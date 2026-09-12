@@ -122,3 +122,8 @@ export {
 export type { Supplier, SupplierSummary, SupplierResult, PurchaseLine } from './services/suppliers.js'
 
 export { applyUpgrades } from './services/upgrade.js'
+
+export * as Totals from './domain/billTotals.js'
+export type { ComputedTotals, LineTotals, TotalsLine } from './domain/billTotals.js'
+export { pricingContextFor, resolveLinePrice } from './repos/pricing.js'
+export type { BillPricingContext } from './repos/pricing.js'

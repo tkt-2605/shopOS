@@ -312,3 +312,74 @@ describe('a held bill keeps what it quoted', () => {
     expect(held.lines[0]!.priceSourceId).toBeNull()
   })
 })
+
+describe('two tabs at one counter', () => {
+  /* What the tab bar rests on: each tab is its own draft, and working in one
+     must not disturb another. */
+  it('keeps two drafts independent when one is edited', async () => {
+    const pen = await makeProduct(fx.db, { name: 'Ball Pen', baseRate: rupees(10), taxRateBp: 0 })
+    const book = await makeProduct(fx.db, { name: 'Note Book', baseRate: rupees(40), taxRateBp: 0 })
+    await stockUp(fx.db, pen, 50)
+    await stockUp(fx.db, book, 50)
+
+    const first = await start(pen, 2)
+    const second = await start(book, 1)
+
+    const saved = await saveDraft(fx.db, {
+      billId: second.billId,
+      registerId: fx.seed.registerId,
+      lines: [{ productId: book, qty: fromUnits(5) }],
+      actorId: fx.adminId,
+    })
+    if (!saved.ok) throw new Error('save failed')
+
+    const open = await listOpenDrafts(fx.db, fx.seed.registerId)
+    expect(open).toHaveLength(2)
+    expect(open.find((d) => d.billId === first.billId)!.grandTotal).toBe(rupees(20))
+    expect(open.find((d) => d.billId === second.billId)!.grandTotal).toBe(rupees(200))
+  })
+
+  it('leaves the other tab alone when one is cancelled', async () => {
+    const pen = await makeProduct(fx.db, { name: 'Ball Pen', baseRate: rupees(10), taxRateBp: 0 })
+    await stockUp(fx.db, pen, 50)
+
+    const first = await start(pen, 2)
+    const second = await start(pen, 3)
+
+    await discardDraft(fx.db, { billId: second.billId, actorId: fx.adminId })
+
+    const open = await listOpenDrafts(fx.db, fx.seed.registerId)
+    expect(open).toHaveLength(1)
+    expect(open[0]!.billId).toBe(first.billId)
+    expect((await loadDraft(fx.db, first.billId))!.lines).toHaveLength(1)
+  })
+
+  it('numbers only the bill that is paid, leaving the other a draft', async () => {
+    const pen = await makeProduct(fx.db, { name: 'Ball Pen', baseRate: rupees(10), taxRateBp: 0 })
+    await stockUp(fx.db, pen, 50)
+
+    const first = await start(pen, 2)
+    const second = await start(pen, 3)
+
+    const done = await submitBill(fx.db, {
+      billId: second.billId,
+      payments: [{ method: 'cash', amount: second.grandTotal }],
+      actorId: fx.adminId,
+    })
+    if (!done.ok) throw new Error('submit failed')
+
+    expect(done.docNo).toMatch(/00001$/)
+    const open = await listOpenDrafts(fx.db, fx.seed.registerId)
+    expect(open).toHaveLength(1)
+    expect(open[0]!.billId).toBe(first.billId)
+
+    // And the held one takes the next number, with no gap.
+    const after = await submitBill(fx.db, {
+      billId: first.billId,
+      payments: [{ method: 'cash', amount: first.grandTotal }],
+      actorId: fx.adminId,
+    })
+    if (!after.ok) throw new Error('submit failed')
+    expect(after.docNo).toMatch(/00002$/)
+  })
+})
