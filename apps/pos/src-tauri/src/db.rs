@@ -209,6 +209,24 @@ pub fn sql_tx_end(db: State<'_, Db>, token: String, commit: bool) -> Result<(), 
     result
 }
 
+/// Rolls back a transaction nothing can still be holding.
+///
+/// Only the webview opens transactions, and it does so against a token it keeps
+/// in memory. A reloaded webview has lost every token it had, so a transaction
+/// still open at that moment is orphaned by definition. The watchdog would clear
+/// it within fifteen seconds, but the till should not fail to open in the
+/// meantime — which is exactly what a reload mid-save used to cause.
+#[tauri::command]
+pub fn sql_abandon_tx(db: State<'_, Db>) -> Result<bool, String> {
+    let mut inner = lock(&db)?;
+    if inner.active_tx.is_none() {
+        return Ok(false);
+    }
+    let _ = inner.conn.execute_batch("ROLLBACK");
+    inner.active_tx = None;
+    Ok(true)
+}
+
 /// Copies the live database to a path the shopkeeper chooses. VACUUM INTO is
 /// consistent against a database being written to, unlike copying the file.
 #[tauri::command]

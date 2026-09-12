@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Money, Quantity, Pricing, Totals,
-  searchProducts, saleUnitsFor, searchCustomers,
+  Money, Quantity, Pricing, Totals, Loyalty,
+  searchProducts, saleUnitsFor, searchCustomers, loadLoyaltyProgram,
   submitBill, pricingContextFor, resolveLinePrice,
   type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
@@ -23,7 +23,11 @@ export default function Billing() {
   const [paying, setPaying] = useState(false)
   const [done, setDone] = useState<{ billId: string; docNo: string; total: number; points: number } | null>(null)
   const [printMsg, setPrintMsg] = useState<string | null>(null)
+  const [redeemPoints, setRedeemPoints] = useState(0)
+  const [program, setProgram] = useState<Loyalty.LoyaltyProgram | null>(null)
   const scanRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { void loadLoyaltyProgram(db).then(setProgram) }, [db])
 
   const focusScan = useCallback(() => scanRef.current?.focus(), [])
   useEffect(() => { focusScan() }, [focusScan, active.tabId])
@@ -49,6 +53,21 @@ export default function Billing() {
   )
 
   const empty = active.lines.length === 0
+
+  /* How many points this bill can absorb: what the customer has, capped by the
+     share of the bill the program lets points cover. */
+  const redeemable = useMemo(() => {
+    const held = active.customer?.loyaltyPoints ?? 0
+    if (!program || !program.enabled || held === 0 || totals.grandTotal === 0) return 0
+    const cap = Math.floor((totals.grandTotal * program.maxRedeemFractionBp) / 10_000)
+    const affordable = program.pointValue > 0 ? Math.floor(cap / program.pointValue) : 0
+    return Math.max(0, Math.min(held, affordable))
+  }, [active.customer, program, totals.grandTotal])
+
+  const redeemedValue = program && redeemPoints > 0
+    ? Loyalty.pointsToMoney(program, redeemPoints, totals.grandTotal)
+    : 0
+  const due = (totals.grandTotal - redeemedValue) as typeof totals.grandTotal
 
   /* Resolved through the same core call the service uses, so the rate on screen
      is the rate that gets saved. */
@@ -123,7 +142,8 @@ export default function Billing() {
 
     const result = await submitBill(db, {
       billId,
-      payments: [{ method, amount: totals.grandTotal }],
+      payments: due > 0 ? [{ method, amount: due }] : [],
+      ...(redeemPoints > 0 ? { redeemPoints } : {}),
       actorId: user.id,
     })
 
@@ -137,10 +157,11 @@ export default function Billing() {
     // Print straight away; the dialog stays up so a failed print can be retried.
     void printBill(db, billId).then((r) => { if (!r.ok) setPrintMsg(r.message) })
     setPaying(false)
+    setRedeemPoints(0)
     tabs.released()
     setTerm('')
     focusScan()
-  }, [db, user.id, active.lines.length, tabs, totals.grandTotal, focusScan])
+  }, [db, user.id, active.lines.length, tabs, totals.grandTotal, due, redeemPoints, focusScan])
 
   /* The counter should not need the mouse. Only bound keys are advertised.
      The handler is held in a ref so the listener registers once but always runs
@@ -189,10 +210,9 @@ export default function Billing() {
             <div key={cart.tabId} className="tab" aria-current={cart.tabId === active.tabId}>
               <button className="pick" onClick={() => tabs.select(cart.tabId)}>
                 <span className="n">{i + 1}</span>
-                {cart.customer && <span className="who">{cart.customer.name}</span>}
-                {cart.lines.length === 0
-                  ? <span className="who">New</span>
-                  : <span className="amt">{Money.format(billTotal(cart) as never)}</span>}
+                <span className="who">
+                  {cart.customer?.name ?? (cart.lines.length === 0 ? 'New' : 'Walk-in')}
+                </span>
               </button>
               {tabs.tabs.length > 1 && (
                 <button className="shut" aria-label="Cancel this bill" onClick={() => void closeTab(cart)}>
@@ -347,12 +367,6 @@ export default function Billing() {
           </div>
         </div>
 
-        <div className="fkeys">
-          <button className="btn" disabled={empty} onClick={() => void closeTab(active)}>
-            Cancel bill
-          </button>
-        </div>
-
         <button className="pay-btn" disabled={empty} onClick={() => setPaying(true)}>
           <span className="k">F12</span>
           <span>Take payment</span>
@@ -361,8 +375,10 @@ export default function Billing() {
 
       {pickingCustomer && (
         <Modal title="Choose a customer" onClose={() => setPickingCustomer(false)}>
-          <input className="input" placeholder="Search by name or phone"
-            onChange={(e) => void searchCustomers(db, e.target.value).then(setCustomers)} />
+          <input
+            className="input" autoFocus placeholder="Name, phone or customer code"
+            onChange={(e) => void searchCustomers(db, e.target.value).then(setCustomers)}
+          />
           <table>
             <tbody>
               <tr
@@ -385,9 +401,13 @@ export default function Billing() {
                 >
                   <td>
                     <span className="cart-name">{c.name}</span>
+                    {c.code && <span className="cart-brand"> · {c.code}</span>}
                     {c.phone && <span className="cart-brand"> · {c.phone}</span>}
                   </td>
                   <td className="r">
+                    {c.loyaltyPoints > 0 && (
+                      <span className="badge ok" style={{ marginRight: 7 }}>{c.loyaltyPoints} pts</span>
+                    )}
                     {c.outstanding > 0 ? <Rupees value={c.outstanding} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}
                   </td>
                 </tr>
@@ -399,19 +419,47 @@ export default function Billing() {
 
       {paying && (
         <Modal
-          title={`Take payment — ${Money.formatWithSymbol(totals.grandTotal)}`}
-          onClose={() => setPaying(false)}
-          footer={<button className="btn" onClick={() => setPaying(false)}>Cancel</button>}
+          title={`Take payment — ${Money.formatWithSymbol(due)}`}
+          onClose={() => { setPaying(false); setRedeemPoints(0) }}
+          footer={<button className="btn" onClick={() => { setPaying(false); setRedeemPoints(0) }}>Cancel</button>}
         >
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <button className="btn primary lg" onClick={() => void pay('cash')}>Cash</button>
-            <button className="btn lg" onClick={() => void pay('upi')}>UPI</button>
-            <button className="btn lg" onClick={() => void pay('card')}>Card</button>
-            <button className="btn lg" disabled={!active.customer} onClick={() => void pay('credit')}>
-              Credit
+          {redeemable > 0 && (
+            <div style={{ padding: '11px 13px', background: 'var(--ok-soft)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 12.5, flex: 1 }}>
+                  {active.customer!.name} has <strong>{active.customer!.loyaltyPoints} points</strong>.
+                  Up to {redeemable} can go against this bill.
+                </span>
+                <input
+                  className="qty-input num" type="number" min={0} max={redeemable}
+                  value={redeemPoints}
+                  onChange={(e) => setRedeemPoints(Math.max(0, Math.min(redeemable, Number(e.target.value) || 0)))}
+                />
+                <button className="btn sm" onClick={() => setRedeemPoints(redeemable)}>All</button>
+              </div>
+              {redeemPoints > 0 && (
+                <div style={{ marginTop: 7, fontSize: 12.5, color: 'var(--ink-2)' }}>
+                  {redeemPoints} points pay {Money.formatWithSymbol(redeemedValue as never)} — {Money.formatWithSymbol(due)} left.
+                </div>
+              )}
+            </div>
+          )}
+
+          {due === 0 ? (
+            <button className="btn primary lg" onClick={() => void pay('cash')}>
+              Settle with points
             </button>
-          </div>
-          {!active.customer && <span className="hint">Credit needs a customer on the bill.</span>}
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <button className="btn primary lg" onClick={() => void pay('cash')}>Cash</button>
+              <button className="btn lg" onClick={() => void pay('upi')}>UPI</button>
+              <button className="btn lg" onClick={() => void pay('card')}>Card</button>
+              <button className="btn lg" disabled={!active.customer} onClick={() => void pay('credit')}>
+                Credit
+              </button>
+            </div>
+          )}
+          {!active.customer && <span className="hint">Credit and loyalty points both need a customer on the bill.</span>}
         </Modal>
       )}
 

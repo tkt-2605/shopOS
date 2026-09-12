@@ -573,3 +573,106 @@ describe('audit trail through a bill lifecycle', () => {
     expect(rows[2]).toMatchObject({ docstatus_from: SUBMITTED, docstatus_to: CANCELLED })
   })
 })
+
+describe('paying with loyalty points', () => {
+  async function withProgram(fraction = 10_000) {
+    await setSetting(fx.db, 'loyalty_program', JSON.stringify({
+      enabled: true,
+      tiers: [{ minSpend: 0, pointsPerHundred: 10 }],
+      expiryDays: null,
+      pointValue: rupees(1),
+      earnOnCreditPortion: true,
+      minBillForEarn: 0,
+      maxRedeemFractionBp: fraction,
+    }))
+  }
+
+  async function givePoints(customerId: string, points: number) {
+    await fx.db.execute(
+      `INSERT INTO loyalty_entries (id, customer_id, bill_id, points, consumed, earned_at, created_at)
+       VALUES (?, ?, NULL, ?, 0, ?, ?)`,
+      [newId(), customerId, points, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'],
+    )
+  }
+
+  /* The counter can now settle a bill entirely with points, which sends no
+     payment rows at all — the redemption has to satisfy the total on its own. */
+  it('settles a bill with points alone, taking no tender', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    await stockUp(fx.db, p, 10)
+    const customerId = await makeCustomer(fx.db)
+    await withProgram()
+    await givePoints(customerId, 500)
+
+    const draft = await billFor(p, 2, customerId)
+    if (!draft.ok) throw new Error('draft failed')
+    expect(draft.grandTotal).toBe(rupees(200))
+
+    const done = await submitBill(fx.db, {
+      billId: draft.billId,
+      payments: [],
+      redeemPoints: 200,
+      actorId: fx.adminId,
+    })
+    expect(done.ok).toBe(true)
+    if (!done.ok) return
+
+    expect(done.pointsRedeemed).toBe(200)
+
+    // The redemption is itself the tender, recorded as such rather than as cash.
+    const tenders = await fx.db.query<{ method: string; amount: number; reference: string | null }>(
+      `SELECT method, amount, reference FROM bill_payments WHERE bill_id = ?`, [draft.billId],
+    )
+    expect(tenders).toHaveLength(1)
+    expect(tenders[0]!.method).toBe('loyalty')
+    expect(tenders[0]!.amount).toBe(rupees(200))
+    expect(tenders[0]!.reference).toBe('200 points')
+
+    const bill = await fx.db.get<{ paid_total: number; credit_total: number }>(
+      `SELECT paid_total, credit_total FROM bills WHERE id = ?`, [draft.billId],
+    )
+    expect(bill?.credit_total).toBe(0)
+  })
+
+  it('takes the rest in cash when points cover only part', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    await stockUp(fx.db, p, 10)
+    const customerId = await makeCustomer(fx.db)
+    await withProgram()
+    await givePoints(customerId, 50)
+
+    const draft = await billFor(p, 2, customerId)
+    if (!draft.ok) throw new Error('draft failed')
+
+    const done = await submitBill(fx.db, {
+      billId: draft.billId,
+      payments: [{ method: 'cash', amount: rupees(150) }],
+      redeemPoints: 50,
+      actorId: fx.adminId,
+    })
+    expect(done.ok).toBe(true)
+    if (!done.ok) return
+    expect(done.pointsRedeemed).toBe(50)
+  })
+
+  it('refuses a payment that does not add up once points are counted', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    await stockUp(fx.db, p, 10)
+    const customerId = await makeCustomer(fx.db)
+    await withProgram()
+    await givePoints(customerId, 50)
+
+    const draft = await billFor(p, 2, customerId)
+    if (!draft.ok) throw new Error('draft failed')
+
+    const done = await submitBill(fx.db, {
+      billId: draft.billId,
+      payments: [{ method: 'cash', amount: rupees(200) }],
+      redeemPoints: 50,
+      actorId: fx.adminId,
+    })
+    expect(done.ok).toBe(false)
+    if (done.ok) return
+    expect(done.code).toBe('PAYMENT_MISMATCH')
+  })
+})

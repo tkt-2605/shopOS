@@ -27,6 +27,7 @@ pub fn run() {
             db::sql_tx_query,
             db::sql_tx_execute,
             db::sql_tx_end,
+            db::sql_abandon_tx,
             db::backup_database,
             printing::list_printers,
             printing::default_printer,

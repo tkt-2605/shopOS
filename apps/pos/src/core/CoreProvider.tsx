@@ -71,6 +71,10 @@ let startup: Promise<{ needsSetup: boolean }> | null = null
 
 function startOnce(): Promise<{ needsSetup: boolean }> {
   startup ??= (async () => {
+    // A reload mid-save leaves the Rust side holding a transaction no one owns
+    // any more; without this the next start fails with "a transaction is already
+    // open" and offers no way out.
+    await invoke('sql_abandon_tx').catch(() => undefined)
     await migrate(db, MIGRATIONS)
     const needsSetup = await isFirstRun(db)
     // A shop that upgrades into a new screen should find it there, without the

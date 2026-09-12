@@ -104,6 +104,8 @@ export async function saleUnitsFor(db: SqlDriver, productId: string): Promise<Sa
 
 export interface CustomerListItem {
   id: string
+  /** The shop's own short reference, if it gives them one. */
+  code: string | null
   name: string
   phone: string | null
   gstin: string | null
@@ -115,10 +117,10 @@ export interface CustomerListItem {
 export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Promise<CustomerListItem[]> {
   const like = `%${term.trim()}%`
   const rows = await db.query<{
-    id: string; name: string; phone: string | null; gstin: string | null
+    id: string; code: string | null; name: string; phone: string | null; gstin: string | null
     credit_limit: number; outstanding: number; points: number
   }>(
-    `SELECT c.id, c.name, c.phone, c.gstin, c.credit_limit,
+    `SELECT c.id, c.code, c.name, c.phone, c.gstin, c.credit_limit,
             COALESCE((SELECT SUM(b.credit_total) FROM bills b WHERE b.customer_id = c.id AND b.docstatus = 1), 0)
           - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
                         JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
@@ -129,14 +131,15 @@ export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Pro
                          AND (le.expires_at IS NULL OR le.expires_at > ?)), 0) AS points
        FROM customers c
       WHERE c.deleted_at IS NULL AND c.is_active = 1
-        AND (? = '' OR c.name LIKE ? OR c.phone LIKE ?)
+        AND (? = '' OR c.name LIKE ? OR c.phone LIKE ? OR c.code LIKE ?)
       ORDER BY c.name
       LIMIT ?`,
-    [new Date().toISOString(), term.trim(), like, like, limit],
+    [new Date().toISOString(), term.trim(), like, like, like, limit],
   )
 
   return rows.map((r) => ({
     id: r.id,
+    code: r.code,
     name: r.name,
     phone: r.phone,
     gstin: r.gstin,
