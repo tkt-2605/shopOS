@@ -6,6 +6,8 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Empty, Alert, Rupees, DocStatusBadge } from '../ui/components'
+import { Attachments } from '../ui/Attachments'
+import { countAttachments } from '@shopos/core'
 
 export default function Bills() {
   const { db } = useCore()
@@ -15,9 +17,18 @@ export default function Bills() {
   const [error, setError] = useState<string | null>(null)
 
   const canCancel = Permissions.can(user.permissions, 'bill', 'cancel')
+  // Evidence is not the document: a cancelled bill can still gain the
+  // photograph that explains why it was cancelled.
+  const canAttach = Permissions.can(user.permissions, 'bill', 'write')
+  const [photos, setPhotos] = useState<Map<string, number>>(new Map())
 
   async function refresh() {
-    setBills(await listBills(db, { limit: 100 }))
+    const rows = await listBills(db, { limit: 100 })
+    setBills(rows)
+    // One query for the page rather than one per row, and only to answer a
+    // question the list cannot otherwise answer: is there a photograph on this
+    // bill, without opening all hundred of them.
+    setPhotos(await countAttachments(db, 'bill', rows.map((b) => b.id)))
   }
 
   useEffect(() => { void refresh() }, [db])
@@ -68,7 +79,14 @@ export default function Bills() {
                   {b.creditTotal > 0 ? <Rupees value={b.creditTotal} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}
                 </td>
                 <td className="r"><Rupees value={b.grandTotal} /></td>
-                <td><DocStatusBadge status={b.docstatus} /></td>
+                <td>
+                  <DocStatusBadge status={b.docstatus} />
+                  {(photos.get(b.id) ?? 0) > 0 && (
+                    <span className="badge" style={{ marginLeft: 6 }} title="Has photographs attached">
+                      {photos.get(b.id)} photo{photos.get(b.id) === 1 ? '' : 's'}
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
             {bills.length === 0 && <tr><td colSpan={7}><Empty>No bills yet</Empty></td></tr>}
@@ -142,6 +160,8 @@ export default function Bills() {
           <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>
             Paid by {open.payments.map((p) => `${p.method} ${Money.formatWithSymbol(p.amount)}`).join(', ') || '—'}
           </div>
+
+          <Attachments entity="bill" entityId={open.id} canEdit={canAttach} onChange={() => void refresh()} />
         </Modal>
       )}
     </>

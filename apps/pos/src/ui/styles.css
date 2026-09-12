@@ -416,5 +416,42 @@ tbody tr:hover { background: var(--accent-soft); }
 }
 .tab-add:hover { background: var(--surface-2); color: var(--ink); }
 
+/* Attachments: the photographs kept against a bill or a stock entry. */
+.att { border-top: 1px solid var(--rule); padding-top: 13px; margin-top: 15px; }
+.att-drop { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.att-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3);
+  margin-bottom: 10px;
+}
+.att-count {
+  display: inline-block; margin-left: 7px; padding: 1px 6px;
+  background: var(--surface-2); color: var(--ink-2); letter-spacing: 0;
+}
+.att-empty { padding: 16px 2px; font-size: 12.5px; color: var(--ink-3); }
+.att-error { padding: 8px 11px; margin-bottom: 10px; font-size: 12.5px;
+  background: var(--danger-soft); border-left: 3px solid var(--danger); }
+.att-strip { display: flex; flex-wrap: wrap; gap: 9px; }
+.att-tile {
+  width: 96px; padding: 0; cursor: pointer; text-align: left;
+  background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 0;
+}
+.att-tile:hover { border-color: var(--accent); }
+.att-tile img { display: block; width: 100%; height: 72px; object-fit: cover; }
+.att-doc {
+  display: flex; align-items: center; justify-content: center; height: 72px;
+  font-size: 11px; letter-spacing: 0.08em; color: var(--ink-3); background: var(--surface-2);
+}
+.att-missing { color: var(--danger); }
+.att-name {
+  display: block; padding: 5px 6px; font-size: 11px; color: var(--ink-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-top: 1px solid var(--rule-soft);
+}
+.att-view { display: flex; align-items: center; justify-content: center; min-height: 140px; }
+.att-view img { max-width: 100%; max-height: 62vh; object-fit: contain; }
+.att-meta { margin-top: 11px; font-size: 12px; color: var(--ink-3); }
+.att-confirm { margin-right: auto; font-size: 12.5px; color: var(--ink-2); }
+
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

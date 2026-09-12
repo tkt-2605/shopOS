@@ -112,6 +112,14 @@ export { listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts } from './ser
 export type { OpenDraft, DraftDetail, DraftLine } from './services/drafts.js'
 export { stockValue, issuedUnitCost } from './services/stock.js'
 
+export {
+  listAttachments, countAttachments, recordAttachment, removeAttachment,
+  attachmentsToCarry, ATTACHMENT_ENTITIES, ACCEPTED_MIME, MAX_BYTES, CARRY_WINDOW_DAYS,
+} from './services/attachments.js'
+export type {
+  Attachment, AttachmentEntity, StoredFile, AttachInput, CarriedFile, RemovalResult,
+} from './services/attachments.js'
+
 export * as Backup from './services/backup.js'
 export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind } from './services/backup.js'
 

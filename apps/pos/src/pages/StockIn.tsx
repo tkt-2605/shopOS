@@ -6,6 +6,7 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
+import { Attachments } from '../ui/Attachments'
 
 interface Line {
   key: string
@@ -33,7 +34,9 @@ export default function StockIn() {
   const [results, setResults] = useState<ProductListItem[]>([])
   const [lines, setLines] = useState<Line[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [done, setDone] = useState<string | null>(null)
+  // Held with its id, not just its number: the distributor's paper bill is in
+  // the shopkeeper's hand at this moment and nowhere else later.
+  const [done, setDone] = useState<{ docNo: string; entryId: string } | null>(null)
 
   useEffect(() => {
     const id = setTimeout(() => { void searchProducts(db, { term, limit: 25 }).then(setResults) }, 140)
@@ -109,7 +112,7 @@ export default function StockIn() {
       return
     }
 
-    setDone(submitted.docNo)
+    setDone({ docNo: submitted.docNo, entryId: entry.entryId })
     setLines([])
     setReference('')
   }
@@ -117,7 +120,17 @@ export default function StockIn() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 900 }}>
       {error && <Alert>{error}</Alert>}
-      {done && <Alert kind="ok">Posted as {done}. Stock updated.</Alert>}
+      {done && (
+        <div>
+          <Alert kind="ok">Posted as {done.docNo}. Stock updated.</Alert>
+          <Attachments
+            entity="stock_entry"
+            entityId={done.entryId}
+            canEdit
+            label={`Supplier's bill for ${done.docNo}`}
+          />
+        </div>
+      )}
 
       <div className="card">
         <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
