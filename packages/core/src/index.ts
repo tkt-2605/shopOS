@@ -4,7 +4,7 @@ export { newId, newDeviceId, timestampOf } from './ids.js'
 
 export type { SqlDriver, Row, SqlValue, ExecResult } from './db/driver.js'
 export { SqlError } from './db/driver.js'
-export { migrate, currentVersion, type Migration } from './db/migrate.js'
+export { migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type Migration } from './db/migrate.js'
 export { createTauriDriver, backupDatabase } from './db/tauri-driver.js'
 
 export * as Tax from './domain/tax.js'
@@ -113,7 +113,7 @@ export type { OpenDraft, DraftDetail, DraftLine } from './services/drafts.js'
 export { stockValue, issuedUnitCost } from './services/stock.js'
 
 export * as Backup from './services/backup.js'
-export type { BackupFile, BackupPlan } from './services/backup.js'
+export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind } from './services/backup.js'
 
 export {
   listSuppliers, supplierSummaries, createSupplier, updateSupplier, deleteSupplier,

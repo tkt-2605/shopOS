@@ -1,7 +1,10 @@
+mod archive;
 mod backup;
 mod db;
 mod exports;
+mod paths;
 mod printing;
+mod restore;
 
 use tauri::Manager;
 
@@ -14,9 +17,18 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             std::fs::create_dir_all(dir.join("backups"))?;
 
-            let database = db::Db::open(&dir.join("shop.db"))?;
+            // Order matters here and nowhere else in the program. A staged
+            // restore has to be applied while nothing holds a handle on the
+            // database, which is true exactly once: now, before Db::open. The
+            // sweep goes first so a temp left by a crash cannot break the
+            // backup that this session will take.
+            paths::sweep_work_dir(&dir);
+            let report = restore::apply_pending(&dir);
+
+            let database = db::Db::open(&dir.join(paths::DB_FILE))?;
             database.start_watchdog();
             app.manage(database);
+            app.manage(restore::LastRestore(report));
 
             Ok(())
         })
@@ -37,7 +49,12 @@ pub fn run() {
             backup::backup_path,
             backup::backup_delete,
             backup::backup_copy,
+            backup::backup_write_zip,
             backup::choose_folder,
+            restore::restore_inspect,
+            restore::restore_begin,
+            restore::restore_report,
+            restore::restore_abandon,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shopos");

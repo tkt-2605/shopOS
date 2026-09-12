@@ -43,6 +43,31 @@ impl Db {
         }))))
     }
 
+    /// Writes a consistent copy of the database to `target`.
+    ///
+    /// VACUUM INTO rather than a file copy: under WAL the main file is stale by
+    /// whatever the write-ahead log still holds, so copying the three files gives
+    /// a torn snapshot while this gives a single, already-checkpointed database.
+    ///
+    /// SQLite refuses to vacuum into a path that already exists, which makes a
+    /// leftover temp from a crash break the *next* backup rather than the one
+    /// that failed — so callers clear the target first.
+    pub fn vacuum_into(&self, target: &std::path::Path) -> Result<(), String> {
+        let inner = lock(self)?;
+        if inner.active_tx.is_some() {
+            return Err("cannot back up while a transaction is open".into());
+        }
+        let escaped = target.to_string_lossy().replace("'", "''");
+        inner
+            .conn
+            .execute_batch(&format!("VACUUM INTO '{escaped}'"))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn has_open_transaction(&self) -> bool {
+        lock(self).map(|inner| inner.active_tx.is_some()).unwrap_or(true)
+    }
+
     pub fn start_watchdog(&self) {
         let inner = Arc::clone(&self.0);
         std::thread::spawn(move || loop {
@@ -227,19 +252,10 @@ pub fn sql_abandon_tx(db: State<'_, Db>) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Copies the live database to a path the shopkeeper chooses. VACUUM INTO is
-/// consistent against a database being written to, unlike copying the file.
+/// Copies the live database to a path the shopkeeper chooses.
 #[tauri::command]
 pub fn backup_database(db: State<'_, Db>, target: String) -> Result<(), String> {
-    let inner = lock(&db)?;
-    if inner.active_tx.is_some() {
-        return Err("cannot back up while a transaction is open".into());
-    }
-    let escaped = target.replace('\'', "''");
-    inner
-        .conn
-        .execute_batch(&format!("VACUUM INTO '{escaped}'"))
-        .map_err(|e| e.to_string())
+    db.vacuum_into(std::path::Path::new(&target))
 }
 
 fn uuid_v4() -> String {

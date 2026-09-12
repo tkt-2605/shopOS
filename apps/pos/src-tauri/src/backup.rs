@@ -2,12 +2,16 @@
 ///
 /// Which backup to take and which to discard is decided in the TypeScript core,
 /// where it is tested; this module only does what it is told, and refuses names
-/// that are not plain files in the backups folder.
-use std::path::{Path, PathBuf};
+/// that are not backup files in the backups folder.
+use std::path::PathBuf;
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::State;
 use tauri_plugin_dialog::DialogExt;
+
+use crate::archive;
+use crate::db::Db;
+use crate::paths::{self, DB_FILE};
 
 #[derive(Serialize)]
 pub struct BackupFile {
@@ -15,32 +19,9 @@ pub struct BackupFile {
     size: u64,
 }
 
-fn backups_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not find the data folder: {e}"))?
-        .join("backups");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    Ok(dir)
-}
-
-/// A name from the webview names a file, never a path. Anything with a separator
-/// or a parent reference would let a bug elsewhere write outside the folder.
-fn in_dir(dir: &Path, name: &str) -> Result<PathBuf, String> {
-    if name.is_empty()
-        || name.contains(['/', '\\', ':'])
-        || name.starts_with('.')
-        || !name.ends_with(".db")
-    {
-        return Err(format!("\"{name}\" is not a backup file name"));
-    }
-    Ok(dir.join(name))
-}
-
 #[tauri::command]
 pub fn backup_list(app: tauri::AppHandle) -> Result<Vec<BackupFile>, String> {
-    let dir = backups_dir(&app)?;
+    let dir = paths::backups_dir(&app)?;
     let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
 
     let mut files = Vec::new();
@@ -50,7 +31,7 @@ pub fn backup_list(app: tauri::AppHandle) -> Result<Vec<BackupFile>, String> {
             _ => continue,
         };
         if let Some(name) = entry.file_name().to_str() {
-            if name.ends_with(".db") {
+            if paths::backup_kind(name).is_some() {
                 files.push(BackupFile { name: name.to_string(), size: meta.len() });
             }
         }
@@ -60,18 +41,41 @@ pub fn backup_list(app: tauri::AppHandle) -> Result<Vec<BackupFile>, String> {
 
 #[tauri::command]
 pub fn backup_path(app: tauri::AppHandle, name: String) -> Result<String, String> {
-    let dir = backups_dir(&app)?;
-    Ok(in_dir(&dir, &name)?.to_string_lossy().to_string())
+    let dir = paths::backups_dir(&app)?;
+    Ok(paths::in_backups(&dir, &name)?.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 pub fn backup_delete(app: tauri::AppHandle, name: String) -> Result<(), String> {
-    let dir = backups_dir(&app)?;
-    let path = in_dir(&dir, &name)?;
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| format!("Could not remove {}: {e}", path.display()))?;
+    let dir = paths::backups_dir(&app)?;
+    paths::remove_if_present(&paths::in_backups(&dir, &name)?)
+}
+
+/// Writes an archive: the database, and in time the photographs attached to it.
+///
+/// The vacuumed copy is taken into the work folder first and removed on every
+/// path out, including the failures, so a crash cannot leave a temp behind for
+/// the next backup to trip over.
+#[tauri::command]
+pub fn backup_write_zip(
+    app: tauri::AppHandle,
+    db: State<'_, Db>,
+    name: String,
+    now: String,
+) -> Result<(), String> {
+    let dir = paths::backups_dir(&app)?;
+    let target = paths::in_backups(&dir, &name)?;
+    if !name.ends_with(".zip") {
+        return Err(format!("\"{name}\" is not an archive name"));
     }
-    Ok(())
+
+    let work = paths::work_dir(&app)?;
+    let copy = archive::Temp(work.join(DB_FILE));
+    paths::remove_if_present(&copy.0)?;
+    db.vacuum_into(&copy.0)?;
+
+    let version = app.package_info().version.to_string();
+    archive::write(&target, &work, &copy.0, &version, &now)
 }
 
 /// Copies a backup somewhere the shopkeeper chose — a USB stick, or a folder that
@@ -79,8 +83,8 @@ pub fn backup_delete(app: tauri::AppHandle, name: String) -> Result<(), String> 
 /// program ever opening a network connection.
 #[tauri::command]
 pub fn backup_copy(app: tauri::AppHandle, name: String, destination: String) -> Result<String, String> {
-    let dir = backups_dir(&app)?;
-    let source = in_dir(&dir, &name)?;
+    let dir = paths::backups_dir(&app)?;
+    let source = paths::in_backups(&dir, &name)?;
     if !source.exists() {
         return Err(format!("{name} is no longer there"));
     }

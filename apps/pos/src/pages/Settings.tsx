@@ -3,9 +3,12 @@ import { Money, Backup, getSetting, setSetting, loadLoyaltyProgram, type Loyalty
 import { useCore, useUser } from '../core/CoreProvider'
 import { listPrinters, defaultPrinter } from '../core/print'
 import {
-  listBackups, takeBackup, deleteBackup, copyBackup, chooseFolder, type BackupFile,
+  describeBackups, takeBackup, deleteBackup, copyBackup, chooseFolder,
+  todaysBackupName, type BackupEntry,
 } from '../core/backup'
+import { lastRestore, type RestoreReport } from '../core/restore'
 import { Card, Field, Alert } from '../ui/components'
+import { RestorePanel } from '../ui/RestorePanel'
 
 type Theme = 'daylight' | 'khata' | 'night'
 type Density = 'comfortable' | 'compact' | 'dense'
@@ -32,7 +35,8 @@ export default function Settings() {
   const [printers, setPrinters] = useState<string[]>([])
   const [printer, setPrinter] = useState('')
   const [systemDefault, setSystemDefault] = useState<string | null>(null)
-  const [backups, setBackups] = useState<BackupFile[]>([])
+  const [backups, setBackups] = useState<BackupEntry[]>([])
+  const [restore, setRestore] = useState<RestoreReport>({ restored: null, error: null })
   const [copyTo, setCopyTo] = useState('')
   const [busy, setBusy] = useState(false)
   const [backupNote, setBackupNote] = useState<string | null>(null)
@@ -51,10 +55,11 @@ export default function Settings() {
   }, [db])
 
   const refreshBackups = useCallback(async () => {
-    setBackups(await listBackups())
+    setBackups(await describeBackups())
   }, [])
 
   useEffect(() => { void refreshBackups() }, [refreshBackups])
+  useEffect(() => { void lastRestore().then(setRestore) }, [])
 
   // Applied immediately so the choice is visible while still on this screen.
   function chooseTheme(next: Theme) {
@@ -86,7 +91,7 @@ export default function Settings() {
     setBusy(true)
     setBackupError(null)
     try {
-      const name = Backup.backupName()
+      const name = todaysBackupName()
       await takeBackup(name)
       await refreshBackups()
       sayBackup(`Saved today's backup.`)
@@ -353,6 +358,15 @@ export default function Settings() {
 
         {backupError && <div style={{ marginBottom: 11 }}><Alert>{backupError}</Alert></div>}
         {backupNote && <div style={{ marginBottom: 11 }}><Alert kind="ok">{backupNote}</Alert></div>}
+        {restore.restored && (
+          <div style={{ marginBottom: 11 }}>
+            <Alert kind="ok">
+              Restored from {restore.restored.source}. Your data from before that is saved
+              as {restore.restored.safety}.
+            </Alert>
+          </div>
+        )}
+        {restore.error && <div style={{ marginBottom: 11 }}><Alert>{restore.error}</Alert></div>}
 
         <div className="card card-scroll" style={{ marginBottom: 14 }}>
           <table>
@@ -361,8 +375,11 @@ export default function Settings() {
               {backups.map((f, i) => (
                 <tr key={f.name}>
                   <td className="num">
-                    {Backup.backupDate(f.name)}
+                    {f.date}{f.time ? ` ${f.time}` : ''}
                     {i === 0 && <span className="badge ok" style={{ marginLeft: 7 }}>latest</span>}
+                    {f.kind === 'safety' && (
+                      <span className="badge" style={{ marginLeft: 7 }}>before a restore</span>
+                    )}
                   </td>
                   <td className="r num">{formatSize(f.size)}</td>
                   <td className="r" style={{ whiteSpace: 'nowrap' }}>
@@ -393,6 +410,10 @@ export default function Settings() {
             {copyTo && <button className="btn ghost" onClick={() => void pickFolder(true)}>Clear</button>}
           </div>
         </Field>
+      </Card>
+
+      <Card title="Restore a backup">
+        <RestorePanel />
       </Card>
 
       <Card title="Shop">

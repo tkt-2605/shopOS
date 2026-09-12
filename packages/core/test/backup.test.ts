@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { planBackup, backupName, backupDate, sortBackups, KEEP_DAILY } from '../src/services/backup.js'
+import {
+  planBackup, backupName, backupZipName, safetyName, backupDate, backupExt,
+  describeBackups, sortBackups, KEEP_DAILY,
+} from '../src/services/backup.js'
 
 const on = (iso: string) => new Date(`${iso}T11:00:00`)
 const files = (...names: string[]) => names.map((name) => ({ name, size: 1024 }))
@@ -69,5 +72,104 @@ describe('listing', () => {
     expect(sorted.map((f) => f.name)).toEqual([
       'shop-2026-09-12.db', 'shop-2026-09-05.db', 'shop-2026-09-01.db',
     ])
+  })
+})
+
+/* A shop that upgrades has a folder of .db files it must still be able to see,
+   prune and restore. Everything below is about that mixed folder. */
+describe('the move from .db to .zip', () => {
+  it('reads a date and a format off either', () => {
+    expect(backupZipName(new Date(2026, 8, 13, 0, 30))).toBe('shop-2026-09-13.zip')
+    expect(backupDate('shop-2026-09-12.zip')).toBe('2026-09-12')
+    expect(backupExt('shop-2026-09-12.zip')).toBe('zip')
+    expect(backupExt('shop-2026-09-12.db')).toBe('db')
+    expect(backupExt('shop-2026-09-12.db-wal')).toBeNull()
+    expect(backupExt('shop-2026-09-12.exe')).toBeNull()
+  })
+
+  it('writes a zip when asked for one', () => {
+    expect(planBackup([], on('2026-09-12'), KEEP_DAILY, 'zip').create).toBe('shop-2026-09-12.zip')
+  })
+
+  /* The day of the upgrade: today's .db already stands for today, and taking a
+     zip beside it would back the same morning up twice. */
+  it('does not take a zip on a day that already has a db', () => {
+    const plan = planBackup(files('shop-2026-09-12.db'), on('2026-09-12'), KEEP_DAILY, 'zip')
+    expect(plan.create).toBeNull()
+  })
+
+  /* Slicing a list of files rather than a list of days would keep seven days
+     through the transition week and call it fourteen. */
+  it('keeps a fortnight of days, not a fortnight of files', () => {
+    const existing = files(
+      ...Array.from({ length: 10 }, (_, i) => `shop-2026-09-${String(i + 1).padStart(2, '0')}.db`),
+      ...Array.from({ length: 10 }, (_, i) => `shop-2026-09-${String(i + 1).padStart(2, '0')}.zip`),
+    )
+    const plan = planBackup(existing, on('2026-09-11'), KEEP_DAILY, 'zip')
+
+    expect(plan.create).toBe('shop-2026-09-11.zip')
+    // Eleven days in play, all inside the fortnight — so nothing falls off the
+    // end, and only the superseded .db files go.
+    expect(plan.prune).toHaveLength(10)
+    expect(plan.prune.every((n) => n.endsWith('.db'))).toBe(true)
+    expect(plan.prune).not.toContain('shop-2026-09-10.zip')
+  })
+
+  it('drops a db the moment a zip for the same day exists', () => {
+    const plan = planBackup(
+      files('shop-2026-09-11.db', 'shop-2026-09-11.zip', 'shop-2026-09-10.db'),
+      on('2026-09-12'), KEEP_DAILY, 'zip',
+    )
+    expect(plan.prune).toEqual(['shop-2026-09-11.db'])
+  })
+
+  it('prunes every file belonging to a day that has fallen off the end', () => {
+    const plan = planBackup(
+      files('shop-2026-08-01.db', 'shop-2026-08-01.zip', 'shop-2026-09-12.zip'),
+      on('2026-09-12'), 1, 'zip',
+    )
+    expect(plan.prune.sort()).toEqual(['shop-2026-08-01.db', 'shop-2026-08-01.zip'])
+  })
+
+  it('lists both formats, newest first', () => {
+    const sorted = sortBackups(files('shop-2026-09-01.db', 'shop-2026-09-12.zip', 'shop-2026-09-05.zip'))
+    expect(sorted.map((f) => f.name)).toEqual([
+      'shop-2026-09-12.zip', 'shop-2026-09-05.zip', 'shop-2026-09-01.db',
+    ])
+  })
+})
+
+/* The copy taken just before a restore. It is not part of the rotation — it is
+   the only way back from restoring the wrong file. */
+describe('pre-restore copies', () => {
+  it('is named for the minute it was taken', () => {
+    expect(safetyName(new Date(2026, 8, 13, 9, 5))).toBe('before-restore-2026-09-13-0905.db')
+  })
+
+  it('is not a daily backup, so the rotation never touches it', () => {
+    expect(backupDate('before-restore-2026-09-13-0905.db')).toBeNull()
+    const plan = planBackup(
+      files('before-restore-2026-09-13-0905.db', 'shop-2026-01-01.db'),
+      on('2026-09-13'), 1, 'zip',
+    )
+    expect(plan.prune).toEqual(['shop-2026-01-01.db'])
+  })
+
+  it('still appears in the list, marked for what it is', () => {
+    const listed = describeBackups(files(
+      'shop-2026-09-12.zip',
+      'before-restore-2026-09-13-0905.db',
+      'shop-2026-09-13.zip',
+      'holiday-photos.db',
+    ))
+    // The safety copy is above the same day's backup because it is newer: the
+    // rotation runs when the shop opens, a restore happens later.
+    expect(listed.map((f) => f.name)).toEqual([
+      'before-restore-2026-09-13-0905.db',
+      'shop-2026-09-13.zip',
+      'shop-2026-09-12.zip',
+    ])
+    expect(listed[0]).toMatchObject({ kind: 'safety', time: '09:05', format: 'db' })
+    expect(listed[1]).toMatchObject({ kind: 'daily', time: null, format: 'zip' })
   })
 })

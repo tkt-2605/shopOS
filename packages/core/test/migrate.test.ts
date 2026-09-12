@@ -128,3 +128,50 @@ describe('transactions', () => {
     expect(rows).toHaveLength(1)
   })
 })
+
+describe('refusing a schema this build cannot run', () => {
+  /* Unreachable until restore exists, and the first thing restore will hit. */
+  it('refuses a database newer than the app', async () => {
+    await migrate(db, MIGRATIONS)
+    await db.execute(`PRAGMA user_version = ${MIGRATIONS.length + 3}`)
+
+    await expect(migrate(db, MIGRATIONS)).rejects.toMatchObject({
+      code: 'SCHEMA_TOO_NEW',
+      found: MIGRATIONS.length + 3,
+      supported: MIGRATIONS.length,
+    })
+  })
+
+  /* The guard has to sit above the `nothing pending` early return, or it is dead
+     code — a too-new database is precisely the one with nothing to apply. */
+  it('refuses rather than returning happily with nothing pending', async () => {
+    await migrate(db, MIGRATIONS)
+    await db.execute('PRAGMA user_version = 99')
+
+    let threw = false
+    try {
+      await migrate(db, MIGRATIONS)
+    } catch {
+      threw = true
+    }
+    expect(threw).toBe(true)
+  })
+
+  it('refuses a database with our tables but no version stamp', async () => {
+    await migrate(db, MIGRATIONS)
+    await db.execute('PRAGMA user_version = 0')
+
+    await expect(migrate(db, MIGRATIONS)).rejects.toMatchObject({ code: 'SCHEMA_UNVERSIONED' })
+  })
+
+  it('leaves an empty database alone — that is a first run, not a damaged file', async () => {
+    expect(await currentVersion(db)).toBe(0)
+    await expect(migrate(db, MIGRATIONS)).resolves.toBe(MIGRATIONS.length)
+  })
+
+  it('still migrates a database one version behind', async () => {
+    await migrate(db, MIGRATIONS.slice(0, 1))
+    expect(await currentVersion(db)).toBe(1)
+    await expect(migrate(db, MIGRATIONS)).resolves.toBe(MIGRATIONS.length)
+  })
+})

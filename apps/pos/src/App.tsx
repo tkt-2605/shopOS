@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { login, Permissions, type Page } from '@shopos/core'
 import { useCore } from './core/CoreProvider'
 import { Field, Alert, Empty } from './ui/components'
+import { RestorePanel } from './ui/RestorePanel'
+import { abandonRestore } from './core/restore'
 import { ICONS, BrandMark } from './ui/icons'
 import Billing from './pages/Billing'
 import Bills from './pages/Bills'
@@ -49,19 +51,48 @@ export default function App() {
   const { status, user } = useCore()
 
   if (status.phase === 'starting') return <Empty>Starting…</Empty>
-  if (status.phase === 'failed') {
-    return (
-      <div className="centre">
-        <div className="panel">
-          <div className="panel-head"><h1>Could not start</h1></div>
-          <div className="panel-body"><Alert>{status.error}</Alert></div>
-        </div>
-      </div>
-    )
-  }
+  if (status.phase === 'failed') return <CouldNotStart error={status.error} />
   if (status.phase === 'setup') return <Setup />
   if (!user) return <Login />
   return <Shell />
+}
+
+/**
+ * The way out of a shop that will not open.
+ *
+ * Restore lives here as well as in Settings, because a database this build
+ * cannot read fails before sign-in — and a fix that sits behind the screen that
+ * will not load is not a fix.
+ */
+function CouldNotStart({ error }: { error: string }) {
+  const [restoring, setRestoring] = useState(false)
+
+  return (
+    <div className="centre">
+      <div className="panel" style={{ maxWidth: restoring ? 620 : undefined }}>
+        <div className="panel-head"><h1>Could not start</h1></div>
+        <div className="panel-body">
+          <Alert>{error}</Alert>
+          {!restoring && (
+            <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+              <button className="btn" onClick={() => setRestoring(true)}>Restore a backup…</button>
+              <button className="btn ghost" onClick={() => { void abandonRestore().then(() => window.location.reload()) }}>
+                Cancel a pending restore
+              </button>
+            </div>
+          )}
+          {restoring && (
+            <div style={{ marginTop: 14 }}>
+              <RestorePanel standalone />
+              <button className="btn ghost sm" style={{ marginTop: 10 }} onClick={() => setRestoring(false)}>
+                Back
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function Setup() {
