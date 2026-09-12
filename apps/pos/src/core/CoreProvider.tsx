@@ -96,7 +96,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         // After the counter is usable, never in front of it. A shop opening for
         // the day waits for nothing, and a backup that fails is reported on the
         // Settings screen rather than blocking the till.
-        void runDailyBackup()
+        void runDailyBackup(db)
       } catch (err) {
         if (!cancelled) setStatus({ phase: 'failed', error: describe(err) })
       }

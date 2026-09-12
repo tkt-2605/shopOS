@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Money, Backup, getSetting, setSetting, loadLoyaltyProgram, type Loyalty } from '@shopos/core'
+import {
+  Money, Backup, getSetting, setSetting, loadLoyaltyProgram, CARRY_WINDOW_DAYS, type Loyalty,
+} from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { listPrinters, defaultPrinter } from '../core/print'
 import {
-  describeBackups, takeBackup, deleteBackup, copyBackup, chooseFolder,
-  todaysBackupName, type BackupEntry,
+  describeBackups, takeBackupNow, deleteBackup, copyBackup, chooseFolder,
+  todaysBackupName, runHook, HOOK_SETTING, type BackupEntry,
 } from '../core/backup'
 import { lastRestore, type RestoreReport } from '../core/restore'
 import { Card, Field, Alert } from '../ui/components'
@@ -41,6 +43,9 @@ export default function Settings() {
   const [busy, setBusy] = useState(false)
   const [backupNote, setBackupNote] = useState<string | null>(null)
   const [backupError, setBackupError] = useState<string | null>(null)
+  const [hookCommand, setHookCommand] = useState('')
+  const [hookOutput, setHookOutput] = useState<{ ok: boolean; text: string } | null>(null)
+  const [hookBusy, setHookBusy] = useState(false)
 
   useEffect(() => {
     void (async () => {
@@ -51,6 +56,7 @@ export default function Settings() {
       setSystemDefault(await defaultPrinter())
       setPrinter((await getSetting(db, 'thermal_printer')) ?? '')
       setCopyTo((await getSetting(db, 'backup_folder')) ?? '')
+      setHookCommand((await getSetting(db, HOOK_SETTING)) ?? '')
     })()
   }, [db])
 
@@ -92,9 +98,13 @@ export default function Settings() {
     setBackupError(null)
     try {
       const name = todaysBackupName()
-      await takeBackup(name)
+      const { attachments } = await takeBackupNow(db, name)
       await refreshBackups()
-      sayBackup(`Saved today's backup.`)
+      sayBackup(
+        attachments === 0
+          ? `Saved today's backup.`
+          : `Saved today's backup, with ${attachments} ${attachments === 1 ? 'photo' : 'photos'}.`,
+      )
     } catch (err) {
       setBackupError(typeof err === 'string' ? err : 'The backup could not be written.')
     } finally {
@@ -133,6 +143,29 @@ export default function Settings() {
     if (!folder) return
     setCopyTo(folder)
     await setSetting(db, 'backup_folder', folder)
+  }
+
+  async function saveHook(value: string) {
+    setHookCommand(value)
+    await setSetting(db, HOOK_SETTING, value.trim())
+  }
+
+  async function testHook() {
+    const name = backups[0]?.name
+    if (!name) { setHookOutput({ ok: false, text: 'Take a backup first, so there is a file to send.' }); return }
+    setHookBusy(true)
+    setHookOutput(null)
+    try {
+      const result = await runHook(hookCommand, name)
+      setHookOutput({
+        ok: result.ok,
+        text: result.output || (result.ok ? 'Finished with nothing to say.' : `Exit code ${result.code ?? '—'}.`),
+      })
+    } catch (err) {
+      setHookOutput({ ok: false, text: typeof err === 'string' ? err : 'That command could not be run.' })
+    } finally {
+      setHookBusy(false)
+    }
   }
 
   function patch(next: Partial<Loyalty.LoyaltyProgram>) {
@@ -353,7 +386,9 @@ export default function Settings() {
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
           One backup is taken automatically each day the shop opens, and the last{' '}
           {Backup.KEEP_DAILY} are kept. They live on this machine — copy one somewhere else
-          for it to survive the machine.
+          for it to survive the machine. Every backup holds the whole shop: bills, stock,
+          payments and customers, complete. Photographs attached to documents are carried
+          for the last {CARRY_WINDOW_DAYS} days; older ones stay on this machine.
         </div>
 
         {backupError && <div style={{ marginBottom: 11 }}><Alert>{backupError}</Alert></div>}
@@ -410,6 +445,36 @@ export default function Settings() {
             {copyTo && <button className="btn ghost" onClick={() => void pickFolder(true)}>Clear</button>}
           </div>
         </Field>
+
+        <Field
+          label="Run after each backup"
+          hint="A command this machine runs once the backup is written, with the file's path in place of {file}. Point it at rclone to upload to a cloud account you already have. ShopOS runs exactly what you type here and never goes online by itself."
+        >
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              className="input"
+              id="backup-hook"
+              value={hookCommand}
+              placeholder={'rclone copy {file} gdrive:shopos'}
+              style={{ flex: 1, minWidth: 0, fontFamily: 'Consolas, monospace', fontSize: 12.5 }}
+              onChange={(e) => setHookCommand(e.target.value)}
+              onBlur={(e) => void saveHook(e.target.value)}
+            />
+            <button className="btn" disabled={hookBusy || hookCommand.trim() === ''} onClick={() => void testHook()}>
+              {hookBusy ? 'Running…' : 'Test'}
+            </button>
+          </div>
+        </Field>
+
+        {hookOutput && (
+          <div style={{ marginTop: -4, marginBottom: 11 }}>
+            <Alert kind={hookOutput.ok ? 'ok' : 'bad'}>
+              <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12, whiteSpace: 'pre-wrap' }}>
+                {hookOutput.text}
+              </span>
+            </Alert>
+          </div>
+        )}
       </Card>
 
       <Card title="Restore a backup">

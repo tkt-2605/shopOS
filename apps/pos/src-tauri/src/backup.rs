@@ -51,7 +51,11 @@ pub fn backup_delete(app: tauri::AppHandle, name: String) -> Result<(), String> 
     paths::remove_if_present(&paths::in_backups(&dir, &name)?)
 }
 
-/// Writes an archive: the database, and in time the photographs attached to it.
+/// Writes an archive: the database, and the photographs attached to it.
+///
+/// Which photographs is decided by the core, where the window is a rule with a
+/// test rather than a number buried in Rust. This end only reads the files it is
+/// named and says in the manifest which of them it could not find.
 ///
 /// The vacuumed copy is taken into the work folder first and removed on every
 /// path out, including the failures, so a crash cannot leave a temp behind for
@@ -62,6 +66,7 @@ pub fn backup_write_zip(
     db: State<'_, Db>,
     name: String,
     now: String,
+    attachments: Vec<String>,
 ) -> Result<(), String> {
     let dir = paths::backups_dir(&app)?;
     let target = paths::in_backups(&dir, &name)?;
@@ -75,7 +80,8 @@ pub fn backup_write_zip(
     db.vacuum_into(&copy.0)?;
 
     let version = app.package_info().version.to_string();
-    archive::write(&target, &work, &copy.0, &version, &now)
+    let photos = paths::attachments_dir(&app)?;
+    archive::write(&target, &work, &copy.0, &version, &now, &photos, &attachments)
 }
 
 /// Copies a backup somewhere the shopkeeper chose — a USB stick, or a folder that

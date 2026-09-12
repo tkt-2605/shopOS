@@ -241,6 +241,16 @@ pub fn restore_begin(
     paths::remove_if_present(&safety_path)?;
     db.vacuum_into(&safety_path)?;
 
+    // Photographs go in before the database, and outside the marker, because they
+    // are content-addressed and additive: writing them twice is the same as
+    // writing them once, and a set that only half arrived is a subset rather than
+    // a corruption. The database landing last is what makes the marker
+    // unambiguous — it means "the swap has not happened yet".
+    if source.extension().and_then(|e| e.to_str()) == Some("zip") {
+        let photos = paths::attachments_dir(&app)?;
+        archive::extract_attachments(&source, &photos)?;
+    }
+
     std::fs::copy(&candidate, &staged).map_err(|e| format!("Could not stage the restore: {e}"))?;
 
     let marker = Marker { source: name, safety: safety_name, staged_at: now };

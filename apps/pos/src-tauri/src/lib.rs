@@ -1,7 +1,9 @@
 mod archive;
+mod attachments;
 mod backup;
 mod db;
 mod exports;
+mod hook;
 mod paths;
 mod printing;
 mod restore;
@@ -16,6 +18,7 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             std::fs::create_dir_all(dir.join("backups"))?;
+            std::fs::create_dir_all(dir.join("attachments"))?;
 
             // Order matters here and nowhere else in the program. A staged
             // restore has to be applied while nothing holds a handle on the
@@ -51,6 +54,11 @@ pub fn run() {
             backup::backup_copy,
             backup::backup_write_zip,
             backup::choose_folder,
+            attachments::attachment_store,
+            attachments::attachment_read,
+            attachments::attachment_delete,
+            attachments::attachment_present,
+            hook::run_backup_hook,
             restore::restore_inspect,
             restore::restore_begin,
             restore::restore_report,

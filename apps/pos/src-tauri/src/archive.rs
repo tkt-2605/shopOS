@@ -15,6 +15,9 @@ use zip::write::SimpleFileOptions;
 pub const FORMAT: u32 = 1;
 pub const DB_ENTRY: &str = "shop.db";
 pub const MANIFEST_ENTRY: &str = "manifest.json";
+/// Attachments keep the layout they have on disk, so restoring them is a copy
+/// rather than a translation.
+pub const ATTACH_PREFIX: &str = "attachments/";
 
 #[derive(Serialize)]
 struct Manifest {
@@ -25,9 +28,13 @@ struct Manifest {
     schema: i64,
     taken_at: String,
     database: Entry,
-    /// Empty until attachments exist; present from the first archive so a reader
-    /// written today does not need a second format version to find it missing.
+    /// The photographs this archive carries, which is those recorded inside the
+    /// window rather than every one on the machine — see `attachmentsToCarry`.
     attachments: Vec<Entry>,
+    /// Named rather than silently dropped: a file a row points at that is no
+    /// longer on the disk is worth knowing about, and is not a reason to fail
+    /// the backup of the ledger.
+    missing: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -58,7 +65,15 @@ impl Drop for Temp {
 /// Built under a temporary name and renamed into place at the end, so a crash
 /// halfway through never leaves a half-written archive wearing today's name —
 /// which would be read next time as a backup that had already been taken.
-pub fn write(target: &Path, work: &Path, db_file: &Path, app_version: &str, taken_at: &str) -> Result<(), String> {
+pub fn write(
+    target: &Path,
+    work: &Path,
+    db_file: &Path,
+    app_version: &str,
+    taken_at: &str,
+    attachments_root: &Path,
+    attachments: &[String],
+) -> Result<(), String> {
     let schema = read_schema(db_file)?;
     let bytes = std::fs::read(db_file).map_err(|e| format!("Could not read the copy: {e}"))?;
 
@@ -69,7 +84,7 @@ pub fn write(target: &Path, work: &Path, db_file: &Path, app_version: &str, take
     let file = std::fs::File::create(&part.0).map_err(|e| format!("Could not create {}: {e}", part.0.display()))?;
     let mut zip = zip::ZipWriter::new(file);
 
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         format: FORMAT,
         app: app_version.to_string(),
         schema,
@@ -80,19 +95,47 @@ pub fn write(target: &Path, work: &Path, db_file: &Path, app_version: &str, take
             crc32: crc32fast::hash(&bytes),
         },
         attachments: Vec::new(),
+        missing: Vec::new(),
     };
+    // A SQLite file is mostly empty pages and repeated structure; it compresses
+    // to a fraction. Photographs are already compressed and are stored as they
+    // are — deflating a JPEG costs time and saves nothing.
+    add(&mut zip, DB_ENTRY, &bytes, zip::CompressionMethod::Deflated)?;
+    drop(bytes);
+
+    for rel in attachments {
+        let file = match super::paths::stored_rel(rel) {
+            Some(r) => attachments_root.join(r),
+            // A path that is not the shape this program writes did not come from
+            // it. Recorded as missing rather than followed.
+            None => {
+                manifest.missing.push(rel.clone());
+                continue;
+            }
+        };
+        let photo = match std::fs::read(&file) {
+            Ok(b) => b,
+            Err(_) => {
+                manifest.missing.push(rel.clone());
+                continue;
+            }
+        };
+        add(&mut zip, &format!("{ATTACH_PREFIX}{rel}"), &photo, zip::CompressionMethod::Stored)?;
+        manifest.attachments.push(Entry {
+            path: rel.clone(),
+            bytes: photo.len() as u64,
+            crc32: crc32fast::hash(&photo),
+        });
+    }
+
     let manifest_json =
         serde_json::to_vec_pretty(&manifest).map_err(|e| format!("Could not write the manifest: {e}"))?;
-
-    // The manifest is stored rather than deflated so it can be read out of a
-    // damaged archive with nothing more than a text editor.
+    // Stored rather than deflated so it can be read out of a damaged archive
+    // with nothing more than a text editor. It goes in last because it is only
+    // true once everything it describes is written.
     add(&mut zip, MANIFEST_ENTRY, &manifest_json, zip::CompressionMethod::Stored)?;
-    // A SQLite file is mostly empty pages and repeated structure; it compresses
-    // to a fraction. Images, when they arrive, will be stored instead.
-    add(&mut zip, DB_ENTRY, &bytes, zip::CompressionMethod::Deflated)?;
 
     zip.finish().map_err(|e| format!("Could not finish the archive: {e}"))?;
-    drop(bytes);
 
     super::paths::remove_if_present(target)?;
     std::fs::rename(&part.0, target).map_err(|e| format!("Could not save {}: {e}", target.display()))?;
@@ -128,6 +171,68 @@ pub fn extract_database(archive: &Path, into: &Path) -> Result<i64, String> {
     drop(entry);
 
     read_schema(into)
+}
+
+/// Copies the archive's photographs into the attachments folder, adding what is
+/// not already there.
+///
+/// A merge, never a replacement. Swapping the folder for this archive's set
+/// would delete every photograph older than the window this zip was taken
+/// under — which is exactly the ones no other archive carries either.
+///
+/// Files are content-addressed, so writing one twice is the same as writing it
+/// once and a half-finished set is simply a subset. That is what lets this run
+/// before the database is replaced and be safe to repeat.
+pub fn extract_attachments(archive: &Path, root: &Path) -> Result<Restored, String> {
+    let file = std::fs::File::open(archive).map_err(|e| format!("Could not open {}: {e}", archive.display()))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("That file is not a ShopOS backup: {e}"))?;
+
+    let mut out = Restored::default();
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| format!("That backup is damaged: {e}"))?;
+        if !entry.is_file() {
+            continue;
+        }
+        // `name` is attacker-controlled in the general case — a zip can carry
+        // `../../windows/system32/x`. The only names accepted are the shape this
+        // program writes, which cannot leave the folder.
+        let Some(rel) = entry.name().strip_prefix(ATTACH_PREFIX).map(str::to_string) else {
+            continue;
+        };
+        let Some(safe) = super::paths::stored_rel(&rel) else {
+            out.refused += 1;
+            continue;
+        };
+
+        let target = root.join(&safe);
+        if target.exists() {
+            out.already += 1;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
+        }
+
+        // Through a temporary name, so a file wearing a hash is always the whole
+        // file. Reading the entry to its end is also what checks its CRC.
+        let part = Temp(target.with_extension("part"));
+        let mut writer = std::fs::File::create(&part.0)
+            .map_err(|e| format!("Could not write {}: {e}", part.0.display()))?;
+        std::io::copy(&mut entry, &mut writer).map_err(|e| format!("That backup is damaged: {e}"))?;
+        writer.sync_all().map_err(|e| e.to_string())?;
+        drop(writer);
+
+        std::fs::rename(&part.0, &target).map_err(|e| format!("Could not save {}: {e}", target.display()))?;
+        out.written += 1;
+    }
+    Ok(out)
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct Restored {
+    pub written: usize,
+    pub already: usize,
+    pub refused: usize,
 }
 
 /// The manifest, as text, for showing the shopkeeper what they are about to
@@ -178,7 +283,7 @@ mod tests {
 
         let work = db.parent().unwrap().to_path_buf();
         let zip = scratch("shop-2026-09-13.zip");
-        write(&zip, &work, &db, "0.1.0", "2026-09-13T03:00:00Z").unwrap();
+        write(&zip, &work, &db, "0.1.0", "2026-09-13T03:00:00Z", &work, &[]).unwrap();
 
         let back = scratch("round-trip-out.db");
         assert_eq!(extract_database(&zip, &back).unwrap(), 7);
@@ -194,7 +299,7 @@ mod tests {
         a_database(&db, 2);
         let work = db.parent().unwrap().to_path_buf();
         let zip = scratch("shop-2026-09-14.zip");
-        write(&zip, &work, &db, "0.1.0", "2026-09-14T03:00:00Z").unwrap();
+        write(&zip, &work, &db, "0.1.0", "2026-09-14T03:00:00Z", &work, &[]).unwrap();
 
         let text = read_manifest(&zip).expect("a manifest");
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -213,9 +318,122 @@ mod tests {
         let work = missing.parent().unwrap().to_path_buf();
         let zip = scratch("shop-2026-09-15.zip");
 
-        assert!(write(&zip, &work, &missing, "0.1.0", "2026-09-15T03:00:00Z").is_err());
+        assert!(write(&zip, &work, &missing, "0.1.0", "2026-09-15T03:00:00Z", &work, &[]).is_err());
         assert!(!zip.exists());
         assert!(!work.join("shop-2026-09-15.zip.part").exists());
+    }
+
+    /// A photograph on disk, named the way `attachments.rs` names them.
+    fn a_photo(root: &Path, digest: &str, bytes: &[u8]) -> String {
+        let rel = format!("{}/{digest}.jpg", &digest[..2]);
+        let path = root.join(&rel[..2]);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(root.join(&rel), bytes).unwrap();
+        rel
+    }
+
+    #[test]
+    fn the_archive_carries_the_photographs_it_is_given() {
+        let db = scratch("photos.db");
+        a_database(&db, 3);
+        let work = db.parent().unwrap().to_path_buf();
+
+        let root = work.join("photos-root");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let one = a_photo(&root, &"a".repeat(64), b"first photograph");
+        let two = a_photo(&root, &"b".repeat(64), b"second photograph");
+
+        let zip = scratch("shop-2026-09-16.zip");
+        write(&zip, &work, &db, "0.1.0", "2026-09-16T03:00:00Z", &root, &[one.clone(), two.clone()]).unwrap();
+
+        let manifest: serde_json::Value = serde_json::from_str(&read_manifest(&zip).unwrap()).unwrap();
+        assert_eq!(manifest["attachments"].as_array().unwrap().len(), 2);
+        assert!(manifest["missing"].as_array().unwrap().is_empty());
+
+        // Into an empty folder: both arrive, unchanged.
+        let into = work.join("photos-restored");
+        let _ = std::fs::remove_dir_all(&into);
+        std::fs::create_dir_all(&into).unwrap();
+        assert_eq!(extract_attachments(&zip, &into).unwrap().written, 2);
+        assert_eq!(std::fs::read(into.join(&one)).unwrap(), b"first photograph");
+        assert_eq!(std::fs::read(into.join(&two)).unwrap(), b"second photograph");
+    }
+
+    /* Swapping the folder for the archive's set would delete every photograph
+       older than the window — the ones no archive carries either. */
+    #[test]
+    fn restoring_photographs_adds_rather_than_replaces() {
+        let db = scratch("merge.db");
+        a_database(&db, 3);
+        let work = db.parent().unwrap().to_path_buf();
+
+        let root = work.join("merge-root");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let carried = a_photo(&root, &"c".repeat(64), b"in the archive");
+
+        let zip = scratch("shop-2026-09-17.zip");
+        write(&zip, &work, &db, "0.1.0", "2026-09-17T03:00:00Z", &root, &[carried.clone()]).unwrap();
+
+        // A machine that already holds an older photograph the archive does not.
+        let into = work.join("merge-into");
+        let _ = std::fs::remove_dir_all(&into);
+        std::fs::create_dir_all(&into).unwrap();
+        let older = a_photo(&into, &"d".repeat(64), b"nine months old");
+
+        let done = extract_attachments(&zip, &into).unwrap();
+        assert_eq!(done.written, 1);
+        assert_eq!(std::fs::read(into.join(&older)).unwrap(), b"nine months old");
+
+        // And running it twice writes nothing a second time.
+        assert_eq!(extract_attachments(&zip, &into).unwrap(), Restored { written: 0, already: 1, refused: 0 });
+    }
+
+    #[test]
+    fn a_photograph_the_machine_has_lost_does_not_fail_the_backup() {
+        let db = scratch("gone.db");
+        a_database(&db, 3);
+        let work = db.parent().unwrap().to_path_buf();
+        let root = work.join("gone-root");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let zip = scratch("shop-2026-09-18.zip");
+        let vanished = format!("{}/{}.jpg", "e".repeat(2), "e".repeat(64));
+        write(&zip, &work, &db, "0.1.0", "2026-09-18T03:00:00Z", &root, &[vanished.clone()]).unwrap();
+
+        let manifest: serde_json::Value = serde_json::from_str(&read_manifest(&zip).unwrap()).unwrap();
+        assert!(manifest["attachments"].as_array().unwrap().is_empty());
+        assert_eq!(manifest["missing"][0], vanished);
+        // The ledger is in there regardless, which is the point.
+        let back = scratch("gone-out.db");
+        assert_eq!(extract_database(&zip, &back).unwrap(), 3);
+    }
+
+    /* A zip is an untrusted file that arrived on a USB stick. */
+    #[test]
+    fn an_entry_that_tries_to_leave_the_folder_is_refused() {
+        let path = scratch("evil.zip");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        for name in [
+            "attachments/../../evil.exe",
+            r"attachments/..\evil.exe",
+            "attachments/ab/not-a-hash.jpg",
+        ] {
+            add(&mut zip, name, b"payload", zip::CompressionMethod::Stored).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let into = path.parent().unwrap().join("evil-into");
+        let _ = std::fs::remove_dir_all(&into);
+        std::fs::create_dir_all(&into).unwrap();
+
+        let done = extract_attachments(&path, &into).unwrap();
+        assert_eq!(done.written, 0);
+        assert_eq!(done.refused, 3);
+        assert_eq!(std::fs::read_dir(&into).unwrap().count(), 0);
     }
 
     #[test]

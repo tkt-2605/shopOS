@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
-import { Backup, backupDatabase, type BackupFile, type BackupEntry } from '@shopos/core'
+import {
+  Backup, backupDatabase, attachmentsToCarry, CARRY_WINDOW_DAYS, getSetting,
+  type BackupFile, type BackupEntry, type SqlDriver,
+} from '@shopos/core'
 
 export type { BackupFile, BackupEntry }
 
@@ -55,18 +58,72 @@ export async function copyBackup(name: string, destination: string): Promise<Cop
   }
 }
 
-export async function takeBackup(name: string, now = new Date()): Promise<void> {
+export async function takeBackup(
+  name: string,
+  now = new Date(),
+  attachments: string[] = [],
+): Promise<void> {
   if (name.endsWith('.zip')) {
-    await invoke('backup_write_zip', { name, now: now.toISOString() })
+    await invoke('backup_write_zip', { name, now: now.toISOString(), attachments })
     return
   }
   // A caller can still ask for the bare v1 format; nothing in the app does.
   await backupDatabase(invoke, await backupPath(name))
 }
 
+/** The setting holding the command to run after a backup. Empty means none. */
+export const HOOK_SETTING = 'backup_hook'
+
+export interface HookResult {
+  ok: boolean
+  code: number | null
+  output: string
+}
+
+export async function runHook(command: string, name: string): Promise<HookResult> {
+  return invoke<HookResult>('run_backup_hook', { command, name })
+}
+
+/**
+ * What cannot be reconstructed is in every archive in full; photographs are
+ * carried for the recent window only, and the older ones stay on disk under the
+ * attachments folder.
+ */
+async function carryList(db: SqlDriver, now: Date): Promise<string[]> {
+  try {
+    return (await attachmentsToCarry(db, now, CARRY_WINDOW_DAYS)).map((a) => a.storedPath)
+  } catch {
+    // A backup of the ledger is worth taking even if the photograph list fails.
+    return []
+  }
+}
+
+/**
+ * Takes one backup and, if the shop has configured one, hands it to the command
+ * that carries it off the machine.
+ *
+ * The hook is fired and not waited for: an upload takes as long as the shop's
+ * connection takes, and neither the counter nor this screen may wait on it.
+ */
+export async function takeBackupNow(
+  db: SqlDriver,
+  name: string,
+  now = new Date(),
+): Promise<{ attachments: number }> {
+  const carry = await carryList(db, now)
+  await takeBackup(name, now, carry)
+
+  const command = (await getSetting(db, HOOK_SETTING))?.trim()
+  if (command) void runHook(command, name).catch(() => undefined)
+
+  return { attachments: carry.length }
+}
+
 export interface DailyResult {
   created: string | null
   pruned: string[]
+  /** How many photographs the archive carries, for saying so on the screen. */
+  attachments: number
   error: string | null
 }
 
@@ -75,14 +132,18 @@ export interface DailyResult {
  * and off at night, so "once a day" and "once per opening" are the same thing,
  * and nothing has to survive the app being closed.
  */
-export async function runDailyBackup(now = new Date()): Promise<DailyResult> {
+export async function runDailyBackup(db: SqlDriver, now = new Date()): Promise<DailyResult> {
   const plan = Backup.planBackup(await listBackups(), now, Backup.KEEP_DAILY, FORMAT)
-  if (!plan.create) return { created: null, pruned: [], error: null }
+  if (!plan.create) return { created: null, pruned: [], attachments: 0, error: null }
 
+  let carried = 0
   try {
-    await takeBackup(plan.create, now)
+    carried = (await takeBackupNow(db, plan.create, now)).attachments
   } catch (err) {
-    return { created: null, pruned: [], error: typeof err === 'string' ? err : 'Backup failed.' }
+    return {
+      created: null, pruned: [], attachments: 0,
+      error: typeof err === 'string' ? err : 'Backup failed.',
+    }
   }
 
   // Only after the new copy is safely written.
@@ -96,7 +157,7 @@ export async function runDailyBackup(now = new Date()): Promise<DailyResult> {
     }
   }
 
-  return { created: plan.create, pruned, error: null }
+  return { created: plan.create, pruned, attachments: carried, error: null }
 }
 
 export function todaysBackupName(now = new Date()): string {
