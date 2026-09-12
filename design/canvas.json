@@ -1,29 +1,47 @@
 {
+  "pages": [
+    { "id": "page-1", "name": "Screens" },
+    { "id": "page-2", "name": "Proposals" }
+  ],
   "artboards": [
-    { "file": "Main.dc.html", "title": "Billing", "x": 0, "y": 0, "w": 1520, "h": 960 },
-    { "file": "Bills.dc.html", "x": 1620, "y": 0, "w": 1520, "h": 960 },
-    { "file": "Inventory.dc.html", "x": 3240, "y": 0, "w": 1520, "h": 960 },
-    { "file": "Suppliers.dc.html", "x": 4860, "y": 0, "w": 1520, "h": 960 },
-    { "file": "Reports.dc.html", "x": 0, "y": 1080, "w": 1520, "h": 960 },
-    { "file": "Roles.dc.html", "title": "Roles & Permissions", "x": 1620, "y": 1080, "w": 1520, "h": 960 },
-    { "file": "Staff.dc.html", "x": 3240, "y": 1080, "w": 1520, "h": 960 },
-    { "file": "Settings.dc.html", "x": 4860, "y": 1080, "w": 1520, "h": 960 }
+    { "file": "Main.dc.html", "title": "Billing", "page": "page-1", "x": 0, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Payment.dc.html", "title": "Billing — payment", "page": "page-1", "x": 1620, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Bills.dc.html", "page": "page-1", "x": 3240, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Inventory.dc.html", "page": "page-1", "x": 4860, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Suppliers.dc.html", "page": "page-1", "x": 0, "y": 1080, "w": 1520, "h": 960 },
+    { "file": "Reports.dc.html", "page": "page-1", "x": 1620, "y": 1080, "w": 1520, "h": 960 },
+    { "file": "Roles.dc.html", "title": "Roles & Permissions", "page": "page-1", "x": 3240, "y": 1080, "w": 1520, "h": 960 },
+    { "file": "Staff.dc.html", "page": "page-1", "x": 4860, "y": 1080, "w": 1520, "h": 960 },
+    { "file": "Settings.dc.html", "page": "page-1", "x": 0, "y": 2160, "w": 1520, "h": 960 },
+
+    { "file": "ItemsPricing.dc.html", "title": "Items & Pricing — proposed", "page": "page-2", "x": 0, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Fonts.dc.html", "title": "Type — three options", "page": "page-2", "x": 1620, "y": 0, "w": 1520, "h": 960 }
   ],
   "annotations": [
     {
-      "id": "how-to-use",
+      "id": "screens-note",
+      "page": "page-1",
       "x": 0,
-      "y": -190,
-      "w": 520,
-      "text": "The counter as it stands today, lifted from the real stylesheet — same tokens, spacing and type sizes.\n\nMark up anything you want changed here rather than sending a screenshot. Each artboard has Theme and Density levers above it, the same two the app actually has."
+      "y": -210,
+      "w": 540,
+      "text": "The counter as it stands, rebuilt from the app's own stylesheet.\n\nSquare corners everywhere now, tabs carry the customer's name rather than the amount, the Cancel button is gone, and the payment dialog can spend loyalty points — all of that is live in the app, not just drawn here.\n\nTheme and Density above each artboard are the app's own two levers."
     },
     {
-      "id": "billing-note",
-      "x": 560,
-      "y": -190,
-      "w": 400,
-      "text": "Billing is the screen that matters. Tab 1 is a walk-in, tab 2 has a customer, tab 3 is empty — the three states the strip can be in."
+      "id": "pricing-note",
+      "page": "page-2",
+      "x": 0,
+      "y": -230,
+      "w": 560,
+      "text": "Items & Pricing, which you said looked too simple — this is where it is headed.\n\nPrice lists with quantity tiers already exist underneath. What is new here is the rules table: item, category, customer group or whole-bill rules with dates, priority and stacking, which is ERPNext's Pricing Rule without its Promotional Scheme generator.\n\nNothing on this artboard is built yet. Tell me what is missing before I start."
+    },
+    {
+      "id": "fonts-note",
+      "page": "page-2",
+      "x": 1620,
+      "y": -230,
+      "w": 520,
+      "text": "Three type pairings, since you asked to see alternatives.\n\nAll three use faces Windows already ships, because the counter must work offline and a downloaded font would not load. Figures stay monospaced in each — a column of amounts that does not line up costs more than any font gains.\n\nSay which and I will switch the app over."
     }
   ],
-  "launch": { "view": "focused", "file": "Main.dc.html" }
+  "launch": { "view": "canvas", "page": "page-2" }
 }

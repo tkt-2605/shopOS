@@ -11,3 +11,6 @@ target/
 
 # Tauri regenerates these on every build.
 apps/pos/src-tauri/gen/schemas/
+
+# Python bytecode from the design canvas build script.
+__pycache__/
