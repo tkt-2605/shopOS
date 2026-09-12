@@ -1,0 +1,16 @@
+# Normalise to LF in the repository, whatever the working copy uses. Without this,
+# a Windows checkout rewrites every file and the first real diff is unreadable.
+* text=auto eol=lf
+
+# Never touched by line-ending conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.db binary
+
+# Generated, and noisy in review.
+apps/pos/src-tauri/Cargo.lock linguist-generated
+package-lock.json linguist-generated

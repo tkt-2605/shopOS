@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; font-family: Archivo, "Helvetica Neue", Arial, sans-serif; }
+    a { color: oklch(0.5 0.13 155); } a:hover { color: oklch(0.4 0.13 155); }
+    .n { font-variant-numeric: tabular-nums; }
+  </style>
+</helmet>
+
+<div style="width: 1280px; height: 820px; display: flex; flex-direction: column; background: oklch(0.955 0.004 90); color: oklch(0.2 0.012 260);">
+
+  <div style="display: flex; align-items: center; gap: 16px; padding: 20px 24px; background: oklch(0.24 0.012 260); flex-shrink: 0;">
+    <span style="font-size: 22px; font-weight: 700; color: #fff; letter-spacing: -0.02em;">Bills</span>
+    <span style="flex-grow: 1;"></span>
+    <input placeholder="Find a bill" style="width: 280px; font-family: Archivo, sans-serif; font-size: 14px; padding: 11px 14px; border: 0; border-radius: 2px; background: oklch(0.32 0.012 260); color: #fff; outline: none;">
+    <div style="display: flex; align-items: center; justify-content: center; padding: 11px 18px; background: oklch(0.32 0.012 260); color: #fff; border-radius: 2px; font-size: 14px; font-weight: 500;">Today</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 20px 24px 6px; flex-shrink: 0;">
+    <div style="padding: 16px 18px; background: #fff; border: 1px solid oklch(0.88 0.006 90); border-radius: 2px;">
+      <div style="font-size: 12.5px; font-weight: 600; color: oklch(0.55 0.012 260); text-transform: uppercase; letter-spacing: 0.06em;">Taken today</div>
+      <div class="n" style="font-size: 30px; font-weight: 700; margin-top: 4px; letter-spacing: -0.02em;">₹3,522</div>
+    </div>
+    <div style="padding: 16px 18px; background: #fff; border: 1px solid oklch(0.88 0.006 90); border-radius: 2px;">
+      <div style="font-size: 12.5px; font-weight: 600; color: oklch(0.55 0.012 260); text-transform: uppercase; letter-spacing: 0.06em;">Bills</div>
+      <div class="n" style="font-size: 30px; font-weight: 700; margin-top: 4px; letter-spacing: -0.02em;">14</div>
+    </div>
+    <div style="padding: 16px 18px; background: #fff; border: 1px solid oklch(0.72 0.15 70); border-radius: 2px;">
+      <div style="font-size: 12.5px; font-weight: 600; color: oklch(0.5 0.15 60); text-transform: uppercase; letter-spacing: 0.06em;">On credit</div>
+      <div class="n" style="font-size: 30px; font-weight: 700; margin-top: 4px; letter-spacing: -0.02em; color: oklch(0.5 0.15 60);">₹1,100</div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px; padding: 14px 24px 24px; flex-grow: 1; overflow: hidden;">
+
+    <div style="display: flex; align-items: center; gap: 18px; padding: 16px 20px; background: #fff; border: 1px solid oklch(0.88 0.006 90); border-radius: 2px;">
+      <div style="width: 4px; height: 40px; background: oklch(0.72 0.15 70); border-radius: 2px; flex-shrink: 0;"></div>
+      <div style="width: 190px; flex-shrink: 0;">
+        <div class="n" style="font-size: 15px; font-weight: 600;">00022</div>
+        <div class="n" style="font-size: 12px; color: oklch(0.55 0.012 260);">10 Sep · 4:12 pm</div>
+      </div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 15px; font-weight: 500;">Ramesh Traders</div>
+        <div style="font-size: 12.5px; color: oklch(0.5 0.15 60);">Unpaid · on credit</div>
+      </div>
+      <span class="n" style="font-size: 20px; font-weight: 700;">₹1,100.00</span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 18px; padding: 16px 20px; background: #fff; border: 1px solid oklch(0.88 0.006 90); border-radius: 2px;">
+      <div style="width: 4px; height: 40px; background: oklch(0.58 0.14 155); border-radius: 2px; flex-shrink: 0;"></div>
+      <div style="width: 190px; flex-shrink: 0;">
+        <div class="n" style="font-size: 15px; font-weight: 600;">00021</div>
+        <div class="n" style="font-size: 12px; color: oklch(0.55 0.012 260);">10 Sep · 3:48 pm</div>
+      </div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 15px; font-weight: 500; color: oklch(0.45 0.012 260);">Walk-in</div>
+        <div style="font-size: 12.5px; color: oklch(0.55 0.012 260);">Paid by cash</div>
+      </div>
+      <span class="n" style="font-size: 20px; font-weight: 700;">₹355.00</span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 18px; padding: 16px 20px; background: #fff; border: 1px solid oklch(0.88 0.006 90); border-radius: 2px;">
+      <div style="width: 4px; height: 40px; background: oklch(0.58 0.14 155); border-radius: 2px; flex-shrink: 0;"></div>
+      <div style="width: 190px; flex-shrink: 0;">
+        <div class="n" style="font-size: 15px; font-weight: 600;">00020</div>
+        <div class="n" style="font-size: 12px; color: oklch(0.55 0.012 260);">11 Sep · 11:02 am</div>
+      </div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 15px; font-weight: 500;">Sri Vidya School</div>
+        <div style="font-size: 12.5px; color: oklch(0.55 0.012 260);">Paid by UPI</div>
+      </div>
+      <span class="n" style="font-size: 20px; font-weight: 700;">₹1,750.00</span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 18px; padding: 16px 20px; background: #fff; border: 1px solid oklch(0.88 0.006 90); border-radius: 2px;">
+      <div style="width: 4px; height: 40px; background: oklch(0.58 0.14 155); border-radius: 2px; flex-shrink: 0;"></div>
+      <div style="width: 190px; flex-shrink: 0;">
+        <div class="n" style="font-size: 15px; font-weight: 600;">00019</div>
+        <div class="n" style="font-size: 12px; color: oklch(0.55 0.012 260);">11 Sep · 10:20 am</div>
+      </div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 15px; font-weight: 500; color: oklch(0.45 0.012 260);">Walk-in</div>
+        <div style="font-size: 12.5px; color: oklch(0.55 0.012 260);">Paid by cash</div>
+      </div>
+      <span class="n" style="font-size: 20px; font-weight: 700;">₹830.00</span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 18px; padding: 16px 20px; background: #fff; border: 1px solid oklch(0.88 0.006 90); border-radius: 2px;">
+      <div style="width: 4px; height: 40px; background: oklch(0.72 0.15 70); border-radius: 2px; flex-shrink: 0;"></div>
+      <div style="width: 190px; flex-shrink: 0;">
+        <div class="n" style="font-size: 15px; font-weight: 600;">00018</div>
+        <div class="n" style="font-size: 12px; color: oklch(0.55 0.012 260);">11 Sep · 9:35 am</div>
+      </div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 15px; font-weight: 500; color: oklch(0.45 0.012 260);">Walk-in</div>
+        <div style="font-size: 12.5px; color: oklch(0.5 0.15 60);">1 item returned</div>
+      </div>
+      <span class="n" style="font-size: 20px; font-weight: 700;">₹46.00</span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 18px; padding: 16px 20px; background: oklch(0.97 0.003 90); border: 1px solid oklch(0.9 0.005 90); border-radius: 2px;">
+      <div style="width: 4px; height: 40px; background: oklch(0.62 0.16 25); border-radius: 2px; flex-shrink: 0;"></div>
+      <div style="width: 190px; flex-shrink: 0;">
+        <div class="n" style="font-size: 15px; font-weight: 600; color: oklch(0.55 0.012 260); text-decoration: line-through;">00017</div>
+        <div class="n" style="font-size: 12px; color: oklch(0.6 0.012 260);">11 Sep · 9:04 am</div>
+      </div>
+      <div style="flex-grow: 1; min-width: 0;">
+        <div style="font-size: 15px; font-weight: 500; color: oklch(0.55 0.012 260);">Lakshmi Stores</div>
+        <div style="font-size: 12.5px; color: oklch(0.55 0.16 25);">Cancelled — wrong item</div>
+      </div>
+      <span class="n" style="font-size: 20px; font-weight: 700; color: oklch(0.6 0.012 260);">₹265.00</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

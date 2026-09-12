@@ -1,0 +1,737 @@
+import type { SqlDriver } from '../db/driver.js'
+import { businessDate } from '../dates.js'
+import { newId } from '../ids.js'
+import { type Money, ZERO, paise, add, sub, allocate, formatWithSymbol as formatMoney } from '../money.js'
+import { type Qty, qty, QTY_SCALE, negQty } from '../quantity.js'
+import { resolvePrice, type PriceSource } from '../domain/pricing.js'
+import { splitTax, supplyTypeFor, type SupplyType } from '../domain/tax.js'
+import { checkCreditLimit, totalOutstanding, type OpenBill } from '../domain/credit.js'
+import { calculateEarned, planRedemption, type LoyaltyProgram, type LoyaltyEntry, DEFAULT_PROGRAM } from '../domain/loyalty.js'
+import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, assertAmendable, parseDocStatus } from '../integrity/docstatus.js'
+import { writeAudit } from '../integrity/audit.js'
+import { loadPriceCandidates, resolveSaleUnit, defaultPriceListId } from '../repos/pricing.js'
+import { checkAvailability, postMovement, reverseVoucher, type StockShortfall } from './stock.js'
+import { nextDocNo } from './numbering.js'
+import { openSessionFor, postCashMovement } from './cash.js'
+import { getSetting } from './bootstrap.js'
+
+export type PaymentMethod = 'cash' | 'upi' | 'card' | 'credit' | 'loyalty'
+
+export interface BillLineInput {
+  productId: string
+  saleUnit?: string | null
+  qty: Qty
+  rateOverride?: Money | null
+  discount?: Money
+}
+
+export interface CreateBillInput {
+  registerId: string
+  sessionId?: string | null
+  customerId?: string | null
+  lines: BillLineInput[]
+  billDiscount?: Money
+  postingDate?: string
+  notes?: string
+  actorId: string
+  now?: Date
+}
+
+export interface PaymentInput {
+  method: PaymentMethod
+  amount: Money
+  reference?: string
+}
+
+export interface SubmitBillInput {
+  billId: string
+  payments: PaymentInput[]
+  redeemPoints?: number
+  idempotencyKey?: string
+  actorId: string
+  now?: Date
+}
+
+export interface BillTotals {
+  subtotal: Money
+  discount: Money
+  taxableTotal: Money
+  taxTotal: Money
+  grandTotal: Money
+}
+
+export type CreateBillResult =
+  | ({ ok: true; billId: string; docNo: string; lineCount: number } & BillTotals)
+  | { ok: false; code: 'NO_LINES' }
+  | { ok: false; code: 'UNKNOWN_PRODUCT'; productId: string }
+  | { ok: false; code: 'INVALID_QTY'; productId: string }
+  | { ok: false; code: 'DISCOUNT_EXCEEDS_TOTAL'; subtotal: Money; discount: Money }
+
+export type SubmitBillResult =
+  | { ok: true; billId: string; docNo: string; grandTotal: Money; pointsEarned: number; pointsRedeemed: number; idempotent: boolean }
+  | { ok: false; code: 'INSUFFICIENT_STOCK'; shortfalls: StockShortfall[] }
+  | { ok: false; code: 'CREDIT_LIMIT_EXCEEDED'; limit: Money; projected: Money; excess: Money }
+  | { ok: false; code: 'PAYMENT_MISMATCH'; expected: Money; received: Money }
+  | { ok: false; code: 'CREDIT_WITHOUT_CUSTOMER' }
+  | { ok: false; code: 'LOYALTY_REJECTED'; reason: string }
+
+export type CancelBillResult =
+  | { ok: true; billId: string }
+  | { ok: false; code: 'HAS_RETURNS'; returnCount: number }
+  | { ok: false; code: 'HAS_PAYMENTS'; paymentCount: number }
+
+interface ComputedLine {
+  productId: string
+  productName: string
+  hsnCode: string | null
+  saleUnit: string
+  qty: Qty
+  baseQty: Qty
+  rate: Money
+  mrp: Money | null
+  discount: Money
+  lineTotal: Money
+  taxRateBp: number
+  priceSource: PriceSource
+  priceSourceId: string | null
+}
+
+/**
+ * Everything a bill needs worked out, and nothing written. Both the first save and
+ * every later one go through here, so a held bill cannot drift away from a fresh
+ * one — prices, units and tax are resolved by the same code either way.
+ */
+type Priced =
+  | { ok: true; computed: ComputedLine[]; shares: Money[]; meta: DraftMeta; subtotal: Money }
+  | Exclude<CreateBillResult, { ok: true }>
+
+interface DraftMeta {
+  sessionId: string | null
+  customerId: string | null
+  customerName: string | null
+  postingDate: string
+  placeOfSupply: string | null
+  billDiscount: Money
+  notes: string | null
+  supply: SupplyType
+  now: Date
+}
+
+async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced> {
+  if (input.lines.length === 0) return { ok: false, code: 'NO_LINES' }
+
+  const now = input.now ?? new Date()
+  const postingDate = input.postingDate ?? businessDate(now)
+
+  const sessionId = input.sessionId ?? (await openSessionFor(db, input.registerId))
+  const customer = input.customerId ? await loadCustomer(db, input.customerId) : null
+  const defaultList = await defaultPriceListId(db)
+  const supply = await supplyFor(db, customer?.stateCode ?? null)
+
+  const computed: ComputedLine[] = []
+  for (const line of input.lines) {
+    if (line.qty <= 0) return { ok: false, code: 'INVALID_QTY', productId: line.productId }
+
+    const product = await db.get<{
+      id: string; name: string; hsn_code: string | null; tax_rate_bp: number; mrp: number | null
+    }>(`SELECT id, name, hsn_code, tax_rate_bp, mrp FROM products WHERE id = ? AND deleted_at IS NULL`, [line.productId])
+    if (!product) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
+
+    const unit = await resolveSaleUnit(db, line.productId, line.saleUnit ?? null)
+    const candidates = await loadPriceCandidates(db, {
+      productId: line.productId,
+      saleUnit: unit.saleUnit,
+      customerId: input.customerId ?? null,
+      customerPriceListId: customer?.priceListId ?? null,
+      defaultPriceListId: defaultList,
+    })
+
+    const resolved = resolvePrice(candidates, line.qty, now)
+    const rate = line.rateOverride ?? resolved.rate
+    const source: PriceSource = line.rateOverride != null ? 'manual_override' : resolved.source
+    const sourceId = line.rateOverride != null ? null : resolved.sourceId
+
+    const gross = paise(Math.round((rate * line.qty) / QTY_SCALE))
+    const discount = line.discount ?? ZERO
+    const lineTotal = sub(gross, discount)
+    if (lineTotal < 0) return { ok: false, code: 'INVALID_QTY', productId: line.productId }
+
+    computed.push({
+      productId: product.id,
+      productName: product.name,
+      hsnCode: product.hsn_code,
+      saleUnit: unit.saleUnit,
+      qty: line.qty,
+      baseQty: qty(Math.round((line.qty * unit.baseUnits) / QTY_SCALE)),
+      rate,
+      mrp: (product.mrp ?? null) as Money | null,
+      discount,
+      lineTotal,
+      taxRateBp: product.tax_rate_bp,
+      priceSource: source,
+      priceSourceId: sourceId,
+    })
+  }
+
+  const subtotal = add(...computed.map((l) => l.lineTotal))
+  const billDiscount = input.billDiscount ?? ZERO
+  if (billDiscount > subtotal) {
+    return { ok: false, code: 'DISCOUNT_EXCEEDS_TOTAL', subtotal, discount: billDiscount }
+  }
+
+  // Spread the bill-level discount across lines so tax is charged on what was
+  // actually paid, and so the per-line figures still sum to the invoice total.
+  const shares = billDiscount > 0 ? allocate(billDiscount, computed.map((l) => l.lineTotal)) : computed.map(() => ZERO)
+
+  return {
+    ok: true,
+    computed,
+    shares,
+    subtotal,
+    meta: {
+      sessionId,
+      customerId: input.customerId ?? null,
+      customerName: customer?.name ?? null,
+      postingDate,
+      placeOfSupply: customer?.stateCode ?? null,
+      billDiscount,
+      notes: input.notes ?? null,
+      supply,
+      now,
+    },
+  }
+}
+
+/** Writes the line rows and returns the totals they add up to. */
+async function writeLines(
+  tx: SqlDriver,
+  billId: string,
+  computed: ComputedLine[],
+  shares: Money[],
+  supply: SupplyType,
+): Promise<{ taxableTotal: Money; taxTotal: Money; grandTotal: Money }> {
+  let taxableTotal: Money = ZERO
+  let taxTotal: Money = ZERO
+  let grandTotal: Money = ZERO
+
+  for (const [i, line] of computed.entries()) {
+    const netLine = sub(line.lineTotal, shares[i] ?? ZERO)
+    const tax = splitTax(netLine, line.taxRateBp, supply)
+
+    taxableTotal = add(taxableTotal, tax.taxableValue)
+    taxTotal = add(taxTotal, tax.taxTotal)
+    grandTotal = add(grandTotal, netLine)
+
+    await tx.execute(
+      `INSERT INTO bill_items
+         (id, bill_id, idx, product_id, product_name, hsn_code, sale_unit, qty, base_qty, rate, mrp,
+          discount, line_total, taxable_value, tax_rate_bp, cgst_amount, sgst_amount, igst_amount,
+          price_source, price_source_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newId(), billId, i + 1, line.productId, line.productName, line.hsnCode, line.saleUnit,
+        line.qty, line.baseQty, line.rate, line.mrp,
+        add(line.discount, shares[i] ?? ZERO), netLine,
+        tax.taxableValue, line.taxRateBp, tax.cgst, tax.sgst, tax.igst,
+        line.priceSource, line.priceSourceId,
+      ],
+    )
+  }
+
+  return { taxableTotal, taxTotal, grandTotal }
+}
+
+export async function createBill(db: SqlDriver, input: CreateBillInput): Promise<CreateBillResult> {
+  const priced = await priceBill(db, input)
+  if (!priced.ok) return priced
+
+  const { computed, shares, meta, subtotal } = priced
+  const billId = newId()
+  const nowIso = meta.now.toISOString()
+  let totals = { taxableTotal: ZERO as Money, taxTotal: ZERO as Money, grandTotal: ZERO as Money }
+
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      `INSERT INTO bills
+         (id, doc_no, docstatus, register_id, session_id, customer_id, customer_name, posting_date,
+          subtotal, discount, taxable_total, tax_total, grand_total, place_of_supply, notes,
+          created_by, created_at, updated_at)
+       VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, ?, ?, ?, ?, ?)`,
+      [
+        billId, `DRAFT-${billId}`, input.registerId, meta.sessionId,
+        meta.customerId, meta.customerName, meta.postingDate,
+        meta.billDiscount, meta.placeOfSupply, meta.notes,
+        input.actorId, nowIso, nowIso,
+      ],
+    )
+
+    totals = await writeLines(tx, billId, computed, shares, meta.supply)
+
+    await tx.execute(
+      `UPDATE bills SET subtotal = ?, taxable_total = ?, tax_total = ?, grand_total = ? WHERE id = ?`,
+      [subtotal, totals.taxableTotal, totals.taxTotal, totals.grandTotal, billId],
+    )
+
+    await writeAudit(tx, { actorId: input.actorId }, {
+      entity: 'bills', entityId: billId, action: 'create', docstatusTo: DRAFT,
+    })
+  })
+
+  return {
+    ok: true,
+    billId,
+    docNo: `DRAFT-${billId}`,
+    lineCount: computed.length,
+    subtotal,
+    discount: meta.billDiscount,
+    ...totals,
+  }
+}
+
+export type SaveDraftResult = CreateBillResult | { ok: false; code: 'NOT_A_DRAFT' }
+
+/**
+ * Replaces a draft's contents in place. The counter calls this as the cashier works,
+ * so an interrupted bill survives switching screens, a crash, or the power going out —
+ * and so a bill can be held while somebody else is served.
+ *
+ * Lines are rewritten wholesale rather than diffed: a draft has no ledger effect, so
+ * there is nothing a diff would protect and a great deal it could get wrong.
+ */
+export async function saveDraft(
+  db: SqlDriver,
+  input: CreateBillInput & { billId: string },
+): Promise<SaveDraftResult> {
+  const existing = await db.get<{ docstatus: number }>(
+    `SELECT docstatus FROM bills WHERE id = ?`, [input.billId],
+  )
+  if (!existing || existing.docstatus !== DRAFT) return { ok: false, code: 'NOT_A_DRAFT' }
+
+  const priced = await priceBill(db, input)
+  if (!priced.ok) return priced
+
+  const { computed, shares, meta, subtotal } = priced
+  let totals = { taxableTotal: ZERO as Money, taxTotal: ZERO as Money, grandTotal: ZERO as Money }
+
+  await db.transaction(async (tx) => {
+    await tx.execute(`DELETE FROM bill_items WHERE bill_id = ?`, [input.billId])
+    totals = await writeLines(tx, input.billId, computed, shares, meta.supply)
+
+    await tx.execute(
+      `UPDATE bills SET session_id = ?, customer_id = ?, customer_name = ?, posting_date = ?,
+              subtotal = ?, discount = ?, taxable_total = ?, tax_total = ?, grand_total = ?,
+              place_of_supply = ?, notes = ?, updated_at = ?
+         WHERE id = ? AND docstatus = 0`,
+      [
+        meta.sessionId, meta.customerId, meta.customerName, meta.postingDate,
+        subtotal, meta.billDiscount, totals.taxableTotal, totals.taxTotal, totals.grandTotal,
+        meta.placeOfSupply, meta.notes, meta.now.toISOString(), input.billId,
+      ],
+    )
+  })
+
+  return {
+    ok: true,
+    billId: input.billId,
+    docNo: `DRAFT-${input.billId}`,
+    lineCount: computed.length,
+    subtotal,
+    discount: meta.billDiscount,
+    ...totals,
+  }
+}
+
+export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise<SubmitBillResult> {
+  const now = input.now ?? new Date()
+
+  if (input.idempotencyKey) {
+    const existing = await db.get<{ id: string; doc_no: string; grand_total: number }>(
+      `SELECT id, doc_no, grand_total FROM bills WHERE idempotency_key = ?`,
+      [input.idempotencyKey],
+    )
+    if (existing) {
+      return {
+        ok: true, billId: existing.id, docNo: existing.doc_no,
+        grandTotal: existing.grand_total as Money,
+        pointsEarned: 0, pointsRedeemed: 0, idempotent: true,
+      }
+    }
+  }
+
+  const bill = await loadBill(db, input.billId)
+  assertCanApply('bill', parseDocStatus(bill.docstatus), 'submit')
+
+  const lines = await db.query<{ product_id: string; product_name: string; base_qty: number }>(
+    `SELECT product_id, product_name, base_qty FROM bill_items WHERE bill_id = ? ORDER BY idx`,
+    [input.billId],
+  )
+
+  const program = await loadLoyaltyProgram(db)
+  let pointsRedeemed = 0
+  let redemptionValue: Money = ZERO
+  let redemptionPlan: { entryId: string; points: number }[] = []
+
+  if (input.redeemPoints && input.redeemPoints > 0) {
+    if (!bill.customerId) return { ok: false, code: 'LOYALTY_REJECTED', reason: 'no customer on the bill' }
+    const entries = await loadLoyaltyEntries(db, bill.customerId)
+    const plan = planRedemption(program, entries, input.redeemPoints, bill.grandTotal, now)
+    if (!plan.ok) return { ok: false, code: 'LOYALTY_REJECTED', reason: plan.code }
+    pointsRedeemed = plan.points
+    redemptionValue = plan.value
+    redemptionPlan = plan.allocations
+  }
+
+  const received = add(...input.payments.map((p) => p.amount), redemptionValue)
+  if (received !== bill.grandTotal) {
+    return { ok: false, code: 'PAYMENT_MISMATCH', expected: bill.grandTotal, received }
+  }
+
+  const creditTotal = add(...input.payments.filter((p) => p.method === 'credit').map((p) => p.amount))
+  if (creditTotal > 0 && !bill.customerId) return { ok: false, code: 'CREDIT_WITHOUT_CUSTOMER' }
+
+  if (creditTotal > 0 && bill.customerId) {
+    const customer = await loadCustomer(db, bill.customerId)
+    const outstanding = totalOutstanding(await loadOpenBills(db, bill.customerId))
+    const check = checkCreditLimit({
+      creditLimit: customer.creditLimit,
+      enforcement: customer.creditEnforcement,
+      currentOutstanding: outstanding,
+      additionalCredit: creditTotal,
+    })
+    if (!check.allowed) {
+      return { ok: false, code: 'CREDIT_LIMIT_EXCEEDED', limit: check.limit, projected: check.projected, excess: check.excess }
+    }
+  }
+
+  const requirements = lines.map((l) => ({
+    productId: l.product_id,
+    productName: l.product_name,
+    required: qty(l.base_qty),
+  }))
+  const shortfalls = await checkAvailability(db, requirements)
+  if (shortfalls.length > 0) return { ok: false, code: 'INSUFFICIENT_STOCK', shortfalls }
+
+  const earned = calculateEarned(program, bill.grandTotal, creditTotal, now)
+  const register = await db.get<{ prefix: string }>(`SELECT prefix FROM registers WHERE id = ?`, [bill.registerId])
+  const nowIso = now.toISOString()
+  let docNo = ''
+
+  await db.transaction(async (tx) => {
+    docNo = await nextDocNo(tx, 'bill', register?.prefix ?? 'XX', now)
+
+    for (const line of lines) {
+      await postMovement(tx, {
+        productId: line.product_id,
+        qtyChange: negQty(qty(line.base_qty)),
+        voucherType: 'bill',
+        voucherId: input.billId,
+        postingDate: bill.postingDate,
+        userId: input.actorId,
+      })
+    }
+
+    for (const payment of input.payments) {
+      await tx.execute(
+        `INSERT INTO bill_payments (id, bill_id, method, amount, reference) VALUES (?, ?, ?, ?, ?)`,
+        [newId(), input.billId, payment.method, payment.amount, payment.reference ?? null],
+      )
+      // Credit moves no money today and loyalty never does.
+      if (bill.sessionId && payment.method !== 'credit') {
+        await postCashMovement(tx, {
+          sessionId: bill.sessionId,
+          direction: 'in',
+          amount: payment.amount,
+          method: payment.method,
+          sourceType: 'bill',
+          sourceId: input.billId,
+          reference: payment.reference ?? null,
+          userId: input.actorId,
+          now,
+        })
+      }
+    }
+
+    if (redemptionValue > 0) {
+      await tx.execute(
+        `INSERT INTO bill_payments (id, bill_id, method, amount, reference) VALUES (?, ?, 'loyalty', ?, ?)`,
+        [newId(), input.billId, redemptionValue, `${pointsRedeemed} points`],
+      )
+    }
+
+    for (const alloc of redemptionPlan) {
+      await tx.execute(`UPDATE loyalty_entries SET consumed = consumed + ? WHERE id = ?`, [alloc.points, alloc.entryId])
+      await tx.execute(
+        `INSERT INTO loyalty_redemptions (id, customer_id, bill_id, loyalty_entry_id, points, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [newId(), bill.customerId, input.billId, alloc.entryId, alloc.points, nowIso],
+      )
+    }
+
+    if (earned.points > 0 && bill.customerId) {
+      await tx.execute(
+        `INSERT INTO loyalty_entries (id, customer_id, bill_id, points, earned_at, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [newId(), bill.customerId, input.billId, earned.points, nowIso, earned.expiresAt, nowIso],
+      )
+    }
+
+    await tx.execute(
+      `UPDATE bills
+          SET docstatus = 1, doc_no = ?, paid_total = ?, credit_total = ?, idempotency_key = ?, updated_at = ?
+        WHERE id = ?`,
+      [docNo, sub(bill.grandTotal, creditTotal), creditTotal, input.idempotencyKey ?? null, nowIso, input.billId],
+    )
+
+    await writeAudit(tx, { actorId: input.actorId }, {
+      entity: 'bills', entityId: input.billId, action: 'submit',
+      docstatusFrom: DRAFT, docstatusTo: SUBMITTED,
+      before: { doc_no: bill.docNo }, after: { doc_no: docNo },
+    })
+  })
+
+  return {
+    ok: true,
+    billId: input.billId,
+    docNo,
+    grandTotal: bill.grandTotal,
+    pointsEarned: earned.points,
+    pointsRedeemed,
+    idempotent: false,
+  }
+}
+
+export async function cancelBill(
+  db: SqlDriver,
+  input: { billId: string; reason?: string; actorId: string; now?: Date },
+): Promise<CancelBillResult> {
+  const now = input.now ?? new Date()
+  const bill = await loadBill(db, input.billId)
+  assertCanApply('bill', parseDocStatus(bill.docstatus), 'cancel')
+
+  const returns = await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM sales_returns WHERE bill_id = ? AND docstatus = 1`,
+    [input.billId],
+  )
+  if ((returns?.n ?? 0) > 0) return { ok: false, code: 'HAS_RETURNS', returnCount: returns!.n }
+
+  const allocations = await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM payment_allocations pa
+       JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
+      WHERE pa.bill_id = ?`,
+    [input.billId],
+  )
+  if ((allocations?.n ?? 0) > 0) return { ok: false, code: 'HAS_PAYMENTS', paymentCount: allocations!.n }
+
+  const nowIso = now.toISOString()
+
+  const tenders = await db.query<{ method: string; amount: number }>(
+    `SELECT method, amount FROM bill_payments WHERE bill_id = ? AND method <> 'credit'`,
+    [input.billId],
+  )
+
+  await db.transaction(async (tx) => {
+    await reverseVoucher(tx, 'bill', input.billId, bill.postingDate, input.actorId)
+
+    const session = await openSessionFor(tx, bill.registerId)
+    if (session) {
+      for (const tender of tenders) {
+        await postCashMovement(tx, {
+          sessionId: session,
+          direction: 'out',
+          amount: tender.amount as Money,
+          method: tender.method as 'cash' | 'upi' | 'card' | 'loyalty',
+          sourceType: 'bill_cancel',
+          sourceId: input.billId,
+          userId: input.actorId,
+          now,
+        })
+      }
+    }
+
+    const redemptions = await tx.query<{ id: string; loyalty_entry_id: string; points: number }>(
+      `SELECT id, loyalty_entry_id, points FROM loyalty_redemptions WHERE bill_id = ? AND reversed_at IS NULL`,
+      [input.billId],
+    )
+    for (const r of redemptions) {
+      await tx.execute(`UPDATE loyalty_entries SET consumed = consumed - ? WHERE id = ?`, [r.points, r.loyalty_entry_id])
+      await tx.execute(`UPDATE loyalty_redemptions SET reversed_at = ? WHERE id = ?`, [nowIso, r.id])
+    }
+
+    await tx.execute(
+      `UPDATE loyalty_entries SET cancelled_at = ? WHERE bill_id = ? AND cancelled_at IS NULL`,
+      [nowIso, input.billId],
+    )
+
+    await tx.execute(
+      `UPDATE bills SET docstatus = 2, cancelled_by = ?, cancelled_at = ?, cancel_reason = ?, updated_at = ? WHERE id = ?`,
+      [input.actorId, nowIso, input.reason ?? null, nowIso, input.billId],
+    )
+
+    await writeAudit(tx, { actorId: input.actorId }, {
+      entity: 'bills', entityId: input.billId, action: 'cancel',
+      docstatusFrom: SUBMITTED, docstatusTo: CANCELLED,
+      after: { cancel_reason: input.reason ?? null },
+    })
+  })
+
+  return { ok: true, billId: input.billId }
+}
+
+/**
+ * Amend copies a cancelled bill into a fresh draft. It does not resurrect the
+ * original — the cancelled document stays on the record with the new one linked
+ * to it, which is what makes "edit a bill" auditable.
+ */
+export async function amendBill(
+  db: SqlDriver,
+  input: { billId: string; actorId: string; now?: Date },
+): Promise<CreateBillResult> {
+  const source = await loadBill(db, input.billId)
+  assertAmendable('bill', parseDocStatus(source.docstatus))
+
+  const lines = await db.query<{ product_id: string; sale_unit: string; qty: number; rate: number; discount: number }>(
+    `SELECT product_id, sale_unit, qty, rate, discount FROM bill_items WHERE bill_id = ? ORDER BY idx`,
+    [input.billId],
+  )
+
+  const created = await createBill(db, {
+    registerId: source.registerId,
+    customerId: source.customerId,
+    lines: lines.map((l) => ({
+      productId: l.product_id,
+      saleUnit: l.sale_unit,
+      qty: qty(l.qty),
+      rateOverride: l.rate as Money,
+    })),
+    actorId: input.actorId,
+    ...(input.now ? { now: input.now } : {}),
+  })
+
+  if (!created.ok) return created
+
+  await db.transaction(async (tx) => {
+    await tx.execute(`UPDATE bills SET amended_from = ? WHERE id = ?`, [input.billId, created.billId])
+    await writeAudit(tx, { actorId: input.actorId }, {
+      entity: 'bills', entityId: created.billId, action: 'amend',
+      after: { amended_from: input.billId },
+    })
+  })
+
+  return created
+}
+
+interface BillRow {
+  id: string
+  docNo: string
+  docstatus: number
+  registerId: string
+  sessionId: string | null
+  customerId: string | null
+  postingDate: string
+  grandTotal: Money
+}
+
+async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
+  const row = await db.get<{
+    id: string; doc_no: string; docstatus: number; register_id: string; session_id: string | null
+    customer_id: string | null; posting_date: string; grand_total: number
+  }>(
+    `SELECT id, doc_no, docstatus, register_id, session_id, customer_id, posting_date, grand_total FROM bills WHERE id = ?`,
+    [billId],
+  )
+  if (!row) throw new Error(`unknown bill: ${billId}`)
+  return {
+    id: row.id,
+    docNo: row.doc_no,
+    docstatus: row.docstatus,
+    registerId: row.register_id,
+    sessionId: row.session_id,
+    customerId: row.customer_id,
+    postingDate: row.posting_date,
+    grandTotal: row.grand_total as Money,
+  }
+}
+
+interface CustomerRow {
+  id: string
+  name: string
+  stateCode: string | null
+  priceListId: string | null
+  creditLimit: Money
+  creditEnforcement: 'none' | 'soft' | 'hard'
+}
+
+async function loadCustomer(db: SqlDriver, customerId: string): Promise<CustomerRow> {
+  const row = await db.get<{
+    id: string; name: string; state_code: string | null; price_list_id: string | null
+    credit_limit: number; credit_enforcement: string
+  }>(
+    `SELECT id, name, state_code, price_list_id, credit_limit, credit_enforcement FROM customers WHERE id = ?`,
+    [customerId],
+  )
+  if (!row) throw new Error(`unknown customer: ${customerId}`)
+  return {
+    id: row.id,
+    name: row.name,
+    stateCode: row.state_code,
+    priceListId: row.price_list_id,
+    creditLimit: row.credit_limit as Money,
+    creditEnforcement: row.credit_enforcement as 'none' | 'soft' | 'hard',
+  }
+}
+
+async function loadOpenBills(db: SqlDriver, customerId: string): Promise<OpenBill[]> {
+  const rows = await db.query<{ id: string; doc_no: string; posting_date: string; credit_total: number; allocated: number }>(
+    `SELECT b.id, b.doc_no, b.posting_date, b.credit_total,
+            COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
+                        JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
+                       WHERE pa.bill_id = b.id), 0) AS allocated
+       FROM bills b
+      WHERE b.customer_id = ? AND b.docstatus = 1 AND b.credit_total > 0`,
+    [customerId],
+  )
+  return rows.map((r) => ({
+    id: r.id,
+    docNo: r.doc_no,
+    postingDate: r.posting_date,
+    creditTotal: r.credit_total as Money,
+    allocated: r.allocated as Money,
+  }))
+}
+
+async function loadLoyaltyEntries(db: SqlDriver, customerId: string): Promise<LoyaltyEntry[]> {
+  const rows = await db.query<{
+    id: string; points: number; consumed: number; earned_at: string
+    expires_at: string | null; cancelled_at: string | null
+  }>(
+    `SELECT id, points, consumed, earned_at, expires_at, cancelled_at FROM loyalty_entries WHERE customer_id = ?`,
+    [customerId],
+  )
+  return rows.map((r) => ({
+    id: r.id,
+    points: r.points,
+    consumed: r.consumed,
+    earnedAt: r.earned_at,
+    expiresAt: r.expires_at,
+    cancelledAt: r.cancelled_at,
+  }))
+}
+
+export async function loadLoyaltyProgram(db: SqlDriver): Promise<LoyaltyProgram> {
+  const raw = await getSetting(db, 'loyalty_program')
+  if (!raw) return DEFAULT_PROGRAM
+  try {
+    return { ...DEFAULT_PROGRAM, ...(JSON.parse(raw) as Partial<LoyaltyProgram>) }
+  } catch {
+    return DEFAULT_PROGRAM
+  }
+}
+
+async function supplyFor(db: SqlDriver, customerStateCode: string | null): Promise<SupplyType> {
+  const shopState = await getSetting(db, 'shop_state_code')
+  return supplyTypeFor(shopState, customerStateCode)
+}
+
+export function billSummary(totals: BillTotals, lineCount: number): string {
+  return `${lineCount} item${lineCount === 1 ? '' : 's'}, ${formatMoney(totals.grandTotal)}`
+}

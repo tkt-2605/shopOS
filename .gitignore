@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+target/
+
+# Tauri regenerates these on every build.
+apps/pos/src-tauri/gen/schemas/
