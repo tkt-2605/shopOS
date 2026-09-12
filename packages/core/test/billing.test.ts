@@ -676,3 +676,120 @@ describe('paying with loyalty points', () => {
     expect(done.code).toBe('PAYMENT_MISMATCH')
   })
 })
+
+/* Recharge vouchers, cigarettes, milk, cooking gas: sold at a few rupees a unit
+   because the shop must stock them, not because they make money. A discount or
+   a loyalty payout across the whole bill turns those lines into a loss, so the
+   exclusion sits on the item and holds regardless of who writes the rule. */
+describe('items that carry no margin to give away', () => {
+  it('refuses a discount typed against a blocked line', async () => {
+    const p = await makeProduct(fx.db, { name: 'Mobile recharge', baseRate: rupees(100), taxRateBp: 0, discountBlocked: true })
+    await stockUp(fx.db, p, 10)
+
+    const r = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      lines: [{ productId: p, qty: fromUnits(1), discount: rupees(10) }],
+      actorId: fx.adminId,
+    })
+
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.code).toBe('DISCOUNT_BLOCKED')
+  })
+
+  it('keeps a bill discount off the blocked line', async () => {
+    const open = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    const thin = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0, discountBlocked: true })
+    await stockUp(fx.db, open, 10)
+    await stockUp(fx.db, thin, 10)
+
+    const r = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      lines: [{ productId: open, qty: fromUnits(1) }, { productId: thin, qty: fromUnits(1) }],
+      billDiscount: rupees(20),
+      actorId: fx.adminId,
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.grandTotal).toBe(rupees(180))
+
+    const rows = await fx.db.query<{ discount: number; line_total: number; discount_blocked: number }>(
+      `SELECT discount, line_total, discount_blocked FROM bill_items WHERE bill_id = ? ORDER BY idx`,
+      [r.billId],
+    )
+    expect(rows[0]).toMatchObject({ discount: rupees(20), discount_blocked: 0 })
+    expect(rows[1]).toMatchObject({ discount: 0, line_total: rupees(100), discount_blocked: 1 })
+  })
+
+  it('refuses a bill discount larger than the part that may carry it', async () => {
+    const open = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    const thin = await makeProduct(fx.db, { baseRate: rupees(900), taxRateBp: 0, discountBlocked: true })
+    await stockUp(fx.db, open, 10)
+    await stockUp(fx.db, thin, 10)
+
+    const r = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      lines: [{ productId: open, qty: fromUnits(1) }, { productId: thin, qty: fromUnits(1) }],
+      billDiscount: rupees(500),
+      actorId: fx.adminId,
+    })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    if (r.code !== 'DISCOUNT_EXCEEDS_TOTAL') throw new Error(r.code)
+    // Reported against the discountable part, so the message can say what is
+    // actually available.
+    expect(r.subtotal).toBe(rupees(100))
+  })
+
+  it('earns no points on a line excluded from the programme', async () => {
+    await setSetting(fx.db, 'loyalty_program', JSON.stringify({
+      enabled: true,
+      tiers: [{ minSpend: 0, pointsPerHundred: 10 }],
+      expiryDays: null,
+      pointValue: rupees(1),
+      earnOnCreditPortion: true,
+      minBillForEarn: 0,
+      maxRedeemFractionBp: 10_000,
+    }))
+
+    const open = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    const thin = await makeProduct(fx.db, { baseRate: rupees(900), taxRateBp: 0, loyaltyBlocked: true })
+    await stockUp(fx.db, open, 10)
+    await stockUp(fx.db, thin, 10)
+    const customerId = await makeCustomer(fx.db)
+
+    const draft = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      customerId,
+      lines: [{ productId: open, qty: fromUnits(1) }, { productId: thin, qty: fromUnits(1) }],
+      actorId: fx.adminId,
+    })
+    if (!draft.ok) throw new Error('draft failed')
+    expect(draft.grandTotal).toBe(rupees(1000))
+
+    const done = await submitBill(fx.db, {
+      billId: draft.billId,
+      payments: [{ method: 'cash', amount: rupees(1000) }],
+      actorId: fx.adminId,
+    })
+    expect(done.ok).toBe(true)
+    if (!done.ok) return
+    // Ten points per hundred, on ₹100 rather than on ₹1,000.
+    expect(done.pointsEarned).toBe(10)
+  })
+
+  /* The flag can be changed later; the bill must still explain itself. */
+  it('stamps the exclusions onto the line as they stood at the time of sale', async () => {
+    const thin = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0, discountBlocked: true, loyaltyBlocked: true })
+    await stockUp(fx.db, thin, 10)
+
+    const r = await billFor(thin, 1)
+    if (!r.ok) throw new Error('draft failed')
+    await fx.db.execute(`UPDATE products SET discount_blocked = 0, loyalty_blocked = 0 WHERE id = ?`, [thin])
+
+    const row = await fx.db.get<{ discount_blocked: number; loyalty_blocked: number }>(
+      `SELECT discount_blocked, loyalty_blocked FROM bill_items WHERE bill_id = ?`, [r.billId],
+    )
+    expect(row).toMatchObject({ discount_blocked: 1, loyalty_blocked: 1 })
+  })
+})

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Money, Quantity, Pricing,
+  Money, Quantity, Pricing, Totals,
   createBill, saveDraft, listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts,
   productsByIds, saleUnitsFor, searchCustomers,
   type SqlDriver, type DraftDetail, type BillLineInput,
@@ -81,9 +81,23 @@ function snapshotOf(cart: Cart): { customerId: string | null; billDiscount: numb
       : { resolved: { rate: line.rate as never, source: line.source, sourceId: line.sourceId } }),
   }))
 
+  // The clamped figure, not the typed one. The service rejects a discount larger
+  // than the part of the bill that may carry it, and a rejected autosave is
+  // invisible — the cashier would go on billing against a draft that stopped
+  // saving. The screen shows the clamp; this sends what the screen shows.
+  const totals = Totals.computeTotals(
+    cart.lines.map((l) => ({
+      qty: Quantity.fromUnits(l.qty),
+      rate: l.rate as never,
+      taxRateBp: l.product.taxRateBp,
+      discountBlocked: l.product.discountBlocked,
+    })),
+    (Money.parseMoney(cart.discount) ?? 0) as never,
+  )
+
   return {
     customerId: cart.customer?.id ?? null,
-    billDiscount: Money.parseMoney(cart.discount) ?? 0,
+    billDiscount: totals.discount,
     lines,
   }
 }

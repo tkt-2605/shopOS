@@ -51,17 +51,41 @@ export interface EarnResult {
   expiresAt: string | null
 }
 
+/**
+ * What a bill offers the programme to earn on.
+ *
+ * `earningTotal` is the bill less the lines excluded from the programme. It is
+ * separate from `grandTotal` because the two answer different questions: the
+ * grand total is what the customer pays, the earning total is what the shop can
+ * afford to pay points on. A bill of ₹1,000 that is ₹900 of mobile recharge
+ * earns on ₹100.
+ */
+export interface EarnBasis {
+  grandTotal: Money
+  creditPortion: Money
+  /** Defaults to the whole bill, which is the answer when nothing is excluded. */
+  earningTotal?: Money
+}
+
 export function calculateEarned(
   program: LoyaltyProgram,
-  grandTotal: Money,
-  creditPortion: Money,
+  basis: EarnBasis,
   on: Date = new Date(),
 ): EarnResult {
   if (!program.enabled || program.tiers.length === 0) {
     return { points: 0, eligibleSpend: ZERO, expiresAt: null }
   }
 
-  const eligibleSpend = program.earnOnCreditPortion ? grandTotal : sub(grandTotal, creditPortion)
+  const { grandTotal, creditPortion } = basis
+  const earningTotal = basis.earningTotal ?? grandTotal
+
+  // Credit comes off the earning part first. It is the conservative reading of
+  // an unanswerable question — which lines the unpaid money belongs to — and
+  // erring towards fewer points is the error a shop can live with.
+  const eligibleSpend = program.earnOnCreditPortion
+    ? earningTotal
+    : minMoney(earningTotal, sub(grandTotal, creditPortion))
+
   if (eligibleSpend <= 0 || eligibleSpend < program.minBillForEarn) {
     return { points: 0, eligibleSpend: ZERO, expiresAt: null }
   }

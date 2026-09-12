@@ -76,6 +76,7 @@ export type CreateBillResult =
   | { ok: false; code: 'UNKNOWN_PRODUCT'; productId: string }
   | { ok: false; code: 'INVALID_QTY'; productId: string }
   | { ok: false; code: 'DISCOUNT_EXCEEDS_TOTAL'; subtotal: Money; discount: Money }
+  | { ok: false; code: 'DISCOUNT_BLOCKED'; productId: string; productName: string }
 
 export type SubmitBillResult =
   | { ok: true; billId: string; docNo: string; grandTotal: Money; pointsEarned: number; pointsRedeemed: number; idempotent: boolean }
@@ -103,6 +104,9 @@ interface ComputedLine {
   taxRateBp: number
   priceSource: PriceSource
   priceSourceId: string | null
+  /** Copied onto the line as it stood at the time of sale, so a bill stays explainable. */
+  discountBlocked: boolean
+  loyaltyBlocked: boolean
 }
 
 /**
@@ -143,8 +147,16 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
 
     const product = await db.get<{
       id: string; name: string; hsn_code: string | null; tax_rate_bp: number; mrp: number | null
-    }>(`SELECT id, name, hsn_code, tax_rate_bp, mrp FROM products WHERE id = ? AND deleted_at IS NULL`, [line.productId])
+      discount_blocked: number; loyalty_blocked: number
+    }>(
+      `SELECT id, name, hsn_code, tax_rate_bp, mrp, discount_blocked, loyalty_blocked
+         FROM products WHERE id = ? AND deleted_at IS NULL`,
+      [line.productId],
+    )
     if (!product) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
+
+    const discountBlocked = product.discount_blocked === 1
+    const loyaltyBlocked = product.loyalty_blocked === 1
 
     const unit = await resolveSaleUnit(db, line.productId, line.saleUnit ?? null)
 
@@ -157,6 +169,12 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
         : await resolveLinePrice(db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now)
 
     const discount = line.discount ?? ZERO
+    // Refused rather than quietly dropped: a cashier who types a discount on a
+    // razor-margin line should be told it will not be given, not left believing
+    // it was.
+    if (discountBlocked && discount > 0) {
+      return { ok: false, code: 'DISCOUNT_BLOCKED', productId: product.id, productName: product.name }
+    }
     if (sub(grossOf(priced.rate, line.qty), discount) < 0) {
       return { ok: false, code: 'DISCOUNT_EXCEEDS_TOTAL', subtotal: grossOf(priced.rate, line.qty), discount }
     }
@@ -174,6 +192,8 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
       taxRateBp: product.tax_rate_bp,
       priceSource: priced.source,
       priceSourceId: priced.sourceId,
+      discountBlocked,
+      loyaltyBlocked,
     })
   }
 
@@ -182,9 +202,15 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
 
   // computeTotals clamps for the screen's benefit; a service caller asking for
   // more discount than the bill holds is a mistake worth reporting, not silently
-  // reducing.
-  if (billDiscount > totals.subtotal) {
-    return { ok: false, code: 'DISCOUNT_EXCEEDS_TOTAL', subtotal: totals.subtotal, discount: billDiscount }
+  // reducing. The comparison is against the discountable part, because a bill
+  // whose lines are all excluded can carry no bill discount at all.
+  if (billDiscount > totals.discountableSubtotal) {
+    return {
+      ok: false,
+      code: 'DISCOUNT_EXCEEDS_TOTAL',
+      subtotal: totals.discountableSubtotal,
+      discount: billDiscount,
+    }
   }
 
   return {
@@ -224,14 +250,15 @@ async function writeLines(
       `INSERT INTO bill_items
          (id, bill_id, idx, product_id, product_name, hsn_code, sale_unit, qty, base_qty, rate, mrp,
           discount, line_total, taxable_value, tax_rate_bp, cgst_amount, sgst_amount, igst_amount,
-          price_source, price_source_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          price_source, price_source_id, discount_blocked, loyalty_blocked)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         newId(), billId, i + 1, line.productId, line.productName, line.hsnCode, line.saleUnit,
         line.qty, line.baseQty, line.rate, line.mrp,
         add(line.discount, t.billDiscountShare), t.net,
         t.tax.taxableValue, line.taxRateBp, t.tax.cgst, t.tax.sgst, t.tax.igst,
         line.priceSource, line.priceSourceId,
+        line.discountBlocked ? 1 : 0, line.loyaltyBlocked ? 1 : 0,
       ],
     )
   }
@@ -359,8 +386,12 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
   const bill = await loadBill(db, input.billId)
   assertCanApply('bill', parseDocStatus(bill.docstatus), 'submit')
 
-  const lines = await db.query<{ product_id: string; product_name: string; base_qty: number }>(
-    `SELECT product_id, product_name, base_qty FROM bill_items WHERE bill_id = ? ORDER BY idx`,
+  const lines = await db.query<{
+    product_id: string; product_name: string; base_qty: number
+    line_total: number; loyalty_blocked: number
+  }>(
+    `SELECT product_id, product_name, base_qty, line_total, loyalty_blocked
+       FROM bill_items WHERE bill_id = ? ORDER BY idx`,
     [input.billId],
   )
 
@@ -409,7 +440,16 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
   const shortfalls = await checkAvailability(db, requirements)
   if (shortfalls.length > 0) return { ok: false, code: 'INSUFFICIENT_STOCK', shortfalls }
 
-  const earned = calculateEarned(program, bill.grandTotal, creditTotal, now)
+  // Read off the line's own flag rather than the product's, so a bill earns on
+  // the rules that were in force when it was rung up.
+  const earningTotal = add(
+    ...lines.filter((l) => l.loyalty_blocked !== 1).map((l) => l.line_total as Money),
+  )
+  const earned = calculateEarned(
+    program,
+    { grandTotal: bill.grandTotal, creditPortion: creditTotal, earningTotal },
+    now,
+  )
   const register = await db.get<{ prefix: string }>(`SELECT prefix FROM registers WHERE id = ?`, [bill.registerId])
   const nowIso = now.toISOString()
   let docNo = ''

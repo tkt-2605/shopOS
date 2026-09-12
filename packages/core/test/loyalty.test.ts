@@ -32,43 +32,43 @@ const now = new Date('2026-06-01T00:00:00Z')
 
 describe('earning', () => {
   it('awards points at the matching tier', () => {
-    expect(calculateEarned(program, rupees(1000), ZERO, now).points).toBe(10)
+    expect(calculateEarned(program, { grandTotal: rupees(1000), creditPortion: ZERO }, now).points).toBe(10)
   })
 
   it('uses the higher tier above its threshold', () => {
-    expect(calculateEarned(program, rupees(6000), ZERO, now).points).toBe(120)
+    expect(calculateEarned(program, { grandTotal: rupees(6000), creditPortion: ZERO }, now).points).toBe(120)
   })
 
   it('excludes the credit portion by default — points on money not yet received', () => {
-    const r = calculateEarned(program, rupees(1000), rupees(600), now)
+    const r = calculateEarned(program, { grandTotal: rupees(1000), creditPortion: rupees(600) }, now)
     expect(r.eligibleSpend).toBe(rupees(400))
     expect(r.points).toBe(4)
   })
 
   it('includes the credit portion when the shop opts in', () => {
-    const r = calculateEarned({ ...program, earnOnCreditPortion: true }, rupees(1000), rupees(600), now)
+    const r = calculateEarned({ ...program, earnOnCreditPortion: true }, { grandTotal: rupees(1000), creditPortion: rupees(600) }, now)
     expect(r.points).toBe(10)
   })
 
   it('awards nothing below the minimum bill', () => {
-    expect(calculateEarned(program, rupees(50), ZERO, now).points).toBe(0)
+    expect(calculateEarned(program, { grandTotal: rupees(50), creditPortion: ZERO }, now).points).toBe(0)
   })
 
   it('awards nothing on a fully-credit bill', () => {
-    expect(calculateEarned(program, rupees(1000), rupees(1000), now).points).toBe(0)
+    expect(calculateEarned(program, { grandTotal: rupees(1000), creditPortion: rupees(1000) }, now).points).toBe(0)
   })
 
   it('awards nothing when the program is off', () => {
-    expect(calculateEarned({ ...program, enabled: false }, rupees(1000), ZERO, now).points).toBe(0)
+    expect(calculateEarned({ ...program, enabled: false }, { grandTotal: rupees(1000), creditPortion: ZERO }, now).points).toBe(0)
   })
 
   it('sets an expiry when the program has one', () => {
-    const r = calculateEarned(program, rupees(1000), ZERO, now)
+    const r = calculateEarned(program, { grandTotal: rupees(1000), creditPortion: ZERO }, now)
     expect(r.expiresAt).toBe('2027-06-01T00:00:00.000Z')
   })
 
   it('leaves expiry null when points never expire', () => {
-    expect(calculateEarned({ ...program, expiryDays: null }, rupees(1000), ZERO, now).expiresAt).toBeNull()
+    expect(calculateEarned({ ...program, expiryDays: null }, { grandTotal: rupees(1000), creditPortion: ZERO }, now).expiresAt).toBeNull()
   })
 })
 
@@ -148,5 +148,54 @@ describe('redemption', () => {
     const plan = planRedemption({ ...program, enabled: false }, [entry('a', 100)], 10, rupees(1000), now)
     expect(plan.ok).toBe(false)
     if (!plan.ok) expect(plan.code).toBe('PROGRAM_DISABLED')
+  })
+})
+
+/* The same reason as the discount block: a bill that is mostly mobile recharge
+   must not pay points on the recharge. */
+describe('earning only on what the shop can afford', () => {
+  it('earns on the eligible part, not the whole bill', () => {
+    const r = calculateEarned(
+      program,
+      { grandTotal: rupees(1000), creditPortion: ZERO, earningTotal: rupees(200) },
+      now,
+    )
+    expect(r.eligibleSpend).toBe(rupees(200))
+    expect(r.points).toBe(2)
+  })
+
+  it('earns nothing when every line on the bill is excluded', () => {
+    const r = calculateEarned(program, { grandTotal: rupees(1000), creditPortion: ZERO, earningTotal: ZERO }, now)
+    expect(r.points).toBe(0)
+  })
+
+  /* Which lines the unpaid money belongs to is unanswerable, so credit comes off
+     the earning part first — fewer points is the error a shop can live with. */
+  it('takes credit off the earning part first', () => {
+    const r = calculateEarned(
+      program,
+      { grandTotal: rupees(1000), creditPortion: rupees(900), earningTotal: rupees(500) },
+      now,
+    )
+    expect(r.eligibleSpend).toBe(rupees(100))
+  })
+
+  it('earns on the whole eligible part when the programme pays on credit too', () => {
+    const r = calculateEarned(
+      { ...program, earnOnCreditPortion: true },
+      { grandTotal: rupees(1000), creditPortion: rupees(900), earningTotal: rupees(500) },
+      now,
+    )
+    expect(r.eligibleSpend).toBe(rupees(500))
+  })
+
+  it('treats a bill with nothing excluded exactly as before', () => {
+    const withOut = calculateEarned(program, { grandTotal: rupees(1000), creditPortion: ZERO }, now)
+    const withFull = calculateEarned(
+      program,
+      { grandTotal: rupees(1000), creditPortion: ZERO, earningTotal: rupees(1000) },
+      now,
+    )
+    expect(withOut).toEqual(withFull)
   })
 })

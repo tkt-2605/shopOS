@@ -41,16 +41,14 @@ export default function Billing() {
   }, [db, term])
 
   const totals = useMemo(
-    () => Totals.computeTotals(
-      active.lines.map((l) => ({
-        qty: Quantity.fromUnits(l.qty),
-        rate: l.rate as never,
-        taxRateBp: l.product.taxRateBp,
-      })),
-      (Money.parseMoney(active.discount) ?? 0) as never,
-    ),
+    () => Totals.computeTotals(totalsLinesOf(active.lines), (Money.parseMoney(active.discount) ?? 0) as never),
     [active.lines, active.discount],
   )
+
+  /* Lines the shop sells at a few rupees a unit. The discount box has to say so,
+     because a cashier typing ₹50 off a bill that is mostly recharge will
+     otherwise see a number that does not happen. */
+  const blocked = active.lines.filter((l) => l.product.discountBlocked)
 
   const empty = active.lines.length === 0
 
@@ -279,7 +277,14 @@ export default function Billing() {
               {active.lines.map((line, i) => (
                 <tr key={line.key}>
                   <td>
-                    <div>{line.product.name}</div>
+                    <div>
+                      {line.product.name}
+                      {line.product.discountBlocked && (
+                        <span className="badge" style={{ marginLeft: 7 }} title="Sold on too thin a margin to discount">
+                          no discount
+                        </span>
+                      )}
+                    </div>
                     <div className="src">{Pricing.describeSource(line.source)}</div>
                   </td>
                   <td>
@@ -359,6 +364,14 @@ export default function Billing() {
               onChange={(e) => tabs.patch((cart) => ({ ...cart, discount: e.target.value }))}
             />
           </div>
+          {blocked.length > 0 && (
+            <div style={{ fontSize: 11.5, color: 'var(--ink-3)', margin: '-4px 0 8px' }}>
+              {blocked.length === 1
+                ? `${blocked[0]!.product.name} takes no discount.`
+                : `${blocked.length} items take no discount.`}
+              {' '}Only <Rupees value={totals.discountableSubtotal} /> of this bill can be reduced.
+            </div>
+          )}
           <div className="total-line" style={{ color: 'var(--ink-3)' }}>
             <span>Tax included</span><Rupees value={totals.taxTotal} />
           </div>
@@ -486,14 +499,20 @@ export default function Billing() {
   )
 }
 
+/** The one mapping from cart lines to what the totals engine wants. */
+function totalsLinesOf(lines: CartLine[]): Totals.TotalsLine[] {
+  return lines.map((l) => ({
+    qty: Quantity.fromUnits(l.qty),
+    rate: l.rate as never,
+    taxRateBp: l.product.taxRateBp,
+    discountBlocked: l.product.discountBlocked,
+  }))
+}
+
 /** A tab's headline figure, computed the same way as the active cart's. */
 function billTotal(cart: Cart): number {
   return Totals.computeTotals(
-    cart.lines.map((l) => ({
-      qty: Quantity.fromUnits(l.qty),
-      rate: l.rate as never,
-      taxRateBp: l.product.taxRateBp,
-    })),
+    totalsLinesOf(cart.lines),
     (Money.parseMoney(cart.discount) ?? 0) as never,
   ).grandTotal
 }

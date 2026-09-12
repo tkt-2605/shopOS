@@ -29,14 +29,22 @@ export async function freshDb(): Promise<Fixture> {
 
 export async function makeProduct(
   db: SqlDriver,
-  overrides: Partial<{ id: string; name: string; baseRate: number; taxRateBp: number; barcode: string }> = {},
+  overrides: Partial<{
+    id: string; name: string; baseRate: number; taxRateBp: number; barcode: string
+    discountBlocked: boolean; loyaltyBlocked: boolean
+  }> = {},
 ): Promise<string> {
   const id = overrides.id ?? newId()
   const now = new Date().toISOString()
   await db.execute(
-    `INSERT INTO products (id, name, base_rate, tax_rate_bp, barcode, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, overrides.name ?? 'Test Product', overrides.baseRate ?? 10000, overrides.taxRateBp ?? 1800, overrides.barcode ?? null, now, now],
+    `INSERT INTO products
+       (id, name, base_rate, tax_rate_bp, barcode, discount_blocked, loyalty_blocked, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id, overrides.name ?? 'Test Product', overrides.baseRate ?? 10000,
+      overrides.taxRateBp ?? 1800, overrides.barcode ?? null,
+      overrides.discountBlocked ? 1 : 0, overrides.loyaltyBlocked ? 1 : 0, now, now,
+    ],
   )
   return id
 }

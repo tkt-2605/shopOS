@@ -106,3 +106,54 @@ describe('bill totals', () => {
     expect(grossOf(rupees(12.5), fromUnits(4))).toBe(rupees(50))
   })
 })
+
+/* A shop sells mobile recharge, cigarettes and cooking gas at a few rupees a
+   unit. A discount across the whole bill that lands on those lines is a loss,
+   whether or not anyone meant to give it. */
+describe('lines that may not be discounted', () => {
+  const blocked = (rate: number, units: number, discount = 0) => ({
+    ...line(rate, units, 0, discount),
+    discountBlocked: true,
+  })
+
+  it('keeps a bill discount off the blocked line entirely', () => {
+    const t = computeTotals([line(100, 1), blocked(100, 1)], rupees(20))
+
+    expect(t.subtotal).toBe(rupees(200))
+    expect(t.discountableSubtotal).toBe(rupees(100))
+    expect(t.lines[0]!.billDiscountShare).toBe(rupees(20))
+    expect(t.lines[1]!.billDiscountShare).toBe(0)
+    expect(t.grandTotal).toBe(rupees(180))
+  })
+
+  it('drops a discount typed against a blocked line rather than showing one', () => {
+    const t = computeTotals([blocked(100, 1, 30)])
+    expect(t.lines[0]!.lineTotal).toBe(rupees(100))
+    expect(t.grandTotal).toBe(rupees(100))
+  })
+
+  /* allocate() splits evenly when every weight is zero, which would put the
+     discount straight onto the blocked lines. The clamp has to make that
+     unreachable. */
+  it('applies no discount at all to a bill of nothing but blocked lines', () => {
+    const t = computeTotals([blocked(100, 1), blocked(50, 2)], rupees(30))
+    expect(t.discountableSubtotal).toBe(0)
+    expect(t.discount).toBe(0)
+    expect(t.lines.every((l) => l.billDiscountShare === 0)).toBe(true)
+    expect(t.grandTotal).toBe(rupees(200))
+  })
+
+  it('clamps a bill discount to the discountable part, not the subtotal', () => {
+    const t = computeTotals([line(100, 1), blocked(900, 1)], rupees(500))
+    expect(t.discount).toBe(rupees(100))
+    expect(t.grandTotal).toBe(rupees(900))
+  })
+
+  /* The per-line figures are what goes on the invoice; they have to sum to it. */
+  it('still loses nothing when the spread skips a line', () => {
+    const t = computeTotals([line(33.33, 1), line(33.33, 1), blocked(33.34, 1)], paise(1000) as Money)
+    const summed = t.lines.reduce((a, l) => a + l.net, 0)
+    expect(summed).toBe(t.grandTotal)
+    expect(t.lines[2]!.billDiscountShare).toBe(0)
+  })
+})

@@ -15,6 +15,9 @@ export interface ProductListItem {
   hsnCode: string | null
   isStockTracked: boolean
   qtyOnHand: Qty
+  /** Margin too thin to carry a discount, or to pay loyalty points on. */
+  discountBlocked: boolean
+  loyaltyBlocked: boolean
 }
 
 export interface SearchOptions {
@@ -37,6 +40,7 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.discount_blocked, p.loyalty_blocked,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
        FROM products p
        LEFT JOIN product_stock ps ON ps.product_id = p.id
@@ -58,6 +62,7 @@ export async function productsByIds(db: SqlDriver, ids: string[]): Promise<Produ
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.discount_blocked, p.loyalty_blocked,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
        FROM products p
        LEFT JOIN product_stock ps ON ps.product_id = p.id
@@ -71,6 +76,7 @@ export async function findByBarcode(db: SqlDriver, barcode: string): Promise<Pro
   const row = await db.get<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.discount_blocked, p.loyalty_blocked,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
        FROM products p
        LEFT JOIN product_stock ps ON ps.product_id = p.id
@@ -294,6 +300,8 @@ interface ProductRow {
   hsn_code: string | null
   is_stock_tracked: number
   qty_on_hand: number
+  discount_blocked: number
+  loyalty_blocked: number
 }
 
 function toProduct(r: ProductRow): ProductListItem {
@@ -310,5 +318,7 @@ function toProduct(r: ProductRow): ProductListItem {
     hsnCode: r.hsn_code,
     isStockTracked: r.is_stock_tracked === 1,
     qtyOnHand: qty(r.qty_on_hand),
+    discountBlocked: r.discount_blocked === 1,
+    loyaltyBlocked: r.loyalty_blocked === 1,
   }
 }
