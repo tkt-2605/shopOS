@@ -7,213 +7,285 @@
 <body>
 <x-dc>
 <helmet>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;700&display=swap">
   <style>
-    body { margin: 0; font-family: "Inter Tight", "Segoe UI", system-ui, sans-serif; }
-    a { color: oklch(0.55 0.15 255); } a:hover { color: oklch(0.45 0.15 255); }
-    .m { font-family: "IBM Plex Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+  :root, .t-daylight {
+    --ground: oklch(0.982 0.002 250); --surface: #fff;
+    --surface-2: oklch(0.976 0.002 250); --sidebar: oklch(0.968 0.003 250);
+    --sidebar-ink: oklch(0.45 0.012 250); --sidebar-active-bg: oklch(0.925 0.028 255);
+    --sidebar-active-ink: oklch(0.4 0.13 258);
+    --ink: oklch(0.28 0.014 252); --ink-2: oklch(0.55 0.012 250); --ink-3: oklch(0.66 0.012 250);
+    --rule: oklch(0.925 0.004 250); --rule-soft: oklch(0.958 0.003 250);
+    --rule-strong: oklch(0.9 0.005 250);
+    --accent: oklch(0.55 0.15 255); --accent-hover: oklch(0.48 0.15 255);
+    --accent-soft: oklch(0.945 0.022 255); --accent-ink: oklch(0.4 0.13 258);
+    --ok: oklch(0.42 0.1 160); --ok-soft: oklch(0.945 0.03 160);
+    --warn: oklch(0.5 0.13 60); --warn-soft: oklch(0.955 0.03 75);
+    --danger: oklch(0.5 0.14 28); --danger-soft: oklch(0.958 0.022 28);
+    --radius: 9px; --radius-sm: 7px;
+    --shadow: 0 1px 2px rgb(20 32 31 / 6%), 0 10px 28px -20px rgb(20 32 31 / 28%);
+  }
+  .t-khata {
+    --ground: oklch(0.972 0.012 85); --surface: oklch(0.99 0.008 85);
+    --surface-2: oklch(0.958 0.014 84); --sidebar: oklch(0.945 0.016 82);
+    --sidebar-ink: oklch(0.42 0.02 60); --sidebar-active-bg: oklch(0.9 0.04 40);
+    --sidebar-active-ink: oklch(0.42 0.16 28);
+    --ink: oklch(0.26 0.02 60); --ink-2: oklch(0.48 0.02 60); --ink-3: oklch(0.62 0.02 60);
+    --rule: oklch(0.88 0.02 80); --rule-soft: oklch(0.92 0.016 82);
+    --rule-strong: oklch(0.8 0.024 78);
+    --accent: oklch(0.5 0.16 28); --accent-hover: oklch(0.42 0.16 28);
+    --accent-soft: oklch(0.94 0.03 40); --accent-ink: oklch(0.42 0.16 28);
+    --ok: oklch(0.42 0.09 150); --ok-soft: oklch(0.94 0.03 150);
+    --warn: oklch(0.48 0.12 60); --warn-soft: oklch(0.95 0.035 75);
+    --danger: oklch(0.46 0.16 28); --danger-soft: oklch(0.94 0.035 30);
+    --radius: 3px; --radius-sm: 2px;
+    --shadow: 0 1px 2px rgb(60 40 20 / 10%), 0 10px 28px -20px rgb(60 40 20 / 30%);
+  }
+  .t-night {
+    --ground: oklch(0.17 0.014 255); --surface: oklch(0.22 0.014 255);
+    --surface-2: oklch(0.25 0.014 255); --sidebar: oklch(0.14 0.014 255);
+    --sidebar-ink: oklch(0.72 0.012 250); --sidebar-active-bg: oklch(0.3 0.05 255);
+    --sidebar-active-ink: oklch(0.92 0.02 255);
+    --ink: oklch(0.93 0.006 250); --ink-2: oklch(0.72 0.012 250); --ink-3: oklch(0.58 0.012 250);
+    --rule: oklch(0.3 0.014 255); --rule-soft: oklch(0.26 0.014 255);
+    --rule-strong: oklch(0.36 0.014 255);
+    --accent: oklch(0.68 0.14 255); --accent-hover: oklch(0.75 0.14 255);
+    --accent-soft: oklch(0.3 0.05 255); --accent-ink: oklch(0.82 0.1 255);
+    --ok: oklch(0.78 0.12 160); --ok-soft: oklch(0.28 0.05 160);
+    --warn: oklch(0.8 0.12 75); --warn-soft: oklch(0.3 0.05 70);
+    --danger: oklch(0.74 0.13 28); --danger-soft: oklch(0.3 0.06 28);
+    --radius: 9px; --radius-sm: 7px;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 28px -20px rgb(0 0 0 / 70%);
+  }
+  .d-compact { --row-py: 10px; --cell-px: 14px; }
+  .d-comfortable { --row-py: 14px; --cell-px: 16px; }
+  .d-dense { --row-py: 7px; --cell-px: 12px; }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+         font-size: 13.5px; color: var(--ink); background: var(--ground);
+         -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-hover); }
+  .num { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+         font-variant-numeric: tabular-nums; }
+
+  .shell { display: grid; grid-template-columns: 196px minmax(0, 1fr); height: 100%; }
+  .sidebar { display: flex; flex-direction: column; background: var(--sidebar);
+             border-right: 1px solid var(--rule); }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 14px 14px 12px; }
+  .brand-mark { display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0;
+                background: var(--accent); border-radius: var(--radius-sm); color: #fff; }
+  .brand-name { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+  .brand-sub { font-size: 11px; color: var(--ink-3); }
+  .nav { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; }
+  .nav-group { padding: 12px 9px 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+               text-transform: uppercase; color: var(--ink-3); }
+  .nav-group.first { padding-top: 2px; }
+  .nav .item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px;
+               border-radius: var(--radius-sm); color: var(--sidebar-ink); font-size: 13px; }
+  .nav .item.on { background: var(--sidebar-active-bg); color: var(--sidebar-active-ink);
+                  font-weight: 600; }
+  .sidebar-foot { display: flex; align-items: center; gap: 9px; padding: 12px 14px;
+                  border-top: 1px solid var(--rule); }
+  .avatar { display: grid; place-items: center; width: 26px; height: 26px; flex-shrink: 0;
+            background: var(--accent-soft); border-radius: 999px; font-size: 10.5px;
+            font-weight: 600; color: var(--accent-ink); }
+  .who { font-size: 12px; font-weight: 500; }
+  .role { font-size: 11px; color: var(--ink-3); }
+  .link { color: var(--accent); font-size: 11.5px; }
+
+  .main { display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .topbar { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 20px;
+            flex-shrink: 0; background: var(--surface); border-bottom: 1px solid var(--rule); }
+  .topbar h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+  .meta { font-size: 12px; color: var(--ink-3); }
+  .content { flex: 1 1 0; overflow: hidden; padding: 16px 18px; }
+  .content.flush { padding: 0; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+         padding: 7px 14px; white-space: nowrap; background: var(--surface); color: var(--ink);
+         border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); font-size: 13px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.ghost { background: none; border-color: transparent; }
+  .btn.sm { padding: 4px 9px; font-size: 12.5px; }
+  .btn.dim { opacity: 0.45; }
+  .input, .select { width: 100%; padding: 7px 11px; background: var(--surface); color: var(--ink);
+            border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+  .field .hint { font-size: 11.5px; color: var(--ink-3); }
+
+  .card { background: var(--surface); border: 1px solid var(--rule);
+          border-radius: var(--radius); overflow: hidden; }
+  .card-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+               border-bottom: 1px solid var(--rule-soft); }
+  .card-head h2 { margin: 0; font-size: 13.5px; font-weight: 600; }
+  .card-body { padding: 15px 16px; }
+  .spacer { flex: 1; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: var(--row-py) var(--cell-px);
+           border-bottom: 1px solid var(--rule-soft); }
+  th { padding-top: 9px; padding-bottom: 9px; background: var(--surface-2);
+       border-bottom: 1px solid var(--rule); font-size: 10.5px; font-weight: 600;
+       letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); }
+  td.r, th.r { text-align: right; }
+  tbody tr:last-child td { border-bottom: 0; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10.5px;
+           font-weight: 600; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .badge.bad { background: var(--danger-soft); color: var(--danger); }
+  .badge.mute { background: var(--surface-2); color: var(--ink-3); }
+  .alert { padding: 10px 13px; font-size: 13px; background: var(--danger-soft); color: var(--ink);
+           border-left: 3px solid var(--danger); border-radius: var(--radius-sm); }
+  .alert.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+  .alert.ok { background: var(--ok-soft); border-left-color: var(--ok); }
+
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .stat { padding: 12px 15px; background: var(--surface); border: 1px solid var(--rule);
+          border-radius: var(--radius); }
+  .stat .label { font-size: 11.5px; color: var(--ink-3); }
+  .stat .value { margin-top: 3px; font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
+  .stat .sub { margin-top: 2px; font-size: 12px; color: var(--ink-3); }
+
+  .segment { display: inline-flex; border: 1px solid var(--rule-strong);
+             border-radius: var(--radius-sm); overflow: hidden; }
+  .segment .seg { padding: 5px 13px; border-right: 1px solid var(--rule);
+                  background: var(--surface); color: var(--ink-2); font-size: 12.5px; }
+  .segment .seg:last-child { border-right: 0; }
+  .segment .seg.on { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+  .bar { height: 5px; border-radius: 3px; background: var(--accent); opacity: 0.7; }
+
+  .billing { display: flex; height: 100%; gap: 14px; padding: 14px 16px; }
+  .bill-left { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+  .bill-right { flex: 0 0 306px; width: 306px; display: flex; flex-direction: column; gap: 12px; }
+  .tab-strip { display: flex; align-items: flex-end; gap: 3px; flex-shrink: 0;
+               border-bottom: 1px solid var(--rule-strong); padding: 0 2px; }
+  .tab { display: flex; align-items: center; max-width: 230px; background: var(--surface-2);
+         color: var(--ink-3); border: 1px solid var(--rule); border-bottom: 0;
+         border-radius: var(--radius-sm) var(--radius-sm) 0 0; margin-bottom: -1px; }
+  .tab.on { background: var(--surface); color: var(--ink); border-color: var(--rule-strong);
+            box-shadow: inset 0 2px 0 var(--accent); }
+  .tab .pick { display: flex; align-items: center; gap: 7px; min-width: 0;
+               padding: 7px 4px 8px 8px; font-size: 12.5px; }
+  .tab .n { display: grid; place-items: center; width: 16px; height: 16px; flex-shrink: 0;
+            background: var(--rule); border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .tab.on .n { background: var(--accent); color: #fff; }
+  .tab .amt { font-variant-numeric: tabular-nums; font-weight: 500; }
+  .tab .shut { padding: 7px 8px 8px 4px; color: var(--ink-3); font-size: 11px; }
+  .tab-add { padding: 5px 11px 6px; margin: 0 0 2px 4px; border: 1px solid var(--rule);
+             border-radius: var(--radius-sm); color: var(--ink-3); font-size: 15px; line-height: 1; }
+  .scan-bar { display: flex; align-items: center; gap: 10px; padding: 8px 11px; flex-shrink: 0;
+              background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); }
+  .scan-bar .ph { flex: 1; padding: 5px 2px; font-size: 15px; color: var(--ink-3); }
+  .cart { flex: 1 1 0; min-height: 0; overflow: hidden; background: var(--surface);
+          border: 1px solid var(--rule); border-radius: var(--radius); }
+  .src { font-size: 10.5px; color: var(--ink-3); }
+  .qty-input { display: inline-block; width: 72px; padding: 4px 8px; text-align: right;
+               background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 6px; }
+  .totals { padding: 14px 15px; background: var(--surface); border: 1px solid var(--rule);
+            border-radius: var(--radius); }
+  .total-line { display: flex; justify-content: space-between; align-items: center;
+                padding: 3px 0; font-size: 12.5px; }
+  .total-line > span:first-child { color: var(--ink-2); }
+  .total-line.grand { align-items: baseline; margin-top: 10px; padding-top: 11px;
+                      border-top: 1px solid var(--rule-strong); }
+  .total-line.grand > span:first-child { color: var(--ink); font-size: 13px; font-weight: 600; }
+  .total-line.grand .amount { font-size: 29px; font-weight: 500; letter-spacing: -0.02em; }
+  .fkeys { display: flex; gap: 7px; flex-shrink: 0; }
+  .pay-btn { display: flex; align-items: center; justify-content: center; gap: 9px; height: 50px;
+             flex-shrink: 0; background: var(--accent); color: #fff; border-radius: var(--radius);
+             font-size: 15.5px; font-weight: 600; }
+  .pay-btn .k { font-size: 10.5px; opacity: 0.75; }
+
+  .frame { height: 960px; overflow: hidden; }
   </style>
 </helmet>
-
-<div style="width: 1280px; height: 820px; display: flex; background: oklch(0.982 0.002 250); color: oklch(0.28 0.014 252);">
-
-  <div style="width: 196px; flex-shrink: 0; display: flex; flex-direction: column; background: oklch(0.968 0.003 250); border-right: 1px solid oklch(0.925 0.004 250);">
-    <div style="display: flex; align-items: center; gap: 9px; padding: 14px 14px 12px;">
-      <div style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: oklch(0.55 0.15 255); border-radius: 7px; flex-shrink: 0;">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3h16v18l-3-2-3 2-3-2-3 2z"/><path d="M8 8h8M8 12h8"/></svg>
+<div class="frame t-{{theme}} d-{{density}}" style="background: var(--ground)">
+  <div class="shell">
+    <aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3h16v18l-3-2-3 2-3-2-3 2z"/><path d="M8 8h8M8 12h8"/></svg></div>
+    <div style="min-width: 0">
+      <div class="brand-name">TRT Stationery</div>
+      <div class="brand-sub">Main Register</div>
+    </div>
+  </div>
+  <nav class="nav"><div class="nav-group first">Sell</div><div class="item on"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3h16v18l-3-2-3 2-3-2-3 2z"/><path d="M8 9h8M8 13h5"/></svg><span>Billing</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6"/></svg><span>Bills</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"/></svg><span>Customers</span></div><div class="nav-group">Stock</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M4 7l8 4 8-4M12 11v10"/></svg><span>Inventory</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg><span>Stock In</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l2-5h14l2 5"/><path d="M4 9h16v10H4z"/><path d="M9 13h6"/></svg><span>Suppliers</span></div><div class="nav-group">Money</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18v10H3z"/><path d="M3 11h18"/></svg><span>Credit</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v12H4z"/><circle cx="12" cy="12" r="2.4"/></svg><span>Cash Counter</span></div><div class="nav-group">Review</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span>Dashboard</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V10M12 20V4M19 20v-7"/></svg><span>Reports</span></div><div class="nav-group">Setup</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 9-9 9-9-9z"/><circle cx="12" cy="12" r="2"/></svg><span>Counters</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2 20c0-3.4 3-5.2 7-5.2s7 1.8 7 5.2"/><path d="M17 8h5M19.5 5.5v5"/></svg><span>Staff</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.4-3.2 7.8-8 9-4.8-1.2-8-4.6-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Roles &amp; Permissions</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg><span>Settings</span></div></nav>
+  <div class="sidebar-foot">
+    <div class="avatar">AD</div>
+    <div style="min-width: 0">
+      <div class="who">Administrator</div>
+      <div class="role">Admin</div>
+      <div class="link">Sign out</div>
+    </div>
+  </div>
+</aside>
+    <main class="main">
+      <div class="topbar">
+        <h1>Billing</h1>
+        <span class="meta">Scan or type, then Enter to add</span>
+        <div class="spacer"></div>
       </div>
-      <div style="min-width: 0;">
-        <div style="font-size: 13px; font-weight: 600; letter-spacing: -0.01em;">TRT Stationery</div>
-        <div style="font-size: 11px; color: oklch(0.6 0.012 250);">Register MR</div>
-      </div>
+      <div class="content flush"><div class="billing">
+  <div class="bill-left">
+    <div class="tab-strip">
+      <div class="tab on"><div class="pick"><span class="n">1</span><span class="amt num">1,428.00</span></div><div class="shut">&#10005;</div></div>
+      <div class="tab"><div class="pick"><span class="n">2</span><span class="who">Sri Vidya School</span><span class="amt num">3,180.00</span></div><div class="shut">&#10005;</div></div>
+      <div class="tab"><div class="pick"><span class="n">3</span><span class="who">New</span></div><div class="shut">&#10005;</div></div>
+      <div class="tab-add">+</div>
     </div>
 
-    <div style="display: flex; flex-direction: column; gap: 1px; padding: 6px 8px;">
-      <div style="display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
-        <span>Dashboard</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; background: oklch(0.925 0.028 255); color: oklch(0.4 0.13 258); font-size: 13px; font-weight: 600;">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3h16v18l-3-2-3 2-3-2-3 2z"/><path d="M8 9h8M8 13h5"/></svg>
-        <span>Billing</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6"/></svg>
-        <span>Bills</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M4 7l8 4 8-4M12 11v10"/></svg>
-        <span>Inventory</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"/></svg>
-        <span>Customers</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v12H4z"/><circle cx="12" cy="12" r="2.4"/></svg>
-        <span>Cash Counter</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 5.6 6.1.5-4.6 4 1.4 6-5.3-3.2-5.3 3.2 1.4-6-4.6-4 6.1-.5z"/></svg>
-        <span>Loyalty</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
-        <span>Settings</span>
-      </div>
+    <div class="scan-bar">
+      <div class="ph">Scan a barcode or type to search&#8230;</div>
     </div>
 
-    <div style="flex-grow: 1;"></div>
-
-    <div style="display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-top: 1px solid oklch(0.925 0.004 250);">
-      <div style="display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; background: oklch(0.9 0.03 255); border-radius: 999px; flex-shrink: 0;">
-        <span style="font-size: 10.5px; font-weight: 600; color: oklch(0.42 0.13 258);">TK</span>
-      </div>
-      <div style="min-width: 0;">
-        <div style="font-size: 12px; font-weight: 500;">admin</div>
-        <div style="font-size: 11px; color: oklch(0.62 0.012 250);">Administrator</div>
-      </div>
+    <div class="cart">
+      <table>
+        <thead><tr>
+          <th>Item</th><th style="width: 100px">Unit</th><th class="r" style="width: 96px">Qty</th><th class="r" style="width: 110px">Rate</th><th class="r" style="width: 110px">Amount</th><th style="width: 40px"></th>
+        </tr></thead>
+        <tbody><tr><td><div>A4 Copier Paper 500 sheets</div><div class="src">Product base price</div></td><td><span class="select" style="display:inline-block;width:88px;padding:5px 9px">ream</span></td><td class="r"><span class="qty-input num">2</span></td><td class="r"><span class="qty-input num">340.00</span></td><td class="r"><span class="num">&#8377;680.00</span></td><td><span class="btn ghost sm" style="color:var(--ink-3)">&#10005;</span></td></tr><tr><td><div>Ball Pen Blue</div><div class="src">Customer's price list</div></td><td><span class="select" style="display:inline-block;width:88px;padding:5px 9px">piece</span></td><td class="r"><span class="qty-input num">12</span></td><td class="r"><span class="qty-input num">9.00</span></td><td class="r"><span class="num">&#8377;108.00</span></td><td><span class="btn ghost sm" style="color:var(--ink-3)">&#10005;</span></td></tr><tr><td><div>Calculator 12 digit</div><div class="src">Entered by cashier</div></td><td><span class="select" style="display:inline-block;width:88px;padding:5px 9px">piece</span></td><td class="r"><span class="qty-input num">1</span></td><td class="r"><span class="qty-input num">640.00</span></td><td class="r"><span class="num">&#8377;640.00</span></td><td><span class="btn ghost sm" style="color:var(--ink-3)">&#10005;</span></td></tr></tbody>
+      </table>
     </div>
   </div>
 
-  <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
-
-    <div style="display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 46px; flex-shrink: 0; border-bottom: 1px solid oklch(0.925 0.004 250); background: #fff;">
-      <span style="font-size: 14px; font-weight: 600; letter-spacing: -0.01em;">Billing</span>
-      <span class="m" style="font-size: 11.5px; color: oklch(0.62 0.012 250);">MR / 26-27 / 00023</span>
-      <span style="flex-grow: 1;"></span>
-      <span style="font-size: 12px; color: oklch(0.6 0.012 250);">Drawer open · ₹4,280</span>
-    </div>
-
-    <div style="display: flex; flex-grow: 1; gap: 14px; padding: 14px 16px; min-height: 0;">
-
-      <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0;">
-
-        <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 9px;">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="oklch(0.62 0.012 250)" stroke-width="1.8" stroke-linecap="round"><path d="M3 6v12M7 6v12M11 6v12M15 6v8M19 6v12"/></svg>
-          <input class="m" value="8901234500011" style="flex-grow: 1; font-size: 15px; padding: 5px 2px; border: 0; background: transparent; color: oklch(0.28 0.014 252); outline: none;">
-          <span style="font-size: 11.5px; color: oklch(0.62 0.012 250);">4 lines</span>
-        </div>
-
-        <div style="flex-grow: 1; min-height: 0; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 9px; overflow: hidden;">
-          <div style="display: grid; grid-template-columns: 30px 1fr 62px 66px 56px 84px 46px 98px; padding: 9px 14px; background: oklch(0.976 0.002 250); border-bottom: 1px solid oklch(0.93 0.004 250); font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: oklch(0.6 0.012 250);">
-            <span>#</span><span>Item</span><span>HSN</span><span>Unit</span><span style="text-align: right;">Qty</span><span style="text-align: right;">Rate</span><span style="text-align: right;">GST</span><span style="text-align: right;">Amount</span>
-          </div>
-
-          <div style="display: grid; grid-template-columns: 30px 1fr 62px 66px 56px 84px 46px 98px; align-items: center; padding: 10px 14px; border-bottom: 1px solid oklch(0.955 0.003 250);">
-            <span class="m" style="font-size: 12px; color: oklch(0.68 0.012 250);">1</span>
-            <span style="font-size: 13.5px;">A4 Copier Paper 500 sheets <span style="color: oklch(0.62 0.012 250);">· JK</span></span>
-            <span class="m" style="font-size: 12px; color: oklch(0.58 0.012 250);">4802</span>
-            <span class="m" style="font-size: 12px; color: oklch(0.58 0.012 250);">ream</span>
-            <span class="m" style="font-size: 13px; text-align: right;">2</span>
-            <span class="m" style="font-size: 13px; text-align: right;">340.00</span>
-            <span class="m" style="font-size: 11.5px; text-align: right; color: oklch(0.62 0.012 250);">12%</span>
-            <span class="m" style="font-size: 13.5px; text-align: right; font-weight: 500;">680.00</span>
-          </div>
-
-          <div style="display: grid; grid-template-columns: 30px 1fr 62px 66px 56px 84px 46px 98px; align-items: center; padding: 10px 14px; border-bottom: 1px solid oklch(0.955 0.003 250);">
-            <span class="m" style="font-size: 12px; color: oklch(0.68 0.012 250);">2</span>
-            <span style="font-size: 13.5px;">Ball Pen Blue <span style="color: oklch(0.62 0.012 250);">· Cello</span>
-              <span style="font-size: 10.5px; font-weight: 600; color: oklch(0.45 0.13 258); background: oklch(0.945 0.022 255); padding: 1.5px 6px; border-radius: 4px; margin-left: 6px;">Wholesale</span></span>
-            <span class="m" style="font-size: 12px; color: oklch(0.58 0.012 250);">9608</span>
-            <span class="m" style="font-size: 12px; color: oklch(0.58 0.012 250);">piece</span>
-            <span class="m" style="font-size: 13px; text-align: right;">12</span>
-            <span class="m" style="font-size: 13px; text-align: right;">10.00</span>
-            <span class="m" style="font-size: 11.5px; text-align: right; color: oklch(0.62 0.012 250);">12%</span>
-            <span class="m" style="font-size: 13.5px; text-align: right; font-weight: 500;">120.00</span>
-          </div>
-
-          <div style="display: grid; grid-template-columns: 30px 1fr 62px 66px 56px 84px 46px 98px; align-items: center; padding: 10px 14px; border-bottom: 1px solid oklch(0.955 0.003 250); background: oklch(0.983 0.006 255);">
-            <span class="m" style="font-size: 12px; color: oklch(0.68 0.012 250);">3</span>
-            <span style="font-size: 13.5px;">Calculator 12 digit <span style="color: oklch(0.62 0.012 250);">· Casio</span></span>
-            <span class="m" style="font-size: 12px; color: oklch(0.58 0.012 250);">8470</span>
-            <span class="m" style="font-size: 12px; color: oklch(0.58 0.012 250);">piece</span>
-            <span class="m" style="font-size: 13px; text-align: right;">1</span>
-            <span class="m" style="font-size: 13px; text-align: right;">650.00</span>
-            <span class="m" style="font-size: 11.5px; text-align: right; color: oklch(0.62 0.012 250);">18%</span>
-            <span class="m" style="font-size: 13.5px; text-align: right; font-weight: 500;">650.00</span>
-          </div>
-
-          <div style="display: grid; grid-template-columns: 30px 1fr 62px 66px 56px 84px 46px 98px; align-items: center; padding: 10px 14px; border-bottom: 1px solid oklch(0.955 0.003 250);">
-            <span class="m" style="font-size: 12px; color: oklch(0.68 0.012 250);">4</span>
-            <span style="font-size: 13.5px;">Notebook 200 pages <span style="color: oklch(0.62 0.012 250);">· Classmate</span></span>
-            <span class="m" style="font-size: 12px; color: oklch(0.58 0.012 250);">4820</span>
-            <span class="m" style="font-size: 12px; color: oklch(0.58 0.012 250);">piece</span>
-            <span class="m" style="font-size: 13px; text-align: right;">4</span>
-            <span class="m" style="font-size: 13px; text-align: right;">75.00</span>
-            <span class="m" style="font-size: 11.5px; text-align: right; color: oklch(0.62 0.012 250);">12%</span>
-            <span class="m" style="font-size: 13.5px; text-align: right; font-weight: 500;">300.00</span>
-          </div>
-        </div>
-
-        <div style="display: flex; gap: 7px; flex-shrink: 0;">
-          <div style="display: flex; align-items: center; gap: 7px; padding: 7px 12px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 7px;">
-            <span class="m" style="font-size: 10px; font-weight: 500; color: oklch(0.55 0.15 255);">F2</span><span style="font-size: 12.5px;">Customer</span>
-          </div>
-          <div style="display: flex; align-items: center; gap: 7px; padding: 7px 12px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 7px;">
-            <span class="m" style="font-size: 10px; font-weight: 500; color: oklch(0.55 0.15 255);">F3</span><span style="font-size: 12.5px;">Discount</span>
-          </div>
-          <div style="display: flex; align-items: center; gap: 7px; padding: 7px 12px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 7px;">
-            <span class="m" style="font-size: 10px; font-weight: 500; color: oklch(0.55 0.15 255);">F4</span><span style="font-size: 12.5px;">Hold</span>
-          </div>
-          <div style="display: flex; align-items: center; gap: 7px; padding: 7px 12px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 7px;">
-            <span class="m" style="font-size: 10px; font-weight: 500; color: oklch(0.58 0.15 28);">F8</span><span style="font-size: 12.5px;">Void line</span>
-          </div>
-        </div>
-      </div>
-
-      <div style="width: 306px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px;">
-
-        <div style="padding: 13px 15px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 9px;">
-          <div style="display: flex; align-items: center; gap: 9px;">
-            <div style="display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; background: oklch(0.93 0.028 255); border-radius: 999px; flex-shrink: 0;">
-              <span style="font-size: 11px; font-weight: 600; color: oklch(0.42 0.13 258);">SV</span>
-            </div>
-            <div style="flex-grow: 1; min-width: 0;">
-              <div style="font-size: 13.5px; font-weight: 600;">Sri Vidya School</div>
-              <div style="font-size: 11.5px; color: oklch(0.62 0.012 250);">Wholesale list</div>
-            </div>
-            <span style="font-size: 12px; color: oklch(0.55 0.15 255); font-weight: 500;">Change</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; margin-top: 11px; padding-top: 10px; border-top: 1px solid oklch(0.955 0.003 250);">
-            <span style="font-size: 12.5px; color: oklch(0.55 0.012 250);">Outstanding</span>
-            <span class="m" style="font-size: 12.5px; color: oklch(0.55 0.14 55);">1,100.00</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; margin-top: 4px;">
-            <span style="font-size: 12.5px; color: oklch(0.55 0.012 250);">Points available</span>
-            <span class="m" style="font-size: 12.5px;">184</span>
-          </div>
-        </div>
-
-        <div style="flex-grow: 1;"></div>
-
-        <div style="padding: 14px 15px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 9px;">
-          <div style="display: flex; justify-content: space-between; padding: 3px 0;">
-            <span style="font-size: 12.5px; color: oklch(0.55 0.012 250);">Subtotal</span>
-            <span class="m" style="font-size: 12.5px;">1,750.00</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; padding: 3px 0;">
-            <span style="font-size: 12.5px; color: oklch(0.55 0.012 250);">Taxable</span>
-            <span class="m" style="font-size: 12.5px;">1,532.99</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; padding: 3px 0;">
-            <span style="font-size: 12.5px; color: oklch(0.55 0.012 250);">CGST + SGST</span>
-            <span class="m" style="font-size: 12.5px;">217.01</span>
-          </div>
-          <div style="display: flex; align-items: baseline; justify-content: space-between; margin-top: 10px; padding-top: 11px; border-top: 1px solid oklch(0.9 0.005 250);">
-            <span style="font-size: 13px; font-weight: 600;">Total</span>
-            <span class="m" style="font-size: 29px; font-weight: 500; letter-spacing: -0.02em;">1,750.00</span>
-          </div>
-        </div>
-
-        <div style="display: flex; align-items: center; justify-content: center; gap: 9px; height: 50px; background: oklch(0.55 0.15 255); border-radius: 9px; flex-shrink: 0;">
-          <span class="m" style="font-size: 10.5px; color: oklch(0.88 0.05 255);">F12</span>
-          <span style="font-size: 15.5px; font-weight: 600; color: #fff;">Take payment</span>
+  <div class="bill-right">
+    <div class="totals">
+      <div class="field">
+        <label>Customer</label>
+        <div class="btn" style="width:100%;justify-content:space-between">
+          <span>Walk-in</span><span style="color:var(--ink-3)">Change</span>
         </div>
       </div>
     </div>
+
+    <div class="totals">
+      <div class="total-line"><span>Subtotal</span><span class="num">&#8377;1,428.00</span></div>
+      <div class="total-line"><span>Discount</span><span class="qty-input num">0.00</span></div>
+      <div class="total-line" style="color:var(--ink-3)"><span>Tax included</span><span class="num">&#8377;152.98</span></div>
+      <div class="total-line grand"><span>Total</span><span class="num amount">&#8377;1,428.00</span></div>
+    </div>
+
+    <div class="fkeys"><div class="btn">Cancel bill</div></div>
+    <div class="pay-btn"><span class="k">F12</span><span>Take payment</span></div>
+  </div>
+</div></div>
+    </main>
   </div>
 </div>
 </x-dc>
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["daylight","khata","night"],"default":"daylight","section":"Theme"},"density":{"editor":"enum","options":["compact","comfortable","dense"],"default":"compact","section":"Theme"},"$preview":{"width":1520,"height":960}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      theme: this.props.theme ?? 'daylight',
+      density: this.props.density ?? 'compact',
+    };
+  }
+}
+</script>
 </body>
 </html>

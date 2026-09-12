@@ -189,15 +189,10 @@ export default function Billing() {
             <div key={cart.tabId} className="tab" aria-current={cart.tabId === active.tabId}>
               <button className="pick" onClick={() => tabs.select(cart.tabId)}>
                 <span className="n">{i + 1}</span>
-                <span className="who">
-                  {cart.customer?.name
-                    ?? (cart.lines.length === 0
-                      ? 'New bill'
-                      : `${cart.lines.length} item${cart.lines.length === 1 ? '' : 's'}`)}
-                </span>
-                {cart.lines.length > 0 && (
-                  <span className="amt">{Money.format(billTotal(cart) as never)}</span>
-                )}
+                {cart.customer && <span className="who">{cart.customer.name}</span>}
+                {cart.lines.length === 0
+                  ? <span className="who">New</span>
+                  : <span className="amt">{Money.format(billTotal(cart) as never)}</span>}
               </button>
               {tabs.tabs.length > 1 && (
                 <button className="shut" aria-label="Cancel this bill" onClick={() => void closeTab(cart)}>
@@ -353,9 +348,6 @@ export default function Billing() {
         </div>
 
         <div className="fkeys">
-          <button className="btn" onClick={tabs.open} disabled={tabs.tabs.length >= MAX_TABS}>
-            <span className="k">Ctrl+T</span> Another bill
-          </button>
           <button className="btn" disabled={empty} onClick={() => void closeTab(active)}>
             Cancel bill
           </button>

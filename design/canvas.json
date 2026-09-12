@@ -1,31 +1,29 @@
 {
-  "pages": [
-    { "id": "page-1", "name": "Daylight" },
-    { "id": "page-2", "name": "Directions" }
-  ],
   "artboards": [
-    { "file": "Main.dc.html",          "title": "Billing",  "page": "page-1", "x": 0,    "y": 0,    "w": 1280, "h": 820 },
-    { "file": "LedgerBills.dc.html",   "title": "Bills",    "page": "page-1", "x": 1400, "y": 0,    "w": 1280, "h": 820 },
-    { "file": "Settings.dc.html",      "title": "Settings", "page": "page-1", "x": 2800, "y": 0,    "w": 1280, "h": 1000 },
-
-    { "file": "CounterBilling.dc.html","title": "B · Counter — Billing", "page": "page-2", "x": 0,    "y": 0,   "w": 1280, "h": 820 },
-    { "file": "KhataBilling.dc.html",  "title": "C · Khata — Billing",   "page": "page-2", "x": 1400, "y": 0,   "w": 1280, "h": 820 },
-    { "file": "CounterBills.dc.html",  "title": "B · Counter — Bills",   "page": "page-2", "x": 0,    "y": 960, "w": 1280, "h": 820 },
-    { "file": "KhataBills.dc.html",    "title": "C · Khata — Bills",     "page": "page-2", "x": 1400, "y": 960, "w": 1280, "h": 820 }
+    { "file": "Main.dc.html", "title": "Billing", "x": 0, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Bills.dc.html", "x": 1620, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Inventory.dc.html", "x": 3240, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Suppliers.dc.html", "x": 4860, "y": 0, "w": 1520, "h": 960 },
+    { "file": "Reports.dc.html", "x": 0, "y": 1080, "w": 1520, "h": 960 },
+    { "file": "Roles.dc.html", "title": "Roles & Permissions", "x": 1620, "y": 1080, "w": 1520, "h": 960 },
+    { "file": "Staff.dc.html", "x": 3240, "y": 1080, "w": 1520, "h": 960 },
+    { "file": "Settings.dc.html", "x": 4860, "y": 1080, "w": 1520, "h": 960 }
   ],
   "annotations": [
     {
-      "id": "daylight",
-      "page": "page-1",
-      "x": 0, "y": -250, "w": 480,
-      "text": "DAYLIGHT — A's bones, Frappe's surface\n\nKept from A: the dense aligned table, monospaced figures, HSN and GST per line, function keys, everything visible without scrolling.\n\nTaken from the Frappe screenshot: light sidebar instead of dark, white cards on a near-white ground, 9px radii, hairline borders instead of hard rules, one restrained blue doing all the work, thin line icons.\n\nThe result reads as a tool rather than a dashboard, without looking like 1990s accounting software."
+      "id": "how-to-use",
+      "x": 0,
+      "y": -190,
+      "w": 520,
+      "text": "The counter as it stands today, lifted from the real stylesheet — same tokens, spacing and type sizes.\n\nMark up anything you want changed here rather than sending a screenshot. Each artboard has Theme and Density levers above it, the same two the app actually has."
     },
     {
-      "id": "themes",
-      "page": "page-1",
-      "x": 2800, "y": -250, "w": 480,
-      "text": "THEMES ARE CHEAP — LAYOUTS ARE NOT\n\nEvery colour here is already a CSS token, so a theme is just a swapped token set: Daylight, Khata, Night counter. Adding one costs an afternoon.\n\nWhat is NOT cheap is a second LAYOUT. Direction B's tile grid is a different screen, not a different skin — it would double the work on every feature after it. Worth building only if a real customer needs a touchscreen till.\n\nThe loyalty panel maps one-to-one onto settings that already exist and are tested. Discounts are marked because nothing behind them is built yet."
+      "id": "billing-note",
+      "x": 560,
+      "y": -190,
+      "w": 400,
+      "text": "Billing is the screen that matters. Tab 1 is a walk-in, tab 2 has a customer, tab 3 is empty — the three states the strip can be in."
     }
   ],
-  "launch": { "view": "canvas", "page": "page-1" }
+  "launch": { "view": "focused", "file": "Main.dc.html" }
 }

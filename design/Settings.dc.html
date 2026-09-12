@@ -7,207 +7,200 @@
 <body>
 <x-dc>
 <helmet>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;700&display=swap">
   <style>
-    body { margin: 0; font-family: "Inter Tight", "Segoe UI", system-ui, sans-serif; }
-    a { color: oklch(0.55 0.15 255); } a:hover { color: oklch(0.45 0.15 255); }
-    .m { font-family: "IBM Plex Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+  :root, .t-daylight {
+    --ground: oklch(0.982 0.002 250); --surface: #fff;
+    --surface-2: oklch(0.976 0.002 250); --sidebar: oklch(0.968 0.003 250);
+    --sidebar-ink: oklch(0.45 0.012 250); --sidebar-active-bg: oklch(0.925 0.028 255);
+    --sidebar-active-ink: oklch(0.4 0.13 258);
+    --ink: oklch(0.28 0.014 252); --ink-2: oklch(0.55 0.012 250); --ink-3: oklch(0.66 0.012 250);
+    --rule: oklch(0.925 0.004 250); --rule-soft: oklch(0.958 0.003 250);
+    --rule-strong: oklch(0.9 0.005 250);
+    --accent: oklch(0.55 0.15 255); --accent-hover: oklch(0.48 0.15 255);
+    --accent-soft: oklch(0.945 0.022 255); --accent-ink: oklch(0.4 0.13 258);
+    --ok: oklch(0.42 0.1 160); --ok-soft: oklch(0.945 0.03 160);
+    --warn: oklch(0.5 0.13 60); --warn-soft: oklch(0.955 0.03 75);
+    --danger: oklch(0.5 0.14 28); --danger-soft: oklch(0.958 0.022 28);
+    --radius: 9px; --radius-sm: 7px;
+    --shadow: 0 1px 2px rgb(20 32 31 / 6%), 0 10px 28px -20px rgb(20 32 31 / 28%);
+  }
+  .t-khata {
+    --ground: oklch(0.972 0.012 85); --surface: oklch(0.99 0.008 85);
+    --surface-2: oklch(0.958 0.014 84); --sidebar: oklch(0.945 0.016 82);
+    --sidebar-ink: oklch(0.42 0.02 60); --sidebar-active-bg: oklch(0.9 0.04 40);
+    --sidebar-active-ink: oklch(0.42 0.16 28);
+    --ink: oklch(0.26 0.02 60); --ink-2: oklch(0.48 0.02 60); --ink-3: oklch(0.62 0.02 60);
+    --rule: oklch(0.88 0.02 80); --rule-soft: oklch(0.92 0.016 82);
+    --rule-strong: oklch(0.8 0.024 78);
+    --accent: oklch(0.5 0.16 28); --accent-hover: oklch(0.42 0.16 28);
+    --accent-soft: oklch(0.94 0.03 40); --accent-ink: oklch(0.42 0.16 28);
+    --ok: oklch(0.42 0.09 150); --ok-soft: oklch(0.94 0.03 150);
+    --warn: oklch(0.48 0.12 60); --warn-soft: oklch(0.95 0.035 75);
+    --danger: oklch(0.46 0.16 28); --danger-soft: oklch(0.94 0.035 30);
+    --radius: 3px; --radius-sm: 2px;
+    --shadow: 0 1px 2px rgb(60 40 20 / 10%), 0 10px 28px -20px rgb(60 40 20 / 30%);
+  }
+  .t-night {
+    --ground: oklch(0.17 0.014 255); --surface: oklch(0.22 0.014 255);
+    --surface-2: oklch(0.25 0.014 255); --sidebar: oklch(0.14 0.014 255);
+    --sidebar-ink: oklch(0.72 0.012 250); --sidebar-active-bg: oklch(0.3 0.05 255);
+    --sidebar-active-ink: oklch(0.92 0.02 255);
+    --ink: oklch(0.93 0.006 250); --ink-2: oklch(0.72 0.012 250); --ink-3: oklch(0.58 0.012 250);
+    --rule: oklch(0.3 0.014 255); --rule-soft: oklch(0.26 0.014 255);
+    --rule-strong: oklch(0.36 0.014 255);
+    --accent: oklch(0.68 0.14 255); --accent-hover: oklch(0.75 0.14 255);
+    --accent-soft: oklch(0.3 0.05 255); --accent-ink: oklch(0.82 0.1 255);
+    --ok: oklch(0.78 0.12 160); --ok-soft: oklch(0.28 0.05 160);
+    --warn: oklch(0.8 0.12 75); --warn-soft: oklch(0.3 0.05 70);
+    --danger: oklch(0.74 0.13 28); --danger-soft: oklch(0.3 0.06 28);
+    --radius: 9px; --radius-sm: 7px;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 28px -20px rgb(0 0 0 / 70%);
+  }
+  .d-compact { --row-py: 10px; --cell-px: 14px; }
+  .d-comfortable { --row-py: 14px; --cell-px: 16px; }
+  .d-dense { --row-py: 7px; --cell-px: 12px; }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+         font-size: 13.5px; color: var(--ink); background: var(--ground);
+         -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-hover); }
+  .num { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+         font-variant-numeric: tabular-nums; }
+
+  .shell { display: grid; grid-template-columns: 196px minmax(0, 1fr); height: 100%; }
+  .sidebar { display: flex; flex-direction: column; background: var(--sidebar);
+             border-right: 1px solid var(--rule); }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 14px 14px 12px; }
+  .brand-mark { display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0;
+                background: var(--accent); border-radius: var(--radius-sm); color: #fff; }
+  .brand-name { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+  .brand-sub { font-size: 11px; color: var(--ink-3); }
+  .nav { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; }
+  .nav-group { padding: 12px 9px 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+               text-transform: uppercase; color: var(--ink-3); }
+  .nav-group.first { padding-top: 2px; }
+  .nav .item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px;
+               border-radius: var(--radius-sm); color: var(--sidebar-ink); font-size: 13px; }
+  .nav .item.on { background: var(--sidebar-active-bg); color: var(--sidebar-active-ink);
+                  font-weight: 600; }
+  .sidebar-foot { display: flex; align-items: center; gap: 9px; padding: 12px 14px;
+                  border-top: 1px solid var(--rule); }
+  .avatar { display: grid; place-items: center; width: 26px; height: 26px; flex-shrink: 0;
+            background: var(--accent-soft); border-radius: 999px; font-size: 10.5px;
+            font-weight: 600; color: var(--accent-ink); }
+  .who { font-size: 12px; font-weight: 500; }
+  .role { font-size: 11px; color: var(--ink-3); }
+  .link { color: var(--accent); font-size: 11.5px; }
+
+  .main { display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .topbar { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 20px;
+            flex-shrink: 0; background: var(--surface); border-bottom: 1px solid var(--rule); }
+  .topbar h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+  .meta { font-size: 12px; color: var(--ink-3); }
+  .content { flex: 1 1 0; overflow: hidden; padding: 16px 18px; }
+  .content.flush { padding: 0; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+         padding: 7px 14px; white-space: nowrap; background: var(--surface); color: var(--ink);
+         border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); font-size: 13px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.ghost { background: none; border-color: transparent; }
+  .btn.sm { padding: 4px 9px; font-size: 12.5px; }
+  .btn.dim { opacity: 0.45; }
+  .input, .select { width: 100%; padding: 7px 11px; background: var(--surface); color: var(--ink);
+            border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+  .field .hint { font-size: 11.5px; color: var(--ink-3); }
+
+  .card { background: var(--surface); border: 1px solid var(--rule);
+          border-radius: var(--radius); overflow: hidden; }
+  .card-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+               border-bottom: 1px solid var(--rule-soft); }
+  .card-head h2 { margin: 0; font-size: 13.5px; font-weight: 600; }
+  .card-body { padding: 15px 16px; }
+  .spacer { flex: 1; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: var(--row-py) var(--cell-px);
+           border-bottom: 1px solid var(--rule-soft); }
+  th { padding-top: 9px; padding-bottom: 9px; background: var(--surface-2);
+       border-bottom: 1px solid var(--rule); font-size: 10.5px; font-weight: 600;
+       letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); }
+  td.r, th.r { text-align: right; }
+  tbody tr:last-child td { border-bottom: 0; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10.5px;
+           font-weight: 600; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .badge.bad { background: var(--danger-soft); color: var(--danger); }
+  .badge.mute { background: var(--surface-2); color: var(--ink-3); }
+  .alert { padding: 10px 13px; font-size: 13px; background: var(--danger-soft); color: var(--ink);
+           border-left: 3px solid var(--danger); border-radius: var(--radius-sm); }
+  .alert.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+  .alert.ok { background: var(--ok-soft); border-left-color: var(--ok); }
+
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .stat { padding: 12px 15px; background: var(--surface); border: 1px solid var(--rule);
+          border-radius: var(--radius); }
+  .stat .label { font-size: 11.5px; color: var(--ink-3); }
+  .stat .value { margin-top: 3px; font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
+  .stat .sub { margin-top: 2px; font-size: 12px; color: var(--ink-3); }
+
+  .segment { display: inline-flex; border: 1px solid var(--rule-strong);
+             border-radius: var(--radius-sm); overflow: hidden; }
+  .segment .seg { padding: 5px 13px; border-right: 1px solid var(--rule);
+                  background: var(--surface); color: var(--ink-2); font-size: 12.5px; }
+  .segment .seg:last-child { border-right: 0; }
+  .segment .seg.on { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+  .bar { height: 5px; border-radius: 3px; background: var(--accent); opacity: 0.7; }
+
+  .frame { height: 960px; overflow: hidden; }
   </style>
 </helmet>
-
-<div style="width: 1280px; height: 1000px; display: flex; background: oklch(0.982 0.002 250); color: oklch(0.28 0.014 252);">
-
-  <div style="width: 196px; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; padding: 14px 8px; background: oklch(0.968 0.003 250); border-right: 1px solid oklch(0.925 0.004 250);">
-    <div style="padding: 0 9px 10px; font-size: 13px; font-weight: 600;">Settings</div>
-    <div style="padding: 7px 9px; border-radius: 6px; background: oklch(0.925 0.028 255); color: oklch(0.4 0.13 258); font-size: 13px; font-weight: 600;">Appearance</div>
-    <div style="padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">Loyalty program</div>
-    <div style="padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">Discounts</div>
-    <div style="padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">Tax &amp; GST</div>
-    <div style="padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">Printing</div>
-    <div style="padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">Registers</div>
-    <div style="padding: 7px 9px; border-radius: 6px; font-size: 13px; color: oklch(0.45 0.012 250);">Shop details</div>
+<div class="frame t-{{theme}} d-{{density}}" style="background: var(--ground)">
+  <div class="shell">
+    <aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3h16v18l-3-2-3 2-3-2-3 2z"/><path d="M8 8h8M8 12h8"/></svg></div>
+    <div style="min-width: 0">
+      <div class="brand-name">TRT Stationery</div>
+      <div class="brand-sub">Main Register</div>
+    </div>
   </div>
-
-  <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
-
-    <div style="display: flex; align-items: center; padding: 0 22px; height: 46px; flex-shrink: 0; border-bottom: 1px solid oklch(0.925 0.004 250); background: #fff;">
-      <span style="font-size: 14px; font-weight: 600; letter-spacing: -0.01em;">Settings</span>
-      <span style="flex-grow: 1;"></span>
-      <div style="padding: 7px 16px; background: oklch(0.55 0.15 255); border-radius: 7px; font-size: 13px; font-weight: 600; color: #fff;">Save</div>
+  <nav class="nav"><div class="nav-group first">Sell</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3h16v18l-3-2-3 2-3-2-3 2z"/><path d="M8 9h8M8 13h5"/></svg><span>Billing</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6"/></svg><span>Bills</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"/></svg><span>Customers</span></div><div class="nav-group">Stock</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M4 7l8 4 8-4M12 11v10"/></svg><span>Inventory</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg><span>Stock In</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l2-5h14l2 5"/><path d="M4 9h16v10H4z"/><path d="M9 13h6"/></svg><span>Suppliers</span></div><div class="nav-group">Money</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18v10H3z"/><path d="M3 11h18"/></svg><span>Credit</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v12H4z"/><circle cx="12" cy="12" r="2.4"/></svg><span>Cash Counter</span></div><div class="nav-group">Review</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span>Dashboard</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V10M12 20V4M19 20v-7"/></svg><span>Reports</span></div><div class="nav-group">Setup</div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 9-9 9-9-9z"/><circle cx="12" cy="12" r="2"/></svg><span>Counters</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2 20c0-3.4 3-5.2 7-5.2s7 1.8 7 5.2"/><path d="M17 8h5M19.5 5.5v5"/></svg><span>Staff</span></div><div class="item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.4-3.2 7.8-8 9-4.8-1.2-8-4.6-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Roles &amp; Permissions</span></div><div class="item on"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg><span>Settings</span></div></nav>
+  <div class="sidebar-foot">
+    <div class="avatar">AD</div>
+    <div style="min-width: 0">
+      <div class="who">Administrator</div>
+      <div class="role">Admin</div>
+      <div class="link">Sign out</div>
     </div>
-
-    <div style="display: flex; flex-direction: column; gap: 14px; padding: 18px 22px;">
-
-      <div style="background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 9px;">
-        <div style="padding: 13px 17px; border-bottom: 1px solid oklch(0.955 0.003 250);">
-          <div style="font-size: 13.5px; font-weight: 600;">Appearance</div>
-          <div style="font-size: 12px; color: oklch(0.6 0.012 250); margin-top: 2px;">Changes how the counter looks. The layout stays the same.</div>
-        </div>
-        <div style="padding: 15px 17px;">
-          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px;">
-
-            <div style="border: 2px solid oklch(0.55 0.15 255); border-radius: 8px; overflow: hidden;">
-              <div style="display: flex; height: 52px; background: oklch(0.982 0.002 250);">
-                <div style="width: 26px; background: oklch(0.968 0.003 250); border-right: 1px solid oklch(0.925 0.004 250);"></div>
-                <div style="flex-grow: 1; padding: 7px;">
-                  <div style="height: 7px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 3px;"></div>
-                  <div style="height: 22px; margin-top: 5px; background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 3px;"></div>
-                </div>
-                <div style="width: 34px; padding: 7px 7px 7px 0;">
-                  <div style="height: 100%; background: oklch(0.55 0.15 255); border-radius: 3px;"></div>
-                </div>
-              </div>
-              <div style="padding: 8px 11px; border-top: 1px solid oklch(0.93 0.004 250);">
-                <div style="font-size: 12.5px; font-weight: 600;">Daylight</div>
-                <div style="font-size: 11px; color: oklch(0.62 0.012 250);">Light and soft. Default.</div>
-              </div>
-            </div>
-
-            <div style="border: 1px solid oklch(0.9 0.005 250); border-radius: 8px; overflow: hidden;">
-              <div style="display: flex; height: 52px; background: oklch(0.968 0.012 85);">
-                <div style="width: 26px; background: oklch(0.94 0.016 82); border-right: 1px solid oklch(0.88 0.02 80);"></div>
-                <div style="flex-grow: 1; padding: 7px;">
-                  <div style="height: 7px; background: oklch(0.99 0.008 85); border: 1px solid oklch(0.88 0.02 80); border-radius: 3px;"></div>
-                  <div style="height: 22px; margin-top: 5px; background: oklch(0.99 0.008 85); border: 1px solid oklch(0.88 0.02 80); border-radius: 3px;"></div>
-                </div>
-                <div style="width: 34px; padding: 7px 7px 7px 0;">
-                  <div style="height: 100%; background: oklch(0.5 0.16 28); border-radius: 3px;"></div>
-                </div>
-              </div>
-              <div style="padding: 8px 11px; border-top: 1px solid oklch(0.93 0.004 250);">
-                <div style="font-size: 12.5px; font-weight: 600;">Khata</div>
-                <div style="font-size: 11px; color: oklch(0.62 0.012 250);">Warm paper, red ink.</div>
-              </div>
-            </div>
-
-            <div style="border: 1px solid oklch(0.9 0.005 250); border-radius: 8px; overflow: hidden;">
-              <div style="display: flex; height: 52px; background: oklch(0.22 0.014 255);">
-                <div style="width: 26px; background: oklch(0.17 0.014 255); border-right: 1px solid oklch(0.3 0.014 255);"></div>
-                <div style="flex-grow: 1; padding: 7px;">
-                  <div style="height: 7px; background: oklch(0.28 0.014 255); border-radius: 3px;"></div>
-                  <div style="height: 22px; margin-top: 5px; background: oklch(0.28 0.014 255); border-radius: 3px;"></div>
-                </div>
-                <div style="width: 34px; padding: 7px 7px 7px 0;">
-                  <div style="height: 100%; background: oklch(0.7 0.16 85); border-radius: 3px;"></div>
-                </div>
-              </div>
-              <div style="padding: 8px 11px; border-top: 1px solid oklch(0.93 0.004 250);">
-                <div style="font-size: 12.5px; font-weight: 600;">Night counter</div>
-                <div style="font-size: 11px; color: oklch(0.62 0.012 250);">Dark, for late hours.</div>
-              </div>
-            </div>
-          </div>
-
-          <div style="display: flex; align-items: center; gap: 14px; margin-top: 15px; padding-top: 14px; border-top: 1px solid oklch(0.955 0.003 250);">
-            <span style="font-size: 12.5px; font-weight: 500; width: 190px;">Row density</span>
-            <div style="display: flex; gap: 0; border: 1px solid oklch(0.9 0.005 250); border-radius: 7px; overflow: hidden;">
-              <span style="padding: 6px 15px; font-size: 12.5px; color: oklch(0.5 0.012 250);">Comfortable</span>
-              <span style="padding: 6px 15px; font-size: 12.5px; font-weight: 600; background: oklch(0.925 0.028 255); color: oklch(0.4 0.13 258);">Compact</span>
-              <span style="padding: 6px 15px; font-size: 12.5px; color: oklch(0.5 0.012 250);">Very compact</span>
-            </div>
-            <span style="font-size: 11.5px; color: oklch(0.62 0.012 250);">Compact fits 14 lines without scrolling.</span>
-          </div>
-        </div>
+  </div>
+</aside>
+    <main class="main">
+      <div class="topbar">
+        <h1>Settings</h1>
+        
+        <div class="spacer"></div>
       </div>
-
-      <div style="background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 9px;">
-        <div style="display: flex; align-items: center; padding: 13px 17px; border-bottom: 1px solid oklch(0.955 0.003 250);">
-          <div>
-            <div style="font-size: 13.5px; font-weight: 600;">Loyalty program</div>
-            <div style="font-size: 12px; color: oklch(0.6 0.012 250); margin-top: 2px;">Points are earned per bill and spent oldest-first.</div>
-          </div>
-          <span style="flex-grow: 1;"></span>
-          <div style="display: flex; align-items: center; width: 38px; height: 21px; padding: 2px; background: oklch(0.55 0.15 255); border-radius: 999px;">
-            <span style="flex-grow: 1;"></span>
-            <div style="width: 17px; height: 17px; background: #fff; border-radius: 999px;"></div>
-          </div>
-        </div>
-
-        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; padding: 6px 17px 15px;">
-
-          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid oklch(0.962 0.003 250);">
-            <span style="font-size: 12.5px; flex-grow: 1;">One point is worth</span>
-            <input class="m" value="1.00" style="width: 76px; font-size: 12.5px; text-align: right; padding: 5px 8px; border: 1px solid oklch(0.9 0.005 250); border-radius: 6px; outline: none;">
-          </div>
-          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid oklch(0.962 0.003 250);">
-            <span style="font-size: 12.5px; flex-grow: 1;">Points expire after</span>
-            <input class="m" value="365" style="width: 76px; font-size: 12.5px; text-align: right; padding: 5px 8px; border: 1px solid oklch(0.9 0.005 250); border-radius: 6px; outline: none;">
-            <span style="font-size: 12px; color: oklch(0.62 0.012 250); width: 30px;">days</span>
-          </div>
-
-          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid oklch(0.962 0.003 250);">
-            <span style="font-size: 12.5px; flex-grow: 1;">Minimum bill to earn</span>
-            <input class="m" value="100.00" style="width: 76px; font-size: 12.5px; text-align: right; padding: 5px 8px; border: 1px solid oklch(0.9 0.005 250); border-radius: 6px; outline: none;">
-          </div>
-          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid oklch(0.962 0.003 250);">
-            <span style="font-size: 12.5px; flex-grow: 1;">Points may pay at most</span>
-            <input class="m" value="50" style="width: 76px; font-size: 12.5px; text-align: right; padding: 5px 8px; border: 1px solid oklch(0.9 0.005 250); border-radius: 6px; outline: none;">
-            <span style="font-size: 12px; color: oklch(0.62 0.012 250); width: 30px;">% of bill</span>
-          </div>
-
-          <div style="grid-column: span 2; display: flex; align-items: flex-start; gap: 10px; padding: 12px 0 10px; border-bottom: 1px solid oklch(0.962 0.003 250);">
-            <div style="display: flex; align-items: center; justify-content: center; width: 17px; height: 17px; margin-top: 1px; border: 1.5px solid oklch(0.78 0.008 250); border-radius: 4px; flex-shrink: 0;"></div>
-            <div>
-              <div style="font-size: 12.5px; font-weight: 500;">Earn points on the credit portion of a bill</div>
-              <div style="font-size: 11.5px; color: oklch(0.6 0.012 250); margin-top: 1px;">Off means a customer buying on khata earns only on what they actually paid today.</div>
-            </div>
-          </div>
-
-          <div style="grid-column: span 2; padding-top: 13px;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <span style="font-size: 12.5px; font-weight: 500;">Earning tiers</span>
-              <span style="font-size: 11.5px; color: oklch(0.6 0.012 250);">The highest tier the bill reaches applies.</span>
-              <span style="flex-grow: 1;"></span>
-              <span style="font-size: 12px; color: oklch(0.55 0.15 255); font-weight: 500;">+ Add tier</span>
-            </div>
-            <div style="margin-top: 9px; border: 1px solid oklch(0.93 0.004 250); border-radius: 7px; overflow: hidden;">
-              <div style="display: grid; grid-template-columns: 1fr 1fr 44px; padding: 7px 12px; background: oklch(0.976 0.002 250); border-bottom: 1px solid oklch(0.94 0.004 250); font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: oklch(0.6 0.012 250);">
-                <span>Bill is at least</span><span>Points per ₹100</span><span></span>
-              </div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr 44px; align-items: center; padding: 8px 12px; border-bottom: 1px solid oklch(0.962 0.003 250);">
-                <span class="m" style="font-size: 12.5px;">0.00</span>
-                <span class="m" style="font-size: 12.5px;">1</span>
-                <span style="font-size: 12px; color: oklch(0.68 0.012 250); text-align: right;">✕</span>
-              </div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr 44px; align-items: center; padding: 8px 12px;">
-                <span class="m" style="font-size: 12.5px;">5,000.00</span>
-                <span class="m" style="font-size: 12.5px;">2</span>
-                <span style="font-size: 12px; color: oklch(0.68 0.012 250); text-align: right;">✕</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div style="background: #fff; border: 1px solid oklch(0.925 0.004 250); border-radius: 9px;">
-        <div style="display: flex; align-items: center; padding: 13px 17px; border-bottom: 1px solid oklch(0.955 0.003 250);">
-          <div>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 13.5px; font-weight: 600;">Discounts</span>
-              <span style="font-size: 10.5px; font-weight: 600; color: oklch(0.52 0.13 60); background: oklch(0.955 0.03 75); padding: 1.5px 7px; border-radius: 4px;">Not built yet</span>
-            </div>
-            <div style="font-size: 12px; color: oklch(0.6 0.012 250); margin-top: 2px;">Limits on what a cashier may take off a bill.</div>
-          </div>
-        </div>
-        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; padding: 6px 17px 15px;">
-          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid oklch(0.962 0.003 250);">
-            <span style="font-size: 12.5px; flex-grow: 1; color: oklch(0.5 0.012 250);">Most a cashier may discount</span>
-            <input class="m" value="10" style="width: 76px; font-size: 12.5px; text-align: right; padding: 5px 8px; border: 1px solid oklch(0.93 0.004 250); border-radius: 6px; background: oklch(0.985 0.002 250); color: oklch(0.5 0.012 250); outline: none;">
-            <span style="font-size: 12px; color: oklch(0.68 0.012 250); width: 30px;">%</span>
-          </div>
-          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid oklch(0.962 0.003 250);">
-            <span style="font-size: 12.5px; flex-grow: 1; color: oklch(0.5 0.012 250);">Above that, needs approval from</span>
-            <span class="m" style="font-size: 12.5px; padding: 5px 10px; border: 1px solid oklch(0.93 0.004 250); border-radius: 6px; background: oklch(0.985 0.002 250); color: oklch(0.5 0.012 250);">Manager</span>
-          </div>
-          <div style="grid-column: span 2; display: flex; align-items: flex-start; gap: 10px; padding: 12px 0 2px;">
-            <div style="width: 17px; height: 17px; margin-top: 1px; border: 1.5px solid oklch(0.85 0.006 250); border-radius: 4px; flex-shrink: 0;"></div>
-            <div style="font-size: 12.5px; color: oklch(0.5 0.012 250);">Allow a discount on items already sold below MRP</div>
-          </div>
-        </div>
-      </div>
-    </div>
+      <div class="content"><div style="display:flex;flex-direction:column;gap:14px;max-width:860px"><div class="card"><div class="card-head"><h2>Appearance</h2></div><div class="card-body"><div style="font-size:12.5px;color:var(--ink-3);margin-bottom:13px">Changes how the counter looks. The layout stays the same.</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:11px"><div style="overflow:hidden;background:var(--surface);border-radius:var(--radius-sm);border:2px solid var(--accent)"><div style="display:flex;height:46px"><div style="width:26px;background:#eef1f6"></div><div style="flex:1;background:#f7f8fa"></div><div style="width:30px;background:#3b6fd4"></div></div><div style="padding:8px 11px;border-top:1px solid var(--rule)"><div style="font-size:12.5px;font-weight:600">Daylight</div><div style="font-size:11px;color:var(--ink-3)">Light and soft. Default.</div></div></div><div style="overflow:hidden;background:var(--surface);border-radius:var(--radius-sm);border:1px solid var(--rule-strong)"><div style="display:flex;height:46px"><div style="width:26px;background:#efe6d6"></div><div style="flex:1;background:#f7f2e8"></div><div style="width:30px;background:#a8452c"></div></div><div style="padding:8px 11px;border-top:1px solid var(--rule)"><div style="font-size:12.5px;font-weight:600">Khata</div><div style="font-size:11px;color:var(--ink-3)">Warm paper, red ink.</div></div></div><div style="overflow:hidden;background:var(--surface);border-radius:var(--radius-sm);border:1px solid var(--rule-strong)"><div style="display:flex;height:46px"><div style="width:26px;background:#2a3442"></div><div style="flex:1;background:#1c2430"></div><div style="width:30px;background:#6f9fe8"></div></div><div style="padding:8px 11px;border-top:1px solid var(--rule)"><div style="font-size:12.5px;font-weight:600">Night counter</div><div style="font-size:11px;color:var(--ink-3)">Dark, for late hours.</div></div></div></div><div style="display:flex;align-items:center;gap:14px;margin-top:15px;padding-top:14px;border-top:1px solid var(--rule-soft)"><span style="font-size:12.5px;font-weight:500;width:150px">Row density</span><div class="segment"><div class="seg">Comfortable</div><div class="seg on">Compact</div><div class="seg">Very compact</div></div></div></div></div><div class="card"><div class="card-head"><h2>Loyalty program</h2><div class="spacer"></div><div class="btn primary sm">Save</div></div><div class="card-body"><div style="font-size:12.5px;color:var(--ink-3);margin-bottom:13px">Points are earned per bill and spent soonest-to-expire first.</div><label style="display:flex;align-items:center;gap:9px;font-size:13px;margin-bottom:14px"><span style="display:inline-block;width:13px;height:13px;background:var(--accent);border-radius:3px;position:relative"><span style="position:absolute;left:3px;top:1px;color:#fff;font-size:9px;line-height:11px">&#10003;</span></span><span style="font-weight:500">Run a loyalty program</span></label><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px 24px"><div class="field"><label>One point is worth</label><div class="input num">1.00</div></div><div class="field"><label>Points expire after</label><div class="input num">365</div><span class="hint">Days. Leave blank for never.</span></div><div class="field"><label>Minimum bill to earn</label><div class="input num">100.00</div></div><div class="field"><label>Points may pay at most</label><div class="input num">20</div><span class="hint">Per cent of the bill.</span></div></div></div></div><div class="card"><div class="card-head"><h2>Receipt printer</h2></div><div class="card-body"><div style="font-size:12.5px;color:var(--ink-3);margin-bottom:13px">Receipts are sent as raw ESC/POS, so the driver cannot reinterpret them.</div><div class="field"><label>Thermal printer</label><div class="select">TVS RP 3200 Star</div><span class="hint">Windows default is TVS RP 3200 Star.</span></div></div></div><div class="card"><div class="card-head"><h2>Backups</h2><div class="spacer"></div><div class="btn primary sm">Back up now</div></div><div class="card-body"><div style="font-size:12.5px;color:var(--ink-3);margin-bottom:13px">One backup is taken automatically each day the shop opens, and the last 14 are kept. They live on this machine &#8212; copy one somewhere else for it to survive the machine.</div><div class="card" style="margin-bottom:14px"><table><thead><tr><th>Backup</th><th class="r">Size</th><th></th></tr></thead><tbody><tr><td><span class="num">2026-09-12</span> <span class="badge ok" style="margin-left:7px">latest</span></td><td class="r"><span class="num">581 KB</span></td><td class="r"><span class="btn ghost sm">Restore</span> <span class="btn ghost sm">Copy out</span></td></tr><tr><td><span class="num">2026-09-11</span></td><td class="r"><span class="num">578 KB</span></td><td class="r"><span class="btn ghost sm">Restore</span> <span class="btn ghost sm">Copy out</span> <span class="btn ghost sm">Delete</span></td></tr><tr><td><span class="num">2026-09-10</span></td><td class="r"><span class="num">574 KB</span></td><td class="r"><span class="btn ghost sm">Restore</span> <span class="btn ghost sm">Copy out</span> <span class="btn ghost sm">Delete</span></td></tr></tbody></table></div><div class="field"><label>Copy backups to</label><div style="display:flex;gap:6px"><div class="input num" style="flex:1">D:/ShopOS backups</div><div class="btn">Choose&#8230;</div></div><span class="hint">A USB stick, or a folder your Drive or OneDrive app syncs &#8212; that is an offsite copy without ShopOS ever going online.</span></div></div></div></div></div>
+    </main>
   </div>
 </div>
 </x-dc>
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["daylight","khata","night"],"default":"daylight","section":"Theme"},"density":{"editor":"enum","options":["compact","comfortable","dense"],"default":"compact","section":"Theme"},"$preview":{"width":1520,"height":960}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      theme: this.props.theme ?? 'daylight',
+      density: this.props.density ?? 'compact',
+    };
+  }
+}
+</script>
 </body>
 </html>
