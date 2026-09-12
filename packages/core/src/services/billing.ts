@@ -1,15 +1,16 @@
 import type { SqlDriver } from '../db/driver.js'
 import { businessDate } from '../dates.js'
 import { newId } from '../ids.js'
-import { type Money, ZERO, paise, add, sub, allocate, formatWithSymbol as formatMoney } from '../money.js'
+import { type Money, ZERO, add, sub, formatWithSymbol as formatMoney } from '../money.js'
 import { type Qty, qty, QTY_SCALE, negQty } from '../quantity.js'
-import { resolvePrice, type PriceSource } from '../domain/pricing.js'
-import { splitTax, supplyTypeFor, type SupplyType } from '../domain/tax.js'
+import { type PriceSource } from '../domain/pricing.js'
+import { computeTotals, grossOf, type ComputedTotals } from '../domain/billTotals.js'
+import { supplyTypeFor, type SupplyType } from '../domain/tax.js'
 import { checkCreditLimit, totalOutstanding, type OpenBill } from '../domain/credit.js'
 import { calculateEarned, planRedemption, type LoyaltyProgram, type LoyaltyEntry, DEFAULT_PROGRAM } from '../domain/loyalty.js'
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, assertAmendable, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
-import { loadPriceCandidates, resolveSaleUnit, defaultPriceListId } from '../repos/pricing.js'
+import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
 import { checkAvailability, postMovement, reverseVoucher, type StockShortfall } from './stock.js'
 import { nextDocNo } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
@@ -21,7 +22,16 @@ export interface BillLineInput {
   productId: string
   saleUnit?: string | null
   qty: Qty
+  /** A rate the cashier typed. Recorded as a manual override against their name. */
   rateOverride?: Money | null
+  /**
+   * A rate already resolved for this line, to be kept rather than resolved again.
+   *
+   * A bill held open must not re-price itself. Without this, saving a draft
+   * re-runs the whole resolution chain, so a bill parked past a price list's
+   * `valid_to` silently changes what the customer was quoted.
+   */
+  resolved?: { rate: Money; source: PriceSource; sourceId: string | null } | null
   discount?: Money
 }
 
@@ -90,7 +100,6 @@ interface ComputedLine {
   rate: Money
   mrp: Money | null
   discount: Money
-  lineTotal: Money
   taxRateBp: number
   priceSource: PriceSource
   priceSourceId: string | null
@@ -102,7 +111,7 @@ interface ComputedLine {
  * one — prices, units and tax are resolved by the same code either way.
  */
 type Priced =
-  | { ok: true; computed: ComputedLine[]; shares: Money[]; meta: DraftMeta; subtotal: Money }
+  | { ok: true; computed: ComputedLine[]; totals: ComputedTotals; meta: DraftMeta; subtotal: Money }
   | Exclude<CreateBillResult, { ok: true }>
 
 interface DraftMeta {
@@ -125,8 +134,8 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
 
   const sessionId = input.sessionId ?? (await openSessionFor(db, input.registerId))
   const customer = input.customerId ? await loadCustomer(db, input.customerId) : null
-  const defaultList = await defaultPriceListId(db)
   const supply = await supplyFor(db, customer?.stateCode ?? null)
+  const pricing = await pricingContextFor(db, input.customerId ?? null)
 
   const computed: ComputedLine[] = []
   for (const line of input.lines) {
@@ -138,23 +147,19 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
     if (!product) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
 
     const unit = await resolveSaleUnit(db, line.productId, line.saleUnit ?? null)
-    const candidates = await loadPriceCandidates(db, {
-      productId: line.productId,
-      saleUnit: unit.saleUnit,
-      customerId: input.customerId ?? null,
-      customerPriceListId: customer?.priceListId ?? null,
-      defaultPriceListId: defaultList,
-    })
 
-    const resolved = resolvePrice(candidates, line.qty, now)
-    const rate = line.rateOverride ?? resolved.rate
-    const source: PriceSource = line.rateOverride != null ? 'manual_override' : resolved.source
-    const sourceId = line.rateOverride != null ? null : resolved.sourceId
+    // A typed rate wins, then a rate already resolved for this line, and only a
+    // line with neither is priced from scratch.
+    const priced = line.rateOverride != null
+      ? { rate: line.rateOverride, source: 'manual_override' as PriceSource, sourceId: null }
+      : line.resolved
+        ? line.resolved
+        : await resolveLinePrice(db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now)
 
-    const gross = paise(Math.round((rate * line.qty) / QTY_SCALE))
     const discount = line.discount ?? ZERO
-    const lineTotal = sub(gross, discount)
-    if (lineTotal < 0) return { ok: false, code: 'INVALID_QTY', productId: line.productId }
+    if (sub(grossOf(priced.rate, line.qty), discount) < 0) {
+      return { ok: false, code: 'DISCOUNT_EXCEEDS_TOTAL', subtotal: grossOf(priced.rate, line.qty), discount }
+    }
 
     computed.push({
       productId: product.id,
@@ -163,31 +168,30 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
       saleUnit: unit.saleUnit,
       qty: line.qty,
       baseQty: qty(Math.round((line.qty * unit.baseUnits) / QTY_SCALE)),
-      rate,
+      rate: priced.rate,
       mrp: (product.mrp ?? null) as Money | null,
       discount,
-      lineTotal,
       taxRateBp: product.tax_rate_bp,
-      priceSource: source,
-      priceSourceId: sourceId,
+      priceSource: priced.source,
+      priceSourceId: priced.sourceId,
     })
   }
 
-  const subtotal = add(...computed.map((l) => l.lineTotal))
   const billDiscount = input.billDiscount ?? ZERO
-  if (billDiscount > subtotal) {
-    return { ok: false, code: 'DISCOUNT_EXCEEDS_TOTAL', subtotal, discount: billDiscount }
-  }
+  const totals = computeTotals(computed, billDiscount, supply)
 
-  // Spread the bill-level discount across lines so tax is charged on what was
-  // actually paid, and so the per-line figures still sum to the invoice total.
-  const shares = billDiscount > 0 ? allocate(billDiscount, computed.map((l) => l.lineTotal)) : computed.map(() => ZERO)
+  // computeTotals clamps for the screen's benefit; a service caller asking for
+  // more discount than the bill holds is a mistake worth reporting, not silently
+  // reducing.
+  if (billDiscount > totals.subtotal) {
+    return { ok: false, code: 'DISCOUNT_EXCEEDS_TOTAL', subtotal: totals.subtotal, discount: billDiscount }
+  }
 
   return {
     ok: true,
     computed,
-    shares,
-    subtotal,
+    totals,
+    subtotal: totals.subtotal,
     meta: {
       sessionId,
       customerId: input.customerId ?? null,
@@ -202,25 +206,19 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
   }
 }
 
-/** Writes the line rows and returns the totals they add up to. */
+/**
+ * Writes the line rows against figures already computed. `bill_items.discount`
+ * holds the line's own discount plus its share of the bill-level one, and
+ * `line_total` is already net, so the rows reconcile to the invoice total exactly.
+ */
 async function writeLines(
   tx: SqlDriver,
   billId: string,
   computed: ComputedLine[],
-  shares: Money[],
-  supply: SupplyType,
-): Promise<{ taxableTotal: Money; taxTotal: Money; grandTotal: Money }> {
-  let taxableTotal: Money = ZERO
-  let taxTotal: Money = ZERO
-  let grandTotal: Money = ZERO
-
+  totals: ComputedTotals,
+): Promise<void> {
   for (const [i, line] of computed.entries()) {
-    const netLine = sub(line.lineTotal, shares[i] ?? ZERO)
-    const tax = splitTax(netLine, line.taxRateBp, supply)
-
-    taxableTotal = add(taxableTotal, tax.taxableValue)
-    taxTotal = add(taxTotal, tax.taxTotal)
-    grandTotal = add(grandTotal, netLine)
+    const t = totals.lines[i]!
 
     await tx.execute(
       `INSERT INTO bill_items
@@ -231,24 +229,21 @@ async function writeLines(
       [
         newId(), billId, i + 1, line.productId, line.productName, line.hsnCode, line.saleUnit,
         line.qty, line.baseQty, line.rate, line.mrp,
-        add(line.discount, shares[i] ?? ZERO), netLine,
-        tax.taxableValue, line.taxRateBp, tax.cgst, tax.sgst, tax.igst,
+        add(line.discount, t.billDiscountShare), t.net,
+        t.tax.taxableValue, line.taxRateBp, t.tax.cgst, t.tax.sgst, t.tax.igst,
         line.priceSource, line.priceSourceId,
       ],
     )
   }
-
-  return { taxableTotal, taxTotal, grandTotal }
 }
 
 export async function createBill(db: SqlDriver, input: CreateBillInput): Promise<CreateBillResult> {
   const priced = await priceBill(db, input)
   if (!priced.ok) return priced
 
-  const { computed, shares, meta, subtotal } = priced
+  const { computed, totals, meta, subtotal } = priced
   const billId = newId()
   const nowIso = meta.now.toISOString()
-  let totals = { taxableTotal: ZERO as Money, taxTotal: ZERO as Money, grandTotal: ZERO as Money }
 
   await db.transaction(async (tx) => {
     await tx.execute(
@@ -265,7 +260,7 @@ export async function createBill(db: SqlDriver, input: CreateBillInput): Promise
       ],
     )
 
-    totals = await writeLines(tx, billId, computed, shares, meta.supply)
+    await writeLines(tx, billId, computed, totals)
 
     await tx.execute(
       `UPDATE bills SET subtotal = ?, taxable_total = ?, tax_total = ?, grand_total = ? WHERE id = ?`,
@@ -283,8 +278,10 @@ export async function createBill(db: SqlDriver, input: CreateBillInput): Promise
     docNo: `DRAFT-${billId}`,
     lineCount: computed.length,
     subtotal,
-    discount: meta.billDiscount,
-    ...totals,
+    discount: totals.discount,
+    taxableTotal: totals.taxableTotal,
+    taxTotal: totals.taxTotal,
+    grandTotal: totals.grandTotal,
   }
 }
 
@@ -310,12 +307,11 @@ export async function saveDraft(
   const priced = await priceBill(db, input)
   if (!priced.ok) return priced
 
-  const { computed, shares, meta, subtotal } = priced
-  let totals = { taxableTotal: ZERO as Money, taxTotal: ZERO as Money, grandTotal: ZERO as Money }
+  const { computed, totals, meta, subtotal } = priced
 
   await db.transaction(async (tx) => {
     await tx.execute(`DELETE FROM bill_items WHERE bill_id = ?`, [input.billId])
-    totals = await writeLines(tx, input.billId, computed, shares, meta.supply)
+    await writeLines(tx, input.billId, computed, totals)
 
     await tx.execute(
       `UPDATE bills SET session_id = ?, customer_id = ?, customer_name = ?, posting_date = ?,
@@ -324,7 +320,7 @@ export async function saveDraft(
          WHERE id = ? AND docstatus = 0`,
       [
         meta.sessionId, meta.customerId, meta.customerName, meta.postingDate,
-        subtotal, meta.billDiscount, totals.taxableTotal, totals.taxTotal, totals.grandTotal,
+        subtotal, totals.discount, totals.taxableTotal, totals.taxTotal, totals.grandTotal,
         meta.placeOfSupply, meta.notes, meta.now.toISOString(), input.billId,
       ],
     )
@@ -336,8 +332,10 @@ export async function saveDraft(
     docNo: `DRAFT-${input.billId}`,
     lineCount: computed.length,
     subtotal,
-    discount: meta.billDiscount,
-    ...totals,
+    discount: totals.discount,
+    taxableTotal: totals.taxableTotal,
+    taxTotal: totals.taxTotal,
+    grandTotal: totals.grandTotal,
   }
 }
 

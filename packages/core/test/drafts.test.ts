@@ -225,3 +225,90 @@ describe('held bills', () => {
     expect(open[0]!.billId).toBe(kept.billId)
   })
 })
+
+describe('a held bill keeps what it quoted', () => {
+  /* The bug: saveDraft re-ran the whole resolution chain, so a bill parked past a
+     price list's valid_to silently re-priced itself under the customer. */
+  it('does not re-price a line when the caller passes the rate back', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    await stockUp(fx.db, p, 20)
+
+    const list = await fx.db.get<{ id: string }>(`SELECT id FROM price_lists WHERE is_default = 1`)
+    const priceId = newId()
+    const now = new Date().toISOString()
+    await fx.db.execute(
+      `INSERT INTO item_prices (id, product_id, price_list_id, sale_unit, min_qty, rate, valid_to, created_at, updated_at)
+       VALUES (?, ?, ?, 'piece', 0, ?, '2099-12-31', ?, ?)`,
+      [priceId, p, list!.id, rupees(80), now, now],
+    )
+
+    const draft = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      lines: [{ productId: p, qty: fromUnits(2) }],
+      actorId: fx.adminId,
+    })
+    if (!draft.ok) throw new Error('draft failed')
+    expect(draft.grandTotal).toBe(rupees(160))
+
+    const held = (await loadDraft(fx.db, draft.billId))!
+    expect(held.lines[0]!.rate).toBe(rupees(80))
+    expect(held.lines[0]!.priceSource).toBe('default_list')
+    expect(held.lines[0]!.priceSourceId).toBe(priceId)
+
+    // The offer expires while the bill is parked.
+    await fx.db.execute(`UPDATE item_prices SET valid_to = '2020-01-01' WHERE id = ?`, [priceId])
+
+    const saved = await saveDraft(fx.db, {
+      billId: draft.billId,
+      registerId: fx.seed.registerId,
+      lines: held.lines.map((l) => ({
+        productId: l.productId,
+        saleUnit: l.saleUnit,
+        qty: l.qty,
+        resolved: { rate: l.rate, source: l.priceSource, sourceId: l.priceSourceId },
+      })),
+      actorId: fx.adminId,
+    })
+    expect(saved.ok).toBe(true)
+    if (!saved.ok) return
+
+    expect(saved.grandTotal).toBe(rupees(160))
+    const after = (await loadDraft(fx.db, draft.billId))!
+    expect(after.lines[0]!.rate).toBe(rupees(80))
+    expect(after.lines[0]!.priceSourceId).toBe(priceId)
+  })
+
+  it('re-prices a line the caller does not pass a rate for', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    await stockUp(fx.db, p, 20)
+    const draft = await start(p, 2)
+
+    await fx.db.execute(`UPDATE products SET base_rate = ? WHERE id = ?`, [rupees(150), p])
+
+    const saved = await saveDraft(fx.db, {
+      billId: draft.billId,
+      registerId: fx.seed.registerId,
+      lines: [{ productId: p, qty: fromUnits(2) }],
+      actorId: fx.adminId,
+    })
+    if (!saved.ok) throw new Error('save failed')
+    expect(saved.grandTotal).toBe(rupees(300))
+  })
+
+  it('keeps a typed rate marked as the cashier’s, not as a resolved one', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
+    await stockUp(fx.db, p, 20)
+
+    const draft = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      lines: [{ productId: p, qty: fromUnits(1), rateOverride: rupees(72) }],
+      actorId: fx.adminId,
+    })
+    if (!draft.ok) throw new Error('draft failed')
+
+    const held = (await loadDraft(fx.db, draft.billId))!
+    expect(held.lines[0]!.rate).toBe(rupees(72))
+    expect(held.lines[0]!.priceSource).toBe('manual_override')
+    expect(held.lines[0]!.priceSourceId).toBeNull()
+  })
+})

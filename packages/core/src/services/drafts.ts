@@ -1,6 +1,7 @@
 import type { SqlDriver } from '../db/driver.js'
 import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
+import type { PriceSource } from '../domain/pricing.js'
 import { DRAFT } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 
@@ -59,7 +60,9 @@ export interface DraftLine {
   qty: Qty
   rate: Money
   discount: Money
-  priceSource: string
+  /** Which rule set this rate, and the row it came from. */
+  priceSource: PriceSource
+  priceSourceId: string | null
 }
 
 export interface DraftDetail {
@@ -81,9 +84,10 @@ export async function loadDraft(db: SqlDriver, billId: string): Promise<DraftDet
 
   const lines = await db.query<{
     product_id: string; product_name: string; sale_unit: string
-    qty: number; rate: number; discount: number; price_source: string
+    qty: number; rate: number; discount: number
+    price_source: string; price_source_id: string | null
   }>(
-    `SELECT product_id, product_name, sale_unit, qty, rate, discount, price_source
+    `SELECT product_id, product_name, sale_unit, qty, rate, discount, price_source, price_source_id
        FROM bill_items WHERE bill_id = ? ORDER BY idx`,
     [billId],
   )
@@ -100,7 +104,8 @@ export async function loadDraft(db: SqlDriver, billId: string): Promise<DraftDet
       qty: l.qty as Qty,
       rate: l.rate as Money,
       discount: l.discount as Money,
-      priceSource: l.price_source,
+      priceSource: l.price_source as PriceSource,
+      priceSourceId: l.price_source_id,
     })),
   }
 }

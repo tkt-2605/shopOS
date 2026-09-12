@@ -1,7 +1,8 @@
 import type { SqlDriver } from '../db/driver.js'
 import type { Money } from '../money.js'
 import { qty, type Qty } from '../quantity.js'
-import type { PriceCandidates, PriceTier, CustomerOverride } from '../domain/pricing.js'
+import { resolvePrice } from '../domain/pricing.js'
+import type { PriceCandidates, PriceTier, CustomerOverride, ResolvedPrice } from '../domain/pricing.js'
 
 export interface PricingContext {
   productId: string
@@ -61,6 +62,57 @@ async function loadTiers(db: SqlDriver, productId: string, priceListId: string, 
 export async function defaultPriceListId(db: SqlDriver): Promise<string | null> {
   const row = await db.get<{ id: string }>(`SELECT id FROM price_lists WHERE is_default = 1 AND deleted_at IS NULL`)
   return row?.id ?? null
+}
+
+/**
+ * Which price lists apply to a customer, looked up once for a whole bill rather
+ * than per line.
+ *
+ * This exists so the billing screen and the billing service cannot disagree. The
+ * screen used to resolve a scanned item's price with the customer's price list
+ * hardcoded to null and a quantity of one, while the service resolved the same
+ * line with the real list and the real quantity — so the rate on screen was not
+ * always the rate on the bill.
+ */
+export interface BillPricingContext {
+  customerId: string | null
+  customerPriceListId: string | null
+  defaultPriceListId: string | null
+}
+
+export async function pricingContextFor(
+  db: SqlDriver,
+  customerId: string | null,
+): Promise<BillPricingContext> {
+  const customer = customerId
+    ? await db.get<{ price_list_id: string | null }>(
+        `SELECT price_list_id FROM customers WHERE id = ? AND deleted_at IS NULL`,
+        [customerId],
+      )
+    : null
+
+  return {
+    customerId: customerId ?? null,
+    customerPriceListId: customer?.price_list_id ?? null,
+    defaultPriceListId: await defaultPriceListId(db),
+  }
+}
+
+/** The rate for one line, resolved the one way. */
+export async function resolveLinePrice(
+  db: SqlDriver,
+  ctx: BillPricingContext,
+  line: { productId: string; saleUnit: string; qty: Qty },
+  on: Date = new Date(),
+): Promise<ResolvedPrice> {
+  const candidates = await loadPriceCandidates(db, {
+    productId: line.productId,
+    saleUnit: line.saleUnit,
+    customerId: ctx.customerId,
+    customerPriceListId: ctx.customerPriceListId,
+    defaultPriceListId: ctx.defaultPriceListId,
+  })
+  return resolvePrice(candidates, line.qty, on)
 }
 
 export interface SaleUnitInfo {
