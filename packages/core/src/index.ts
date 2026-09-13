@@ -101,6 +101,9 @@ export type { RoleSummary, RoleMatrix, RoleResult, DeleteRoleResult } from './se
 export { listStaff, updateUser, resetPassword, unlockUser } from './services/auth.js'
 export type { StaffMember } from './services/auth.js'
 
+export { listAuditEntries, auditEntities, auditActors, countAuditEntries } from './repos/audit.js'
+export type { AuditEntry, AuditFilter, FieldChange } from './repos/audit.js'
+
 export * as Reports from './repos/reports.js'
 
 export { reorderList, bySupplier } from './repos/reorder.js'
