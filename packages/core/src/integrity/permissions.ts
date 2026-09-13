@@ -14,7 +14,7 @@ export type Resource = (typeof RESOURCES)[number]
 
 export const PAGES = [
   'dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers',
-  'customers', 'credit', 'cash_counter', 'pricing', 'reports', 'users', 'roles', 'settings',
+  'customers', 'credit', 'cash_counter', 'pricing', 'registers', 'reports', 'users', 'roles', 'settings',
 ] as const
 export type Page = (typeof PAGES)[number]
 
@@ -136,7 +136,7 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
       report: { read: true },
       settings: { read: true },
     },
-    pages: ['dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers', 'customers', 'credit', 'cash_counter', 'pricing', 'reports'],
+    pages: ['dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers', 'customers', 'credit', 'cash_counter', 'pricing', 'registers', 'reports'],
   },
   {
     name: 'Cashier',

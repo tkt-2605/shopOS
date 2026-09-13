@@ -113,6 +113,17 @@ export { saveDraft } from './services/billing.js'
 export type { SaveDraftResult } from './services/billing.js'
 export { listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts } from './services/drafts.js'
 export type { OpenDraft, DraftDetail, DraftLine } from './services/drafts.js'
+export {
+  listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
+  listItemPrices, setItemPrice, removeItemPrice,
+  listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList,
+  perBaseUnit,
+} from './services/pricing.js'
+export type {
+  SaleUnit, SaleUnitInput, SetUnitsResult, PriceList, PriceListResult,
+  ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice,
+} from './services/pricing.js'
+
 export { listBarcodes, setBarcodes, productIdForBarcode } from './services/barcodes.js'
 export type { Barcode, BarcodeInput, SetBarcodesResult } from './services/barcodes.js'
 

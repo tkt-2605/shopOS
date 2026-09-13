@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Money, Quantity, Pricing, Totals, Loyalty,
+  Money, Quantity, Pricing, Totals, Loyalty, Permissions,
   searchProducts, saleUnitsFor, searchCustomers, loadLoyaltyProgram,
   submitBill, pricingContextFor, resolveLinePrice,
   type ProductListItem, type CustomerListItem,
@@ -15,6 +15,7 @@ export default function Billing() {
   const user = useUser()
   const tabs = useBillTabs(db, registerId, user.id)
   const active = tabs.active
+  const canOverridePrice = Permissions.can(user.permissions, 'price_list', 'write')
 
   const [term, setTerm] = useState('')
   const [results, setResults] = useState<ProductListItem[]>([])
@@ -120,7 +121,16 @@ export default function Billing() {
   const editLine = (key: string, change: (line: CartLine) => CartLine) =>
     tabs.patch((cart) => ({ ...cart, lines: cart.lines.map((l) => (l.key === key ? change(l) : l)) }))
 
+  /**
+   * Retyping a rate at the counter is a permission, not a given.
+   *
+   * A shop that has gone to the trouble of setting tiers and customer rates does
+   * not want a cashier quietly undoing them one bill at a time — and one that
+   * bargains over every sale wants exactly this. It is the same capability that
+   * lets someone set prices in the first place.
+   */
   function setRate(key: string, value: string) {
+    if (!canOverridePrice) return
     const rate = Money.parseMoney(value)
     if (rate === null) return
     editLine(key, (l) => ({ ...l, rate, manual: true, source: 'manual_override', sourceId: null }))
@@ -305,12 +315,18 @@ export default function Billing() {
                     />
                   </td>
                   <td className="r">
-                    <input
-                      key={`${line.key}-${line.rate}`}
-                      className="qty-input num"
-                      defaultValue={Money.format(line.rate as never)}
-                      onBlur={(e) => setRate(line.key, e.target.value)}
-                    />
+                    {canOverridePrice ? (
+                      <input
+                        key={`${line.key}-${line.rate}`}
+                        className="qty-input num"
+                        defaultValue={Money.format(line.rate as never)}
+                        onBlur={(e) => setRate(line.key, e.target.value)}
+                      />
+                    ) : (
+                      <span className="num" title="Changing a price needs permission">
+                        {Money.format(line.rate as never)}
+                      </span>
+                    )}
                   </td>
                   <td className="r"><Rupees value={totals.lines[i]?.net ?? 0} /></td>
                   <td>

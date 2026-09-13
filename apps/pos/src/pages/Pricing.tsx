@@ -1,0 +1,491 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  listPriceLists, createPriceList, updatePriceList,
+  listItemPrices, setItemPrice, removeItemPrice,
+  listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList,
+  listUnits, perBaseUnit,
+  searchProducts, searchCustomers, Money, Quantity, Permissions,
+  type PriceList, type ItemPrice, type CustomerPrice, type SaleUnit,
+  type ProductListItem, type CustomerListItem,
+} from '@shopos/core'
+import { useDb, useUser } from '../core/CoreProvider'
+import { Card, Field, Empty, Alert, Rupees } from '../ui/components'
+
+/**
+ * Where prices are set.
+ *
+ * The engine that reads these has existed since v1 — a four-step chain from a
+ * customer's own rate, through their price list, through the shop's list, down
+ * to the item's base rate, with quantity tiers and validity dates at each step.
+ * Until now nothing could write to it but the demo seed, which meant a shop
+ * could be told it had tiered pricing and never find it.
+ *
+ * Laid out item-first, because that is the question a shopkeeper actually has:
+ * not "what is on the wholesale list" but "what does this pen cost, and to
+ * whom".
+ */
+
+type Tab = 'items' | 'lists' | 'customers'
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'items', label: 'Item prices' },
+  { id: 'lists', label: 'Price lists' },
+  { id: 'customers', label: 'Customer rates' },
+]
+
+export default function Pricing() {
+  const user = useUser()
+  const [tab, setTab] = useState<Tab>('items')
+  const canWrite = Permissions.can(user.permissions, 'price_list', 'write')
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 1000 }}>
+      <div className="segment">
+        {TABS.map((t) => (
+          <button key={t.id} className={t.id === tab ? 'on' : ''} onClick={() => setTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {!canWrite && <Alert kind="warn">You can see prices here but not change them.</Alert>}
+
+      {tab === 'items' && <ItemPrices canWrite={canWrite} />}
+      {tab === 'lists' && <PriceLists canWrite={canWrite} />}
+      {tab === 'customers' && <CustomerRates canWrite={canWrite} />}
+    </div>
+  )
+}
+
+/* --------------------------------------------------------- item prices --- */
+
+function ItemPrices({ canWrite }: { canWrite: boolean }) {
+  const db = useDb()
+  const user = useUser()
+  const [term, setTerm] = useState('')
+  const [results, setResults] = useState<ProductListItem[]>([])
+  const [chosen, setChosen] = useState<ProductListItem | null>(null)
+  const [units, setUnits] = useState<SaleUnit[]>([])
+  const [lists, setLists] = useState<PriceList[]>([])
+  const [prices, setPrices] = useState<ItemPrice[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  const [row, setRow] = useState({ priceListId: '', saleUnit: '', minQty: '', rate: '', from: '', to: '' })
+
+  useEffect(() => { void listPriceLists(db).then(setLists) }, [db])
+
+  useEffect(() => {
+    const id = setTimeout(async () => {
+      setResults(term.trim() === '' ? [] : await searchProducts(db, { term, limit: 20 }))
+    }, 140)
+    return () => clearTimeout(id)
+  }, [db, term])
+
+  const load = useCallback(async (product: ProductListItem) => {
+    setChosen(product)
+    setResults([])
+    setTerm('')
+    setError(null)
+    const [u, p] = await Promise.all([listUnits(db, product.id), listItemPrices(db, { productId: product.id })])
+    setUnits(u)
+    setPrices(p)
+    setRow({
+      priceListId: lists.find((l) => l.isDefault)?.id ?? lists[0]?.id ?? '',
+      saleUnit: product.baseUnit, minQty: '', rate: '', from: '', to: '',
+    })
+  }, [db, lists])
+
+  const unitOptions = useMemo(
+    () => (chosen ? [{ saleUnit: chosen.baseUnit, baseUnits: Quantity.fromUnits(1) }, ...units] : []),
+    [chosen, units],
+  )
+
+  async function add() {
+    if (!chosen) return
+    const rate = Money.parseMoney(row.rate)
+    if (rate === null) { setError('That rate is not a number.'); return }
+
+    const result = await setItemPrice(db, { actorId: user.id }, {
+      productId: chosen.id,
+      priceListId: row.priceListId,
+      saleUnit: row.saleUnit,
+      minQty: row.minQty.trim() === '' ? Quantity.qty(0) : (Quantity.parseQty(row.minQty) ?? Quantity.qty(0)),
+      rate,
+      validFrom: row.from || null,
+      validTo: row.to || null,
+    })
+    if (!result.ok) {
+      setError(
+        result.code === 'BAD_DATES'
+          ? 'The last day is before the first.'
+          : `This item does not sell in ${row.saleUnit}. Add the unit on the Inventory screen first.`,
+      )
+      return
+    }
+    setError(null)
+    setRow({ ...row, minQty: '', rate: '', from: '', to: '' })
+    setPrices(await listItemPrices(db, { productId: chosen.id }))
+  }
+
+  async function drop(id: string) {
+    if (!chosen) return
+    await removeItemPrice(db, { actorId: user.id }, id)
+    setPrices(await listItemPrices(db, { productId: chosen.id }))
+  }
+
+  return (
+    <>
+      <Card title="Which item">
+        <input className="input" id="price-search" autoFocus
+          placeholder="Search an item by name, code or barcode"
+          value={term} onChange={(e) => setTerm(e.target.value)} />
+        {results.length > 0 && (
+          <div className="results" style={{ marginTop: 8 }}>
+            {results.map((p) => (
+              <div key={p.id} className="pickable" style={{ padding: '7px 10px' }} onClick={() => void load(p)}>
+                {p.name}
+                <span style={{ float: 'right', color: 'var(--ink-3)' }}>
+                  base <Rupees value={p.baseRate} /> / {p.baseUnit}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {chosen && (
+        <Card title={chosen.name}>
+          <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
+            Base rate <Rupees value={chosen.baseRate} /> per {chosen.baseUnit}, used when no rule below
+            applies. A rate with a quantity applies from that quantity upwards, so a ladder is just
+            several rows.
+          </div>
+
+          {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
+
+          <table>
+            <thead>
+              <tr>
+                <th>Price list</th><th>Unit</th><th className="r">From qty</th>
+                <th className="r">Rate</th><th className="r">Per {chosen.baseUnit}</th>
+                <th>Dates</th><th />
+              </tr>
+            </thead>
+            <tbody>
+              {prices.map((p) => {
+                const unit = unitOptions.find((u) => u.saleUnit === p.saleUnit)
+                return (
+                  <tr key={p.id}>
+                    <td>{p.priceListName}</td>
+                    <td>{p.saleUnit}</td>
+                    <td className="r num">{p.minQty > 0 ? Quantity.formatQty(p.minQty) : '—'}</td>
+                    <td className="r"><Rupees value={p.rate} /></td>
+                    <td className="r" style={{ color: 'var(--ink-3)' }}>
+                      {unit ? <Rupees value={perBaseUnit(p.rate, unit.baseUnits)} /> : '—'}
+                    </td>
+                    <td style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                      {p.validFrom || p.validTo ? `${p.validFrom ?? '—'} → ${p.validTo ?? '—'}` : 'always'}
+                    </td>
+                    <td className="r">
+                      {canWrite && <button className="btn ghost sm" onClick={() => void drop(p.id)}>Remove</button>}
+                    </td>
+                  </tr>
+                )
+              })}
+              {prices.length === 0 && (
+                <tr><td colSpan={7}><Empty>No rates yet — everyone pays the base rate</Empty></td></tr>
+              )}
+            </tbody>
+          </table>
+
+          {canWrite && (
+            <div style={{ marginTop: 15, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 9 }}>Add a rate</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                <Field label="Price list">
+                  <select className="input" value={row.priceListId}
+                    onChange={(e) => setRow({ ...row, priceListId: e.target.value })}>
+                    {lists.map((l) => <option key={l.id} value={l.id}>{l.name}{l.isDefault ? ' (default)' : ''}</option>)}
+                  </select>
+                </Field>
+                <Field label="Unit" hint="Add units to an item on the Inventory screen.">
+                  <select className="input" value={row.saleUnit}
+                    onChange={(e) => setRow({ ...row, saleUnit: e.target.value })}>
+                    {unitOptions.map((u) => <option key={u.saleUnit} value={u.saleUnit}>{u.saleUnit}</option>)}
+                  </select>
+                </Field>
+                <Field label="From quantity" hint="Blank means it always applies.">
+                  <input className="input num" value={row.minQty} inputMode="decimal"
+                    onChange={(e) => setRow({ ...row, minQty: e.target.value })} />
+                </Field>
+                <Field label="Rate">
+                  <input className="input num" value={row.rate} inputMode="decimal"
+                    onChange={(e) => setRow({ ...row, rate: e.target.value })} />
+                </Field>
+                <Field label="First day" hint="Blank for no start.">
+                  <input className="input" type="date" value={row.from}
+                    onChange={(e) => setRow({ ...row, from: e.target.value })} />
+                </Field>
+                <Field label="Last day" hint="Blank for no end.">
+                  <input className="input" type="date" value={row.to}
+                    onChange={(e) => setRow({ ...row, to: e.target.value })} />
+                </Field>
+              </div>
+              <button className="btn primary" style={{ marginTop: 4 }}
+                disabled={row.rate.trim() === ''} onClick={() => void add()}>
+                Save this rate
+              </button>
+            </div>
+          )}
+        </Card>
+      )}
+    </>
+  )
+}
+
+/* --------------------------------------------------------- price lists --- */
+
+function PriceLists({ canWrite }: { canWrite: boolean }) {
+  const db = useDb()
+  const user = useUser()
+  const [lists, setLists] = useState<PriceList[]>([])
+  const [name, setName] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => setLists(await listPriceLists(db)), [db])
+  useEffect(() => { void refresh() }, [refresh])
+
+  async function add() {
+    const result = await createPriceList(db, { actorId: user.id }, { name })
+    if (!result.ok) {
+      setError(result.code === 'NO_NAME' ? 'Give the list a name.' : 'There is already a list with that name.')
+      return
+    }
+    setError(null)
+    setName('')
+    await refresh()
+  }
+
+  async function makeDefault(priceListId: string) {
+    await updatePriceList(db, { actorId: user.id }, { priceListId, isDefault: true })
+    await refresh()
+  }
+
+  return (
+    <Card title="Price lists">
+      <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
+        A list is a set of rates. The default one is what a walk-in customer pays; put a customer on
+        another and they get its rates instead. Every shop has exactly one default.
+      </div>
+
+      {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
+
+      <table>
+        <thead>
+          <tr><th>Name</th><th className="r">Rates</th><th className="r">Customers</th><th>Default</th><th /></tr>
+        </thead>
+        <tbody>
+          {lists.map((l) => (
+            <tr key={l.id}>
+              <td>{l.name}</td>
+              <td className="r num">{l.priceCount}</td>
+              <td className="r num">{l.customerCount}</td>
+              <td>{l.isDefault ? <span className="badge ok">default</span> : ''}</td>
+              <td className="r">
+                {canWrite && !l.isDefault && (
+                  <button className="btn ghost sm" onClick={() => void makeDefault(l.id)}>Make default</button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {canWrite && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 14, maxWidth: 420 }}>
+          <input className="input" placeholder="New list — Wholesale, Festival, Staff"
+            value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1 }} />
+          <button className="btn" disabled={name.trim() === ''} onClick={() => void add()}>Add</button>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/* ------------------------------------------------------ customer rates --- */
+
+function CustomerRates({ canWrite }: { canWrite: boolean }) {
+  const db = useDb()
+  const user = useUser()
+  const [term, setTerm] = useState('')
+  const [results, setResults] = useState<CustomerListItem[]>([])
+  const [chosen, setChosen] = useState<CustomerListItem | null>(null)
+  const [lists, setLists] = useState<PriceList[]>([])
+  const [onList, setOnList] = useState('')
+  const [rates, setRates] = useState<CustomerPrice[]>([])
+  const [productTerm, setProductTerm] = useState('')
+  const [productResults, setProductResults] = useState<ProductListItem[]>([])
+  const [picked, setPicked] = useState<{ product: ProductListItem; units: SaleUnit[] } | null>(null)
+  const [saleUnit, setSaleUnit] = useState('')
+  const [rate, setRate] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => { void listPriceLists(db).then(setLists) }, [db])
+
+  useEffect(() => {
+    const id = setTimeout(async () => {
+      setResults(term.trim() === '' ? [] : await searchCustomers(db, term, 20))
+    }, 140)
+    return () => clearTimeout(id)
+  }, [db, term])
+
+  useEffect(() => {
+    const id = setTimeout(async () => {
+      setProductResults(productTerm.trim() === '' ? [] : await searchProducts(db, { term: productTerm, limit: 15 }))
+    }, 140)
+    return () => clearTimeout(id)
+  }, [db, productTerm])
+
+  async function choose(customer: CustomerListItem) {
+    setChosen(customer)
+    setResults([])
+    setTerm('')
+    setRates(await listCustomerPrices(db, { customerId: customer.id }))
+    const row = await db.get<{ price_list_id: string | null }>(
+      `SELECT price_list_id FROM customers WHERE id = ?`, [customer.id],
+    )
+    setOnList(row?.price_list_id ?? '')
+  }
+
+  async function pickProduct(product: ProductListItem) {
+    const units = await listUnits(db, product.id)
+    setPicked({ product, units })
+    setSaleUnit(product.baseUnit)
+    setProductResults([])
+    setProductTerm('')
+  }
+
+  async function moveList(priceListId: string) {
+    if (!chosen) return
+    setOnList(priceListId)
+    await setCustomerPriceList(db, { actorId: user.id }, chosen.id, priceListId || null)
+  }
+
+  async function add() {
+    if (!chosen || !picked) return
+    const parsed = Money.parseMoney(rate)
+    if (parsed === null) { setError('That rate is not a number.'); return }
+
+    const result = await setCustomerPrice(db, { actorId: user.id }, {
+      customerId: chosen.id, productId: picked.product.id, saleUnit, rate: parsed,
+    })
+    if (!result.ok) {
+      setError(result.code === 'BAD_DATES' ? 'The last day is before the first.' : `That item does not sell in ${saleUnit}.`)
+      return
+    }
+    setError(null)
+    setPicked(null)
+    setRate('')
+    setRates(await listCustomerPrices(db, { customerId: chosen.id }))
+  }
+
+  async function drop(id: string) {
+    if (!chosen) return
+    await removeCustomerPrice(db, { actorId: user.id }, id)
+    setRates(await listCustomerPrices(db, { customerId: chosen.id }))
+  }
+
+  return (
+    <>
+      <Card title="Which customer">
+        <input className="input" placeholder="Search a customer by name or phone"
+          value={term} onChange={(e) => setTerm(e.target.value)} />
+        {results.length > 0 && (
+          <div className="results" style={{ marginTop: 8 }}>
+            {results.map((c) => (
+              <div key={c.id} className="pickable" style={{ padding: '7px 10px' }} onClick={() => void choose(c)}>
+                {c.name}<span style={{ float: 'right', color: 'var(--ink-3)' }}>{c.phone ?? ''}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {chosen && (
+        <Card title={chosen.name}>
+          {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
+
+          <Field label="Price list" hint="Everything this customer buys comes off this list, unless an item below says otherwise.">
+            <select className="input" value={onList} disabled={!canWrite}
+              onChange={(e) => void moveList(e.target.value)} style={{ maxWidth: 320 }}>
+              <option value="">The shop's default list</option>
+              {lists.filter((l) => !l.isDefault).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
+          </Field>
+
+          <div style={{ fontSize: 12.5, fontWeight: 600, margin: '15px 0 7px' }}>Rates only this customer gets</div>
+          <table>
+            <thead>
+              <tr><th>Item</th><th>Unit</th><th className="r">Rate</th><th /></tr>
+            </thead>
+            <tbody>
+              {rates.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.productName}</td>
+                  <td>{r.saleUnit}</td>
+                  <td className="r"><Rupees value={r.rate} /></td>
+                  <td className="r">
+                    {canWrite && <button className="btn ghost sm" onClick={() => void drop(r.id)}>Remove</button>}
+                  </td>
+                </tr>
+              ))}
+              {rates.length === 0 && (
+                <tr><td colSpan={4}><Empty>Nothing special — they pay their list's rates</Empty></td></tr>
+              )}
+            </tbody>
+          </table>
+
+          {canWrite && (
+            <div style={{ marginTop: 15, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+              {!picked ? (
+                <>
+                  <input className="input" placeholder="Add a rate — search the item"
+                    value={productTerm} onChange={(e) => setProductTerm(e.target.value)} style={{ maxWidth: 420 }} />
+                  {productResults.length > 0 && (
+                    <div className="results" style={{ marginTop: 8, maxWidth: 420 }}>
+                      {productResults.map((p) => (
+                        <div key={p.id} className="pickable" style={{ padding: '7px 10px' }}
+                          onClick={() => void pickProduct(p)}>{p.name}</div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 180 }}>
+                    <div style={{ fontSize: 12.5, marginBottom: 4 }}>{picked.product.name}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
+                      base <Rupees value={picked.product.baseRate} />
+                    </div>
+                  </div>
+                  <Field label="Unit">
+                    <select className="input" value={saleUnit} onChange={(e) => setSaleUnit(e.target.value)}>
+                      <option value={picked.product.baseUnit}>{picked.product.baseUnit}</option>
+                      {picked.units.map((u) => <option key={u.saleUnit} value={u.saleUnit}>{u.saleUnit}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Their rate">
+                    <input className="input num" value={rate} inputMode="decimal"
+                      onChange={(e) => setRate(e.target.value)} />
+                  </Field>
+                  <button className="btn primary" disabled={rate.trim() === ''} onClick={() => void add()}>Save</button>
+                  <button className="btn ghost" onClick={() => setPicked(null)}>Cancel</button>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+    </>
+  )
+}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Tax, Permissions,
   searchProducts, productValuation, recomputeStock, newId,
-  listBarcodes, setBarcodes,
+  listBarcodes, setBarcodes, listUnits, setUnits,
   type ProductListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -13,12 +13,20 @@ interface BarcodeDraft {
   label: string
 }
 
+interface UnitDraft {
+  saleUnit: string
+  /** How many base units one of these is: a ream is 500 sheets. */
+  baseUnits: string
+}
+
 interface Draft {
   id: string | null
   name: string
   brand: string
   /** First is the primary — the one printed on a shelf tag and shown in lists. */
   barcodes: BarcodeDraft[]
+  /** Bigger units this item also sells in. The base unit is not one of them. */
+  units: UnitDraft[]
   hsnCode: string
   taxPercent: string
   baseRate: string
@@ -30,7 +38,7 @@ interface Draft {
 }
 
 const BLANK: Draft = {
-  id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], hsnCode: '', taxPercent: '12',
+  id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [], hsnCode: '', taxPercent: '12',
   baseRate: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   reorderLevel: '', reorderQty: '',
 }
@@ -105,17 +113,34 @@ export default function Inventory() {
       return
     }
 
+    const units = await setUnits(db, { actorId: user.id }, productId, draft.units
+      .filter((u) => u.saleUnit.trim() !== '')
+      .map((u) => ({ saleUnit: u.saleUnit, baseUnits: Quantity.parseQty(u.baseUnits) ?? Quantity.qty(0) })))
+    if (!units.ok) {
+      setNotice(
+        units.code === 'IN_USE'
+          ? `${units.saleUnit} is on ${units.billCount} bill(s) and cannot be removed. The rest was saved.`
+          : units.code === 'CLASHES_WITH_BASE'
+            ? `This item is already counted in ${units.saleUnit}. The rest was saved.`
+            : `${units.saleUnit} needs how many ${draft.baseUnit} it holds. The rest was saved.`,
+      )
+      setDraft(null)
+      await refresh()
+      return
+    }
+
     setDraft(null)
     await refresh()
   }
 
   async function edit(p: ProductListItem) {
-    const codes = await listBarcodes(db, p.id)
+    const [codes, units] = await Promise.all([listBarcodes(db, p.id), listUnits(db, p.id)])
     setDraft({
       id: p.id, name: p.name, brand: p.brand ?? '',
       barcodes: codes.length > 0
         ? codes.map((c) => ({ barcode: c.barcode, label: c.label ?? '' }))
         : [{ barcode: '', label: '' }],
+      units: units.map((u) => ({ saleUnit: u.saleUnit, baseUnits: Quantity.formatQty(u.baseUnits) })),
       hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
       baseRate: Money.format(p.baseRate), baseUnit: p.baseUnit,
       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
@@ -224,6 +249,52 @@ export default function Inventory() {
                   onChange={(e) => setDraft({ ...draft, baseUnit: e.target.value })} />
               </Field>
             )}
+          </div>
+
+          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>
+              Units it also sells in
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
+              Stock is counted in {draft.baseUnit || 'the base unit'}. A bigger unit says how many of
+              those it holds — a ream is 500 sheets, a pack of pens is 10. The cashier then picks the
+              unit at the counter, and each one can carry its own price on the Prices screen.
+            </div>
+            {draft.units.map((unit, index) => (
+              <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 0 }}
+                  placeholder="ream, pack, dozen, box"
+                  value={unit.saleUnit}
+                  onChange={(e) => setDraft({
+                    ...draft,
+                    units: draft.units.map((u, i) => (i === index ? { ...u, saleUnit: e.target.value } : u)),
+                  })}
+                />
+                <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>=</span>
+                <input
+                  className="input num"
+                  style={{ width: 90 }}
+                  inputMode="decimal"
+                  placeholder="500"
+                  value={unit.baseUnits}
+                  onChange={(e) => setDraft({
+                    ...draft,
+                    units: draft.units.map((u, i) => (i === index ? { ...u, baseUnits: e.target.value } : u)),
+                  })}
+                />
+                <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>
+                  {draft.baseUnit || 'units'}
+                </span>
+                <button className="btn ghost" type="button" title="Remove this unit"
+                  onClick={() => setDraft({ ...draft, units: draft.units.filter((_, i) => i !== index) })}
+                >✕</button>
+              </div>
+            ))}
+            <button className="btn ghost sm" type="button"
+              onClick={() => setDraft({ ...draft, units: [...draft.units, { saleUnit: '', baseUnits: '' }] })}
+            >Another unit</button>
           </div>
 
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>

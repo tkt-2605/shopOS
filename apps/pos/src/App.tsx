@@ -21,6 +21,7 @@ import Roles from './pages/Roles'
 import Suppliers from './pages/Suppliers'
 import StockCount from './pages/StockCount'
 import Reorder from './pages/Reorder'
+import Pricing from './pages/Pricing'
 
 /* Grouped by what the person is doing, rather than one flat list of every screen.
    A cashier lives in Sell and never opens Setup. */
@@ -29,7 +30,7 @@ const NAV_GROUPS: { label: string; pages: Page[] }[] = [
   { label: 'Stock', pages: ['inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers'] },
   { label: 'Money', pages: ['credit', 'cash_counter'] },
   { label: 'Review', pages: ['dashboard', 'reports'] },
-  { label: 'Setup', pages: ['pricing', 'users', 'roles', 'settings'] },
+  { label: 'Setup', pages: ['pricing', 'registers', 'users', 'roles', 'settings'] },
 ]
 
 const PAGE_TITLES: Record<string, string> = {
@@ -44,7 +45,8 @@ const PAGE_TITLES: Record<string, string> = {
   customers: 'Customers',
   credit: 'Credit',
   cash_counter: 'Cash Counter',
-  pricing: 'Counters',
+  pricing: 'Prices',
+  registers: 'Counters',
   reports: 'Reports',
   users: 'Staff',
   roles: 'Roles & Permissions',
@@ -272,7 +274,8 @@ function PageBody({ page }: { page: Page }) {
     case 'cash_counter': return <CashCounter />
     case 'settings': return <Settings />
     case 'customers': return <Customers />
-    case 'pricing': return <Registers />
+    case 'pricing': return <Pricing />
+    case 'registers': return <Registers />
     case 'reports': return <Reports />
     case 'users': return <Staff />
     case 'roles': return <Roles />
