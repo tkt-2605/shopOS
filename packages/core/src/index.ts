@@ -102,6 +102,9 @@ export { listStaff, updateUser, resetPassword, unlockUser } from './services/aut
 export type { StaffMember } from './services/auth.js'
 
 export * as Reports from './repos/reports.js'
+
+export { reorderList, bySupplier } from './repos/reorder.js'
+export type { ReorderRow, ReorderOptions, SupplierGroup } from './repos/reorder.js'
 export type { DateRange } from './repos/reports.js'
 
 export { businessDate, addDays } from './dates.js'

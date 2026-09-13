@@ -18,11 +18,21 @@ interface Draft {
   baseUnit: string
   discountBlocked: boolean
   loyaltyBlocked: boolean
+  reorderLevel: string
+  reorderQty: string
 }
 
 const BLANK: Draft = {
   id: null, name: '', brand: '', barcode: '', hsnCode: '', taxPercent: '12',
   baseRate: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
+  reorderLevel: '', reorderQty: '',
+}
+
+/** Blank means "not set", which is not the same as a level of zero. */
+function levelOf(raw: string): number | null {
+  const trimmed = raw.trim()
+  if (trimmed === '') return null
+  return Quantity.parseQty(trimmed)
 }
 
 export default function Inventory() {
@@ -54,20 +64,24 @@ export default function Inventory() {
     if (draft.id) {
       await db.execute(
         `UPDATE products SET name = ?, brand = ?, barcode = ?, hsn_code = ?, tax_rate_bp = ?, base_rate = ?,
-                             discount_blocked = ?, loyalty_blocked = ?, updated_at = ?
+                             discount_blocked = ?, loyalty_blocked = ?,
+                             reorder_level = ?, reorder_qty = ?, updated_at = ?
          WHERE id = ?`,
         [draft.name.trim(), draft.brand.trim() || null, draft.barcode.trim() || null,
          draft.hsnCode.trim() || null, bp, rate,
-         draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0, now, draft.id],
+         draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
+         levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, draft.id],
       )
     } else {
       await db.execute(
         `INSERT INTO products (id, name, brand, barcode, hsn_code, tax_rate_bp, base_rate, base_unit,
-                               discount_blocked, loyalty_blocked, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               discount_blocked, loyalty_blocked, reorder_level, reorder_qty,
+                               created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [newId(), draft.name.trim(), draft.brand.trim() || null, draft.barcode.trim() || null,
          draft.hsnCode.trim() || null, bp, rate, draft.baseUnit,
-         draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0, now, now],
+         draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
+         levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, now],
       )
     }
     setDraft(null)
@@ -133,6 +147,8 @@ export default function Inventory() {
                       hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
                       baseRate: Money.format(p.baseRate), baseUnit: p.baseUnit,
                       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
+                      reorderLevel: p.reorderLevel === null ? '' : Quantity.formatQty(p.reorderLevel),
+                      reorderQty: p.reorderQty === null ? '' : Quantity.formatQty(p.reorderQty),
                     })}>Edit</button>
                   )}
                 </td>
@@ -183,6 +199,24 @@ export default function Inventory() {
                   onChange={(e) => setDraft({ ...draft, baseUnit: e.target.value })} />
               </Field>
             )}
+          </div>
+
+          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Buying</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
+              An item with a reorder level appears on the buying list once stock falls to it.
+              Leave both empty for things you buy when you happen to think of them.
+            </div>
+            <div className="grid-res">
+              <Field label="Reorder at" hint="Stock level that puts it on the buying list.">
+                <input className="input" id="reorder-level" inputMode="decimal" value={draft.reorderLevel}
+                  onChange={(e) => setDraft({ ...draft, reorderLevel: e.target.value })} />
+              </Field>
+              <Field label="Order quantity" hint="How many to buy. Empty means the reorder level itself.">
+                <input className="input" id="reorder-qty" inputMode="decimal" value={draft.reorderQty}
+                  onChange={(e) => setDraft({ ...draft, reorderQty: e.target.value })} />
+              </Field>
+            </div>
           </div>
 
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
