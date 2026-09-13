@@ -589,11 +589,21 @@ tbody tr:hover { background: var(--accent-soft); }
   font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.45;
-  white-space: pre;
-  tab-size: 1;
   color: var(--ink);
   background: var(--surface-2);
   border: 1px solid var(--rule);
 }
+
+/* One element per printed line, so the printer's own alignment and emphasis
+   survive into the preview. Rendering a centred double-width shop name flush
+   left reads as a hole in the layout rather than as the banner it is. */
+.receipt-line { white-space: pre; min-height: 1.45em; }
+.receipt-line.align-centre { text-align: center; }
+.receipt-line.align-right { text-align: right; }
+.receipt-line.bold { font-weight: 700; }
+.receipt-line.small { font-size: 0.85em; }
+/* Double width and height on the printer; double height alone for `tall`. */
+.receipt-line.banner { font-size: 2em; line-height: 1.15; font-weight: 700; }
+.receipt-line.tall { font-size: 1.35em; line-height: 1.25; font-weight: 700; }
 .receipt-preview.paper-thermal_58 { max-width: 30em; }
 .receipt-preview.paper-thermal_80 { max-width: 39em; }

@@ -116,7 +116,7 @@ export function Formats() {
     if (!draft) return []
     const format = { id: draft.id ?? 'preview', name: draft.name, paper: draft.paper, kinds: draft.kinds, blocks: draft.blocks }
     const doc = sampleDoc({ name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin })
-    return Receipt.visibleLines(Receipt.buildReceipt(doc, format))
+    return Receipt.previewLines(Receipt.buildReceipt(doc, format))
   }, [draft, shop])
 
   function patch(change: Partial<Draft>) {
@@ -309,10 +309,28 @@ export function Formats() {
 
       <Card title={`Preview — ${Fmt.PAPER_LABEL[draft.paper]}`}>
         <p className="format-note">
-          Exactly what the printer will produce. Tamil and the ₹ sign are not
-          available on a thermal receipt — the printer carries neither.
+          The characters and the columns are exactly what the printer will
+          produce. Type size is shown close to it rather than to the millimetre.
+          Tamil and the ₹ sign are not available on a thermal receipt — the
+          printer carries neither.
         </p>
-        <pre className={`receipt-preview paper-${draft.paper}`}>{preview.join('\n')}</pre>
+        <div className={`receipt-preview paper-${draft.paper}`}>
+          {preview.map((line, i) => (
+            <div
+              key={i}
+              className={[
+                'receipt-line',
+                `align-${line.align}`,
+                line.banner ? 'banner' : '',
+                line.tall ? 'tall' : '',
+                line.small ? 'small' : '',
+                line.bold ? 'bold' : '',
+              ].filter(Boolean).join(' ')}
+            >
+              {line.text || ' '}
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   )

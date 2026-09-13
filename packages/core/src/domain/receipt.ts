@@ -394,6 +394,106 @@ function titleCase(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
+export type PreviewAlign = 'left' | 'centre' | 'right'
+
+/** How a line is set on the paper, for a preview that is not lying about it. */
+export interface PreviewLine {
+  text: string
+  align: PreviewAlign
+  bold: boolean
+  /** Double width and height: the shop name across the top. */
+  banner: boolean
+  /** Double height only. */
+  tall: boolean
+  /** Font B, condensed. */
+  small: boolean
+}
+
+/**
+ * The receipt as a person would see it come out of the printer.
+ *
+ * `visibleLines` throws the alignment and emphasis away, which is right for
+ * measuring column widths and wrong for showing someone their own receipt: a
+ * centred double-width shop name rendered flush left reads as a gap in the
+ * layout rather than as the banner it is.
+ *
+ * The column arithmetic is untouched — `text` is the same characters
+ * `visibleLines` gives. Only the styling is carried alongside instead of
+ * discarded.
+ */
+export function previewLines(receipt: string): PreviewLine[] {
+  const lines: PreviewLine[] = []
+
+  let align: PreviewAlign = 'left'
+  let bold = false
+  let banner = false
+  let tall = false
+  let small = false
+  let text = ''
+
+  /* The style as it was when the line's first character was written, not as it
+     is at the newline. `BOLD_OFF` comes before the line break, so reading the
+     state at the end would report every fully-bold line as not bold. */
+  let started: Omit<PreviewLine, 'text'> | null = null
+
+  const endLine = () => {
+    lines.push({ text, ...(started ?? { align, bold, banner, tall, small }) })
+    text = ''
+    started = null
+  }
+
+  for (let i = 0; i < receipt.length; i++) {
+    const ch = receipt[i]!
+
+    if (ch === LF) {
+      endLine()
+      continue
+    }
+
+    if (ch === ESC) {
+      const code = receipt[i + 1]
+      const arg = receipt.charCodeAt(i + 2)
+
+      if (code === '@') { i += 1; continue }
+      if (code === 'a') {
+        align = arg === 1 ? 'centre' : arg === 2 ? 'right' : 'left'
+        i += 2
+        continue
+      }
+      if (code === 'E') { bold = arg === 1; i += 2; continue }
+      if (code === 'd') { i += 2; continue }
+      if (code === '!') {
+        /* The mode byte is a set of flags: 0x01 font B, 0x08 emphasis,
+           0x10 double height, 0x20 double width. */
+        small = (arg & 0x01) !== 0
+        const wide = (arg & 0x20) !== 0
+        const high = (arg & 0x10) !== 0
+        banner = wide && high
+        tall = high && !wide
+        bold = (arg & 0x08) !== 0
+        i += 2
+        continue
+      }
+      i += 1
+      continue
+    }
+
+    if (ch === GS) {
+      // GS V, the cut. Nothing a person sees.
+      i += 2
+      continue
+    }
+
+    if (text === '') started = { align, bold, banner, tall, small }
+    text += ch
+  }
+
+  // Unconditional, so the line count matches `visibleLines`, which splits on the
+  // final newline and therefore ends with an empty line of its own.
+  endLine()
+  return lines
+}
+
 /** Strips ESC/POS control sequences, so a test can measure printed width. */
 export function visibleLines(receipt: string): string[] {
   return receipt
