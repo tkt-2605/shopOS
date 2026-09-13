@@ -89,8 +89,11 @@ export default function Suppliers() {
             <tbody>
               {rows.map((s) => (
                 <tr key={s.id}>
-                  <td className="pickable" onClick={() => void open(s)}>
-                    {s.name}
+                  <td>
+                    {/* A button rather than a clickable cell: the row already
+                        has Edit and Delete in the tab order, and the name was
+                        the one thing in it the keyboard could not reach. */}
+                    <button className="cell-btn" onClick={() => void open(s)}>{s.name}</button>
                     {!s.isActive && <span className="badge mute" style={{ marginLeft: 7 }}>off</span>}
                   </td>
                   <td className="num">{s.phone ?? <span style={{ color: 'var(--ink-3)' }}>—</span>}</td>

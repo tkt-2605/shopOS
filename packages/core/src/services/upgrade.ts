@@ -1,5 +1,6 @@
 import type { SqlDriver } from '../db/driver.js'
 import { ROLE_TEMPLATES, PAGES } from '../integrity/permissions.js'
+import { backfillCustomerCodes } from './customers.js'
 
 /**
  * What a new version of ShopOS has to do to a shop that is already running.
@@ -12,8 +13,15 @@ import { ROLE_TEMPLATES, PAGES } from '../integrity/permissions.js'
  * reasonably know — chiefly which of the shop's roles should see a screen that
  * did not exist when they configured them.
  */
-export async function applyUpgrades(db: SqlDriver): Promise<{ pagesGranted: string[] }> {
+export async function applyUpgrades(db: SqlDriver): Promise<{ pagesGranted: string[]; codesGiven: number }> {
   const granted: string[] = []
+
+  /* Customers entered before the code existed have none, and a screen that shows
+     a blank in the column meant to identify people is worse than no column. Done
+     here rather than in a migration because the codes have to dodge whatever the
+     shop has typed by hand, and a migration that hit the unique constraint would
+     leave the shop unable to open its own till. */
+  const codesGiven = await backfillCustomerCodes(db)
 
   await db.transaction(async (tx) => {
     const newPages = await pagesNotYetKnown(tx)
@@ -29,7 +37,7 @@ export async function applyUpgrades(db: SqlDriver): Promise<{ pagesGranted: stri
     }
   })
 
-  return { pagesGranted: [...new Set(granted)] }
+  return { pagesGranted: [...new Set(granted)], codesGiven }
 }
 
 /**

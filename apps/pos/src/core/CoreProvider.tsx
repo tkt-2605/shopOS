@@ -1,10 +1,22 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { createTauriDriver, migrate, type SqlDriver } from '@shopos/core'
-import { MIGRATIONS } from './migrations'
+import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup } from './backup'
-import { isFirstRun, firstRun, seedDemoData, applyUpgrades, login, getSetting, getDeviceRegister } from '@shopos/core'
-import type { SessionUser } from '@shopos/core'
+import {
+  isFirstRun, firstRun, seedDemoData, applyUpgrades, login, getSetting, getDeviceRegister,
+  loadFeatures, setFeature, FEATURES_OFF,
+  loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
+  loadShopProfile,
+} from '@shopos/core'
+import type { SessionUser, Features, FeatureKey, StockPolicy, ShopProfile } from '@shopos/core'
+
+/** Until the database has been read. Never printed — the setup screen runs first. */
+const NO_SHOP: ShopProfile = {
+  name: 'My Shop',
+  address: null, phone: null, email: null, gstin: null, stateCode: null,
+  receiptFooter: null, terms: null, logoPath: null,
+}
 
 type Status =
   | { phase: 'starting' }
@@ -18,7 +30,27 @@ interface CoreValue {
   user: SessionUser | null
   registerId: string
   registerName: string
+  /**
+   * Who the shop is, on paper. Held here rather than read per screen so that
+   * saving a new name or address changes the sidebar and the next receipt at the
+   * same moment — a shop that corrects its GSTIN and then prints the old one
+   * until it restarts would have no way of knowing the save worked.
+   */
+  shop: ShopProfile
+  refreshShop: () => Promise<void>
+  /** `shop.name`, kept for the places that only ever wanted the name. */
   shopName: string
+  /**
+   * Which optional capabilities this shop uses. Held here rather than read on
+   * every screen so that switching one off takes effect everywhere at once —
+   * the product form, the prices screen and the counter cannot disagree about
+   * whether the shop has quantity breaks.
+   */
+  features: Features
+  setFeatureFlag: (key: FeatureKey, on: boolean) => Promise<void>
+  /** What the counter does when the count says there is nothing left. */
+  stockPolicy: StockPolicy
+  setStockPolicyTo: (policy: StockPolicy) => Promise<void>
   reloadRegister: () => Promise<void>
   setUser: (user: SessionUser | null) => void
   completeSetup: (input: { shopName: string; password: string; withDemo: boolean }) => Promise<void>
@@ -58,6 +90,14 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
     // any more; without this the next start fails with "a transaction is already
     // open" and offers no way out.
     await invoke('sql_abandon_tx').catch(() => undefined)
+
+    /* Before anything reads a table: this bundle's .sql files were fixed when it
+       was built, and the code around them was not. Starting against a database
+       the code is ahead of fails one query at a time, on whichever screen asks
+       first, with nothing to connect it to the cause. */
+    const stale = staleBuild()
+    if (stale) throw new Error(stale)
+
     await migrate(db, MIGRATIONS)
     const needsSetup = await isFirstRun(db)
     // A shop that upgrades into a new screen should find it there, without the
@@ -72,8 +112,10 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>({ phase: 'starting' })
   const [user, setUser] = useState<SessionUser | null>(null)
   const [registerId, setRegisterId] = useState('')
-  const [shopName, setShopName] = useState('ShopOS')
+  const [shop, setShop] = useState<ShopProfile>(NO_SHOP)
   const [registerName, setRegisterName] = useState('')
+  const [features, setFeatures] = useState<Features>(FEATURES_OFF)
+  const [stockPolicy, setPolicy] = useState<StockPolicy>(STOCK_POLICY_DEFAULT)
 
   useEffect(() => {
     let cancelled = false
@@ -90,6 +132,8 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 
         await loadRegister()
         await applyAppearance()
+        setFeatures(await loadFeatures(db))
+        setPolicy(await loadStockPolicy(db))
         await devAutoLogin()
         if (!cancelled) setStatus({ phase: 'ready' })
 
@@ -128,7 +172,28 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     const density = (await getSetting(db, 'ui_density')) ?? 'compact'
     document.documentElement.dataset['theme'] = theme
     document.documentElement.dataset['density'] = density
-    setShopName((await getSetting(db, 'shop_name')) ?? 'ShopOS')
+    await refreshShop()
+  }
+
+  async function refreshShop() {
+    const profile = await loadShopProfile(db)
+    setShop(profile)
+    /* The shop in front of the product, both on paper and on the taskbar. The
+       window is still ShopOS — that is what the person is running — but which
+       shop it is open on is the thing an owner with two of them needs to see. */
+    document.title = `${profile.name} — ShopOS`
+  }
+
+  async function setFeatureFlag(key: FeatureKey, on: boolean) {
+    if (!user) return
+    await setFeature(db, { actorId: user.id }, key, on)
+    setFeatures(await loadFeatures(db))
+  }
+
+  async function setStockPolicyTo(policy: StockPolicy) {
+    if (!user) return
+    await setStockPolicy(db, { actorId: user.id }, policy)
+    setPolicy(await loadStockPolicy(db))
   }
 
   async function loadRegister() {
@@ -143,11 +208,18 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     if (input.withDemo) await seedDemoData(db, adminId)
     await loadRegister()
     await applyAppearance()
+    setFeatures(await loadFeatures(db))
+    setPolicy(await loadStockPolicy(db))
     setStatus({ phase: 'ready' })
   }
 
   return (
-    <Ctx.Provider value={{ db, status, user, registerId, registerName, shopName, reloadRegister: loadRegister, setUser, completeSetup }}>
+    <Ctx.Provider value={{
+      db, status, user, registerId, registerName,
+      shop, refreshShop, shopName: shop.name,
+      features, stockPolicy,
+      setFeatureFlag, setStockPolicyTo, reloadRegister: loadRegister, setUser, completeSetup,
+    }}>
       {children}
     </Ctx.Provider>
   )

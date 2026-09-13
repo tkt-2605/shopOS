@@ -6,6 +6,7 @@ import { resolvePrice } from '../src/domain/pricing.js'
 import { createBill } from '../src/services/billing.js'
 import { rupees } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
+import { setFeature } from '../src/services/features.js'
 import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 
 let fx: Fixture
@@ -30,6 +31,9 @@ async function aPen(ladder?: string) {
   const p = await makeProduct(fx.db, { name: 'Pen', baseRate: rupees(10) })
   await setUnits(fx.db, ctx(), p, [{ saleUnit: 'box', baseUnits: fromUnits(12) }])
   if (ladder) {
+    // A shop with a ladder is a shop that has turned quantity breaks on — the
+    // editor offers one price box until it has.
+    await setFeature(fx.db, ctx(), 'tieredPricing', true)
     const saved = await setLadder(fx.db, ctx(), {
       productId: p, priceListId: fx.seed.priceListId, saleUnit: 'piece', rungs: rungs(ladder),
     })

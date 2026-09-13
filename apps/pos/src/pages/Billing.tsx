@@ -8,10 +8,12 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { printBill } from '../core/print'
 import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBillTabs'
+import { useShortcuts } from '../core/useShortcuts'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
+import { usePickList } from '../ui/PickList'
 
 export default function Billing() {
-  const { db, registerId } = useCore()
+  const { db, registerId, stockPolicy } = useCore()
   const user = useUser()
   const tabs = useBillTabs(db, registerId, user.id)
   const active = tabs.active
@@ -20,6 +22,7 @@ export default function Billing() {
   const [term, setTerm] = useState('')
   const [results, setResults] = useState<ProductListItem[]>([])
   const [customers, setCustomers] = useState<CustomerListItem[]>([])
+  const [customerTerm, setCustomerTerm] = useState('')
   const [pickingCustomer, setPickingCustomer] = useState(false)
   const [paying, setPaying] = useState(false)
   const [done, setDone] = useState<{ billId: string; docNo: string; total: number; points: number } | null>(null)
@@ -52,6 +55,57 @@ export default function Billing() {
   const blocked = active.lines.filter((l) => l.product.discountBlocked)
 
   const empty = active.lines.length === 0
+  /* A line left at zero is half-typed, not a sale. Said rather than silently
+     billed for nothing. */
+  const unfinished = active.lines.some((l) => l.qty <= 0)
+
+  /**
+   * Lines being sold off a shelf that does not have them.
+   *
+   * Read off the snapshot the search returned rather than asked of the database
+   * on every keystroke: this is a warning, and the authoritative check still
+   * happens inside `submitBill` where it belongs. Several lines of the same item
+   * are added together, because two lines of three pens is six pens.
+   */
+  const short = useMemo(() => {
+    const wanted = new Map<string, { name: string; unit: string; want: number; have: number }>()
+    for (const line of active.lines) {
+      if (!line.product.isStockTracked) continue
+      const factor = line.units.find((u) => u.saleUnit === line.saleUnit)?.baseUnits
+      const base = line.qty * Quantity.toUnits(factor ?? Quantity.fromUnits(1))
+      const at = wanted.get(line.product.id)
+      if (at) at.want += base
+      else {
+        wanted.set(line.product.id, {
+          name: line.product.name,
+          unit: line.product.baseUnit,
+          want: base,
+          have: Quantity.toUnits(line.product.qtyOnHand),
+        })
+      }
+    }
+    for (const [id, w] of wanted) if (w.want <= w.have) wanted.delete(id)
+    return wanted
+  }, [active.lines])
+
+  const sellingShort = short.size > 0 && stockPolicy === 'warn'
+
+  /**
+   * Whether the cashier has said they meant it.
+   *
+   * Not a second dialog on top of the payment dialog — at a counter with a queue
+   * that is the exact friction this product exists to avoid. Instead the money
+   * buttons are simply not available until the shortfall is acknowledged, so the
+   * warning is something you act on rather than something you read past. Keyed on
+   * what is short, so changing the cart withdraws the acknowledgement rather than
+   * carrying it over to a different mistake.
+   */
+  const [acknowledged, setAcknowledged] = useState('')
+  const shortKey = useMemo(
+    () => [...short.values()].map((w) => `${w.name}:${w.want}`).join('|'),
+    [short],
+  )
+  const blockedOnShort = sellingShort && acknowledged !== shortKey
 
   /* How many points this bill can absorb: what the customer has, capped by the
      share of the bill the program lets points cover. */
@@ -111,12 +165,41 @@ export default function Billing() {
   // typed value goes straight into the cart without a selection step.
   const onScanKey = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') { setTerm(''); return }
+    // Typed three letters and several things match: ↓ goes into the list rather
+    // than forcing a reach for the mouse.
+    if (e.key === 'ArrowDown' && results.length > 0) {
+      e.preventDefault()
+      resultPick.focusList()
+      return
+    }
     if (e.key !== 'Enter') return
     e.preventDefault()
     const exact = results.find((r) => r.barcode === term.trim())
     const pick = exact ?? results[0]
     if (pick) await addProduct(pick)
   }
+
+  /* The two lists a cashier chooses from. Enter on the scan box is deliberately
+     not the list's Enter: an exact barcode beats whatever is highlighted, which
+     is what makes a scanner feel instant. */
+  const resultPick = usePickList({
+    count: results.length,
+    resetKey: term,
+    onPick: (i) => { const p = results[i]; if (p) void addProduct(p) },
+  })
+
+  /* Walk-in is row zero, so the commonest answer is the one already highlighted
+     when the dialog opens. */
+  const chooseCustomer = useCallback((customer: CustomerListItem | null) => {
+    tabs.patch((cart) => ({ ...cart, customer }))
+    setPickingCustomer(false)
+  }, [tabs])
+
+  const customerPick = usePickList({
+    count: customers.length + 1,
+    resetKey: customerTerm,
+    onPick: (i) => chooseCustomer(i === 0 ? null : customers[i - 1] ?? null),
+  })
 
   const editLine = (key: string, change: (line: CartLine) => CartLine) =>
     tabs.patch((cart) => ({ ...cart, lines: cart.lines.map((l) => (l.key === key ? change(l) : l)) }))
@@ -172,34 +255,28 @@ export default function Billing() {
   }, [db, user.id, active.lines.length, tabs, totals.grandTotal, due, redeemPoints, focusScan])
 
   /* The counter should not need the mouse. Only bound keys are advertised.
-     The handler is held in a ref so the listener registers once but always runs
-     against the current tabs, rather than re-binding on every render. */
-  const onKey = (e: KeyboardEvent) => {
-    const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement
-
-    if (e.key === 'F12') {
-      e.preventDefault()
-      if (!empty && !done) setPaying(true)
-      return
-    }
-    if (e.ctrlKey && e.key.toLowerCase() === 't') { e.preventDefault(); tabs.open(); return }
-    if (e.ctrlKey && e.key.toLowerCase() === 'w') { e.preventDefault(); void closeTab(active); return }
-    if (e.ctrlKey && e.key >= '1' && e.key <= String(MAX_TABS)) {
-      const target = tabs.tabs[Number(e.key) - 1]
-      if (target) { e.preventDefault(); tabs.select(target.tabId) }
-      return
-    }
-    if (e.key === '/' && !typing) { e.preventDefault(); focusScan() }
-  }
-
-  const keyHandler = useRef(onKey)
-  keyHandler.current = onKey
-
-  useEffect(() => {
-    const listener = (e: KeyboardEvent) => keyHandler.current(e)
-    window.addEventListener('keydown', listener)
-    return () => window.removeEventListener('keydown', listener)
-  }, [])
+     Every one of these now stands down while a dialog is open — the payment
+     sheet used to be reachable with F12 from inside the customer picker, and
+     Ctrl+W would cancel the bill behind whatever was on screen. */
+  useShortcuts([
+    // Allowed while typing: the cashier is often in the quantity box when the
+    // customer is ready to pay.
+    { key: 'F12', whileTyping: true, run: () => { if (!empty && !unfinished && !done) setPaying(true) } },
+    { key: 't', ctrl: true, whileTyping: true, run: () => tabs.open() },
+    { key: 'w', ctrl: true, whileTyping: true, run: () => void closeTab(active) },
+    ...Array.from({ length: MAX_TABS }, (_, i) => ({
+      key: String(i + 1),
+      ctrl: true,
+      whileTyping: true,
+      run: () => {
+        const target = tabs.tabs[i]
+        if (target) tabs.select(target.tabId)
+      },
+    })),
+    // Not while typing: a cashier searching for "Tuf 1/2" is not asking to jump
+    // back to the scan box.
+    { key: '/', run: focusScan },
+  ])
 
   async function closeTab(cart: Cart) {
     if (cart.lines.length > 0) {
@@ -234,6 +311,19 @@ export default function Billing() {
           )}
         </div>
 
+        {tabs.notice && (
+          <div style={{ padding: '0 0 10px' }}>
+            <Alert kind="ok">
+              {tabs.notice}
+              <button
+                className="btn ghost sm"
+                style={{ marginLeft: 10 }}
+                onClick={tabs.dismissNotice}
+              >Dismiss</button>
+            </Alert>
+          </div>
+        )}
+
         <div className="scan-wrap">
           <div className="scan-bar">
             <input
@@ -249,9 +339,9 @@ export default function Billing() {
           {term !== '' && (
             <div className="results">
               <table>
-                <tbody>
-                  {results.map((p) => (
-                    <tr key={p.id} className="pickable" onClick={() => void addProduct(p)}>
+                <tbody {...resultPick.listProps}>
+                  {results.map((p, i) => (
+                    <tr key={p.id} {...resultPick.rowProps(i)}>
                       <td>
                         <span className="cart-name">{p.name}</span>
                         {p.brand && <span className="cart-brand"> · {p.brand}</span>}
@@ -296,10 +386,18 @@ export default function Billing() {
                       )}
                     </div>
                     <div className="src">{Pricing.describeSource(line.source)}</div>
+                    {/* Said where the mistake is being made, not at the end. A
+                        cashier who learns at the payment screen has a queue
+                        waiting while they work out which line to change. */}
+                    {stockPolicy !== 'allow' && short.has(line.product.id) && (
+                      <div className="src warn-note">
+                        Only {Quantity.formatQty(line.product.qtyOnHand)} {line.product.baseUnit} in stock
+                      </div>
+                    )}
                   </td>
                   <td>
                     <select
-                      className="select"
+                      className="select unit-select"
                       value={line.saleUnit}
                       onChange={(e) => editLine(line.key, (l) => ({ ...l, saleUnit: e.target.value }))}
                     >
@@ -307,11 +405,16 @@ export default function Billing() {
                     </select>
                   </td>
                   <td className="r">
+                    {/* `step="any"` rather than a step against a fractional
+                        `min`: a number input counts from its minimum, so min
+                        0.0001 step 1 made the arrows produce 1.0001, 2.0001,
+                        3.0001. Fractional quantities are still typed freely — a
+                        shop sells 0.3 kg — the arrows just stop inventing them. */}
                     <input
                       className="qty-input num"
-                      type="number" min="0.0001" step="1"
+                      type="number" min="0" step="any"
                       value={line.qty}
-                      onChange={(e) => editLine(line.key, (l) => ({ ...l, qty: Math.max(0.0001, Number(e.target.value)) }))}
+                      onChange={(e) => editLine(line.key, (l) => ({ ...l, qty: Math.max(0, Number(e.target.value) || 0) }))}
                     />
                   </td>
                   <td className="r">
@@ -354,7 +457,11 @@ export default function Billing() {
         <div className="totals">
           <Field label="Customer">
             <button className="btn" style={{ width: '100%', justifyContent: 'space-between' }}
-              onClick={() => { void searchCustomers(db).then(setCustomers); setPickingCustomer(true) }}>
+              onClick={() => {
+                setCustomerTerm('')
+                void searchCustomers(db).then(setCustomers)
+                setPickingCustomer(true)
+              }}>
               <span>{active.customer?.name ?? 'Walk-in'}</span>
               <span style={{ color: 'var(--ink-3)' }}>Change</span>
             </button>
@@ -396,38 +503,30 @@ export default function Billing() {
           </div>
         </div>
 
-        <button className="pay-btn" disabled={empty} onClick={() => setPaying(true)}>
+        <button className="pay-btn" disabled={empty || unfinished} onClick={() => setPaying(true)}>
           <span className="k">F12</span>
-          <span>Take payment</span>
+          <span>{unfinished ? 'A line has no quantity' : 'Take payment'}</span>
         </button>
       </div>
 
       {pickingCustomer && (
         <Modal title="Choose a customer" onClose={() => setPickingCustomer(false)}>
           <input
-            className="input" autoFocus placeholder="Name, phone or customer code"
-            onChange={(e) => void searchCustomers(db, e.target.value).then(setCustomers)}
+            className="input" placeholder="Name, phone or customer code"
+            value={customerTerm}
+            onChange={(e) => {
+              setCustomerTerm(e.target.value)
+              void searchCustomers(db, e.target.value).then(setCustomers)
+            }}
+            onKeyDown={customerPick.searchKeyDown}
           />
           <table>
-            <tbody>
-              <tr
-                className="pickable"
-                onClick={() => {
-                  tabs.patch((cart) => ({ ...cart, customer: null }))
-                  setPickingCustomer(false)
-                }}
-              >
+            <tbody {...customerPick.listProps}>
+              <tr {...customerPick.rowProps(0)}>
                 <td><span className="cart-name">Walk-in</span></td><td className="r">—</td>
               </tr>
-              {customers.map((c) => (
-                <tr
-                  key={c.id}
-                  className="pickable"
-                  onClick={() => {
-                    tabs.patch((cart) => ({ ...cart, customer: c }))
-                    setPickingCustomer(false)
-                  }}
-                >
+              {customers.map((c, i) => (
+                <tr key={c.id} {...customerPick.rowProps(i + 1)}>
                   <td>
                     <span className="cart-name">{c.name}</span>
                     {c.code && <span className="cart-brand"> · {c.code}</span>}
@@ -474,20 +573,55 @@ export default function Billing() {
             </div>
           )}
 
+          {/* Above the money, not below it. This is the last point at which
+              changing the quantity costs nothing, and the buttons stay out of
+              reach until it has been answered one way or the other. Under
+              `block` the service refuses instead and this never shows. */}
+          {sellingShort && (
+            <div className="short-gate">
+              <div className="short-gate-text">
+                <div className="short-gate-head">
+                  Not enough stock for {short.size === 1 ? 'this item' : `${short.size} items`}
+                </div>
+                {[...short.values()].map((w) => (
+                  <div key={w.name} className="short-gate-line">
+                    {w.name} — <span className="num">{w.have}</span> {w.unit} in stock,
+                    selling <span className="num">{w.want}</span>
+                  </div>
+                ))}
+                <div className="short-gate-note">
+                  {acknowledged === shortKey
+                    ? 'The count will go below zero and the item will be on “Counts that need fixing”.'
+                    : 'Change the quantity on the bill, or sell it anyway and fix the count later.'}
+                </div>
+              </div>
+              {acknowledged !== shortKey && (
+                <button className="btn warn" onClick={() => setAcknowledged(shortKey)}>
+                  Sell anyway
+                </button>
+              )}
+            </div>
+          )}
+
           {due === 0 ? (
-            <button className="btn primary lg" onClick={() => void pay('cash')}>
+            <button className="btn primary lg" disabled={blockedOnShort} onClick={() => void pay('cash')}>
               Settle with points
             </button>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <button className="btn primary lg" onClick={() => void pay('cash')}>Cash</button>
-              <button className="btn lg" onClick={() => void pay('upi')}>UPI</button>
-              <button className="btn lg" onClick={() => void pay('card')}>Card</button>
-              <button className="btn lg" disabled={!active.customer} onClick={() => void pay('credit')}>
+              <button className="btn primary lg" disabled={blockedOnShort} onClick={() => void pay('cash')}>Cash</button>
+              <button className="btn lg" disabled={blockedOnShort} onClick={() => void pay('upi')}>UPI</button>
+              <button className="btn lg" disabled={blockedOnShort} onClick={() => void pay('card')}>Card</button>
+              <button
+                className="btn lg"
+                disabled={blockedOnShort || !active.customer}
+                onClick={() => void pay('credit')}
+              >
                 Credit
               </button>
             </div>
           )}
+
           {!active.customer && <span className="hint">Credit and loyalty points both need a customer on the bill.</span>}
         </Modal>
       )}
@@ -515,6 +649,14 @@ export default function Billing() {
   )
 }
 
+/** What is short, in the order a person would say it. */
+function describeShort(short: Map<string, { name: string; unit: string; want: number; have: number }>): string {
+  const parts = [...short.values()].map(
+    (w) => `${w.name} — ${w.have} ${w.unit} in stock, selling ${w.want}`,
+  )
+  return parts.length === 1 ? `${parts[0]}.` : `${parts.join('; ')}.`
+}
+
 /** The one mapping from cart lines to what the totals engine wants. */
 function totalsLinesOf(lines: CartLine[]): Totals.TotalsLine[] {
   return lines.map((l) => ({
@@ -537,9 +679,13 @@ function submitMessage(result: Extract<Awaited<ReturnType<typeof submitBill>>, {
   switch (result.code) {
     case 'INSUFFICIENT_STOCK': {
       const first = result.shortfalls[0]
+      // This shop has chosen to refuse. Said with the way out, because a cashier
+      // who cannot sell the item in the customer's hand needs to know it is a
+      // setting and not a fault.
+      const how = ' This shop refuses sales below the count — an owner can change that in Settings.'
       return first
-        ? `Not enough stock: ${first.productName} has ${Quantity.formatQty(first.available)}, needs ${Quantity.formatQty(first.required)}.`
-        : 'Not enough stock.'
+        ? `Not enough stock: ${first.productName} has ${Quantity.formatQty(first.available)}, needs ${Quantity.formatQty(first.required)}.${how}`
+        : `Not enough stock.${how}`
     }
     case 'CREDIT_LIMIT_EXCEEDED':
       return `Over the credit limit by ${Money.formatWithSymbol(result.excess)}. Take a payment first or reduce the bill.`

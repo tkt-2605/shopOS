@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Money, Backup, getSetting, setSetting, loadLoyaltyProgram, CARRY_WINDOW_DAYS, type Loyalty,
+  Money, Backup, getSetting, setSetting, loadLoyaltyProgram, CARRY_WINDOW_DAYS,
+  saveShopProfile, stateName, STATES, type Loyalty, type ShopProfile,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { listPrinters, defaultPrinter } from '../core/print'
@@ -28,8 +29,7 @@ const DENSITIES: { id: Density; name: string }[] = [
 ]
 
 export default function Settings() {
-  const { db } = useCore()
-  const user = useUser()
+  const { db, features, setFeatureFlag, stockPolicy, setStockPolicyTo } = useCore()
   const [theme, setTheme] = useState<Theme>('daylight')
   const [density, setDensity] = useState<Density>('compact')
   const [program, setProgram] = useState<Loyalty.LoyaltyProgram | null>(null)
@@ -175,6 +175,8 @@ export default function Settings() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 860 }}>
       {saved && <Alert kind="ok">Saved.</Alert>}
+
+      <ShopCard />
 
       <Card title="Appearance">
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
@@ -351,6 +353,85 @@ export default function Settings() {
         </Card>
       )}
 
+      <Card title="What this shop uses">
+        <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
+          Not every shop needs everything. Switching one of these off takes it off
+          the screens that ask for it — nothing already saved is deleted, and
+          turning it back on finds it where it was.
+        </div>
+
+        <Switch
+          id="feature-multi-barcode"
+          on={features.multiBarcode}
+          onChange={(on) => void setFeatureFlag('multiBarcode', on)}
+          title="Several barcodes for one item"
+          note={
+            'The manufacturer’s code, your own printed tag, and the one on the old packaging '
+            + 'still at the back of the shelf — all finding the same item. Off, the item form '
+            + 'asks for one code. Codes already saved go on working at the counter either way: a '
+            + 'scan that stopped finding its item would be the worst thing this switch could do.'
+          }
+        />
+
+        <Switch
+          id="feature-tiered-pricing"
+          on={features.tieredPricing}
+          onChange={(on) => void setFeatureFlag('tieredPricing', on)}
+          title="Cheaper by the quantity"
+          note={
+            'One is ₹15, ten or more are ₹12, twenty or more are ₹11. Off, an item has '
+            + 'one price and the forms ask for one number. Any breaks already written stay in the '
+            + 'database, but they stop setting prices while this is off — a price that is still '
+            + 'being charged by a rule nobody can see is worse than no rule at all.'
+          }
+        />
+        <Switch
+          id="feature-unique-phone"
+          on={features.uniquePhone}
+          onChange={(on) => void setFeatureFlag('uniquePhone', on)}
+          title="One customer per phone number"
+          note={
+            'The number is what a cashier searches on, so the same person entered twice under '
+            + 'one number is two khata accounts and two balances. On, a number already in use is '
+            + 'refused and the form offers to open whoever has it. Off, the same warning appears '
+            + 'and the save goes through — for the household that shares one phone between two '
+            + 'accounts on purpose. Nothing already saved is changed either way.'
+          }
+        />
+
+        <div style={{ paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>When the count says there is nothing left</div>
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 2, marginBottom: 9, lineHeight: 1.5 }}>
+            The customer is at the counter holding the item and the records say it does
+            not exist. Counts are wrong in every shop that has just started, so this
+            decides whether that is the cashier’s problem or the owner’s. Whatever is
+            chosen, the item turns up on “Counts that need fixing” on the stock count
+            screen, and the goods still leave at a cost so the margin stays right.
+          </div>
+          <Choice
+            value={stockPolicy}
+            onChange={(next) => void setStockPolicyTo(next)}
+            options={[
+              {
+                id: 'block',
+                title: 'Refuse the sale',
+                note: 'Nothing can be sold that the records do not show. Right where the count is the point — a pharmacy, or anything licensed.',
+              },
+              {
+                id: 'warn',
+                title: 'Warn, and let it through',
+                note: 'The cashier is told what is short and can go ahead. The queue moves and the owner gets a list to fix.',
+              },
+              {
+                id: 'allow',
+                title: 'Say nothing',
+                note: 'Fastest at the counter. A count that is genuinely wrong is never noticed at the till.',
+              },
+            ]}
+          />
+        </div>
+      </Card>
+
       <Card title="Receipt printer">
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
           Receipts are sent as raw ESC/POS, so the driver cannot reinterpret them.
@@ -481,11 +562,210 @@ export default function Settings() {
         <RestorePanel />
       </Card>
 
-      <Card title="Shop">
-        <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>
-          Signed in as <strong>{user.username}</strong> ({user.roleName}).
-        </div>
-      </Card>
+    </div>
+  )
+}
+
+/**
+ * Who the shop is, on every document it prints.
+ *
+ * Every field on this form was already being read by the printing code and
+ * written by nothing — the receipt builder has asked for the address, the phone
+ * and the GSTIN since v1 and got null every time, because the only screen that
+ * could have set them showed the signed-in user's name and stopped there.
+ */
+function ShopCard() {
+  const { db, shop, refreshShop } = useCore()
+  const user = useUser()
+  const [draft, setDraft] = useState<ShopProfile>(shop)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  // The profile arrives one tick after the provider mounts, so the form has to
+  // follow it rather than snapshot whatever was there first.
+  useEffect(() => { setDraft(shop) }, [shop])
+
+  function patch(next: Partial<ShopProfile>) {
+    setDraft((d) => ({ ...d, ...next }))
+    setSaved(false)
+  }
+
+  async function save() {
+    setBusy(true)
+    setError(null)
+    const result = await saveShopProfile(db, { actorId: user.id }, draft)
+    setBusy(false)
+
+    if (!result.ok) {
+      setError(
+        result.code === 'NAME_REQUIRED'
+          ? 'The shop needs a name — it is the first line of every bill.'
+          : result.code === 'BAD_GSTIN'
+            ? 'That is not the shape of a GSTIN. It is 15 characters: two digits, then five letters, four digits, a letter, one more character, a Z, and a last character.'
+            : result.code === 'UNKNOWN_STATE'
+              ? 'That is not a state this software knows.'
+              : `This GSTIN belongs to ${stateName(result.gstinState) ?? `state ${result.gstinState}`}, but the state chosen is ${stateName(result.chosenState) ?? result.chosenState}. One of the two is wrong.`,
+      )
+      return
+    }
+
+    await refreshShop()
+    setSaved(true)
+    setTimeout(() => setSaved(false), 3000)
+  }
+
+  return (
+    <Card
+      title="Shop"
+      actions={
+        <button className="btn primary sm" disabled={busy} onClick={() => void save()}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      }
+    >
+      <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
+        This is what prints at the top of every bill, receipt and statement.
+        Changing it never rewrites a document already raised — a bill keeps the
+        address it was printed with.
+      </div>
+
+      {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
+      {saved && <div style={{ marginBottom: 11 }}><Alert kind="ok">Saved.</Alert></div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '12px 24px' }}>
+        <Field label="Shop name">
+          <input className="input" id="shop-name" value={draft.name}
+            onChange={(e) => patch({ name: e.target.value })} />
+        </Field>
+        <Field label="Phone">
+          <input className="input" id="shop-phone" value={draft.phone ?? ''}
+            onChange={(e) => patch({ phone: e.target.value })} />
+        </Field>
+        <Field label="Email" hint="Printed on documents that have room for it.">
+          <input className="input" id="shop-email" value={draft.email ?? ''}
+            onChange={(e) => patch({ email: e.target.value })} />
+        </Field>
+        <Field label="GSTIN" hint="Leave blank if the shop is not registered.">
+          <input className="input num" id="shop-gstin" value={draft.gstin ?? ''}
+            placeholder="33ABCDE1234F1Z5"
+            onChange={(e) => patch({ gstin: e.target.value.toUpperCase() })} />
+        </Field>
+      </div>
+
+      <Field label="Address">
+        <textarea className="input" id="shop-address" rows={2} value={draft.address ?? ''}
+          onChange={(e) => patch({ address: e.target.value })} />
+      </Field>
+
+      <Field
+        label="State the shop is in"
+        hint={
+          'This decides the tax on every bill. Without it, a sale to a customer in '
+          + 'another state is charged CGST and SGST when the law says IGST — and '
+          + 'nothing on the bill would show that it was wrong.'
+        }
+      >
+        <select className="select" id="shop-state" value={draft.stateCode ?? ''}
+          onChange={(e) => patch({ stateCode: e.target.value === '' ? null : e.target.value })}>
+          <option value="">Not chosen — every sale is treated as local</option>
+          {STATES.map((s) => <option key={s.code} value={s.code}>{s.name}</option>)}
+        </select>
+      </Field>
+
+      <Field label="Small print on the receipt" hint="Shown at the bottom of every receipt and statement.">
+        <input className="input" id="receipt-footer" value={draft.receiptFooter ?? ''}
+          placeholder="Thank you. Goods once sold are not returnable without this bill."
+          onChange={(e) => patch({ receiptFooter: e.target.value })} />
+      </Field>
+
+      <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>
+        Signed in as <strong>{user.username}</strong> ({user.roleName}).
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * A switch with its consequence written beside it.
+ *
+ * The note is not decoration. Every one of these changes what other screens do,
+ * and an owner flicking it deserves to know what happens to the data they have
+ * already entered before they find out by looking for it.
+ */
+function Switch({
+  id, on, onChange, title, note,
+}: {
+  id: string
+  on: boolean
+  onChange: (on: boolean) => void
+  title: string
+  note: string
+}) {
+  return (
+    <label
+      htmlFor={id}
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer',
+        padding: '11px 0', borderTop: '1px solid var(--rule-soft)',
+      }}
+    >
+      <input
+        type="checkbox" id={id} checked={on} style={{ marginTop: 3 }}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span>
+        <span style={{ fontSize: 13, fontWeight: 500 }}>{title}</span>
+        <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.5 }}>
+          {note}
+        </span>
+      </span>
+    </label>
+  )
+}
+
+/**
+ * One answer out of several, where a switch would be a lie.
+ *
+ * Laid out as full rows rather than a dropdown because each option needs its
+ * consequence written beside it — these change what happens at a counter, and an
+ * owner picking one deserves to know what they are picking before they find out
+ * on a Saturday.
+ */
+function Choice<T extends string>({
+  value, onChange, options,
+}: {
+  value: T
+  onChange: (next: T) => void
+  options: { id: T; title: string; note: string }[]
+}) {
+  return (
+    <div role="radiogroup" style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+      {options.map((o) => (
+        <label
+          key={o.id}
+          style={{
+            display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer',
+            padding: '9px 11px',
+            background: value === o.id ? 'var(--accent-soft)' : 'var(--surface)',
+            border: value === o.id ? '2px solid var(--accent)' : '1px solid var(--rule-strong)',
+          }}
+        >
+          <input
+            type="radio"
+            name="stock-policy"
+            checked={value === o.id}
+            style={{ marginTop: 2 }}
+            onChange={() => onChange(o.id)}
+          />
+          <span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{o.title}</span>
+            <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.5 }}>
+              {o.note}
+            </span>
+          </span>
+        </label>
+      ))}
     </div>
   )
 }

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    The ShopOS mark: a ledger with a notch cut out of the foot, which is the
+    shape a khata book makes when its pages are held open.
+
+    This is the same drawing as `BrandMark` in `apps/pos/src/ui/icons.tsx`, and
+    the two have to be changed together — there is nothing in the build that
+    would notice if they drifted apart.
+
+    Filled rather than stroked, unlike the component. A two-pixel outline on a
+    transparent ground is legible in a sidebar at 15px and turns to grey mush in
+    a 16px taskbar slot, so the icon is a solid ground with the mark knocked out
+    of it. The colour is the daylight theme's accent.
+  -->
+  <rect width="1024" height="1024" fill="#3b6fd4"/>
+  <g transform="translate(512 512) scale(26.5) translate(-12 -12)">
+    <path d="M4 3h16v18l-3-2-3 2-3-2-3 2z" fill="#ffffff"/>
+    <path d="M8 8h8M8 12h8" fill="none" stroke="#3b6fd4" stroke-width="1.7"
+          stroke-linecap="round"/>
+  </g>
+</svg>

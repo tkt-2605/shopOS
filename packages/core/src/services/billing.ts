@@ -11,6 +11,7 @@ import { calculateEarned, planRedemption, type LoyaltyProgram, type LoyaltyEntry
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, assertAmendable, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
+import { loadStockPolicy } from './features.js'
 import { checkAvailability, postMovement, reverseVoucher, type StockShortfall } from './stock.js'
 import { nextDocNo } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
@@ -79,7 +80,17 @@ export type CreateBillResult =
   | { ok: false; code: 'DISCOUNT_BLOCKED'; productId: string; productName: string }
 
 export type SubmitBillResult =
-  | { ok: true; billId: string; docNo: string; grandTotal: Money; pointsEarned: number; pointsRedeemed: number; idempotent: boolean }
+  | {
+      ok: true; billId: string; docNo: string; grandTotal: Money
+      pointsEarned: number; pointsRedeemed: number; idempotent: boolean
+      /**
+       * Lines that were sold with nothing on the shelf. Empty on an ordinary
+       * sale. Present so the counter can say what it just did and the shop can
+       * find the item again on the shortfall report — never a refusal, or the
+       * setting would mean nothing.
+       */
+      shortfalls: StockShortfall[]
+    }
   | { ok: false; code: 'INSUFFICIENT_STOCK'; shortfalls: StockShortfall[] }
   | { ok: false; code: 'CREDIT_LIMIT_EXCEEDED'; limit: Money; projected: Money; excess: Money }
   | { ok: false; code: 'PAYMENT_MISMATCH'; expected: Money; received: Money }
@@ -378,7 +389,8 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
       return {
         ok: true, billId: existing.id, docNo: existing.doc_no,
         grandTotal: existing.grand_total as Money,
-        pointsEarned: 0, pointsRedeemed: 0, idempotent: true,
+        // A replay reports nothing new: whatever was short was said at the time.
+        pointsEarned: 0, pointsRedeemed: 0, idempotent: true, shortfalls: [],
       }
     }
   }
@@ -437,8 +449,14 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     productName: l.product_name,
     required: qty(l.base_qty),
   }))
+  /* The check is the same as it always was; what changed is who it binds.
+     Under `block` a short line still refuses the sale. Otherwise the sale goes
+     through and the shortfall is reported back on the result, so the counter can
+     say what happened and the shortfall report can pick it up afterwards. */
   const shortfalls = await checkAvailability(db, requirements)
-  if (shortfalls.length > 0) return { ok: false, code: 'INSUFFICIENT_STOCK', shortfalls }
+  if (shortfalls.length > 0 && await loadStockPolicy(db) === 'block') {
+    return { ok: false, code: 'INSUFFICIENT_STOCK', shortfalls }
+  }
 
   // Read off the line's own flag rather than the product's, so a bill earns on
   // the rules that were in force when it was rung up.
@@ -535,6 +553,7 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     pointsEarned: earned.points,
     pointsRedeemed,
     idempotent: false,
+    shortfalls,
   }
 }
 
@@ -586,12 +605,18 @@ export async function cancelBill(
       }
     }
 
-    const redemptions = await tx.query<{ id: string; loyalty_entry_id: string; points: number }>(
-      `SELECT id, loyalty_entry_id, points FROM loyalty_redemptions WHERE bill_id = ? AND reversed_at IS NULL`,
+    // Only the part still outstanding. A return against this bill may already
+    // have handed some of these points back, and taking them off `consumed` a
+    // second time would invent points the customer never had.
+    const redemptions = await tx.query<{ id: string; loyalty_entry_id: string; owed: number }>(
+      `SELECT id, loyalty_entry_id, points - restored AS owed FROM loyalty_redemptions
+        WHERE bill_id = ? AND reversed_at IS NULL`,
       [input.billId],
     )
     for (const r of redemptions) {
-      await tx.execute(`UPDATE loyalty_entries SET consumed = consumed - ? WHERE id = ?`, [r.points, r.loyalty_entry_id])
+      if (r.owed > 0) {
+        await tx.execute(`UPDATE loyalty_entries SET consumed = consumed - ? WHERE id = ?`, [r.owed, r.loyalty_entry_id])
+      }
       await tx.execute(`UPDATE loyalty_redemptions SET reversed_at = ? WHERE id = ?`, [nowIso, r.id])
     }
 

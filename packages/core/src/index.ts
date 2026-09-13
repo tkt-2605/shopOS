@@ -5,12 +5,15 @@ export { newId, newDeviceId, timestampOf } from './ids.js'
 export type { SqlDriver, Row, SqlValue, ExecResult } from './db/driver.js'
 export { SqlError } from './db/driver.js'
 export { migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type Migration } from './db/migrate.js'
+export { EXPECTED_SCHEMA_VERSION } from './db/schemaVersion.js'
 export { createTauriDriver, backupDatabase } from './db/tauri-driver.js'
 
 export * as Tax from './domain/tax.js'
 export * as Pricing from './domain/pricing.js'
 export * as Loyalty from './domain/loyalty.js'
 export * as Credit from './domain/credit.js'
+export * as Returns from './domain/returns.js'
+export * as DocFormat from './domain/docFormat.js'
 
 export * as DocStatus from './integrity/docstatus.js'
 export * as Permissions from './integrity/permissions.js'
@@ -40,10 +43,18 @@ export type { DocType } from './services/numbering.js'
 
 export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from './repos/pricing.js'
 
-export { createReturn, submitReturn, cancelReturn, returnableQty } from './services/returns.js'
+export {
+  createReturn, submitReturn, cancelReturn, processReturn, previewReturn, listReturns, returnableQty,
+} from './services/returns.js'
 export type {
   ReturnLineInput, CreateReturnInput, CreateReturnResult, SubmitReturnResult, RefundMethod,
+  ProcessReturnResult, PreviewReturnResult, ReturnPreview, ReturnListItem, ReturnOutcome,
 } from './services/returns.js'
+
+export { loadFeatures, isOn, setFeature, FEATURES_OFF } from './services/features.js'
+export { loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT } from './services/features.js'
+export type { StockPolicy } from './services/features.js'
+export type { Features, FeatureKey } from './services/features.js'
 
 export {
   recordPayment, cancelPayment, customerOutstanding, customerStatement, loadOpenBills,
@@ -68,13 +79,22 @@ export type {
 export { productValuation } from './services/stock.js'
 export * as Valuation from './domain/valuation.js'
 
-export { login, createUser, changePassword, setUserActive } from './services/auth.js'
-export type { SessionUser, LoginResult, CreateUserResult, ChangePasswordResult } from './services/auth.js'
+export { login, reauthenticate, createUser, changePassword, setUserActive } from './services/auth.js'
+export type {
+  SessionUser, LoginResult, ReauthResult, CreateUserResult, ChangePasswordResult,
+} from './services/auth.js'
+
+export { loadShopProfile, saveShopProfile, stateName, STATES } from './services/shop.js'
+export type { ShopProfile, SaveShopResult } from './services/shop.js'
+
+export { listFormats, loadFormat, getDefaultFormat, saveFormat, deleteFormat } from './services/formats.js'
 
 export {
-  searchProducts, findByBarcode, productsByIds, saleUnitsFor, searchCustomers, listBills, loadBillDetail,
+  searchProducts, findByBarcode, productsByIds, saleUnitsFor, searchCustomers,
+  listBills, countBills, loadBillDetail,
 } from './repos/catalog.js'
 export type {
+  BillFilter, BillStatusFilter,
   ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem,
   BillListItem, BillDetail, BillDetailItem,
 } from './repos/catalog.js'
@@ -108,6 +128,19 @@ export * as Reports from './repos/reports.js'
 
 export { reorderList, bySupplier } from './repos/reorder.js'
 export type { ReorderRow, ReorderOptions, SupplierGroup } from './repos/reorder.js'
+export { listShortfalls, countShortfalls } from './repos/shortfalls.js'
+export {
+  createCustomer, updateCustomer, customerByPhone, nextCustomerCode, backfillCustomerCodes,
+} from './services/customers.js'
+export type { CustomerInput, CustomerConflict, SaveCustomerResult } from './services/customers.js'
+export {
+  listCustomerPayments, writeOff, recordOpeningBalance, customerAccount,
+} from './services/payments.js'
+export type {
+  CustomerPayment, OpeningBalanceResult,
+  CustomerAccount, StatementEntry, StatementKind,
+} from './services/payments.js'
+export type { Shortfall, ShortfallSummary } from './repos/shortfalls.js'
 export type { DateRange } from './repos/reports.js'
 
 export { businessDate, addDays } from './dates.js'

@@ -12,9 +12,12 @@
     "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/pos --noEmit"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.2",
     "better-sqlite3": "^11.7.0",
-    "@types/better-sqlite3": "^7.6.12",
+    "jsdom": "^29.1.1",
     "typescript": "^5.7.2",
     "vitest": "^5.0.0"
   }

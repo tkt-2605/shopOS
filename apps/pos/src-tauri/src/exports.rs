@@ -43,3 +43,28 @@ pub fn export_file(app: tauri::AppHandle, filename: String, contents: String) ->
     std::fs::write(&path, bytes).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
     Ok(path.to_string_lossy().to_string())
 }
+
+/// The same folder, but bytes rather than text, so a PDF lands beside the CSVs
+/// a shop already knows where to find.
+#[tauri::command]
+pub fn export_pdf(
+    app: tauri::AppHandle,
+    filename: String,
+    doc: crate::pdf::PdfDoc,
+) -> Result<String, String> {
+    let name = safe_name(&filename)?;
+
+    let base = app
+        .path()
+        .document_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| format!("Could not find a folder to save into: {e}"))?;
+
+    let dir = base.join("ShopOS").join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+
+    let path = dir.join(&name);
+    std::fs::write(&path, crate::pdf::render(&doc))
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().to_string())
+}

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   openCount, loadCount, listCounts, setCounted, submitCount, cancelCount,
-  Quantity, Permissions,
-  type CountSheet, type CountSummary, type SubmitCountResult,
+  listShortfalls, Quantity, Permissions,
+  type CountSheet, type CountSummary, type SubmitCountResult, type Shortfall,
 } from '@shopos/core'
 import { useCore, useDb, useUser } from '../core/CoreProvider'
 import { Card, Modal, Empty, Alert, Rupees } from '../ui/components'
@@ -170,6 +170,8 @@ export default function StockCount() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 1000 }}>
       {error && <Alert>{error}</Alert>}
+
+      {!sheet && <NeedFixing />}
 
       {!sheet && (
         <Card title="Count the shelves">
@@ -393,5 +395,70 @@ function Finished({ result, onClose }: { result: SubmitCountResult; onClose: () 
         </div>
       </Card>
     </div>
+  )
+}
+
+
+/**
+ * Counts that need fixing.
+ *
+ * The other half of letting a shop sell below its count. Negative stock is not
+ * by itself theft or a mistake — it is one of three things, and only the shop
+ * can say which: the opening count was wrong, a delivery was never entered, or
+ * goods have genuinely walked. So this shows what is needed to tell them apart
+ * and does not guess.
+ *
+ * It lives on the count screen rather than behind its own page because the tool
+ * that fixes it is three inches below.
+ */
+function NeedFixing() {
+  const db = useDb()
+  const [rows, setRows] = useState<Shortfall[]>([])
+
+  useEffect(() => { void listShortfalls(db).then((r) => setRows(r.rows)) }, [db])
+
+  if (rows.length === 0) return null
+
+  return (
+    <Card title={`Counts that need fixing — ${rows.length}`}>
+      <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
+        These have been sold below what the records showed, so the figure is now under
+        zero. Either the opening count was wrong, a delivery was never entered, or the
+        goods have gone. Counting the shelf below settles it.
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th className="r">Short by</th>
+            <th className="r">Sold with none</th>
+            <th>Since</th>
+            <th>Last counted</th>
+            <th>Last received</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.productId}>
+              <td>
+                {r.name}
+                {r.code && <span className="cart-brand"> · {r.code}</span>}
+              </td>
+              <td className="r num" style={{ color: 'var(--danger)' }}>
+                {Quantity.formatQty(r.onHand)} {r.baseUnit}
+              </td>
+              <td className="r num">{Quantity.formatQty(r.soldShort)}</td>
+              <td className="num">{r.shortSince ?? '—'}</td>
+              <td className="num">
+                {r.lastCountedOn ?? <span style={{ color: 'var(--ink-3)' }}>Never</span>}
+              </td>
+              <td className="num">
+                {r.lastReceivedOn ?? <span style={{ color: 'var(--ink-3)' }}>Never</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
   )
 }

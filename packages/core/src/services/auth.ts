@@ -99,6 +99,87 @@ export async function login(
   }
 }
 
+export type ReauthResult =
+  | { ok: true }
+  | { ok: false; code: 'WRONG_PASSWORD'; attemptsLeft: number }
+  | { ok: false; code: 'ACCOUNT_LOCKED'; until: string }
+
+/**
+ * Proving again that the person at the keyboard is still the person who signed in.
+ *
+ * Settings and the permissions screen decide what every bill prints and who may
+ * do what. A till that is signed in and left alone is the normal state of a
+ * counter, so "is signed in" is not a strong enough answer for those two.
+ *
+ * It deliberately reuses sign-in's own rules rather than keeping a softer copy
+ * of them: the same bcrypt compare, the same `failed_logins` counter, the same
+ * lockout after five tries. Somebody guessing at the Settings screen is doing
+ * exactly what somebody guessing at the sign-in screen is doing, and it would be
+ * a strange door that counted the attempts differently.
+ *
+ * Recorded in the audit trail as a credential check against the user — which is
+ * what it is — with `reauth` and the screen in the diff, because `audit_log`
+ * carries a CHECK on its actions and rewriting an append-only table to add two
+ * names to it would be a worse trade than one field.
+ */
+export async function reauthenticate(
+  db: SqlDriver,
+  input: { userId: string; password: string; scope: string; now?: Date },
+): Promise<ReauthResult> {
+  const now = input.now ?? new Date()
+  const nowIso = now.toISOString()
+
+  const user = await db.get<{
+    id: string; password_hash: string; failed_logins: number; locked_until: string | null
+  }>(
+    `SELECT id, password_hash, failed_logins, locked_until
+       FROM users WHERE id = ? AND deleted_at IS NULL`,
+    [input.userId],
+  )
+
+  // No timing dance here, unlike `login`: the caller already knows this user
+  // exists — they are signed in as them — so there is nothing to conceal.
+  if (!user) return { ok: false, code: 'WRONG_PASSWORD', attemptsLeft: 0 }
+
+  if (user.locked_until && user.locked_until > nowIso) {
+    return { ok: false, code: 'ACCOUNT_LOCKED', until: user.locked_until }
+  }
+
+  if (!(await bcrypt.compare(input.password, user.password_hash))) {
+    const failed = user.failed_logins + 1
+    const lockedUntil =
+      failed >= MAX_FAILED ? new Date(now.getTime() + LOCKOUT_MINUTES * 60_000).toISOString() : null
+
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        `UPDATE users SET failed_logins = ?, locked_until = ?, updated_at = ? WHERE id = ?`,
+        [failed, lockedUntil, nowIso, user.id],
+      )
+      await writeAudit(tx, { actorId: user.id }, {
+        entity: 'users', entityId: user.id, action: 'login_failed',
+        after: { reauth: 1, screen: input.scope, failed_logins: failed },
+      })
+    })
+
+    return lockedUntil
+      ? { ok: false, code: 'ACCOUNT_LOCKED', until: lockedUntil }
+      : { ok: false, code: 'WRONG_PASSWORD', attemptsLeft: MAX_FAILED - failed }
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      `UPDATE users SET failed_logins = 0, locked_until = NULL, updated_at = ? WHERE id = ?`,
+      [nowIso, user.id],
+    )
+    await writeAudit(tx, { actorId: user.id }, {
+      entity: 'users', entityId: user.id, action: 'login',
+      after: { reauth: 1, screen: input.scope },
+    })
+  })
+
+  return { ok: true }
+}
+
 export type CreateUserResult =
   | { ok: true; userId: string }
   | { ok: false; code: 'USERNAME_TAKEN' }

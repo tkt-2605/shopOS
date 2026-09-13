@@ -6,7 +6,7 @@ import { loadRoleMatrix, saveRoleMatrix } from '../src/services/roles.js'
 describe('applying an upgrade to a running shop', () => {
   it('does nothing when the shop already knows every page', async () => {
     const { db } = await freshDb()
-    expect(await applyUpgrades(db)).toEqual({ pagesGranted: [] })
+    expect((await applyUpgrades(db)).pagesGranted).toEqual([])
   })
 
   it('grants a page the shop has never seen, to the roles whose template names it', async () => {
@@ -30,7 +30,7 @@ describe('applying an upgrade to a running shop', () => {
       roleId: admin.id, resources: admin.resources, pages: admin.pages, actorId: adminId,
     })
 
-    expect(await applyUpgrades(db)).toEqual({ pagesGranted: [] })
+    expect((await applyUpgrades(db)).pagesGranted).toEqual([])
     expect((await loadRoleMatrix(db, seed.roleIds['Admin']!))!.pages.suppliers).toBe(false)
   })
 
@@ -38,7 +38,7 @@ describe('applying an upgrade to a running shop', () => {
     const { db } = await freshDb()
     await db.execute(`DELETE FROM role_pages WHERE page_key = 'suppliers'`)
     await applyUpgrades(db)
-    expect(await applyUpgrades(db)).toEqual({ pagesGranted: [] })
+    expect((await applyUpgrades(db)).pagesGranted).toEqual([])
   })
 
   it('ignores a role the shop has renamed away from its template', async () => {

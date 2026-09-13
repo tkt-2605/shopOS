@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { setStockPolicy } from '../src/services/features.js'
 import { rupees, paise, add, type Money } from '../src/money.js'
 import { fromUnits, qty, toUnits } from '../src/quantity.js'
 import { createBill, submitBill, cancelBill, amendBill } from '../src/services/billing.js'
@@ -176,7 +177,8 @@ describe('submitting', () => {
     if (!r.ok) expect(r.code).toBe('PAYMENT_MISMATCH')
   })
 
-  it('refuses to sell stock that is not there, and writes nothing', async () => {
+  it('refuses to sell stock that is not there when the shop has asked it to', async () => {
+    await setStockPolicy(fx.db, { actorId: fx.adminId }, 'block')
     const p = await makeProduct(fx.db, { baseRate: rupees(100) })
     await stockUp(fx.db, p, 2)
     const draft = await billFor(p, 5)

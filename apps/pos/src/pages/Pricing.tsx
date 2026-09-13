@@ -8,9 +8,10 @@ import {
   type PriceList, type ItemPrice, type CustomerPrice, type SaleUnit,
   type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
-import { useDb, useUser } from '../core/CoreProvider'
+import { useCore, useDb, useUser } from '../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
+import { usePickList } from '../ui/PickList'
 
 /**
  * Where prices are set.
@@ -62,6 +63,7 @@ export default function Pricing() {
 
 function ItemPrices({ canWrite }: { canWrite: boolean }) {
   const db = useDb()
+  const breaks = useCore().features.tieredPricing
   const user = useUser()
   const [term, setTerm] = useState('')
   const [results, setResults] = useState<ProductListItem[]>([])
@@ -134,16 +136,23 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
     setPrices(await listItemPrices(db, { productId: chosen.id }))
   }
 
+  const pick = usePickList({
+    count: results.length,
+    resetKey: term,
+    onPick: (i) => { const hit = results[i]; if (hit) void load(hit) },
+  })
+
   return (
     <>
       <Card title="Which item">
         <input className="input" id="price-search" autoFocus
           placeholder="Search an item by name, code or barcode"
-          value={term} onChange={(e) => setTerm(e.target.value)} />
+          value={term} onChange={(e) => setTerm(e.target.value)}
+          onKeyDown={pick.searchKeyDown} />
         {results.length > 0 && (
-          <div className="results" style={{ marginTop: 8 }}>
-            {results.map((p) => (
-              <div key={p.id} className="pickable" style={{ padding: '7px 10px' }} onClick={() => void load(p)}>
+          <div className="results" style={{ marginTop: 8 }} {...pick.listProps}>
+            {results.map((p, i) => (
+              <div key={p.id} style={{ padding: '7px 10px' }} {...pick.rowProps(i)}>
                 {p.name}
                 <span style={{ float: 'right', color: 'var(--ink-3)' }}>
                   base <Rupees value={p.baseRate} /> / {p.baseUnit}
@@ -158,8 +167,10 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
         <Card title={chosen.name}>
           <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
             Base rate <Rupees value={chosen.baseRate} /> per {chosen.baseUnit}, used when no rule below
-            applies. A rate with a quantity applies from that quantity upwards, so a ladder is just
-            several rows.
+            applies.{' '}
+            {breaks
+              ? 'A rate with a quantity applies from that quantity upwards, so a ladder is just several rows.'
+              : 'One rate per list and unit. Turn on cheaper-by-the-quantity in Settings to price by how much is bought.'}
           </div>
 
           {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
@@ -167,7 +178,8 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
           <table>
             <thead>
               <tr>
-                <th>Price list</th><th>Unit</th><th className="r">From qty</th>
+                <th>Price list</th><th>Unit</th>
+                {breaks && <th className="r">From qty</th>}
                 <th className="r">Rate</th><th className="r">Per {chosen.baseUnit}</th>
                 <th>Dates</th><th />
               </tr>
@@ -179,7 +191,7 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
                   <tr key={p.id}>
                     <td>{p.priceListName}</td>
                     <td>{p.saleUnit}</td>
-                    <td className="r num">{p.minQty > 0 ? Quantity.formatQty(p.minQty) : '—'}</td>
+                    {breaks && <td className="r num">{p.minQty > 0 ? Quantity.formatQty(p.minQty) : '—'}</td>}
                     <td className="r"><Rupees value={p.rate} /></td>
                     <td className="r" style={{ color: 'var(--ink-3)' }}>
                       {unit ? <Rupees value={perBaseUnit(p.rate, unit.baseUnits)} /> : '—'}
@@ -194,7 +206,7 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
                 )
               })}
               {prices.length === 0 && (
-                <tr><td colSpan={7}><Empty>No rates yet — everyone pays the base rate</Empty></td></tr>
+                <tr><td colSpan={breaks ? 7 : 6}><Empty>No rates yet — everyone pays the base rate</Empty></td></tr>
               )}
             </tbody>
           </table>
@@ -215,10 +227,12 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
                     {unitOptions.map((u) => <option key={u.saleUnit} value={u.saleUnit}>{u.saleUnit}</option>)}
                   </select>
                 </Field>
-                <Field label="From quantity" hint="Blank means it always applies.">
-                  <input className="input num" value={row.minQty} inputMode="decimal"
-                    onChange={(e) => setRow({ ...row, minQty: e.target.value })} />
-                </Field>
+                {breaks && (
+                  <Field label="From quantity" hint="Blank means it always applies.">
+                    <input className="input num" value={row.minQty} inputMode="decimal"
+                      onChange={(e) => setRow({ ...row, minQty: e.target.value })} />
+                  </Field>
+                )}
                 <Field label="Rate">
                   <input className="input num" value={row.rate} inputMode="decimal"
                     onChange={(e) => setRow({ ...row, rate: e.target.value })} />
@@ -317,6 +331,7 @@ function PriceLists({ canWrite }: { canWrite: boolean }) {
 
 function CustomerRates({ canWrite }: { canWrite: boolean }) {
   const db = useDb()
+  const breaks = useCore().features.tieredPricing
   const user = useUser()
   const [term, setTerm] = useState('')
   const [results, setResults] = useState<CustomerListItem[]>([])
@@ -404,15 +419,28 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
     setRates(await listCustomerPrices(db, { customerId: chosen.id }))
   }
 
+  const customerPick = usePickList({
+    count: results.length,
+    resetKey: term,
+    onPick: (i) => { const hit = results[i]; if (hit) void choose(hit) },
+  })
+
+  const productPick = usePickList({
+    count: productResults.length,
+    resetKey: productTerm,
+    onPick: (i) => { const hit = productResults[i]; if (hit) void pickProduct(hit) },
+  })
+
   return (
     <>
       <Card title="Which customer">
         <input className="input" placeholder="Search a customer by name or phone"
-          value={term} onChange={(e) => setTerm(e.target.value)} />
+          value={term} onChange={(e) => setTerm(e.target.value)}
+          onKeyDown={customerPick.searchKeyDown} />
         {results.length > 0 && (
-          <div className="results" style={{ marginTop: 8 }}>
-            {results.map((c) => (
-              <div key={c.id} className="pickable" style={{ padding: '7px 10px' }} onClick={() => void choose(c)}>
+          <div className="results" style={{ marginTop: 8 }} {...customerPick.listProps}>
+            {results.map((c, i) => (
+              <div key={c.id} style={{ padding: '7px 10px' }} {...customerPick.rowProps(i)}>
                 {c.name}<span style={{ float: 'right', color: 'var(--ink-3)' }}>{c.phone ?? ''}</span>
               </div>
             ))}
@@ -434,19 +462,30 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
 
           <div style={{ fontSize: 12.5, fontWeight: 600, margin: '15px 0 3px' }}>Rates only this customer gets</div>
           <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 7 }}>
-            These beat every list. Below the lowest quantity here the customer falls back to their
-            list, which is what makes a ladder starting at ten mean &ldquo;only when they take ten&rdquo;.
+            {breaks ? (
+              <>
+                These beat every list. Below the lowest quantity here the customer falls back to
+                their list, which is what makes a ladder starting at ten mean &ldquo;only when they
+                take ten&rdquo;.
+              </>
+            ) : (
+              <>These beat every list. One rate per item and unit.</>
+            )}
           </div>
           <table>
             <thead>
-              <tr><th>Item</th><th>Unit</th><th className="r">From qty</th><th className="r">Rate</th><th /></tr>
+              <tr>
+                <th>Item</th><th>Unit</th>
+                {breaks && <th className="r">From qty</th>}
+                <th className="r">Rate</th><th />
+              </tr>
             </thead>
             <tbody>
               {rates.map((r) => (
                 <tr key={r.id}>
                   <td>{r.productName}</td>
                   <td>{r.saleUnit}</td>
-                  <td className="r num">{r.minQty > 0 ? Quantity.formatQty(r.minQty) : '—'}</td>
+                  {breaks && <td className="r num">{r.minQty > 0 ? Quantity.formatQty(r.minQty) : '—'}</td>}
                   <td className="r"><Rupees value={r.rate} /></td>
                   <td className="r">
                     {canWrite && <button className="btn ghost sm" onClick={() => void drop(r.id)}>Remove</button>}
@@ -454,7 +493,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
                 </tr>
               ))}
               {rates.length === 0 && (
-                <tr><td colSpan={5}><Empty>Nothing special — they pay their list's rates</Empty></td></tr>
+                <tr><td colSpan={breaks ? 5 : 4}><Empty>Nothing special — they pay their list's rates</Empty></td></tr>
               )}
             </tbody>
           </table>
@@ -464,12 +503,13 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
               {!picked ? (
                 <>
                   <input className="input" placeholder="Add a rate — search the item"
-                    value={productTerm} onChange={(e) => setProductTerm(e.target.value)} style={{ maxWidth: 420 }} />
+                    value={productTerm} onChange={(e) => setProductTerm(e.target.value)} style={{ maxWidth: 420 }}
+                    onKeyDown={productPick.searchKeyDown} />
                   {productResults.length > 0 && (
-                    <div className="results" style={{ marginTop: 8, maxWidth: 420 }}>
-                      {productResults.map((p) => (
-                        <div key={p.id} className="pickable" style={{ padding: '7px 10px' }}
-                          onClick={() => void pickProduct(p)}>{p.name}</div>
+                    <div className="results" style={{ marginTop: 8, maxWidth: 420 }} {...productPick.listProps}>
+                      {productResults.map((p, i) => (
+                        <div key={p.id} style={{ padding: '7px 10px' }}
+                          {...productPick.rowProps(i)}>{p.name}</div>
                       ))}
                     </div>
                   )}
@@ -490,7 +530,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
                   </Field>
                   <Field label="What they pay">
                     <div style={{ minWidth: 300 }}>
-                      <LadderEditor rows={ladder} unit={saleUnit} onChange={setLadder} />
+                      <LadderEditor rows={ladder} unit={saleUnit} breaks={breaks} onChange={setLadder} />
                     </div>
                   </Field>
                   <button className="btn primary" onClick={() => void add()}>Save</button>

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import type { Migration } from './migrate.js'
+import { EXPECTED_SCHEMA_VERSION } from './schemaVersion.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const migrationsDir = join(here, '..', '..', 'migrations')
@@ -17,6 +18,10 @@ const FILES: ReadonlyArray<readonly [number, string]> = [
   [8, '008_pricing_page.sql'],
   [9, '009_grouping.sql'],
   [10, '010_customer_ladders.sql'],
+  [11, '011_features_and_returns.sql'],
+  [12, '012_stock_policy.sql'],
+  [13, '013_customer_identity.sql'],
+  [14, '014_doc_formats.sql'],
 ]
 
 export const MIGRATIONS: Migration[] = FILES.map(([version, file]) => ({
@@ -24,3 +29,12 @@ export const MIGRATIONS: Migration[] = FILES.map(([version, file]) => ({
   name: file,
   sql: readFileSync(join(migrationsDir, file), 'utf8'),
 }))
+
+/* Adding the file and adding it here are two steps and one gets forgotten. This
+   is the third place that has to agree, so it checks rather than trusts. */
+const highest = FILES[FILES.length - 1]?.[0] ?? 0
+if (highest !== EXPECTED_SCHEMA_VERSION) {
+  throw new Error(
+    `migration list ends at ${highest} but the code expects ${EXPECTED_SCHEMA_VERSION}`,
+  )
+}

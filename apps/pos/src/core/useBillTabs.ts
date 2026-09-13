@@ -3,9 +3,11 @@ import {
   Money, Quantity, Pricing, Totals,
   createBill, saveDraft, listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts,
   productsByIds, saleUnitsFor, searchCustomers,
+  pricingContextFor, resolveLinePrice,
   type SqlDriver, type DraftDetail, type BillLineInput,
   type ProductListItem, type CustomerListItem, type SaleUnitOption,
 } from '@shopos/core'
+import { takeRepeat, onRepeat, type RepeatRequest } from './repeat'
 
 /**
  * Several bills open at once at one counter.
@@ -115,12 +117,19 @@ export interface BillTabs {
   flush: () => Promise<void>
   /** The active draft became a real bill; forget it and leave an empty tab. */
   released: () => void
+  /**
+   * What just happened without anyone on this screen asking for it — a tab
+   * opened from an old bill, or the reason one could not be.
+   */
+  notice: string | null
+  dismissNotice: () => void
 }
 
 export function useBillTabs(db: SqlDriver, registerId: string, actorId: string): BillTabs {
   const [tabs, setTabs] = useState<Cart[]>(() => [emptyCart()])
   const [activeTabId, setActiveTabId] = useState(() => tabs[0]!.tabId)
   const [ready, setReady] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
 
   // Autosave state, per tab. Kept in refs so a save in flight is never affected
   // by a re-render, and chained per tab so two quick edits cannot both decide
@@ -130,6 +139,9 @@ export function useBillTabs(db: SqlDriver, registerId: string, actorId: string):
   const chains = useRef(new Map<string, Promise<void>>())
   const billIds = useRef(new Map<string, string | null>())
   const live = useRef(true)
+  /** The tabs as they stand, readable outside a render. */
+  const open_ = useRef<Cart[]>(tabs)
+  open_.current = tabs
 
   useEffect(() => {
     live.current = true
@@ -240,6 +252,108 @@ export function useBillTabs(db: SqlDriver, registerId: string, actorId: string):
     return cart
   }, [db])
 
+  /**
+   * Builds a tab from an old bill.
+   *
+   * Priced today, not as it was priced then. What the customer bought is a fact
+   * about the past; what it costs is a fact about now, and a March rate quietly
+   * reappearing on a September bill is the kind of thing nobody notices until
+   * the month's margin is short.
+   *
+   * An item that has since been removed from the catalogue is dropped and said
+   * out loud, rather than making a tab that is silently short a line.
+   */
+  const buildRepeat = useCallback(async (request: RepeatRequest): Promise<{ cart: Cart; missing: number }> => {
+    const products = await productsByIds(db, request.lines.map((l) => l.productId))
+    const byId = new Map(products.map((p) => [p.id, p]))
+
+    let customer: CustomerListItem | null = null
+    if (request.customerId) {
+      const found = await searchCustomers(db)
+      customer = found.find((c) => c.id === request.customerId) ?? null
+    }
+
+    const pricing = await pricingContextFor(db, customer?.id ?? null)
+    const lines: CartLine[] = []
+    let missing = 0
+
+    for (const [i, wanted] of request.lines.entries()) {
+      const product = byId.get(wanted.productId)
+      if (!product) { missing += 1; continue }
+
+      const units = await saleUnitsFor(db, product.id)
+      // The unit it was sold in, if the shop still sells in it.
+      const unit = units.find((u) => u.saleUnit === wanted.saleUnit)?.saleUnit
+        ?? units.find((u) => u.isDefault)?.saleUnit
+        ?? product.baseUnit
+
+      const resolved = await resolveLinePrice(db, pricing, {
+        productId: product.id,
+        saleUnit: unit,
+        qty: Quantity.fromUnits(wanted.qty),
+      })
+
+      lines.push({
+        key: `${product.id}-repeat-${i}-${Date.now()}`,
+        product,
+        saleUnit: unit,
+        units,
+        qty: wanted.qty,
+        rate: resolved.rate,
+        source: resolved.source,
+        sourceId: resolved.sourceId,
+        manual: false,
+      })
+    }
+
+    return {
+      cart: { ...emptyCart(), lines, customer },
+      missing,
+    }
+  }, [db])
+
+  const repeat = useCallback(async (request: RepeatRequest) => {
+    // Read off the ref rather than a flag set inside a state updater: React does
+    // not promise to run an updater before the next line, so a decision made in
+    // one and read out here is a decision made on stale news.
+    if (open_.current.length >= MAX_TABS) {
+      // A full counter is a real answer, not a failure: six bills are open, and
+      // which of them to finish first is the cashier's call, not this one's.
+      setNotice(`All ${MAX_TABS} bills are open here. Finish or cancel one, then try again.`)
+      return
+    }
+
+    const { cart, missing } = await buildRepeat(request)
+
+    if (cart.lines.length === 0) {
+      setNotice(`Nothing from ${request.docNo} is still in the catalogue.`)
+      return
+    }
+
+    setTabs((prev) => (prev.length >= MAX_TABS ? prev : [...prev, cart]))
+    setActiveTabId(cart.tabId)
+
+    // Saved as a draft straight away, so the tab survives the power going out
+    // exactly as a typed one does.
+    queue(cart)
+    setNotice(
+      missing === 0
+        ? `${request.docNo} again — ${cart.lines.length} item${cart.lines.length === 1 ? '' : 's'}, at today's prices.`
+        : `${request.docNo} again, at today's prices. ${missing} item${missing === 1 ? ' is' : 's are'} no longer in the catalogue and could not be added.`,
+    )
+  }, [buildRepeat, queue])
+
+  // Someone asked for this from the bills screen while this screen was still
+  // mounting; and again, live, for the case where it was already open.
+  useEffect(() => {
+    if (!ready) return
+    const outstanding = takeRepeat()
+    if (outstanding) void repeat(outstanding)
+    return onRepeat((request) => {
+      if (takeRepeat()) void repeat(request)
+    })
+  }, [ready, repeat])
+
   // Reopen whatever this counter had open. A shop that loses power finds its
   // bills where they were.
   useEffect(() => {
@@ -337,8 +451,13 @@ export function useBillTabs(db: SqlDriver, registerId: string, actorId: string):
   // Leaving the screen writes whatever is outstanding rather than dropping it.
   useEffect(() => () => { void flushAll() }, [flushAll])
 
+  const dismissNotice = useCallback(() => setNotice(null), [])
+
   return useMemo(
-    () => ({ tabs, active, ready, select, open, close, patch, flush: flushAll, released }),
-    [tabs, active, ready, select, open, close, patch, flushAll, released],
+    () => ({
+      tabs, active, ready, select, open, close, patch,
+      flush: flushAll, released, notice, dismissNotice,
+    }),
+    [tabs, active, ready, select, open, close, patch, flushAll, released, notice, dismissNotice],
   )
 }

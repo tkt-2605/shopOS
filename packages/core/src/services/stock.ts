@@ -2,7 +2,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { newId } from '../ids.js'
 import { type Qty, qty, addQty, hasAtLeast, QTY_SCALE } from '../quantity.js'
 import type { Money } from '../money.js'
-import { movingAverage, fifo, type Valuation, type FifoResult } from '../domain/valuation.js'
+import { movingAverage, fifo, type LedgerMovement, type Valuation, type FifoResult } from '../domain/valuation.js'
 
 /**
  * stock_ledger is the truth; product_stock is a cache kept in the same transaction
@@ -36,10 +36,16 @@ export async function postMovement(tx: SqlDriver, posting: StockPosting): Promis
   const after = addQty(held.qty, posting.qtyChange)
 
   // Goods leaving are valued at what the goods on the shelf cost, unless the
-  // caller already knows (a reversal puts back exactly what it took out).
-  const unitCost = posting.unitCost ?? (posting.qtyChange < 0 ? unitValueOf(held) : null)
-  const valueChange = unitCost === null ? 0 : valueOf(unitCost, posting.qtyChange)
-  const afterValue = after === 0 ? 0 : Math.max(0, held.value + valueChange)
+  // caller already knows (a reversal puts back exactly what it took out). With
+  // nothing on the shelf there is no average to read, so the last rate the item
+  // was known at stands in — see `movingAverage`, which defines the rule this
+  // follows. A sale with no cost at all reports as pure profit.
+  const unitCost = posting.unitCost
+    ?? (posting.qtyChange < 0
+      ? unitValueOf(held) ?? await lastKnownCost(tx, posting.productId)
+      : null)
+
+  const afterValue = valueAfter(held, posting.qtyChange, unitCost, after)
 
   const now = new Date().toISOString()
 
@@ -87,6 +93,38 @@ function unitValueOf(held: Holding): Money | null {
 
 function valueOf(unitCost: Money, quantity: Qty): number {
   return Math.round((unitCost * quantity) / QTY_SCALE)
+}
+
+/**
+ * What the holding is worth after a movement. The live half of the rule written
+ * out on `movingAverage`; both must agree or the cache and the ledger drift.
+ */
+function valueAfter(held: Holding, change: Qty, unitCost: Money | null, after: Qty): number {
+  if (after <= 0) return 0
+
+  // Coming back from a shortfall: the goods that were owed were never paid for,
+  // so only what is left over carries value, at the rate it arrived at.
+  if (held.qty < 0 && change > 0) {
+    return unitCost === null ? 0 : Math.max(0, valueOf(unitCost, after))
+  }
+
+  const valueChange = unitCost === null ? 0 : valueOf(unitCost, change)
+  return Math.max(0, held.value + valueChange)
+}
+
+/**
+ * The most recent rate this item was known at. Goods bought in are preferred
+ * over goods issued, because a purchase is a price somebody actually paid.
+ */
+async function lastKnownCost(tx: SqlDriver, productId: string): Promise<Money | null> {
+  const row = await tx.get<{ unit_cost: number }>(
+    `SELECT unit_cost FROM stock_ledger
+      WHERE product_id = ? AND unit_cost IS NOT NULL
+      ORDER BY (qty_change > 0) DESC, rowid DESC
+      LIMIT 1`,
+    [productId],
+  )
+  return (row?.unit_cost ?? null) as Money | null
 }
 
 /**
@@ -170,37 +208,45 @@ export interface StockDrift {
 }
 
 export async function recomputeStock(db: SqlDriver, opts: { repair: boolean } = { repair: false }): Promise<StockDrift[]> {
-  const rows = await db.query<{
-    product_id: string; cached: number | null; actual: number
-    cached_value: number | null; actual_value: number
-  }>(
-    `SELECT p.id AS product_id,
-            ps.qty_on_hand AS cached,
-            ps.stock_value AS cached_value,
-            COALESCE((SELECT SUM(qty_change) FROM stock_ledger sl WHERE sl.product_id = p.id), 0) AS actual,
-            COALESCE((SELECT SUM(CAST(ROUND(sl.qty_change * sl.unit_cost / ${QTY_SCALE}.0) AS INTEGER))
-                        FROM stock_ledger sl
-                       WHERE sl.product_id = p.id AND sl.unit_cost IS NOT NULL), 0) AS actual_value
-       FROM products p
-       LEFT JOIN product_stock ps ON ps.product_id = p.id`,
+  /* Replayed rather than summed.
+     
+     The cache used to be checked against SUM(qty_change * unit_cost), which is
+     only the same answer while stock never goes below zero. Once a shop can
+     sell against a wrong count, the running value floors at zero and a later
+     delivery rebases it, and neither of those survives being added up — the
+     check would report drift on every overdrawn item for ever. So the ledger is
+     replayed through the one function that defines the rule. */
+  const ledger = await db.query<{ product_id: string; qty_change: number; unit_cost: number | null }>(
+    `SELECT product_id, qty_change, unit_cost FROM stock_ledger ORDER BY product_id, rowid`,
+  )
+
+  const byProduct = new Map<string, LedgerMovement[]>()
+  for (const row of ledger) {
+    const movements = byProduct.get(row.product_id) ?? []
+    movements.push({ qtyChange: qty(row.qty_change), unitCost: (row.unit_cost ?? null) as Money | null })
+    byProduct.set(row.product_id, movements)
+  }
+
+  const cache = await db.query<{ product_id: string; cached: number | null; cached_value: number | null }>(
+    `SELECT p.id AS product_id, ps.qty_on_hand AS cached, ps.stock_value AS cached_value
+       FROM products p LEFT JOIN product_stock ps ON ps.product_id = p.id`,
   )
 
   const drift: StockDrift[] = []
   const now = new Date().toISOString()
 
-  for (const row of rows) {
+  for (const row of cache) {
+    const truth = movingAverage(byProduct.get(row.product_id) ?? [])
     const cached = qty(row.cached ?? 0)
-    const actual = qty(row.actual)
     const cachedValue = row.cached_value ?? 0
-    const actualValue = actual === 0 ? 0 : Math.max(0, row.actual_value)
-    if (cached === actual && cachedValue === actualValue) continue
+    if (cached === truth.qtyOnHand && cachedValue === truth.totalValue) continue
 
     drift.push({
       productId: row.product_id,
       cached,
-      actual,
+      actual: truth.qtyOnHand,
       cachedValue: cachedValue as Money,
-      actualValue: actualValue as Money,
+      actualValue: truth.totalValue,
     })
 
     if (opts.repair) {
@@ -210,7 +256,7 @@ export async function recomputeStock(db: SqlDriver, opts: { repair: boolean } = 
            qty_on_hand = excluded.qty_on_hand,
            stock_value = excluded.stock_value,
            updated_at = excluded.updated_at`,
-        [row.product_id, actual, actualValue, now],
+        [row.product_id, truth.qtyOnHand, truth.totalValue, now],
       )
     }
   }

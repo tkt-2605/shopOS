@@ -11,6 +11,7 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
+import { usePickList } from '../ui/PickList'
 
 interface BarcodeDraft {
   barcode: string
@@ -62,7 +63,7 @@ function levelOf(raw: string): number | null {
 }
 
 export default function Inventory() {
-  const { db } = useCore()
+  const { db, features } = useCore()
   const user = useUser()
   const [term, setTerm] = useState('')
   const [rows, setRows] = useState<ProductListItem[]>([])
@@ -73,11 +74,32 @@ export default function Inventory() {
   const [newCategory, setNewCategory] = useState('')
   const [parentSearch, setParentSearch] = useState('')
   const [parentResults, setParentResults] = useState<ProductListItem[]>([])
+  /* An item cannot be its own main item, so the row is dropped before the list
+     is numbered — otherwise ↓ would land on a gap. */
+  const parentOptions = parentResults.filter((r) => r.id !== draft?.id)
+  const parentPick = usePickList({
+    count: parentOptions.length,
+    resetKey: parentSearch,
+    onPick: (i) => {
+      const hit = parentOptions[i]
+      if (!hit || !draft) return
+      setDraft({ ...draft, parentProductId: hit.id })
+      setParentSearch('')
+    },
+  })
   const [browsing, setBrowsing] = useState('')
   const [ladders, setLadders] = useState<Map<string, Ladder.Rung[]>>(new Map())
   const [priceListId, setPriceListId] = useState('')
 
   const canWrite = Permissions.can(user.permissions, 'product', 'write')
+
+  /* With several barcodes switched off, only the first box is shown — and the
+     rest stay in the draft and are written back untouched. A screen that stops
+     showing a code must not be a screen that deletes it: that code is printed on
+     a packet somewhere, and the scanner still reads it. */
+  const allBarcodes = draft?.barcodes ?? []
+  const visibleBarcodes = features.multiBarcode ? allBarcodes : allBarcodes.slice(0, 1)
+  const hiddenBarcodes = allBarcodes.length - visibleBarcodes.length
 
   const refresh = useCallback(async () => {
     setRows(await searchProducts(db, {
@@ -278,7 +300,7 @@ export default function Inventory() {
         <table>
           <thead>
             <tr>
-              <th>Item</th><th>Barcode</th><th>Quantity ladder</th>
+              <th>Item</th><th>Barcode</th><th>{features.tieredPricing ? 'Quantity ladder' : 'Price list'}</th>
               <th className="r">GST</th><th className="r">Rate</th><th className="r">On hand</th><th />
             </tr>
           </thead>
@@ -359,17 +381,30 @@ export default function Inventory() {
           </div>
 
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Quantity ladder</div>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>
+              {features.tieredPricing ? 'Quantity ladder' : 'Price on the shop’s list'}
+            </div>
             <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              Cheaper by the quantity. One row per price break: buy one or more at one price, ten or
-              more at another. Counted in {draft.baseUnit || 'base units'}, so a bigger unit gets the
-              rate its contents have earned — a box of twelve reaches the ten-or-more break. Leave it
-              empty and everyone pays the base rate. Other price lists, a price for the box itself,
-              and a ladder for one customer are on the Prices screen.
+              {features.tieredPricing ? (
+                <>
+                  Cheaper by the quantity. One row per price break: buy one or more at one price, ten
+                  or more at another. Counted in {draft.baseUnit || 'base units'}, so a bigger unit
+                  gets the rate its contents have earned — a box of twelve reaches the ten-or-more
+                  break. Leave it empty and everyone pays the base rate. Other price lists, a price
+                  for the box itself, and a ladder for one customer are on the Prices screen.
+                </>
+              ) : (
+                <>
+                  What this item sells for on the shop’s own price list, per{' '}
+                  {draft.baseUnit || 'unit'}. Leave it empty and everyone pays the base rate above.
+                  Turn on cheaper-by-the-quantity in Settings to price by how much is bought.
+                </>
+              )}
             </div>
             <LadderEditor
               rows={draft.ladder}
               unit={draft.baseUnit || 'units'}
+              breaks={features.tieredPricing}
               onChange={(ladder) => setDraft({ ...draft, ladder })}
             />
           </div>
@@ -415,12 +450,12 @@ export default function Inventory() {
               ) : (
                 <>
                   <input className="input" placeholder="Search the main item" value={parentSearch}
-                    onChange={(e) => setParentSearch(e.target.value)} />
-                  {parentResults.length > 0 && (
-                    <div className="results" style={{ marginTop: 6 }}>
-                      {parentResults.filter((r) => r.id !== draft.id).map((r) => (
-                        <div key={r.id} className="pickable" style={{ padding: '6px 10px' }}
-                          onClick={() => { setDraft({ ...draft, parentProductId: r.id }); setParentSearch('') }}>
+                    onChange={(e) => setParentSearch(e.target.value)}
+                    onKeyDown={parentPick.searchKeyDown} />
+                  {parentOptions.length > 0 && (
+                    <div className="results" style={{ marginTop: 6 }} {...parentPick.listProps}>
+                      {parentOptions.map((r, i) => (
+                        <div key={r.id} style={{ padding: '6px 10px' }} {...parentPick.rowProps(i)}>
                           {r.name}
                         </div>
                       ))}
@@ -480,11 +515,17 @@ export default function Inventory() {
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Barcodes</div>
             <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              An item can answer to several — the manufacturer's code on the packet, your own
-              printed label, the one from the old packaging still on the back shelf. Scanning any
-              of them finds this item. The first is the one shown in lists.
+              {features.multiBarcode ? (
+                <>
+                  An item can answer to several — the manufacturer’s code on the packet, your own
+                  printed label, the one from the old packaging still on the back shelf. Scanning
+                  any of them finds this item. The first is the one shown in lists.
+                </>
+              ) : (
+                <>The code on the packet, or the one you print and stick on the shelf.</>
+              )}
             </div>
-            {draft.barcodes.map((code, index) => (
+            {visibleBarcodes.map((code, index) => (
               <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
                 <input
                   className="input num"
@@ -497,30 +538,43 @@ export default function Inventory() {
                     barcodes: draft.barcodes.map((c, i) => (i === index ? { ...c, barcode: e.target.value } : c)),
                   })}
                 />
-                <input
-                  className="input"
-                  style={{ flex: 1, minWidth: 0 }}
-                  placeholder="What it is"
-                  value={code.label}
-                  onChange={(e) => setDraft({
-                    ...draft,
-                    barcodes: draft.barcodes.map((c, i) => (i === index ? { ...c, label: e.target.value } : c)),
-                  })}
-                />
-                <button
-                  className="btn ghost"
-                  type="button"
-                  title="Remove this barcode"
-                  disabled={draft.barcodes.length === 1}
-                  onClick={() => setDraft({ ...draft, barcodes: draft.barcodes.filter((_, i) => i !== index) })}
-                >✕</button>
+                {features.multiBarcode && (
+                  <input
+                    className="input"
+                    style={{ flex: 1, minWidth: 0 }}
+                    placeholder="What it is"
+                    value={code.label}
+                    onChange={(e) => setDraft({
+                      ...draft,
+                      barcodes: draft.barcodes.map((c, i) => (i === index ? { ...c, label: e.target.value } : c)),
+                    })}
+                  />
+                )}
+                {features.multiBarcode && (
+                  <button
+                    className="btn ghost"
+                    type="button"
+                    title="Remove this barcode"
+                    disabled={draft.barcodes.length === 1}
+                    onClick={() => setDraft({ ...draft, barcodes: draft.barcodes.filter((_, i) => i !== index) })}
+                  >✕</button>
+                )}
               </div>
             ))}
-            <button
-              className="btn ghost sm"
-              type="button"
-              onClick={() => setDraft({ ...draft, barcodes: [...draft.barcodes, { barcode: '', label: '' }] })}
-            >Another barcode</button>
+            {features.multiBarcode ? (
+              <button
+                className="btn ghost sm"
+                type="button"
+                onClick={() => setDraft({ ...draft, barcodes: [...draft.barcodes, { barcode: '', label: '' }] })}
+              >Another barcode</button>
+            ) : hiddenBarcodes > 0 && (
+              <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
+                {hiddenBarcodes === 1 ? 'One other code is' : `${hiddenBarcodes} other codes are`} saved
+                against this item and still {hiddenBarcodes === 1 ? 'scans' : 'scan'} at the counter.
+                Turn on several barcodes per item in Settings to see{' '}
+                {hiddenBarcodes === 1 ? 'it' : 'them'}.
+              </div>
+            )}
           </div>
 
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>

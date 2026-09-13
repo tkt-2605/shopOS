@@ -7,6 +7,7 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { Attachments } from '../ui/Attachments'
+import { usePickList } from '../ui/PickList'
 
 interface Line {
   key: string
@@ -117,6 +118,12 @@ export default function StockIn() {
     setReference('')
   }
 
+  const pick = usePickList({
+    count: results.length,
+    resetKey: term,
+    onPick: (i) => { const hit = results[i]; if (hit) add(hit) },
+  })
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 900 }}>
       {error && <Alert>{error}</Alert>}
@@ -180,14 +187,15 @@ export default function StockIn() {
       )}
 
       <input className="input" placeholder="Scan or search an item to add" value={term}
-        onChange={(e) => setTerm(e.target.value)} id="stock-search" />
+        onChange={(e) => setTerm(e.target.value)} id="stock-search"
+        onKeyDown={pick.searchKeyDown} />
 
       {term !== '' && (
         <div className="card" style={{ maxHeight: 220, overflow: 'auto' }}>
           <table>
-            <tbody>
-              {results.map((p) => (
-                <tr key={p.id} className="pickable" onClick={() => add(p)}>
+            <tbody {...pick.listProps}>
+              {results.map((p, i) => (
+                <tr key={p.id} {...pick.rowProps(i)}>
                   <td>{p.name}{p.brand && <span style={{ color: 'var(--ink-3)' }}> · {p.brand}</span>}</td>
                   <td className="r num">{Quantity.formatQty(p.qtyOnHand)} {p.baseUnit}</td>
                 </tr>

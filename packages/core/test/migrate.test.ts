@@ -114,7 +114,9 @@ describe('transactions', () => {
       }),
     ).rejects.toThrow('boom')
 
-    const rows = await db.query(`SELECT key FROM settings`)
+    // Its own row, not the whole table: migration 011 seeds the feature
+    // switches, so an empty table is no longer what a rollback looks like.
+    const rows = await db.query(`SELECT key FROM settings WHERE key = 'shop_name'`)
     expect(rows).toHaveLength(0)
   })
 
@@ -124,7 +126,7 @@ describe('transactions', () => {
         `INSERT INTO settings (key, value, updated_at) VALUES ('shop_name', 'Test', '2026-01-01')`,
       )
     })
-    const rows = await db.query(`SELECT key FROM settings`)
+    const rows = await db.query(`SELECT key FROM settings WHERE key = 'shop_name'`)
     expect(rows).toHaveLength(1)
   })
 })

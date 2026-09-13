@@ -3,6 +3,7 @@ import type { Money } from '../money.js'
 import { qty, QTY_SCALE, type Qty } from '../quantity.js'
 import { resolvePrice } from '../domain/pricing.js'
 import type { PriceCandidates, PriceTier, ResolvedPrice } from '../domain/pricing.js'
+import { isOn } from '../services/features.js'
 
 export interface PricingContext {
   productId: string
@@ -10,6 +11,8 @@ export interface PricingContext {
   customerId?: string | null
   customerPriceListId?: string | null
   defaultPriceListId: string | null
+  /** Defaults to true. See `PriceCandidates.quantityBreaks`. */
+  quantityBreaks?: boolean | undefined
 }
 
 /**
@@ -40,7 +43,10 @@ export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): P
   // The base rate is per base unit, so a box of twelve is twelve times it.
   // Without this a shop selling by the box collects one piece's worth of money
   // and gives away twelve pieces of stock.
-  const candidates: PriceCandidates = { baseRate: inSaleUnit(product.base_rate as Money) }
+  const candidates: PriceCandidates = {
+    baseRate: inSaleUnit(product.base_rate as Money),
+    quantityBreaks: ctx.quantityBreaks !== false,
+  }
   const ladderUnit = product.base_unit === ctx.saleUnit ? null : product.base_unit
 
   if (ctx.customerId) {
@@ -186,6 +192,8 @@ export interface BillPricingContext {
   customerId: string | null
   customerPriceListId: string | null
   defaultPriceListId: string | null
+  /** Whether this shop uses quantity breaks. Read once per bill, not per line. */
+  quantityBreaks: boolean
 }
 
 export async function pricingContextFor(
@@ -203,6 +211,7 @@ export async function pricingContextFor(
     customerId: customerId ?? null,
     customerPriceListId: customer?.price_list_id ?? null,
     defaultPriceListId: await defaultPriceListId(db),
+    quantityBreaks: await isOn(db, 'tieredPricing'),
   }
 }
 
@@ -219,6 +228,7 @@ export async function resolveLinePrice(
     customerId: ctx.customerId,
     customerPriceListId: ctx.customerPriceListId,
     defaultPriceListId: ctx.defaultPriceListId,
+    quantityBreaks: ctx.quantityBreaks,
   })
   return resolvePrice(candidates, line.qty, on)
 }

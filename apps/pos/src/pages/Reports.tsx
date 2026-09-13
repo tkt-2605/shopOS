@@ -3,8 +3,9 @@ import {
   Reports as R, Money, Quantity, businessDate, listRegisters, type DateRange, type Register,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
-import { Card, Stat, Empty, Alert, Rupees } from '../ui/components'
+import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'
 import { saveFile } from '../core/exportFile'
+import { reportPdf } from '../core/pdf'
 
 type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff'
 
@@ -30,7 +31,7 @@ interface Data {
 
 export default function Reports() {
   const { db } = useCore()
-  const [range, setRange] = useState<DateRange>(() => preset('month'))
+  const [range, setRange] = useState<DateRange>(() => rangePreset('month'))
   const [registers, setRegisters] = useState<Register[]>([])
   const [tab, setTab] = useState<Tab>('days')
   const [data, setData] = useState<Data | null>(null)
@@ -40,31 +41,73 @@ export default function Reports() {
 
   useEffect(() => { void listRegisters(db, true).then(setRegisters) }, [db])
 
+  /**
+   * Eight reports at once, and any one of them able to say what went wrong.
+   *
+   * Without the catch, a query that threw left this page saying "Working…" for
+   * ever with nothing else on screen and nothing in the interface to suggest
+   * where to look — the failure and the loading state were indistinguishable,
+   * which is the worst way for a screen to be broken.
+   */
   const load = useCallback(async () => {
     setBusy(true)
-    const [summary, days, products, margin, marginRows, tax, tenders, staff] = await Promise.all([
-      R.salesSummary(db, range),
-      R.salesByDay(db, range),
-      R.topProducts(db, range, 25),
-      R.grossMargin(db, range),
-      R.marginByProduct(db, range, 25),
-      R.taxByRate(db, range),
-      R.paymentMix(db, range),
-      R.salesByStaff(db, range),
-    ])
-    setData({ summary, days, products, margin, marginRows, tax, tenders, staff })
-    setBusy(false)
+    setError(null)
+    try {
+      const [summary, days, products, margin, marginRows, tax, tenders, staff] = await Promise.all([
+        R.salesSummary(db, range),
+        R.salesByDay(db, range),
+        R.topProducts(db, range, 25),
+        R.grossMargin(db, range),
+        R.marginByProduct(db, range, 25),
+        R.taxByRate(db, range),
+        R.paymentMix(db, range),
+        R.salesByStaff(db, range),
+      ])
+      setData({ summary, days, products, margin, marginRows, tax, tenders, staff })
+    } catch (err) {
+      setData(null)
+      setError(`The reports could not be built: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusy(false)
+    }
   }, [db, range])
 
   useEffect(() => { void load() }, [load])
 
   async function exportCsv() {
     setError(null)
-    const { name, csv } = csvFor(tab, data)
-    if (!csv) { setError('There is nothing in this range to export.'); return }
+    const table = tableFor(tab, data)
+    if (!table || table.rows.length === 0) {
+      setError('There is nothing in this range to export.')
+      return
+    }
 
-    const filename = `${name}-${range.from}-to-${range.to}.csv`
-    const result = await saveFile(filename, csv)
+    const csv = R.toCsv(table.columns.map((c) => c.label), table.rows)
+    const result = await saveFile(`${table.name}-${range.from}-to-${range.to}.csv`, csv)
+    if (!result.ok) { setError(result.message); return }
+    setNotice(`Saved to ${result.path}`)
+    setTimeout(() => setNotice(null), 8000)
+  }
+
+  /* The same table, laid out for reading rather than for a spreadsheet. Built
+     from what is on screen rather than re-queried, so the page an accountant
+     gets cannot disagree with what the owner was looking at. */
+  async function exportPdf() {
+    setError(null)
+    const table = tableFor(tab, data)
+    if (!table || table.rows.length === 0) {
+      setError('There is nothing in this range to save.')
+      return
+    }
+
+    const result = await reportPdf(db, {
+      title: table.title,
+      range: { from: range.from, to: range.to },
+      columns: table.columns.map((c) => ({
+        label: c.label, width: c.width, ...(c.right ? { alignRight: true } : {}),
+      })),
+      rows: table.rows,
+    })
     if (!result.ok) { setError(result.message); return }
     setNotice(`Saved to ${result.path}`)
     setTimeout(() => setNotice(null), 8000)
@@ -95,25 +138,8 @@ export default function Reports() {
       {error && <Alert>{error}</Alert>}
       {notice && <Alert kind="ok">{notice}</Alert>}
 
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
-        <div className="segment">
-          {(['today', 'week', 'month', 'lastMonth', 'year'] as const).map((p) => (
-            <button key={p} aria-selected={sameRange(range, preset(p))} onClick={() => setRange(preset(p))}>
-              {PRESET_LABELS[p]}
-            </button>
-          ))}
-        </div>
-
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--ink-3)' }}>
-          From
-          <input className="input num" style={{ width: 140 }} type="date" value={range.from}
-            onChange={(e) => setRange({ ...range, from: e.target.value })} />
-        </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--ink-3)' }}>
-          to
-          <input className="input num" style={{ width: 140 }} type="date" value={range.to}
-            onChange={(e) => setRange({ ...range, to: e.target.value })} />
-        </label>
+      <div className="filter-bar">
+        <DateRangePicker value={range} onChange={setRange} />
 
         {registers.length > 1 && (
           <select
@@ -130,7 +156,9 @@ export default function Reports() {
       </div>
 
       {!s ? (
-        <Empty>{busy ? 'Working…' : 'No data'}</Empty>
+        <Empty>
+          {busy ? 'Working…' : error ? 'Nothing to show — see the message above.' : 'No data'}
+        </Empty>
       ) : (
         <>
           <div className="stat-row">
@@ -158,7 +186,8 @@ export default function Reports() {
               ))}
             </div>
             <div style={{ flex: 1 }} />
-            <button className="btn sm" onClick={() => void exportCsv()}>Export this table</button>
+            <button className="btn sm" onClick={() => void exportCsv()}>Save as CSV</button>
+            <button className="btn sm" onClick={() => void exportPdf()}>Save as PDF</button>
           </div>
 
           <Card>
@@ -337,60 +366,125 @@ function StaffTable({ rows }: { rows: R.StaffRow[] }) {
   )
 }
 
-function csvFor(tab: Tab, data: Data | null): { name: string; csv: string | null } {
-  if (!data) return { name: tab, csv: null }
+/**
+ * One description of each report's table, which both the CSV and the PDF are
+ * built from.
+ *
+ * Kept as one because the alternative — a list of columns for the spreadsheet
+ * and another for the page — is two lists that quietly stop agreeing, and the
+ * first anybody hears of it is an accountant looking at a column that is not
+ * the one it is labelled.
+ *
+ * `width` is a share of the page and is ignored by the CSV; `right` marks the
+ * figures, which the PDF sets in a monospaced face so they line up.
+ */
+interface TableColumn {
+  label: string
+  width: number
+  right?: boolean
+}
+
+interface Table {
+  /** For the filename. */
+  name: string
+  /** For the heading on the page. */
+  title: string
+  columns: TableColumn[]
+  rows: string[][]
+}
+
+function tableFor(tab: Tab, data: Data | null): Table | null {
+  if (!data) return null
 
   switch (tab) {
     case 'days':
       return {
         name: 'sales-by-day',
-        csv: data.days.length === 0 ? null : R.toCsv(
-          ['Date', 'Bills', 'Discount', 'GST', 'Gross', 'Returns', 'Net'],
-          data.days.map((r) => [r.date, r.bills, rupeeCell(r.discount), rupeeCell(r.tax), rupeeCell(r.total), rupeeCell(r.returns), rupeeCell(r.net)]),
-        ),
+        title: 'Sales by day',
+        columns: [
+          { label: 'Date', width: 1.4 },
+          { label: 'Bills', width: 0.7, right: true },
+          { label: 'Discount', width: 1 , right: true },
+          { label: 'GST', width: 1, right: true },
+          { label: 'Gross', width: 1.1, right: true },
+          { label: 'Returns', width: 1, right: true },
+          { label: 'Net', width: 1.1, right: true },
+        ],
+        rows: data.days.map((r) => [
+          r.date, String(r.bills), rupeeCell(r.discount), rupeeCell(r.tax),
+          rupeeCell(r.total), rupeeCell(r.returns), rupeeCell(r.net),
+        ]),
       }
     case 'products':
       return {
         name: 'products',
-        csv: data.products.length === 0 ? null : R.toCsv(
-          ['Item', 'Quantity', 'Unit', 'Bills', 'Revenue'],
-          data.products.map((r) => [r.name, Quantity.formatQty(r.qty), r.unit, r.bills, rupeeCell(r.revenue)]),
-        ),
+        title: 'What sold',
+        columns: [
+          { label: 'Item', width: 3.4 },
+          { label: 'Quantity', width: 1, right: true },
+          { label: 'Unit', width: 0.8 },
+          { label: 'Bills', width: 0.7, right: true },
+          { label: 'Revenue', width: 1.2, right: true },
+        ],
+        rows: data.products.map((r) => [
+          r.name, Quantity.formatQty(r.qty), r.unit, String(r.bills), rupeeCell(r.revenue),
+        ]),
       }
     case 'margin':
       return {
         name: 'profit-by-product',
-        csv: data.marginRows.length === 0 ? null : R.toCsv(
-          ['Item', 'Quantity', 'Unit', 'Revenue', 'Cost', 'Profit', 'Margin %'],
-          data.marginRows.map((r) => [
-            r.name, Quantity.formatQty(r.qty), r.unit,
-            rupeeCell(r.revenue), rupeeCell(r.cost), rupeeCell(r.margin), (r.marginBp / 100).toFixed(1),
-          ]),
-        ),
+        title: 'Profit by product',
+        columns: [
+          { label: 'Item', width: 2.8 },
+          { label: 'Quantity', width: 0.9, right: true },
+          { label: 'Unit', width: 0.7 },
+          { label: 'Revenue', width: 1, right: true },
+          { label: 'Cost', width: 1, right: true },
+          { label: 'Profit', width: 1, right: true },
+          { label: 'Margin %', width: 0.9, right: true },
+        ],
+        rows: data.marginRows.map((r) => [
+          r.name, Quantity.formatQty(r.qty), r.unit,
+          rupeeCell(r.revenue), rupeeCell(r.cost), rupeeCell(r.margin), (r.marginBp / 100).toFixed(1),
+        ]),
       }
     case 'tax':
       return {
         name: 'gst-summary',
-        csv: data.tax.length === 0 ? null : R.toCsv(
-          ['Rate %', 'Taxable', 'CGST', 'SGST', 'IGST'],
-          data.tax.map((r) => [r.rateBp / 100, rupeeCell(r.taxable), rupeeCell(r.cgst), rupeeCell(r.sgst), rupeeCell(r.igst)]),
-        ),
+        title: 'GST summary',
+        columns: [
+          { label: 'Rate %', width: 1, right: true },
+          { label: 'Taxable', width: 1.4, right: true },
+          { label: 'CGST', width: 1.2, right: true },
+          { label: 'SGST', width: 1.2, right: true },
+          { label: 'IGST', width: 1.2, right: true },
+        ],
+        rows: data.tax.map((r) => [
+          (r.rateBp / 100).toString(), rupeeCell(r.taxable),
+          rupeeCell(r.cgst), rupeeCell(r.sgst), rupeeCell(r.igst),
+        ]),
       }
     case 'tenders':
       return {
         name: 'payments',
-        csv: data.tenders.length === 0 ? null : R.toCsv(
-          ['Method', 'Bills', 'Amount'],
-          data.tenders.map((r) => [r.method, r.count, rupeeCell(r.amount)]),
-        ),
+        title: 'How they paid',
+        columns: [
+          { label: 'Method', width: 2 },
+          { label: 'Bills', width: 1, right: true },
+          { label: 'Amount', width: 1.4, right: true },
+        ],
+        rows: data.tenders.map((r) => [r.method, String(r.count), rupeeCell(r.amount)]),
       }
     case 'staff':
       return {
         name: 'sales-by-staff',
-        csv: data.staff.length === 0 ? null : R.toCsv(
-          ['Username', 'Bills', 'Total'],
-          data.staff.map((r) => [r.username, r.bills, rupeeCell(r.total)]),
-        ),
+        title: 'Sales by staff',
+        columns: [
+          { label: 'Username', width: 2 },
+          { label: 'Bills', width: 1, right: true },
+          { label: 'Total', width: 1.4, right: true },
+        ],
+        rows: data.staff.map((r) => [r.username, String(r.bills), rupeeCell(r.total)]),
       }
   }
 }
@@ -398,41 +492,6 @@ function csvFor(tab: Tab, data: Data | null): { name: string; csv: string | null
 /** Plain rupees, no symbol and no grouping — a spreadsheet must read it as a number. */
 function rupeeCell(paise: number): string {
   return (paise / 100).toFixed(2)
-}
-
-const PRESET_LABELS = {
-  today: 'Today',
-  week: 'This week',
-  month: 'This month',
-  lastMonth: 'Last month',
-  year: 'This year',
-} as const
-
-function preset(which: keyof typeof PRESET_LABELS): DateRange {
-  const now = new Date()
-  switch (which) {
-    case 'today':
-      return { from: businessDate(now), to: businessDate(now) }
-    case 'week': {
-      const start = new Date(now)
-      // Monday, because a shop's week and a spreadsheet's week should agree.
-      start.setDate(now.getDate() - ((now.getDay() + 6) % 7))
-      return { from: businessDate(start), to: businessDate(now) }
-    }
-    case 'month':
-      return { from: businessDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: businessDate(now) }
-    case 'lastMonth': {
-      const first = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-      const last = new Date(now.getFullYear(), now.getMonth(), 0)
-      return { from: businessDate(first), to: businessDate(last) }
-    }
-    case 'year':
-      return { from: businessDate(new Date(now.getFullYear(), 0, 1)), to: businessDate(now) }
-  }
-}
-
-function sameRange(a: DateRange, b: DateRange): boolean {
-  return a.from === b.from && a.to === b.to
 }
 
 function describe(range: DateRange): string {

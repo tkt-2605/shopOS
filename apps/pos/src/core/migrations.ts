@@ -1,4 +1,4 @@
-import type { Migration } from '@shopos/core'
+import { EXPECTED_SCHEMA_VERSION, type Migration } from '@shopos/core'
 
 /**
  * Every .sql file in the core migrations folder, in order, with the version taken
@@ -30,3 +30,21 @@ export const MIGRATIONS: Migration[] = Object.entries(
  * not match it.
  */
 export const SCHEMA_VERSION: number = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
+
+/**
+ * Whether this bundle is carrying the migrations its own code needs.
+ *
+ * `import.meta.glob` is resolved when the bundle is built, but the TypeScript
+ * around it is hot-reloaded. So an app left running while a migration file is
+ * added keeps the old set of .sql files and starts querying columns the database
+ * has never been given — which surfaces as "no such column" from whichever screen
+ * happens to ask first, with nothing to connect it to the cause.
+ *
+ * Checked once at start and said in one sentence instead.
+ */
+export function staleBuild(): string | null {
+  if (SCHEMA_VERSION >= EXPECTED_SCHEMA_VERSION) return null
+  return `This build carries database changes up to ${SCHEMA_VERSION}, but the code needs `
+    + `${EXPECTED_SCHEMA_VERSION}. Close ShopOS and start it again — the new changes are on disk `
+    + `but were not in the running copy.`
+}

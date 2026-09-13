@@ -5,6 +5,7 @@ mod db;
 mod exports;
 mod hook;
 mod paths;
+mod pdf;
 mod printing;
 mod restore;
 
@@ -48,6 +49,7 @@ pub fn run() {
             printing::default_printer,
             printing::print_receipt,
             exports::export_file,
+            exports::export_pdf,
             backup::backup_list,
             backup::backup_path,
             backup::backup_delete,

@@ -1,4 +1,4 @@
-import type { SqlDriver } from '../db/driver.js'
+import type { SqlDriver, SqlValue } from '../db/driver.js'
 import type { Money } from '../money.js'
 import { qty, type Qty } from '../quantity.js'
 
@@ -200,26 +200,105 @@ export interface BillListItem {
   grandTotal: Money
   creditTotal: Money
   createdBy: string | null
+  /** Whether any goods have come back against it. */
+  returned: boolean
 }
 
-export async function listBills(
-  db: SqlDriver,
-  opts: { limit?: number; offset?: number; from?: string; to?: string } = {},
-): Promise<BillListItem[]> {
+/**
+ * Which bills a screen is asking for.
+ *
+ * "Status" is not a column, and pretending it were would mean inventing one.
+ * A bill is cancelled or it is not (`docstatus`); it has goods back against it
+ * or it does not (`sales_returns`); it was partly put on the khata or it was
+ * not (`credit_total`). Those are three different facts, and a shop looking for
+ * "the cancelled ones" and a shop looking for "the ones still owed" are asking
+ * two different questions, so the filter names them rather than merging them
+ * into a single invented state field.
+ */
+export type BillStatusFilter = 'all' | 'live' | 'cancelled' | 'returned' | 'credit'
+
+export interface BillFilter {
+  from?: string
+  to?: string
+  status?: BillStatusFilter
+  /** Matches the document number or the customer's name. */
+  search?: string
+  limit?: number
+  offset?: number
+}
+
+/**
+ * The WHERE shared by the list and the count, so the two cannot disagree about
+ * what they are counting.
+ *
+ * `kind = 'sale'` is on every branch and is not optional. An opening balance is
+ * a bill only because a payment has to allocate against something (migration
+ * 013); it is not something the shop sold, and it must never appear on a screen
+ * that says "Bills" whatever filter is chosen.
+ */
+function billWhere(filter: BillFilter): { clause: string; params: SqlValue[] } {
+  const parts: string[] = [`b.kind = 'sale'`]
+  const params: SqlValue[] = []
+
+  switch (filter.status ?? 'all') {
+    case 'live':
+      parts.push(`b.docstatus = 1`)
+      break
+    case 'cancelled':
+      parts.push(`b.docstatus = 2`)
+      break
+    case 'returned':
+      parts.push(`b.docstatus > 0`)
+      parts.push(`EXISTS (SELECT 1 FROM sales_returns r WHERE r.bill_id = b.id AND r.docstatus = 1)`)
+      break
+    case 'credit':
+      // What is still on the khata, not what was ever put there: a bill since
+      // paid off has credit_total unchanged, and listing it under "on credit"
+      // would send a shopkeeper to ask for money already handed over.
+      parts.push(`b.docstatus = 1`)
+      parts.push(`b.credit_total > 0`)
+      parts.push(`b.credit_total > COALESCE((
+        SELECT SUM(a.amount) FROM payment_allocations a
+          JOIN payment_entries p ON p.id = a.payment_id
+         WHERE a.bill_id = b.id AND p.docstatus = 1
+      ), 0)`)
+      break
+    case 'all':
+      // Drafts are a cart someone has parked, not a document. They belong to
+      // the counter that is holding them.
+      parts.push(`b.docstatus > 0`)
+      break
+  }
+
+  if (filter.from) { parts.push(`b.posting_date >= ?`); params.push(filter.from) }
+  if (filter.to) { parts.push(`b.posting_date <= ?`); params.push(filter.to) }
+
+  const search = filter.search?.trim()
+  if (search) {
+    parts.push(`(b.doc_no LIKE ? OR b.customer_name LIKE ?)`)
+    params.push(`%${search}%`, `%${search}%`)
+  }
+
+  return { clause: parts.join(' AND '), params }
+}
+
+export async function listBills(db: SqlDriver, filter: BillFilter = {}): Promise<BillListItem[]> {
+  const { clause, params } = billWhere(filter)
+
   const rows = await db.query<{
     id: string; doc_no: string; docstatus: number; posting_date: string
     customer_name: string | null; grand_total: number; credit_total: number; username: string | null
+    returned: number
   }>(
     `SELECT b.id, b.doc_no, b.docstatus, b.posting_date, b.customer_name,
-            b.grand_total, b.credit_total, u.username
+            b.grand_total, b.credit_total, u.username,
+            EXISTS (SELECT 1 FROM sales_returns r WHERE r.bill_id = b.id AND r.docstatus = 1) AS returned
        FROM bills b
        LEFT JOIN users u ON u.id = b.created_by
-      WHERE b.docstatus > 0
-        AND (? IS NULL OR b.posting_date >= ?)
-        AND (? IS NULL OR b.posting_date <= ?)
-      ORDER BY b.created_at DESC
+      WHERE ${clause}
+      ORDER BY b.posting_date DESC, b.created_at DESC
       LIMIT ? OFFSET ?`,
-    [opts.from ?? null, opts.from ?? null, opts.to ?? null, opts.to ?? null, opts.limit ?? 50, opts.offset ?? 0],
+    [...params, filter.limit ?? 50, filter.offset ?? 0],
   )
 
   return rows.map((r) => ({
@@ -231,10 +310,23 @@ export async function listBills(
     grandTotal: r.grand_total as Money,
     creditTotal: r.credit_total as Money,
     createdBy: r.username,
+    returned: r.returned === 1,
   }))
 }
 
+/**
+ * How many there are in total, which the page needs because a limit without a
+ * count is a page that quietly says "this is all of them" when it is not.
+ */
+export async function countBills(db: SqlDriver, filter: BillFilter = {}): Promise<number> {
+  const { clause, params } = billWhere(filter)
+  const row = await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bills b WHERE ${clause}`, params)
+  return row?.n ?? 0
+}
+
 export interface BillDetail extends BillListItem {
+  /** Who it was billed to, for selling the same list to them again. */
+  customerId: string | null
   subtotal: Money
   discount: Money
   taxableTotal: Money
@@ -246,6 +338,8 @@ export interface BillDetail extends BillListItem {
 
 export interface BillDetailItem {
   id: string
+  /** The item itself, not only the name it was sold under. */
+  productId: string
   productName: string
   saleUnit: string
   qty: Qty
@@ -262,11 +356,13 @@ export interface BillDetailItem {
 
 export async function loadBillDetail(db: SqlDriver, billId: string): Promise<BillDetail | null> {
   const head = await db.get<{
-    id: string; doc_no: string; docstatus: number; posting_date: string; customer_name: string | null
+    id: string; doc_no: string; docstatus: number; posting_date: string
+    customer_id: string | null; customer_name: string | null
     subtotal: number; discount: number; taxable_total: number; tax_total: number
     grand_total: number; credit_total: number; cancel_reason: string | null; username: string | null
   }>(
-    `SELECT b.id, b.doc_no, b.docstatus, b.posting_date, b.customer_name, b.subtotal, b.discount,
+    `SELECT b.id, b.doc_no, b.docstatus, b.posting_date, b.customer_id, b.customer_name,
+            b.subtotal, b.discount,
             b.taxable_total, b.tax_total, b.grand_total, b.credit_total, b.cancel_reason, u.username
        FROM bills b LEFT JOIN users u ON u.id = b.created_by
       WHERE b.id = ?`,
@@ -275,11 +371,12 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
   if (!head) return null
 
   const items = await db.query<{
-    id: string; product_name: string; sale_unit: string; qty: number; rate: number; line_total: number
+    id: string; product_id: string; product_name: string; sale_unit: string
+    qty: number; rate: number; line_total: number
     taxable_value: number; cgst_amount: number; sgst_amount: number; igst_amount: number
     hsn_code: string | null; price_source: string; returned_qty: number
   }>(
-    `SELECT id, product_name, sale_unit, qty, rate, line_total, taxable_value,
+    `SELECT id, product_id, product_name, sale_unit, qty, rate, line_total, taxable_value,
             cgst_amount, sgst_amount, igst_amount, hsn_code, price_source, returned_qty
        FROM bill_items WHERE bill_id = ? ORDER BY idx`,
     [billId],
@@ -295,7 +392,11 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     docNo: head.doc_no,
     docstatus: head.docstatus,
     postingDate: head.posting_date,
+    customerId: head.customer_id,
     customerName: head.customer_name,
+    // From the lines rather than a second query: they are already loaded, and
+    // `returned_qty` is the same fact the EXISTS on the list answers.
+    returned: items.some((i) => i.returned_qty > 0),
     subtotal: head.subtotal as Money,
     discount: head.discount as Money,
     taxableTotal: head.taxable_total as Money,
@@ -306,6 +407,7 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     createdBy: head.username,
     items: items.map((i) => ({
       id: i.id,
+      productId: i.product_id,
       productName: i.product_name,
       saleUnit: i.sale_unit,
       qty: qty(i.qty),

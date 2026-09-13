@@ -52,7 +52,7 @@ export async function salesSummary(db: SqlDriver, range: DateRange): Promise<Sal
             COALESCE(SUM(b.paid_total), 0)    AS paid,
             COALESCE(SUM(b.credit_total), 0)  AS credit
        FROM bills b
-      WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}`,
+      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}`,
     s.params,
   )
 
@@ -102,7 +102,7 @@ export async function salesByDay(db: SqlDriver, range: DateRange): Promise<DayRo
             COALESCE(SUM(b.tax_total), 0) AS tax,
             COALESCE(SUM(b.grand_total), 0) AS total
        FROM bills b
-      WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}
+      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
       GROUP BY b.posting_date ORDER BY b.posting_date`,
     s.params,
   )
@@ -156,7 +156,7 @@ export async function topProducts(db: SqlDriver, range: DateRange, limit = 20): 
        FROM bill_items bi
        JOIN bills b ON b.id = bi.bill_id
        LEFT JOIN products p ON p.id = bi.product_id
-      WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}
+      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
       GROUP BY bi.product_id
       ORDER BY revenue DESC
       LIMIT ?`,
@@ -184,7 +184,7 @@ export async function paymentMix(db: SqlDriver, range: DateRange): Promise<Tende
   const rows = await db.query<{ method: string; amount: number; n: number }>(
     `SELECT bp.method, SUM(bp.amount) AS amount, COUNT(*) AS n
        FROM bill_payments bp JOIN bills b ON b.id = bp.bill_id
-      WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}
+      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
       GROUP BY bp.method ORDER BY amount DESC`,
     s.params,
   )
@@ -211,7 +211,7 @@ export async function taxByRate(db: SqlDriver, range: DateRange): Promise<TaxRat
             SUM(bi.sgst_amount) AS sgst,
             SUM(bi.igst_amount) AS igst
        FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
-      WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}
+      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
       GROUP BY bi.tax_rate_bp ORDER BY bi.tax_rate_bp`,
     s.params,
   )
@@ -236,7 +236,7 @@ export async function salesByStaff(db: SqlDriver, range: DateRange): Promise<Sta
   const rows = await db.query<{ id: string; username: string; n: number; total: number }>(
     `SELECT u.id, u.username, COUNT(*) AS n, COALESCE(SUM(b.grand_total), 0) AS total
        FROM bills b JOIN users u ON u.id = b.created_by
-      WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}
+      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
       GROUP BY u.id ORDER BY total DESC`,
     s.params,
   )
@@ -279,7 +279,7 @@ export async function gstLines(db: SqlDriver, range: DateRange): Promise<GstLine
        FROM bill_items bi
        JOIN bills b ON b.id = bi.bill_id
        LEFT JOIN customers c ON c.id = b.customer_id
-      WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}
+      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
       GROUP BY b.id, bi.tax_rate_bp
       ORDER BY b.posting_date, b.doc_no, bi.tax_rate_bp`,
     s.params,
@@ -342,7 +342,7 @@ export async function grossMargin(db: SqlDriver, range: DateRange): Promise<Marg
                  AND sl.product_id = bi.product_id AND sl.unit_cost IS NOT NULL
             ) THEN 1 ELSE 0 END), 0) AS uncosted
        FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
-      WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}`,
+      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}`,
     s.params,
   )
 
@@ -410,7 +410,7 @@ export async function marginByProduct(db: SqlDriver, range: DateRange, limit = 2
               SUM(bi.base_qty) AS base_qty,
               SUM(bi.taxable_value) AS revenue
          FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
-        WHERE b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}
+        WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
         GROUP BY bi.product_id
      ), cost AS (
        SELECT sl.product_id, SUM(${COST}) AS cost

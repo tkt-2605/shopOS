@@ -38,6 +38,16 @@ export interface PriceCandidates {
   customerListTiers?: PriceTier[] | undefined
   defaultListTiers?: PriceTier[] | undefined
   baseRate: Money
+  /**
+   * Whether the shop uses quantity breaks at all. Defaults to true, which is
+   * what every caller meant before the switch existed.
+   *
+   * Off, a ladder does not merely stop being editable — it stops charging, or a
+   * shop would turn quantity breaks off and go on being billed by them. The
+   * rungs stay in the database untouched, and the first one is the price at any
+   * quantity: what a shop with no breaks has said about this item on this list.
+   */
+  quantityBreaks?: boolean | undefined
 }
 
 export interface ResolvedPrice {
@@ -48,6 +58,8 @@ export interface ResolvedPrice {
 
 export function resolvePrice(candidates: PriceCandidates, quantity: Qty, on: Date = new Date()): ResolvedPrice {
   const asOf = on.toISOString()
+  const breaks = candidates.quantityBreaks !== false
+  const bestTier = breaks ? tierForQty : firstTier
 
   const forCustomer = bestTier(candidates.customerTiers, quantity, asOf)
   if (forCustomer) {
@@ -71,7 +83,7 @@ export function resolvePrice(candidates: PriceCandidates, quantity: Qty, on: Dat
  * Highest `minQty` the quantity reaches. Tiers are inclusive at the break point:
  * a tier at minQty 10 applies to exactly 10.
  */
-function bestTier(tiers: PriceTier[] | undefined, quantity: Qty, asOf: string): PriceTier | null {
+function tierForQty(tiers: PriceTier[] | undefined, quantity: Qty, asOf: string): PriceTier | null {
   if (!tiers || tiers.length === 0) return null
 
   let best: PriceTier | null = null
@@ -81,6 +93,21 @@ function bestTier(tiers: PriceTier[] | undefined, quantity: Qty, asOf: string): 
     if (best === null || tier.minQty > best.minQty) best = tier
   }
   return best
+}
+
+/**
+ * The lowest rung, whatever the quantity — the shop's ordinary price for this
+ * item on this list, with the breaks above it ignored rather than deleted.
+ */
+function firstTier(tiers: PriceTier[] | undefined, _quantity: Qty, asOf: string): PriceTier | null {
+  if (!tiers || tiers.length === 0) return null
+
+  let first: PriceTier | null = null
+  for (const tier of tiers) {
+    if (!isValid(tier.validFrom, tier.validTo, asOf)) continue
+    if (first === null || tier.minQty < first.minQty) first = tier
+  }
+  return first
 }
 
 function isValid(from: string | null | undefined, to: string | null | undefined, asOf: string): boolean {

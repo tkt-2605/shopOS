@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { login, Permissions, type Page } from '@shopos/core'
 import { useCore } from './core/CoreProvider'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
 import { abandonRestore } from './core/restore'
+import { onRepeat } from './core/repeat'
 import { ICONS, BrandMark } from './ui/icons'
+import { AdminGate } from './ui/AdminGate'
+import { lock } from './core/adminGate'
 import Billing from './pages/Billing'
 import Bills from './pages/Bills'
 import Dashboard from './pages/Dashboard'
@@ -208,6 +211,12 @@ function Shell() {
   )
   const initials = (user!.fullName ?? user!.username).slice(0, 2).toUpperCase()
 
+  /* Selling an old bill again is asked for from the bills screen and happens at
+     the counter, so the shell is what moves between them. The billing tabs claim
+     the request themselves once they are there. */
+  const canBill = pages.includes('billing')
+  useEffect(() => onRepeat(() => { if (canBill) setCurrent('billing') }), [canBill])
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -242,7 +251,9 @@ function Shell() {
           <div style={{ minWidth: 0 }}>
             <div className="who">{user!.fullName ?? user!.username}</div>
             <div className="role">{user!.roleName}</div>
-            <button className="link-btn" onClick={() => setUser(null)}>Sign out</button>
+            {/* The unlock belongs to a person, not to the machine, so it does
+                not outlive their session. */}
+            <button className="link-btn" onClick={() => { lock(); setUser(null) }}>Sign out</button>
           </div>
         </div>
       </aside>
@@ -274,14 +285,22 @@ function PageBody({ page }: { page: Page }) {
     case 'reorder': return <Reorder />
     case 'credit': return <Credit />
     case 'cash_counter': return <CashCounter />
-    case 'settings': return <Settings />
+    /* The two screens that can change what every other screen does. Staff is
+       deliberately not among them: resetting a cashier's forgotten password is a
+       daily job, and a second password in front of it is how an owner ends up
+       turning the whole gate off. */
+    case 'settings': return (
+      <AdminGate scope="settings" title="Settings"><Settings /></AdminGate>
+    )
+    case 'roles': return (
+      <AdminGate scope="roles" title="Roles & Permissions"><Roles /></AdminGate>
+    )
     case 'customers': return <Customers />
     case 'pricing': return <Pricing />
     case 'registers': return <Registers />
     case 'reports': return <Reports />
     case 'audit': return <Audit />
     case 'users': return <Staff />
-    case 'roles': return <Roles />
     case 'suppliers': return <Suppliers />
     default:
       return <Empty>{PAGE_TITLES[page] ?? page} is not built yet.</Empty>

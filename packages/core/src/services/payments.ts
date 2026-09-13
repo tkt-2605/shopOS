@@ -117,6 +117,64 @@ export async function recordPayment(db: SqlDriver, input: RecordPaymentInput): P
   return { ok: true, paymentId, docNo, allocated: sub(input.amount, unallocated), unallocated, allocations }
 }
 
+/**
+ * A receipt raised by something else, inside that thing's transaction.
+ *
+ * A refund put back on the khata is a receipt against the customer: the goods
+ * came back, so the money they owe for them goes away. Written here rather than
+ * through `recordPayment` so it commits or rolls back with the return itself —
+ * a return that posted stock but left the customer still owing for it is the
+ * one outcome worth being paranoid about.
+ *
+ * The method is `adjustment` because no money moved: nothing goes in the drawer
+ * and nothing comes out of it.
+ */
+export async function postCreditNote(
+  tx: SqlDriver,
+  input: {
+    customerId: string
+    amount: Money
+    reference: string
+    notes?: string | null
+    registerPrefix?: string
+    actorId: string
+    now: Date
+  },
+): Promise<{ paymentId: string; docNo: string; allocated: Money }> {
+  const openBills = await loadOpenBills(tx, input.customerId)
+  const plan = planAllocation(input.amount, openBills)
+
+  const paymentId = newId()
+  const nowIso = input.now.toISOString()
+  const docNo = await nextDocNo(tx, 'payment', input.registerPrefix ?? 'MR', input.now)
+
+  await tx.execute(
+    `INSERT INTO payment_entries
+       (id, doc_no, docstatus, party_type, customer_id, posting_date, method, amount, reference, notes,
+        created_by, created_at, updated_at)
+     VALUES (?, ?, 1, 'customer', ?, ?, 'adjustment', ?, ?, ?, ?, ?, ?)`,
+    [
+      paymentId, docNo, input.customerId, businessDate(input.now), input.amount,
+      input.reference, input.notes ?? null, input.actorId, nowIso, nowIso,
+    ],
+  )
+
+  for (const alloc of plan.allocations) {
+    await tx.execute(
+      `INSERT INTO payment_allocations (id, payment_id, bill_id, amount) VALUES (?, ?, ?, ?)`,
+      [newId(), paymentId, alloc.billId, alloc.amount],
+    )
+  }
+
+  await writeAudit(tx, { actorId: input.actorId }, {
+    entity: 'payment_entries', entityId: paymentId, action: 'submit',
+    docstatusTo: SUBMITTED,
+    after: { amount: input.amount, reference: input.reference },
+  })
+
+  return { paymentId, docNo, allocated: plan.allocated }
+}
+
 export async function cancelPayment(
   db: SqlDriver,
   input: { paymentId: string; reason?: string; actorId: string; now?: Date },
@@ -188,4 +246,409 @@ export async function customerStatement(db: SqlDriver, customerId: string): Prom
     }))
     .filter((r) => r.outstanding > 0)
     .sort((a, b) => a.postingDate.localeCompare(b.postingDate))
+}
+
+/* ------------------------------------------------ the rest of the khata --- */
+
+/**
+ * What has been received from this customer, newest first.
+ *
+ * Needed before anything can be undone: a receipt entered against the wrong
+ * customer is the commonest correction in a khata shop, and until now
+ * `cancelPayment` existed with nothing able to name a payment to it.
+ */
+export interface CustomerPayment {
+  paymentId: string
+  docNo: string
+  postingDate: string
+  method: ReceiptMethod
+  amount: Money
+  reference: string | null
+  notes: string | null
+  docstatus: number
+  /** Which bills it settled, so cancelling it can say what goes back on the khata. */
+  allocatedTo: { docNo: string; amount: Money }[]
+}
+
+export async function listCustomerPayments(
+  db: SqlDriver,
+  customerId: string,
+  limit = 50,
+): Promise<CustomerPayment[]> {
+  const rows = await db.query<{
+    id: string; doc_no: string; posting_date: string; method: string
+    amount: number; reference: string | null; notes: string | null; docstatus: number
+  }>(
+    `SELECT id, doc_no, posting_date, method, amount, reference, notes, docstatus
+       FROM payment_entries
+      WHERE customer_id = ? AND party_type = 'customer'
+      ORDER BY posting_date DESC, created_at DESC
+      LIMIT ?`,
+    [customerId, limit],
+  )
+
+  const out: CustomerPayment[] = []
+  for (const r of rows) {
+    const allocs = await db.query<{ doc_no: string; amount: number }>(
+      `SELECT b.doc_no, pa.amount FROM payment_allocations pa
+         JOIN bills b ON b.id = pa.bill_id
+        WHERE pa.payment_id = ?
+        ORDER BY b.posting_date`,
+      [r.id],
+    )
+    out.push({
+      paymentId: r.id,
+      docNo: r.doc_no,
+      postingDate: r.posting_date,
+      method: r.method as ReceiptMethod,
+      amount: r.amount as Money,
+      reference: r.reference,
+      notes: r.notes,
+      docstatus: r.docstatus,
+      allocatedTo: allocs.map((a) => ({ docNo: a.doc_no, amount: a.amount as Money })),
+    })
+  }
+  return out
+}
+
+/**
+ * Giving up on money that is owed.
+ *
+ * The customer has gone, or the last ₹40 is not worth the phone call. Posted as
+ * an adjustment rather than as a receipt, so the drawer is untouched and the
+ * day's takings do not report money that never arrived — the difference between
+ * a debt settled and a debt abandoned is exactly what an owner wants to see
+ * separately later.
+ *
+ * Reversible the same way a payment is: it is a payment entry, so cancelling it
+ * puts the debt back.
+ */
+export async function writeOff(
+  db: SqlDriver,
+  input: {
+    customerId: string
+    /** Omit to clear the oldest bills first, as a payment would. */
+    billId?: string
+    amount: Money
+    reason: string
+    registerPrefix?: string
+    actorId: string
+    now?: Date
+  },
+): Promise<RecordPaymentResult> {
+  return recordPayment(db, {
+    customerId: input.customerId,
+    amount: input.amount,
+    method: 'adjustment',
+    reference: 'Written off',
+    notes: input.reason,
+    ...(input.billId ? { allocations: [{ billId: input.billId, amount: input.amount }] } : {}),
+    ...(input.registerPrefix ? { registerPrefix: input.registerPrefix } : {}),
+    actorId: input.actorId,
+    ...(input.now ? { now: input.now } : {}),
+  })
+}
+
+export type OpeningBalanceResult =
+  | { ok: true; billId: string; docNo: string }
+  | { ok: false; code: 'INVALID_AMOUNT' }
+  | { ok: false; code: 'ALREADY_SET'; docNo: string }
+
+/**
+ * What the customer already owed before this shop started using ShopOS.
+ *
+ * Recorded as a bill, because a bill is the only thing a payment can be
+ * allocated against, and an opening balance that cannot be paid off is useless.
+ * It carries `kind = 'opening'` so that no sales report ever counts it as
+ * something the shop sold — that mark is the whole reason it is safe to put it
+ * here rather than inventing a parallel ledger the outstanding query would have
+ * to learn about.
+ *
+ * One per customer. A second one is refused rather than added, because "the
+ * opening balance" is a single fact about a single moment; getting it wrong is
+ * corrected by cancelling and re-entering.
+ */
+export async function recordOpeningBalance(
+  db: SqlDriver,
+  input: {
+    customerId: string
+    amount: Money
+    /** The day the shop's own book was closed. Defaults to today. */
+    asOf?: string
+    note?: string
+    registerId: string
+    registerPrefix?: string
+    actorId: string
+    now?: Date
+  },
+): Promise<OpeningBalanceResult> {
+  if (input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
+
+  const existing = await db.get<{ doc_no: string }>(
+    `SELECT doc_no FROM bills WHERE customer_id = ? AND kind = 'opening' AND docstatus = 1`,
+    [input.customerId],
+  )
+  if (existing) return { ok: false, code: 'ALREADY_SET', docNo: existing.doc_no }
+
+  const now = input.now ?? new Date()
+  const nowIso = now.toISOString()
+  const postingDate = input.asOf ?? businessDate(now)
+  const billId = newId()
+
+  const customer = await db.get<{ name: string }>(`SELECT name FROM customers WHERE id = ?`, [input.customerId])
+
+  let docNo = ''
+  await db.transaction(async (tx) => {
+    docNo = await nextDocNo(tx, 'bill', input.registerPrefix ?? 'OB', now)
+    await tx.execute(
+      `INSERT INTO bills
+         (id, doc_no, docstatus, kind, register_id, customer_id, customer_name, posting_date,
+          subtotal, discount, taxable_total, tax_total, round_off, grand_total,
+          paid_total, credit_total, notes, created_by, created_at, updated_at)
+       VALUES (?, ?, 1, 'opening', ?, ?, ?, ?, 0, 0, 0, 0, 0, ?, 0, ?, ?, ?, ?, ?)`,
+      [
+        billId, docNo, input.registerId, input.customerId, customer?.name ?? null, postingDate,
+        input.amount, input.amount, input.note ?? 'Balance carried over', input.actorId, nowIso, nowIso,
+      ],
+    )
+    await writeAudit(tx, { actorId: input.actorId }, {
+      entity: 'bills', entityId: billId, action: 'submit',
+      docstatusTo: SUBMITTED,
+      after: { kind: 'opening', amount: input.amount, posting_date: postingDate },
+    })
+  })
+
+  return { ok: true, billId, docNo }
+}
+
+export type StatementKind =
+  /** What they owed before this shop started keeping the account here. */
+  | 'opening'
+  /** Goods taken. */
+  | 'bill'
+  /** Paid there and then, when the bill was made. */
+  | 'counter'
+  /** Paid later, against the account. */
+  | 'receipt'
+  /** Goods came back. */
+  | 'return'
+  /** Given up on. */
+  | 'writeoff'
+
+export interface StatementEntry {
+  kind: StatementKind
+  id: string
+  docNo: string
+  postingDate: string
+  /** What the line says on the page, already in words. */
+  description: string
+  /** Increases what they owe. */
+  debit: Money
+  /** Reduces it. */
+  credit: Money
+  /** What is owed after this line — the figure the customer reads. */
+  balance: Money
+}
+
+export interface CustomerAccount {
+  /** Owed at the start of the window. Zero when the window is the whole account. */
+  openingBalance: Money
+  entries: StatementEntry[]
+  closingBalance: Money
+  /** The three figures a customer looks for at the bottom of a statement. */
+  totals: { bought: Money; paid: Money; returned: Money }
+}
+
+/**
+ * A customer's account, the way a bank states one.
+ *
+ * The khata ledger this replaces listed only what had been put on credit, so a
+ * customer who paid cash for eleven months appeared to have bought nothing —
+ * no use as a statement, because the first thing anybody checks is whether
+ * their purchases are all there.
+ *
+ * So every document appears, and the balance still means exactly one thing:
+ * what is owed right now. A bill is a debit for its full value and the money
+ * handed over at the counter is a credit on the same day, which nets a cash
+ * sale to nothing while still showing it. That is the two-line shape a bank
+ * statement uses, and it is what lets the balance be read at any row rather
+ * than only at the bottom.
+ *
+ * The one trap is a return refunded onto the account: that refund raises a
+ * credit note, which is a payment entry, so counting both the goods coming back
+ * and the credit note would take the balance down twice for one lot of goods.
+ * The return carries the credit and the note it raised is left out —
+ * `sales_returns.credit_note_id` names it, so there is nothing to guess.
+ */
+export async function customerAccount(
+  db: SqlDriver,
+  customerId: string,
+  range: { from?: string; to?: string } = {},
+): Promise<CustomerAccount> {
+  const from = range.from ?? null
+  const to = range.to ?? null
+
+  const bills = await db.query<{
+    id: string; doc_no: string; posting_date: string; kind: string
+    grand_total: number; credit_total: number
+  }>(
+    `SELECT id, doc_no, posting_date, kind, grand_total, credit_total
+       FROM bills WHERE customer_id = ? AND docstatus = 1`,
+    [customerId],
+  )
+
+  const counterPaid = await db.query<{ bill_id: string; method: string; paid: number }>(
+    `SELECT bp.bill_id, bp.method, SUM(bp.amount) AS paid
+       FROM bill_payments bp JOIN bills b ON b.id = bp.bill_id
+      WHERE b.customer_id = ? AND b.docstatus = 1 AND bp.method <> 'credit'
+      GROUP BY bp.bill_id, bp.method`,
+    [customerId],
+  )
+
+  const returns = await db.query<{
+    id: string; doc_no: string; posting_date: string; refund_total: number
+    refund_method: string; credit_note_id: string | null
+  }>(
+    `SELECT r.id, r.doc_no, r.posting_date, r.refund_total, r.refund_method, r.credit_note_id
+       FROM sales_returns r JOIN bills b ON b.id = r.bill_id
+      WHERE b.customer_id = ? AND r.docstatus = 1`,
+    [customerId],
+  )
+
+  const payments = await db.query<{
+    id: string; doc_no: string; posting_date: string; amount: number
+    method: string; reference: string | null
+  }>(
+    `SELECT id, doc_no, posting_date, amount, method, reference
+       FROM payment_entries
+      WHERE customer_id = ? AND party_type = 'customer' AND docstatus = 1`,
+    [customerId],
+  )
+
+  const raisedByReturn = new Set(
+    returns.map((r) => r.credit_note_id).filter((id): id is string => id !== null),
+  )
+
+  type Row = Omit<StatementEntry, 'balance'>
+  const rows: Row[] = []
+
+  for (const b of bills) {
+    rows.push({
+      kind: b.kind === 'opening' ? 'opening' : 'bill',
+      id: b.id,
+      docNo: b.doc_no,
+      postingDate: b.posting_date,
+      description: b.kind === 'opening' ? 'Balance brought forward' : 'Goods',
+      debit: b.grand_total as Money,
+      credit: ZERO,
+    })
+  }
+
+  for (const p of counterPaid) {
+    const bill = bills.find((b) => b.id === p.bill_id)
+    if (!bill) continue
+    rows.push({
+      kind: 'counter',
+      id: `${p.bill_id}-${p.method}`,
+      docNo: bill.doc_no,
+      postingDate: bill.posting_date,
+      description: p.method === 'loyalty'
+        ? 'Paid with points'
+        : `Paid at the counter — ${titleOf(p.method)}`,
+      debit: ZERO,
+      credit: p.paid as Money,
+    })
+  }
+
+  for (const r of returns) {
+    const onAccount = r.credit_note_id !== null
+    rows.push({
+      kind: 'return',
+      id: r.id,
+      docNo: r.doc_no,
+      postingDate: r.posting_date,
+      description: onAccount
+        ? 'Goods returned — put on your account'
+        : `Goods returned — refunded in ${titleOf(r.refund_method).toLowerCase()}`,
+      debit: ZERO,
+      // Money handed back leaves the account where it was: the goods went back
+      // and so did the cash.
+      credit: (onAccount ? r.refund_total : 0) as Money,
+    })
+  }
+
+  for (const p of payments) {
+    if (raisedByReturn.has(p.id)) continue
+    const written = p.method === 'adjustment' && p.reference === 'Written off'
+    rows.push({
+      kind: written ? 'writeoff' : 'receipt',
+      id: p.id,
+      docNo: p.doc_no,
+      postingDate: p.posting_date,
+      description: written
+        ? 'Written off'
+        : p.method === 'adjustment'
+          ? (p.reference ?? 'Adjustment')
+          : `Payment — ${titleOf(p.method)}`,
+      debit: ZERO,
+      credit: p.amount as Money,
+    })
+  }
+
+  /* Oldest first, and within a day a bill before the money paid against it. The
+     total is the same either way, but a statement is read down the page and a
+     receipt listed above the bill it settles looks like an error. */
+  const order: Record<StatementKind, number> = {
+    opening: 0, bill: 1, counter: 2, return: 3, receipt: 4, writeoff: 5,
+  }
+  rows.sort((a, b) => (
+    a.postingDate !== b.postingDate
+      ? a.postingDate.localeCompare(b.postingDate)
+      : order[a.kind] !== order[b.kind]
+        ? order[a.kind] - order[b.kind]
+        : a.docNo.localeCompare(b.docNo)
+  ))
+
+  let running = 0
+  let openingBalance = 0
+  const entries: StatementEntry[] = []
+  let bought = 0
+  let paid = 0
+  let returned = 0
+
+  for (const row of rows) {
+    running += row.debit - row.credit
+
+    /* Anything before the window is not listed; it is the figure the window
+       starts from, which is what makes a dated statement add up rather than
+       begin in the middle of a balance nobody can account for. */
+    if (from !== null && row.postingDate < from) { openingBalance = running; continue }
+    if (to !== null && row.postingDate > to) continue
+
+    if (row.kind === 'bill' || row.kind === 'opening') bought += row.debit
+    if (row.kind === 'counter' || row.kind === 'receipt') paid += row.credit
+    // Counted off the goods rather than off the credit, because a refund handed
+    // back in cash is still a return even though the account did not move.
+    if (row.kind === 'return') {
+      const r = returns.find((x) => x.id === row.id)
+      returned += r?.refund_total ?? 0
+    }
+
+    entries.push({ ...row, balance: running as Money })
+  }
+
+  return {
+    openingBalance: openingBalance as Money,
+    entries,
+    closingBalance: running as Money,
+    totals: {
+      bought: bought as Money,
+      paid: paid as Money,
+      returned: returned as Money,
+    },
+  }
+}
+
+function titleOf(method: string): string {
+  return method === 'upi' ? 'UPI' : method.charAt(0).toUpperCase() + method.slice(1)
 }

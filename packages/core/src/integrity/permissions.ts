@@ -143,7 +143,12 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
     description: 'Bills and takes payment; cannot cancel or change prices',
     resources: {
       bill: { read: true, create: true, write: true, submit: true },
-      sales_return: { read: true, create: true },
+      /* Sees the returns against a bill, does not take one. A refund is money
+         out of the drawer against goods nobody has checked yet, and a shop that
+         wants its cashiers doing it ticks the two boxes on the Roles screen.
+         Create without submit would be worse than either: a return is taken
+         complete, so it would be a permission that does nothing at all. */
+      sales_return: { read: true },
       payment: { read: true, create: true, submit: true },
       product: { read: true },
       customer: { read: true, create: true, write: true },

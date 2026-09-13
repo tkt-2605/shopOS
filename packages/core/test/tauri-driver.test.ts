@@ -91,7 +91,7 @@ describe('bridge protocol', () => {
     await db.transaction(async (tx) => {
       await tx.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('k', 'v', 'now')`)
     })
-    expect(await db.query(`SELECT key FROM settings`)).toHaveLength(1)
+    expect(await db.query(`SELECT key FROM settings WHERE key = 'k'`)).toHaveLength(1)
     expect(rust.isTxOpen()).toBe(false)
   })
 
@@ -103,7 +103,7 @@ describe('bridge protocol', () => {
       }),
     ).rejects.toThrow('boom')
 
-    expect(await db.query(`SELECT key FROM settings`)).toHaveLength(0)
+    expect(await db.query(`SELECT key FROM settings WHERE key = 'k'`)).toHaveLength(0)
     // The critical property: a thrown body must not strand the transaction, or
     // every later query blocks until the watchdog fires.
     expect(rust.isTxOpen()).toBe(false)
@@ -114,7 +114,7 @@ describe('bridge protocol', () => {
     await db.transaction(async (tx) => {
       await tx.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('after', 'ok', 'now')`)
     })
-    expect(await db.query(`SELECT key FROM settings`)).toHaveLength(1)
+    expect(await db.query(`SELECT key FROM settings WHERE key = 'after'`)).toHaveLength(1)
   })
 
   it('routes statements inside a transaction through the token commands', async () => {
@@ -134,7 +134,7 @@ describe('bridge protocol', () => {
       })
     })
     expect(rust.calls.filter((c) => c === 'sql_tx_begin')).toHaveLength(1)
-    expect(await db.query(`SELECT key FROM settings`)).toHaveLength(1)
+    expect(await db.query(`SELECT key FROM settings WHERE key = 'n'`)).toHaveLength(1)
   })
 
   it('surfaces a Rust error as a SqlError', async () => {
