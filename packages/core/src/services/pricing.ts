@@ -3,6 +3,7 @@ import { newId } from '../ids.js'
 import type { Money } from '../money.js'
 import { type Qty, qty, QTY_SCALE } from '../quantity.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import type { Rung } from '../domain/ladder.js'
 
 /**
  * Writing prices down.
@@ -367,6 +368,8 @@ export interface CustomerPrice {
   productId: string
   productName: string
   saleUnit: string
+  /** A customer's own rate is a ladder too: ₹9, ₹8 from ten, ₹7 from fifty. */
+  minQty: Qty
   rate: Money
   validFrom: string | null
   validTo: string | null
@@ -383,22 +386,22 @@ export async function listCustomerPrices(
 
   const rows = await db.query<{
     id: string; customer_id: string; customer_name: string; product_id: string
-    product_name: string; sale_unit: string; rate: number
+    product_name: string; sale_unit: string; min_qty: number; rate: number
     valid_from: string | null; valid_to: string | null
   }>(
     `SELECT cp.id, cp.customer_id, c.name AS customer_name, cp.product_id, p.name AS product_name,
-            cp.sale_unit, cp.rate, cp.valid_from, cp.valid_to
+            cp.sale_unit, cp.min_qty, cp.rate, cp.valid_from, cp.valid_to
        FROM customer_item_prices cp
        JOIN customers c ON c.id = cp.customer_id
        JOIN products p ON p.id = cp.product_id
       WHERE ${where.join(' AND ')}
-      ORDER BY c.name, p.name, cp.sale_unit`,
+      ORDER BY c.name, p.name, cp.sale_unit, cp.min_qty`,
     args,
   )
   return rows.map((r) => ({
     id: r.id, customerId: r.customer_id, customerName: r.customer_name,
     productId: r.product_id, productName: r.product_name, saleUnit: r.sale_unit,
-    rate: r.rate as Money, validFrom: r.valid_from, validTo: r.valid_to,
+    minQty: qty(r.min_qty), rate: r.rate as Money, validFrom: r.valid_from, validTo: r.valid_to,
   }))
 }
 
@@ -407,7 +410,7 @@ export async function setCustomerPrice(
   ctx: AuditContext & { actorId: string },
   input: {
     customerId: string; productId: string; saleUnit: string; rate: Money
-    validFrom?: string | null; validTo?: string | null
+    minQty?: Qty; validFrom?: string | null; validTo?: string | null
   },
 ): Promise<ItemPriceResult> {
   if (input.validFrom && input.validTo && input.validFrom > input.validTo) {
@@ -418,9 +421,11 @@ export async function setCustomerPrice(
   }
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
+  const minQty = input.minQty ?? qty(0)
   const existing = await db.get<{ id: string; rate: number }>(
-    `SELECT id, rate FROM customer_item_prices WHERE customer_id = ? AND product_id = ? AND sale_unit = ?`,
-    [input.customerId, input.productId, input.saleUnit],
+    `SELECT id, rate FROM customer_item_prices
+      WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND min_qty = ?`,
+    [input.customerId, input.productId, input.saleUnit, minQty],
   )
   const id = existing?.id ?? newId()
 
@@ -435,9 +440,9 @@ export async function setCustomerPrice(
     } else {
       await tx.execute(
         `INSERT INTO customer_item_prices
-           (id, customer_id, product_id, sale_unit, rate, valid_from, valid_to, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, input.customerId, input.productId, input.saleUnit, input.rate,
+           (id, customer_id, product_id, sale_unit, min_qty, rate, valid_from, valid_to, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, input.customerId, input.productId, input.saleUnit, minQty, input.rate,
          input.validFrom ?? null, input.validTo ?? null, now, now],
       )
     }
@@ -488,6 +493,145 @@ export async function setCustomerPriceList(
       after: { price_list_id: priceListId },
     })
   })
+}
+
+/* --------------------------------------------------------------- ladders --- */
+
+export type SetLadderResult =
+  | { ok: true; rungs: number; removed: number }
+  | { ok: false; code: 'UNKNOWN_UNIT'; saleUnit: string }
+  | { ok: false; code: 'BAD_DATES' }
+
+/**
+ * A whole quantity ladder in one go.
+ *
+ * The rungs given become the ladder: anything at a quantity not in the list is
+ * removed. That is what makes the compact form on the product screen honest —
+ * what is typed there is the ladder, not an addition to whatever was there
+ * before, which would leave a rung nobody can see quietly undercutting the rest.
+ */
+export async function setLadder(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  input: { productId: string; priceListId: string; saleUnit: string; rungs: Rung[] },
+): Promise<SetLadderResult> {
+  if (!(await unitExists(db, input.productId, input.saleUnit))) {
+    return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
+  }
+
+  const existing = await db.query<{ id: string; min_qty: number }>(
+    `SELECT id, min_qty FROM item_prices
+      WHERE product_id = ? AND price_list_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
+    [input.productId, input.priceListId, input.saleUnit],
+  )
+  const keep = new Set<number>(input.rungs.map((r) => r.minQty))
+
+  for (const rung of input.rungs) {
+    const written = await setItemPrice(db, ctx, {
+      productId: input.productId,
+      priceListId: input.priceListId,
+      saleUnit: input.saleUnit,
+      minQty: rung.minQty,
+      rate: rung.rate,
+    })
+    if (!written.ok) return written
+  }
+
+  for (const row of existing) {
+    if (!keep.has(row.min_qty)) await removeItemPrice(db, ctx, row.id)
+  }
+
+  return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.min_qty)).length }
+}
+
+/** The same, for a rate that belongs to one customer and one item. */
+export async function setCustomerLadder(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  input: { customerId: string; productId: string; saleUnit: string; rungs: Rung[] },
+): Promise<SetLadderResult> {
+  if (!(await unitExists(db, input.productId, input.saleUnit))) {
+    return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
+  }
+
+  const existing = await db.query<{ id: string; min_qty: number }>(
+    `SELECT id, min_qty FROM customer_item_prices
+      WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
+    [input.customerId, input.productId, input.saleUnit],
+  )
+  const keep = new Set<number>(input.rungs.map((r) => r.minQty))
+
+  for (const rung of input.rungs) {
+    const written = await setCustomerPrice(db, ctx, {
+      customerId: input.customerId,
+      productId: input.productId,
+      saleUnit: input.saleUnit,
+      minQty: rung.minQty,
+      rate: rung.rate,
+    })
+    if (!written.ok) return written
+  }
+
+  for (const row of existing) {
+    if (!keep.has(row.min_qty)) await removeCustomerPrice(db, ctx, row.id)
+  }
+
+  return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.min_qty)).length }
+}
+
+/** One product's ladder on one list, in the order it applies. */
+export async function ladderFor(
+  db: SqlDriver,
+  input: { productId: string; priceListId: string; saleUnit: string },
+): Promise<Rung[]> {
+  const rows = await db.query<{ min_qty: number; rate: number }>(
+    `SELECT min_qty, rate FROM item_prices
+      WHERE product_id = ? AND price_list_id = ? AND sale_unit = ? AND deleted_at IS NULL
+      ORDER BY min_qty`,
+    [input.productId, input.priceListId, input.saleUnit],
+  )
+  return rows.map((r) => ({ minQty: qty(r.min_qty), rate: r.rate as Money }))
+}
+
+export async function customerLadderFor(
+  db: SqlDriver,
+  input: { customerId: string; productId: string; saleUnit: string },
+): Promise<Rung[]> {
+  const rows = await db.query<{ min_qty: number; rate: number }>(
+    `SELECT min_qty, rate FROM customer_item_prices
+      WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND deleted_at IS NULL
+      ORDER BY min_qty`,
+    [input.customerId, input.productId, input.saleUnit],
+  )
+  return rows.map((r) => ({ minQty: qty(r.min_qty), rate: r.rate as Money }))
+}
+
+/**
+ * Every product's ladder on one list, for a column in a list of products.
+ *
+ * One query rather than one per row: a shop with three thousand items would
+ * otherwise open its product screen three thousand times.
+ */
+export async function laddersFor(
+  db: SqlDriver,
+  priceListId: string,
+): Promise<Map<string, Rung[]>> {
+  const rows = await db.query<{ product_id: string; sale_unit: string; min_qty: number; rate: number }>(
+    `SELECT ip.product_id, ip.sale_unit, ip.min_qty, ip.rate
+       FROM item_prices ip
+       JOIN products p ON p.id = ip.product_id
+      WHERE ip.price_list_id = ? AND ip.deleted_at IS NULL AND ip.sale_unit = p.base_unit
+      ORDER BY ip.product_id, ip.min_qty`,
+    [priceListId],
+  )
+
+  const ladders = new Map<string, Rung[]>()
+  for (const row of rows) {
+    const rungs = ladders.get(row.product_id) ?? []
+    rungs.push({ minQty: qty(row.min_qty), rate: row.rate as Money })
+    ladders.set(row.product_id, rungs)
+  }
+  return ladders
 }
 
 /* --------------------------------------------------------------- helpers --- */

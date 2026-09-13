@@ -4,6 +4,7 @@ import {
   searchProducts, productValuation, recomputeStock, newId,
   listBarcodes, setBarcodes, listUnits, setUnits,
   listCategories, createCategory, setProductCategory, setVariantOf,
+  setLadder, laddersFor, defaultPriceListId, Ladder,
   type Category,
   type ProductListItem,
 } from '@shopos/core'
@@ -33,6 +34,8 @@ interface Draft {
   /** The item this one is a version of, and what makes it different. */
   parentProductId: string
   variantLabel: string
+  /** The quantity ladder as typed: `1=10, 10=9, 50=8`. */
+  ladder: string
   hsnCode: string
   taxPercent: string
   baseRate: string
@@ -45,9 +48,38 @@ interface Draft {
 
 const BLANK: Draft = {
   id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
-  categoryId: '', parentProductId: '', variantLabel: '', hsnCode: '', taxPercent: '12',
+  categoryId: '', parentProductId: '', variantLabel: '', ladder: '', hsnCode: '', taxPercent: '12',
   baseRate: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   reorderLevel: '', reorderQty: '',
+}
+
+/**
+ * Said while typing rather than on save: a ladder that charges more for buying
+ * more is almost always a typo, and almost always noticed too late.
+ */
+function ladderWarning(text: string) {
+  if (text.trim() === '') return null
+  const parsed = Ladder.parseLadder(text)
+  if (!parsed.ok) {
+    return (
+      <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 5 }}>
+        &ldquo;{parsed.part}&rdquo; is not a rung — write them as 1=10, 10=9, 50=8.
+      </div>
+    )
+  }
+  const rising = Ladder.risingRungs(parsed.rungs)
+  if (rising.length > 0) {
+    return (
+      <div style={{ fontSize: 11.5, color: 'var(--warn)', marginTop: 5 }}>
+        This charges more for buying more. Check it is what you meant.
+      </div>
+    )
+  }
+  return (
+    <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 5 }}>
+      {Ladder.describeLadder(parsed.rungs)}
+    </div>
+  )
 }
 
 /** Blank means "not set", which is not the same as a level of zero. */
@@ -70,6 +102,8 @@ export default function Inventory() {
   const [parentSearch, setParentSearch] = useState('')
   const [parentResults, setParentResults] = useState<ProductListItem[]>([])
   const [browsing, setBrowsing] = useState('')
+  const [ladders, setLadders] = useState<Map<string, Ladder.Rung[]>>(new Map())
+  const [priceListId, setPriceListId] = useState('')
 
   const canWrite = Permissions.can(user.permissions, 'product', 'write')
 
@@ -86,6 +120,16 @@ export default function Inventory() {
 
   const refreshCategories = useCallback(async () => setCategories(await listCategories(db)), [db])
   useEffect(() => { void refreshCategories() }, [refreshCategories])
+
+  // The ladder column reads the shop's own price list. Other lists are the
+  // Prices screen's business; this one is the answer to "what does it cost".
+  const refreshLadders = useCallback(async () => {
+    const listId = await defaultPriceListId(db)
+    if (!listId) return
+    setPriceListId(listId)
+    setLadders(await laddersFor(db, listId))
+  }, [db])
+  useEffect(() => { void refreshLadders() }, [refreshLadders])
 
   useEffect(() => {
     const id = setTimeout(async () => {
@@ -153,6 +197,22 @@ export default function Inventory() {
       return
     }
 
+    const parsed = Ladder.parseLadder(draft.ladder)
+    if (!parsed.ok) {
+      setNotice(
+        parsed.code === 'REPEATED_QTY'
+          ? `The ladder names quantity ${parsed.part.split(/[=@:]/)[0]} twice.`
+          : `"${parsed.part}" is not a rung. Write them as 1=10, 10=9, 50=8.`,
+      )
+      return
+    }
+    if (priceListId) {
+      const written = await setLadder(db, { actorId: user.id }, {
+        productId, priceListId, saleUnit: draft.baseUnit, rungs: parsed.rungs,
+      })
+      if (!written.ok) setNotice('The ladder could not be saved against this item.')
+    }
+
     await setProductCategory(db, { actorId: user.id }, productId, draft.categoryId || null)
 
     const variant = await setVariantOf(db, { actorId: user.id }, {
@@ -173,6 +233,7 @@ export default function Inventory() {
     setDraft(null)
     setParentSearch('')
     await refresh()
+    await refreshLadders()
   }
 
   async function addCategory() {
@@ -195,6 +256,7 @@ export default function Inventory() {
         ? codes.map((c) => ({ barcode: c.barcode, label: c.label ?? '' }))
         : [{ barcode: '', label: '' }],
       units: units.map((u) => ({ saleUnit: u.saleUnit, baseUnits: Quantity.formatQty(u.baseUnits) })),
+      ladder: Ladder.formatLadder(ladders.get(p.id) ?? []),
       categoryId: p.categoryId ?? '',
       parentProductId: p.parentProductId ?? '',
       variantLabel: p.variantLabel ?? '',
@@ -248,7 +310,7 @@ export default function Inventory() {
         <table>
           <thead>
             <tr>
-              <th>Item</th><th>Barcode</th><th>HSN</th>
+              <th>Item</th><th>Barcode</th><th>Quantity ladder</th>
               <th className="r">GST</th><th className="r">Rate</th><th className="r">On hand</th><th />
             </tr>
           </thead>
@@ -266,6 +328,11 @@ export default function Inventory() {
                   </div>
                 </td>
                 <td className="num">{p.barcode ?? '—'}</td>
+                <td className="num" style={{ fontSize: 12 }}>
+                  {ladders.has(p.id)
+                    ? Ladder.describeLadder(ladders.get(p.id)!)
+                    : <span style={{ color: 'var(--ink-3)' }}>—</span>}
+                </td>
                 <td className="num">{p.hsnCode ?? '—'}</td>
                 <td className="r num">{Tax.bpToPercent(p.taxRateBp)}%</td>
                 <td className="r"><Rupees value={p.baseRate} /></td>
@@ -321,6 +388,25 @@ export default function Inventory() {
                   onChange={(e) => setDraft({ ...draft, baseUnit: e.target.value })} />
               </Field>
             )}
+          </div>
+
+          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Quantity ladder</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
+              Cheaper by the quantity, written the way you would say it:{' '}
+              <span className="num">1=10, 10=9, 50=8</span> — one is ten rupees, ten or more is nine,
+              fifty or more is eight. Per {draft.baseUnit || 'unit'}, on the shop's default price list.
+              Leave it empty and everyone pays the base rate. Other lists, other units, and a ladder for
+              one customer, are on the Prices screen.
+            </div>
+            <input
+              className="input num"
+              id="p-ladder"
+              placeholder="1=10, 10=9, 50=8"
+              value={draft.ladder}
+              onChange={(e) => setDraft({ ...draft, ladder: e.target.value })}
+            />
+            {ladderWarning(draft.ladder)}
           </div>
 
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>

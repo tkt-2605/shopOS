@@ -10,7 +10,7 @@
 /// string are only a claim — and this module's whole job is deciding what gets
 /// written to disk.
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use base64::Engine as _;
 use serde::Serialize;
@@ -204,14 +204,10 @@ pub fn attachment_present(app: tauri::AppHandle, path: String) -> Result<bool, S
     Ok(paths::in_attachments(&root, &path)?.exists())
 }
 
-/// The full path, for adding a file to a backup archive.
-pub fn file_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
-    paths::in_attachments(root, rel)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
 

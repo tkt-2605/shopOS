@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   listPriceLists, createPriceList, updatePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
-  listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList,
-  listUnits, perBaseUnit,
+  listCustomerPrices, removeCustomerPrice, setCustomerPriceList,
+  setCustomerLadder, customerLadderFor, listUnits, perBaseUnit, Ladder,
   searchProducts, searchCustomers, Money, Quantity, Permissions,
   type PriceList, type ItemPrice, type CustomerPrice, type SaleUnit,
   type ProductListItem, type CustomerListItem,
@@ -327,7 +327,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
   const [productResults, setProductResults] = useState<ProductListItem[]>([])
   const [picked, setPicked] = useState<{ product: ProductListItem; units: SaleUnit[] } | null>(null)
   const [saleUnit, setSaleUnit] = useState('')
-  const [rate, setRate] = useState('')
+  const [ladder, setLadder] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => { void listPriceLists(db).then(setLists) }, [db])
@@ -358,9 +358,14 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
   }
 
   async function pickProduct(product: ProductListItem) {
+    if (!chosen) return
     const units = await listUnits(db, product.id)
     setPicked({ product, units })
     setSaleUnit(product.baseUnit)
+    // Whatever this customer already has for it, in the form it is typed in.
+    setLadder(Ladder.formatLadder(await customerLadderFor(db, {
+      customerId: chosen.id, productId: product.id, saleUnit: product.baseUnit,
+    })))
     setProductResults([])
     setProductTerm('')
   }
@@ -373,11 +378,14 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
 
   async function add() {
     if (!chosen || !picked) return
-    const parsed = Money.parseMoney(rate)
-    if (parsed === null) { setError('That rate is not a number.'); return }
+    const parsed = Ladder.parseLadder(ladder)
+    if (!parsed.ok) {
+      setError(`"${parsed.part}" is not a rung. Write them as 1=9, 10=8, 50=7.`)
+      return
+    }
 
-    const result = await setCustomerPrice(db, { actorId: user.id }, {
-      customerId: chosen.id, productId: picked.product.id, saleUnit, rate: parsed,
+    const result = await setCustomerLadder(db, { actorId: user.id }, {
+      customerId: chosen.id, productId: picked.product.id, saleUnit, rungs: parsed.rungs,
     })
     if (!result.ok) {
       setError(result.code === 'BAD_DATES' ? 'The last day is before the first.' : `That item does not sell in ${saleUnit}.`)
@@ -385,7 +393,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
     }
     setError(null)
     setPicked(null)
-    setRate('')
+    setLadder('')
     setRates(await listCustomerPrices(db, { customerId: chosen.id }))
   }
 
@@ -423,16 +431,21 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
             </select>
           </Field>
 
-          <div style={{ fontSize: 12.5, fontWeight: 600, margin: '15px 0 7px' }}>Rates only this customer gets</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600, margin: '15px 0 3px' }}>Rates only this customer gets</div>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 7 }}>
+            These beat every list. Below the lowest quantity here the customer falls back to their
+            list, which is what makes a ladder starting at ten mean &ldquo;only when they take ten&rdquo;.
+          </div>
           <table>
             <thead>
-              <tr><th>Item</th><th>Unit</th><th className="r">Rate</th><th /></tr>
+              <tr><th>Item</th><th>Unit</th><th className="r">From qty</th><th className="r">Rate</th><th /></tr>
             </thead>
             <tbody>
               {rates.map((r) => (
                 <tr key={r.id}>
                   <td>{r.productName}</td>
                   <td>{r.saleUnit}</td>
+                  <td className="r num">{r.minQty > 0 ? Quantity.formatQty(r.minQty) : '—'}</td>
                   <td className="r"><Rupees value={r.rate} /></td>
                   <td className="r">
                     {canWrite && <button className="btn ghost sm" onClick={() => void drop(r.id)}>Remove</button>}
@@ -440,7 +453,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
                 </tr>
               ))}
               {rates.length === 0 && (
-                <tr><td colSpan={4}><Empty>Nothing special — they pay their list's rates</Empty></td></tr>
+                <tr><td colSpan={5}><Empty>Nothing special — they pay their list's rates</Empty></td></tr>
               )}
             </tbody>
           </table>
@@ -474,12 +487,13 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
                       {picked.units.map((u) => <option key={u.saleUnit} value={u.saleUnit}>{u.saleUnit}</option>)}
                     </select>
                   </Field>
-                  <Field label="Their rate">
-                    <input className="input num" value={rate} inputMode="decimal"
-                      onChange={(e) => setRate(e.target.value)} />
+                  <Field label="Their ladder" hint="1=9, 10=8, 50=7 — or a single rate like 1=9.">
+                    <input className="input num" style={{ minWidth: 220 }} value={ladder}
+                      placeholder="1=9, 10=8, 50=7"
+                      onChange={(e) => setLadder(e.target.value)} />
                   </Field>
-                  <button className="btn primary" disabled={rate.trim() === ''} onClick={() => void add()}>Save</button>
-                  <button className="btn ghost" onClick={() => setPicked(null)}>Cancel</button>
+                  <button className="btn primary" onClick={() => void add()}>Save</button>
+                  <button className="btn ghost" onClick={() => { setPicked(null); setLadder('') }}>Cancel</button>
                 </div>
               )}
             </div>

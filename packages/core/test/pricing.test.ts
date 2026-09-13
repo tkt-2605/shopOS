@@ -14,7 +14,7 @@ const base: PriceCandidates = {
     { id: 'w0', minQty: fromUnits(0), rate: rupees(88) },
     { id: 'w20', minQty: fromUnits(20), rate: rupees(80) },
   ],
-  customerOverride: { id: 'o1', rate: rupees(70) },
+  customerTiers: [{ id: 'o1', minQty: fromUnits(0), rate: rupees(70) }],
 }
 
 describe('price resolution order', () => {
@@ -26,14 +26,14 @@ describe('price resolution order', () => {
   })
 
   it("falls to the customer's price list when there is no override", () => {
-    const r = resolvePrice({ ...base, customerOverride: null }, fromUnits(25))
+    const r = resolvePrice({ ...base, customerTiers: [] }, fromUnits(25))
     expect(r.rate).toBe(rupees(80))
     expect(r.source).toBe('customer_list')
     expect(r.sourceId).toBe('w20')
   })
 
   it('falls to the default list when the customer has no list', () => {
-    const r = resolvePrice({ ...base, customerOverride: null, customerListTiers: [] }, fromUnits(10))
+    const r = resolvePrice({ ...base, customerTiers: [], customerListTiers: [] }, fromUnits(10))
     expect(r.rate).toBe(rupees(90))
     expect(r.source).toBe('default_list')
     expect(r.sourceId).toBe('d10')
@@ -87,7 +87,7 @@ describe('validity windows', () => {
 
   it('skips an expired override and uses the list instead', () => {
     const r = resolvePrice(
-      { ...base, customerOverride: { id: 'o1', rate: rupees(70), validTo: '2026-01-01T00:00:00Z' } },
+      { ...base, customerTiers: [{ id: 'o1', minQty: fromUnits(0), rate: rupees(70), validTo: '2026-01-01T00:00:00Z' }] },
       fromUnits(25),
       on,
     )

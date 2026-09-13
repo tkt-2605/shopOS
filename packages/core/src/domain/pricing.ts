@@ -4,7 +4,9 @@ import type { Qty } from '../quantity.js'
 /**
  * Price resolution, in strict order:
  *
- *   1. a rate negotiated with this customer for this product
+ *   1. a rate negotiated with this customer for this product, which is itself
+ *      a quantity ladder — the whole reason a shop negotiates with a regular
+ *      is how much they take
  *   2. the customer's assigned price list, best matching quantity tier
  *   3. the default price list, best matching quantity tier
  *   4. the product's own base rate
@@ -30,15 +32,9 @@ export interface PriceTier {
   validTo?: string | null
 }
 
-export interface CustomerOverride {
-  id: string
-  rate: Money
-  validFrom?: string | null
-  validTo?: string | null
-}
-
 export interface PriceCandidates {
-  customerOverride?: CustomerOverride | null | undefined
+  /** Rates for this customer and this item alone. */
+  customerTiers?: PriceTier[] | undefined
   customerListTiers?: PriceTier[] | undefined
   defaultListTiers?: PriceTier[] | undefined
   baseRate: Money
@@ -53,9 +49,9 @@ export interface ResolvedPrice {
 export function resolvePrice(candidates: PriceCandidates, quantity: Qty, on: Date = new Date()): ResolvedPrice {
   const asOf = on.toISOString()
 
-  const override = candidates.customerOverride
-  if (override && isValid(override.validFrom, override.validTo, asOf)) {
-    return { rate: override.rate, source: 'customer_override', sourceId: override.id }
+  const forCustomer = bestTier(candidates.customerTiers, quantity, asOf)
+  if (forCustomer) {
+    return { rate: forCustomer.rate, source: 'customer_override', sourceId: forCustomer.id }
   }
 
   const fromCustomerList = bestTier(candidates.customerListTiers, quantity, asOf)

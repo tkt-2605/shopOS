@@ -120,12 +120,16 @@ export {
   listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
   listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList,
+  setLadder, setCustomerLadder, ladderFor, customerLadderFor, laddersFor,
   perBaseUnit,
 } from './services/pricing.js'
 export type {
   SaleUnit, SaleUnitInput, SetUnitsResult, PriceList, PriceListResult,
-  ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice,
+  ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice, SetLadderResult,
 } from './services/pricing.js'
+
+export * as Ladder from './domain/ladder.js'
+export type { Rung, LadderResult } from './domain/ladder.js'
 
 export {
   listCategories, createCategory, renameCategory, removeCategory, setProductCategory,

@@ -2,7 +2,7 @@ import type { SqlDriver } from '../db/driver.js'
 import type { Money } from '../money.js'
 import { qty, type Qty } from '../quantity.js'
 import { resolvePrice } from '../domain/pricing.js'
-import type { PriceCandidates, PriceTier, CustomerOverride, ResolvedPrice } from '../domain/pricing.js'
+import type { PriceCandidates, PriceTier, ResolvedPrice } from '../domain/pricing.js'
 
 export interface PricingContext {
   productId: string
@@ -19,18 +19,21 @@ export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): P
   const candidates: PriceCandidates = { baseRate: product.base_rate as Money }
 
   if (ctx.customerId) {
-    const row = await db.get<{ id: string; rate: number; valid_from: string | null; valid_to: string | null }>(
-      `SELECT id, rate, valid_from, valid_to FROM customer_item_prices
+    const rows = await db.query<{
+      id: string; min_qty: number; rate: number; valid_from: string | null; valid_to: string | null
+    }>(
+      `SELECT id, min_qty, rate, valid_from, valid_to FROM customer_item_prices
         WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
       [ctx.customerId, ctx.productId, ctx.saleUnit],
     )
-    if (row) {
-      candidates.customerOverride = {
-        id: row.id,
-        rate: row.rate as Money,
-        validFrom: row.valid_from,
-        validTo: row.valid_to,
-      } satisfies CustomerOverride
+    if (rows.length > 0) {
+      candidates.customerTiers = rows.map((r) => ({
+        id: r.id,
+        minQty: qty(r.min_qty),
+        rate: r.rate as Money,
+        validFrom: r.valid_from,
+        validTo: r.valid_to,
+      })) satisfies PriceTier[]
     }
   }
 
