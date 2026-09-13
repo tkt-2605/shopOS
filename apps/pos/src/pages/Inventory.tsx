@@ -10,6 +10,7 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 
 interface BarcodeDraft {
   barcode: string
@@ -34,8 +35,8 @@ interface Draft {
   /** The item this one is a version of, and what makes it different. */
   parentProductId: string
   variantLabel: string
-  /** The quantity ladder as typed: `1=10, 10=9, 50=8`. */
-  ladder: string
+  /** One rung per row: buy this many or more, pay this each. */
+  ladder: LadderRow[]
   hsnCode: string
   taxPercent: string
   baseRate: string
@@ -48,38 +49,9 @@ interface Draft {
 
 const BLANK: Draft = {
   id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
-  categoryId: '', parentProductId: '', variantLabel: '', ladder: '', hsnCode: '', taxPercent: '12',
+  categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', taxPercent: '12',
   baseRate: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   reorderLevel: '', reorderQty: '',
-}
-
-/**
- * Said while typing rather than on save: a ladder that charges more for buying
- * more is almost always a typo, and almost always noticed too late.
- */
-function ladderWarning(text: string) {
-  if (text.trim() === '') return null
-  const parsed = Ladder.parseLadder(text)
-  if (!parsed.ok) {
-    return (
-      <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 5 }}>
-        &ldquo;{parsed.part}&rdquo; is not a rung — write them as 1=10, 10=9, 50=8.
-      </div>
-    )
-  }
-  const rising = Ladder.risingRungs(parsed.rungs)
-  if (rising.length > 0) {
-    return (
-      <div style={{ fontSize: 11.5, color: 'var(--warn)', marginTop: 5 }}>
-        This charges more for buying more. Check it is what you meant.
-      </div>
-    )
-  }
-  return (
-    <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 5 }}>
-      {Ladder.describeLadder(parsed.rungs)}
-    </div>
-  )
 }
 
 /** Blank means "not set", which is not the same as a level of zero. */
@@ -197,13 +169,9 @@ export default function Inventory() {
       return
     }
 
-    const parsed = Ladder.parseLadder(draft.ladder)
+    const parsed = Ladder.rowsToRungs(draft.ladder)
     if (!parsed.ok) {
-      setNotice(
-        parsed.code === 'REPEATED_QTY'
-          ? `The ladder names quantity ${parsed.part.split(/[=@:]/)[0]} twice.`
-          : `"${parsed.part}" is not a rung. Write them as 1=10, 10=9, 50=8.`,
-      )
+      setNotice(describeRowsProblem(parsed, draft.baseUnit || 'units') ?? 'The prices need checking.')
       return
     }
     if (priceListId) {
@@ -256,7 +224,7 @@ export default function Inventory() {
         ? codes.map((c) => ({ barcode: c.barcode, label: c.label ?? '' }))
         : [{ barcode: '', label: '' }],
       units: units.map((u) => ({ saleUnit: u.saleUnit, baseUnits: Quantity.formatQty(u.baseUnits) })),
-      ladder: Ladder.formatLadder(ladders.get(p.id) ?? []),
+      ladder: Ladder.rungsToRows(ladders.get(p.id) ?? []),
       categoryId: p.categoryId ?? '',
       parentProductId: p.parentProductId ?? '',
       variantLabel: p.variantLabel ?? '',
@@ -393,20 +361,17 @@ export default function Inventory() {
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Quantity ladder</div>
             <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              Cheaper by the quantity, written the way you would say it:{' '}
-              <span className="num">1=10, 10=9, 50=8</span> — one is ten rupees, ten or more is nine,
-              fifty or more is eight. Per {draft.baseUnit || 'unit'}, on the shop's default price list.
-              Leave it empty and everyone pays the base rate. Other lists, other units, and a ladder for
-              one customer, are on the Prices screen.
+              Cheaper by the quantity. One row per price break: buy one or more at one price, ten or
+              more at another. Counted in {draft.baseUnit || 'base units'}, so a bigger unit gets the
+              rate its contents have earned — a box of twelve reaches the ten-or-more break. Leave it
+              empty and everyone pays the base rate. Other price lists, a price for the box itself,
+              and a ladder for one customer are on the Prices screen.
             </div>
-            <input
-              className="input num"
-              id="p-ladder"
-              placeholder="1=10, 10=9, 50=8"
-              value={draft.ladder}
-              onChange={(e) => setDraft({ ...draft, ladder: e.target.value })}
+            <LadderEditor
+              rows={draft.ladder}
+              unit={draft.baseUnit || 'units'}
+              onChange={(ladder) => setDraft({ ...draft, ladder })}
             />
-            {ladderWarning(draft.ladder)}
           </div>
 
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>

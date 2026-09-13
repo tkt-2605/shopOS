@@ -129,7 +129,7 @@ export type {
 } from './services/pricing.js'
 
 export * as Ladder from './domain/ladder.js'
-export type { Rung, LadderResult } from './domain/ladder.js'
+export type { Rung, LadderRow, RowsResult } from './domain/ladder.js'
 
 export {
   listCategories, createCategory, renameCategory, removeCategory, setProductCategory,

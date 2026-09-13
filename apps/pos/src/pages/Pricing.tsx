@@ -10,6 +10,7 @@ import {
 } from '@shopos/core'
 import { useDb, useUser } from '../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../ui/components'
+import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 
 /**
  * Where prices are set.
@@ -327,7 +328,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
   const [productResults, setProductResults] = useState<ProductListItem[]>([])
   const [picked, setPicked] = useState<{ product: ProductListItem; units: SaleUnit[] } | null>(null)
   const [saleUnit, setSaleUnit] = useState('')
-  const [ladder, setLadder] = useState('')
+  const [ladder, setLadder] = useState<LadderRow[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => { void listPriceLists(db).then(setLists) }, [db])
@@ -363,7 +364,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
     setPicked({ product, units })
     setSaleUnit(product.baseUnit)
     // Whatever this customer already has for it, in the form it is typed in.
-    setLadder(Ladder.formatLadder(await customerLadderFor(db, {
+    setLadder(Ladder.rungsToRows(await customerLadderFor(db, {
       customerId: chosen.id, productId: product.id, saleUnit: product.baseUnit,
     })))
     setProductResults([])
@@ -378,9 +379,9 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
 
   async function add() {
     if (!chosen || !picked) return
-    const parsed = Ladder.parseLadder(ladder)
+    const parsed = Ladder.rowsToRungs(ladder)
     if (!parsed.ok) {
-      setError(`"${parsed.part}" is not a rung. Write them as 1=9, 10=8, 50=7.`)
+      setError(describeRowsProblem(parsed, saleUnit) ?? 'The prices need checking.')
       return
     }
 
@@ -393,7 +394,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
     }
     setError(null)
     setPicked(null)
-    setLadder('')
+    setLadder([])
     setRates(await listCustomerPrices(db, { customerId: chosen.id }))
   }
 
@@ -487,13 +488,13 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
                       {picked.units.map((u) => <option key={u.saleUnit} value={u.saleUnit}>{u.saleUnit}</option>)}
                     </select>
                   </Field>
-                  <Field label="Their ladder" hint="1=9, 10=8, 50=7 — or a single rate like 1=9.">
-                    <input className="input num" style={{ minWidth: 220 }} value={ladder}
-                      placeholder="1=9, 10=8, 50=7"
-                      onChange={(e) => setLadder(e.target.value)} />
+                  <Field label="What they pay">
+                    <div style={{ minWidth: 300 }}>
+                      <LadderEditor rows={ladder} unit={saleUnit} onChange={setLadder} />
+                    </div>
                   </Field>
                   <button className="btn primary" onClick={() => void add()}>Save</button>
-                  <button className="btn ghost" onClick={() => { setPicked(null); setLadder('') }}>Cancel</button>
+                  <button className="btn ghost" onClick={() => { setPicked(null); setLadder([]) }}>Cancel</button>
                 </div>
               )}
             </div>

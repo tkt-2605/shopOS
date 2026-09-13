@@ -2,14 +2,15 @@ import { type Money, parseMoney } from '../money.js'
 import { type Qty, parseQty, formatQty } from '../quantity.js'
 
 /**
- * A quantity ladder, written the way a shopkeeper says it.
+ * A quantity ladder: buy this many or more, pay this each.
  *
- * "One is ten rupees, ten is nine, fifty is eight" — `1=10, 10=9, 50=8`. The
- * same thing the Prices screen holds as three rows, in a form that can be typed
- * in one go against a product and read back at a glance in a list.
+ * "One is ten rupees, ten or more is nine, fifty or more is eight" — three
+ * rungs. The rows in `item_prices` are the record; this is the shape a screen
+ * edits them in, and the rule for whether what has been typed makes sense.
  *
- * The rows are the record; this is a way of writing them. Nothing here touches
- * the database, so the parsing can be wrong in a test rather than in a shop.
+ * That rule lives here rather than on the screen because it decides whether a
+ * shop's prices are valid, which is something that should be wrong in a test
+ * rather than at a counter.
  */
 
 export interface Rung {
@@ -18,70 +19,76 @@ export interface Rung {
   rate: Money
 }
 
-export type LadderResult =
+/**
+ * One rung as it is being typed.
+ *
+ * Text, not numbers: a half-typed "1" on the way to "10" must not be read as a
+ * rung of one and reprice the shelf while somebody is still typing.
+ */
+export interface LadderRow {
+  minQty: string
+  rate: string
+}
+
+export type RowsResult =
   | { ok: true; rungs: Rung[] }
-  | { ok: false; code: 'BAD_PART'; part: string }
-  | { ok: false; code: 'BAD_QTY'; part: string }
-  | { ok: false; code: 'BAD_RATE'; part: string }
-  | { ok: false; code: 'REPEATED_QTY'; part: string }
+  | { ok: false; code: 'BAD_QTY' | 'BAD_RATE' | 'HALF_ROW' | 'REPEATED_QTY'; index: number }
+
+/** A row with neither box filled is somebody who changed their mind, not an error. */
+function isBlank(row: LadderRow): boolean {
+  return row.minQty.trim() === '' && row.rate.trim() === ''
+}
 
 /**
- * Reads `1=10, 10=9, 50=8`.
+ * What the rows mean, or the first thing wrong with them.
  *
- * Forgiving about how it is written, because it is typed at a counter: commas,
- * semicolons or new lines between the rungs; `=`, `@` or `:` between the two
- * numbers; rupee signs and "rs" ignored. Strict about what it means — a rung
- * that cannot be read is an error rather than a silent omission, since a ladder
- * quietly missing its top rung sells at the wrong price all week.
+ * Strict about a half-filled row. A quantity with no price beside it is a rung
+ * that would otherwise be dropped in silence, and a ladder quietly missing a
+ * rung sells at the wrong price all week with nothing on screen to say so.
  */
-export function parseLadder(text: string): LadderResult {
-  const parts = text.split(/[,;\n]+/).map((p) => p.trim()).filter((p) => p !== '')
+export function rowsToRungs(rows: LadderRow[]): RowsResult {
   const rungs: Rung[] = []
   const seen = new Set<number>()
 
-  for (const part of parts) {
-    const match = part.match(/^(.+?)\s*[=@:]\s*(.+)$/)
-    if (!match) return { ok: false, code: 'BAD_PART', part }
+  for (const [index, row] of rows.entries()) {
+    if (isBlank(row)) continue
+    if (row.minQty.trim() === '' || row.rate.trim() === '') {
+      return { ok: false, code: 'HALF_ROW', index }
+    }
 
-    const quantity = parseQty(clean(match[1]!))
-    if (quantity === null || quantity < 0) return { ok: false, code: 'BAD_QTY', part }
+    const minQty = parseQty(row.minQty.trim())
+    if (minQty === null || minQty < 0) return { ok: false, code: 'BAD_QTY', index }
 
-    const rate = parseMoney(clean(match[2]!))
-    if (rate === null || rate < 0) return { ok: false, code: 'BAD_RATE', part }
+    const rate = parseMoney(row.rate.trim())
+    if (rate === null || rate < 0) return { ok: false, code: 'BAD_RATE', index }
 
-    if (seen.has(quantity)) return { ok: false, code: 'REPEATED_QTY', part }
-    seen.add(quantity)
-    rungs.push({ minQty: quantity, rate })
+    // Two prices for the same quantity has no answer.
+    if (seen.has(minQty)) return { ok: false, code: 'REPEATED_QTY', index }
+    seen.add(minQty)
+    rungs.push({ minQty, rate })
   }
 
-  // Read in whatever order it was typed, kept in the order it applies.
+  // Typed in any order, kept in the order they apply.
   rungs.sort((a, b) => a.minQty - b.minQty)
   return { ok: true, rungs }
 }
 
-function clean(raw: string): string {
-  return raw.replace(/[₹]/g, '').replace(/\brs\.?/gi, '').replace(/\s+/g, '').trim()
+/** Back into the boxes they are edited in. */
+export function rungsToRows(rungs: Rung[]): LadderRow[] {
+  return [...rungs]
+    .sort((a, b) => a.minQty - b.minQty)
+    .map((r) => ({ minQty: formatQty(r.minQty), rate: plainRupees(r.rate) }))
 }
 
 /**
- * Plain rupees, ungrouped.
+ * Plain rupees, ungrouped and without `.00` on a whole one.
  *
- * `Money.format` groups in the Indian style — a ₹1,200 rung would come back as
- * `1=1,200.00`, and the comma is what separates one rung from the next, so the
- * ladder would read as two. Whole rupees lose their `.00` as well: this is a box
- * a shopkeeper types into and reads back.
+ * `Money.format` groups in the Indian style, so ₹1,200 would come back into the
+ * box as `1,200.00` and read as something other than a number.
  */
 function plainRupees(m: Money): string {
   const rupees = m / 100
   return Number.isInteger(rupees) ? String(rupees) : rupees.toFixed(2)
-}
-
-/** Back to `1=10, 10=9, 50=8`, for putting in the box that was typed into. */
-export function formatLadder(rungs: Rung[]): string {
-  return [...rungs]
-    .sort((a, b) => a.minQty - b.minQty)
-    .map((r) => `${formatQty(r.minQty)}=${plainRupees(r.rate)}`)
-    .join(', ')
 }
 
 /** The one-line form for a column: `1=₹10 · 10=₹9 · 50=₹8`. */
@@ -93,24 +100,9 @@ export function describeLadder(rungs: Rung[]): string {
 }
 
 /**
- * What the ladder charges for a quantity — the same rule the resolver uses, so a
- * screen can show the effect of a ladder without going to the database.
- *
- * The highest rung at or below the quantity wins. Below the lowest rung there is
- * no answer here: that is the item's base rate, which this module does not know.
- */
-export function rateFor(rungs: Rung[], quantity: Qty): Money | null {
-  let best: Rung | null = null
-  for (const rung of rungs) {
-    if (quantity >= rung.minQty && (best === null || rung.minQty > best.minQty)) best = rung
-  }
-  return best?.rate ?? null
-}
-
-/**
  * Whether a ladder ever charges more for buying more, which is almost always a
- * typo — `1=10, 10=90` rather than `10=9`. Worth saying out loud rather than
- * refusing: a shop may genuinely price a single loose unit below a sealed box.
+ * typo — 90 where 9 was meant. Worth saying out loud rather than refusing: a
+ * shop may genuinely price a single loose unit above a sealed box.
  */
 export function risingRungs(rungs: Rung[]): Rung[] {
   const sorted = [...rungs].sort((a, b) => a.minQty - b.minQty)

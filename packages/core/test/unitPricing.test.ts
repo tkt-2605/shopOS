@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { setUnits, setLadder, setCustomerLadder, setItemPrice } from '../src/services/pricing.js'
-import { parseLadder } from '../src/domain/ladder.js'
+import { rowsToRungs, type LadderRow } from '../src/domain/ladder.js'
 import { loadPriceCandidates, resolveLinePrice, pricingContextFor } from '../src/repos/pricing.js'
 import { resolvePrice } from '../src/domain/pricing.js'
 import { createBill } from '../src/services/billing.js'
@@ -16,7 +16,11 @@ afterEach(async () => { await fx.db.close() })
 const ctx = () => ({ actorId: fx.adminId })
 
 function rungs(text: string) {
-  const parsed = parseLadder(text)
+  const rows: LadderRow[] = text.split(',').map((part) => {
+    const [minQty, rate] = part.split('=')
+    return { minQty: (minQty ?? '').trim(), rate: (rate ?? '').trim() }
+  })
+  const parsed = rowsToRungs(rows)
   if (!parsed.ok) throw new Error(parsed.code)
   return parsed.rungs
 }
