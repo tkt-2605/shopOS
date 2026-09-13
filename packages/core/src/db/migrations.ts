@@ -13,6 +13,7 @@ const FILES: ReadonlyArray<readonly [number, string]> = [
   [4, '004_attachments.sql'],
   [5, '005_stock_counts.sql'],
   [6, '006_reorder.sql'],
+  [7, '007_barcodes.sql'],
 ]
 
 export const MIGRATIONS: Migration[] = FILES.map(([version, file]) => ({

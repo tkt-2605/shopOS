@@ -33,6 +33,9 @@ export interface SearchOptions {
 /**
  * An exact barcode match sorts first: the scanner is the primary input and the
  * cashier expects the scanned item, not an alphabetical near-miss.
+ *
+ * "Exact" means any of the item's barcodes, not just the printed one — the
+ * manufacturer's EAN and the shop's own label are the same product.
  */
 export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): Promise<ProductListItem[]> {
   const term = opts.term?.trim() ?? ''
@@ -47,11 +50,12 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
        FROM products p
        LEFT JOIN product_stock ps ON ps.product_id = p.id
+       LEFT JOIN product_barcodes pb ON pb.product_id = p.id AND pb.barcode = ?
       WHERE p.deleted_at IS NULL ${activeClause}
-        AND (? = '' OR p.barcode = ? OR p.name LIKE ? OR p.brand LIKE ? OR p.code LIKE ?)
-      ORDER BY CASE WHEN p.barcode = ? THEN 0 ELSE 1 END, p.name
+        AND (? = '' OR pb.id IS NOT NULL OR p.name LIKE ? OR p.brand LIKE ? OR p.code LIKE ?)
+      ORDER BY CASE WHEN pb.id IS NOT NULL THEN 0 ELSE 1 END, p.name
       LIMIT ? OFFSET ?`,
-    [term, term, like, like, like, term, limit, opts.offset ?? 0],
+    [term, term, like, like, like, limit, opts.offset ?? 0],
   )
 
   return rows.map(toProduct)
@@ -83,7 +87,8 @@ export async function findByBarcode(db: SqlDriver, barcode: string): Promise<Pro
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
        FROM products p
        LEFT JOIN product_stock ps ON ps.product_id = p.id
-      WHERE p.barcode = ? AND p.deleted_at IS NULL AND p.is_active = 1`,
+       JOIN product_barcodes pb ON pb.product_id = p.id AND pb.barcode = ?
+      WHERE p.deleted_at IS NULL AND p.is_active = 1`,
     [barcode.trim()],
   )
   return row ? toProduct(row) : null

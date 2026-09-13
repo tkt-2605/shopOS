@@ -104,6 +104,13 @@ export async function seedDemoData(db: SqlDriver, actorId: string): Promise<{ pr
       [id, p.name, p.brand, category, p.barcode, p.hsn, p.taxPercent * 100, rupees(p.rate), rupees(p.rate), p.unit ?? 'piece', now, now],
     )
 
+    // The scanner reads product_barcodes, not products.barcode: a product whose
+    // printed code has no row here cannot be scanned.
+    await db.execute(
+      `INSERT INTO product_barcodes (id, product_id, barcode, is_primary, created_at) VALUES (?, ?, ?, 1, ?)`,
+      [newId(), id, p.barcode, now],
+    )
+
     // A dozen for the pen lines, so tiered and unit pricing have something to act on.
     if (p.name.includes('Pen') || p.name.includes('Pencil')) {
       await db.execute(

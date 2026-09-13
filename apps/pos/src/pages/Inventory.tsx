@@ -2,16 +2,23 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Tax, Permissions,
   searchProducts, productValuation, recomputeStock, newId,
+  listBarcodes, setBarcodes,
   type ProductListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 
+interface BarcodeDraft {
+  barcode: string
+  label: string
+}
+
 interface Draft {
   id: string | null
   name: string
   brand: string
-  barcode: string
+  /** First is the primary — the one printed on a shelf tag and shown in lists. */
+  barcodes: BarcodeDraft[]
   hsnCode: string
   taxPercent: string
   baseRate: string
@@ -23,7 +30,7 @@ interface Draft {
 }
 
 const BLANK: Draft = {
-  id: null, name: '', brand: '', barcode: '', hsnCode: '', taxPercent: '12',
+  id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], hsnCode: '', taxPercent: '12',
   baseRate: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   reorderLevel: '', reorderQty: '',
 }
@@ -61,31 +68,60 @@ export default function Inventory() {
     const rate = Money.parseMoney(draft.baseRate) ?? 0
     const bp = Math.round((Number(draft.taxPercent) || 0) * 100)
 
-    if (draft.id) {
+    // The barcode column is not written here. setBarcodes owns the pair of
+    // products.barcode and the product_barcodes rows, and two writers would be
+    // how they come apart.
+    let productId = draft.id
+    if (productId) {
       await db.execute(
-        `UPDATE products SET name = ?, brand = ?, barcode = ?, hsn_code = ?, tax_rate_bp = ?, base_rate = ?,
+        `UPDATE products SET name = ?, brand = ?, hsn_code = ?, tax_rate_bp = ?, base_rate = ?,
                              discount_blocked = ?, loyalty_blocked = ?,
                              reorder_level = ?, reorder_qty = ?, updated_at = ?
          WHERE id = ?`,
-        [draft.name.trim(), draft.brand.trim() || null, draft.barcode.trim() || null,
+        [draft.name.trim(), draft.brand.trim() || null,
          draft.hsnCode.trim() || null, bp, rate,
          draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
-         levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, draft.id],
+         levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, productId],
       )
     } else {
+      productId = newId()
       await db.execute(
-        `INSERT INTO products (id, name, brand, barcode, hsn_code, tax_rate_bp, base_rate, base_unit,
+        `INSERT INTO products (id, name, brand, hsn_code, tax_rate_bp, base_rate, base_unit,
                                discount_blocked, loyalty_blocked, reorder_level, reorder_qty,
                                created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [newId(), draft.name.trim(), draft.brand.trim() || null, draft.barcode.trim() || null,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [productId, draft.name.trim(), draft.brand.trim() || null,
          draft.hsnCode.trim() || null, bp, rate, draft.baseUnit,
          draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
          levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, now],
       )
     }
+
+    const codes = await setBarcodes(db, { actorId: user.id }, productId, draft.barcodes)
+    if (!codes.ok) {
+      setNotice(`${codes.barcode} is already ${codes.productName}'s barcode. The rest was saved.`)
+      setDraft(null)
+      await refresh()
+      return
+    }
+
     setDraft(null)
     await refresh()
+  }
+
+  async function edit(p: ProductListItem) {
+    const codes = await listBarcodes(db, p.id)
+    setDraft({
+      id: p.id, name: p.name, brand: p.brand ?? '',
+      barcodes: codes.length > 0
+        ? codes.map((c) => ({ barcode: c.barcode, label: c.label ?? '' }))
+        : [{ barcode: '', label: '' }],
+      hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
+      baseRate: Money.format(p.baseRate), baseUnit: p.baseUnit,
+      discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
+      reorderLevel: p.reorderLevel === null ? '' : Quantity.formatQty(p.reorderLevel),
+      reorderQty: p.reorderQty === null ? '' : Quantity.formatQty(p.reorderQty),
+    })
   }
 
   async function showValuation(p: ProductListItem) {
@@ -142,14 +178,7 @@ export default function Inventory() {
                 <td className="r" style={{ whiteSpace: 'nowrap' }}>
                   <button className="btn ghost sm" onClick={() => void showValuation(p)}>Cost</button>
                   {canWrite && (
-                    <button className="btn ghost sm" onClick={() => setDraft({
-                      id: p.id, name: p.name, brand: p.brand ?? '', barcode: p.barcode ?? '',
-                      hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
-                      baseRate: Money.format(p.baseRate), baseUnit: p.baseUnit,
-                      discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
-                      reorderLevel: p.reorderLevel === null ? '' : Quantity.formatQty(p.reorderLevel),
-                      reorderQty: p.reorderQty === null ? '' : Quantity.formatQty(p.reorderQty),
-                    })}>Edit</button>
+                    <button className="btn ghost sm" onClick={() => void edit(p)}>Edit</button>
                   )}
                 </td>
               </tr>
@@ -177,10 +206,6 @@ export default function Inventory() {
               <input className="input" id="p-brand" value={draft.brand}
                 onChange={(e) => setDraft({ ...draft, brand: e.target.value })} />
             </Field>
-            <Field label="Barcode">
-              <input className="input num" id="p-barcode" value={draft.barcode}
-                onChange={(e) => setDraft({ ...draft, barcode: e.target.value })} />
-            </Field>
             <Field label="HSN code">
               <input className="input num" id="p-hsn" value={draft.hsnCode}
                 onChange={(e) => setDraft({ ...draft, hsnCode: e.target.value })} />
@@ -199,6 +224,52 @@ export default function Inventory() {
                   onChange={(e) => setDraft({ ...draft, baseUnit: e.target.value })} />
               </Field>
             )}
+          </div>
+
+          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Barcodes</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
+              An item can answer to several — the manufacturer's code on the packet, your own
+              printed label, the one from the old packaging still on the back shelf. Scanning any
+              of them finds this item. The first is the one shown in lists.
+            </div>
+            {draft.barcodes.map((code, index) => (
+              <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                <input
+                  className="input num"
+                  id={index === 0 ? 'p-barcode' : `p-barcode-${index}`}
+                  style={{ flex: 2, minWidth: 0 }}
+                  placeholder={index === 0 ? 'Main barcode' : 'Another barcode'}
+                  value={code.barcode}
+                  onChange={(e) => setDraft({
+                    ...draft,
+                    barcodes: draft.barcodes.map((c, i) => (i === index ? { ...c, barcode: e.target.value } : c)),
+                  })}
+                />
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 0 }}
+                  placeholder="What it is"
+                  value={code.label}
+                  onChange={(e) => setDraft({
+                    ...draft,
+                    barcodes: draft.barcodes.map((c, i) => (i === index ? { ...c, label: e.target.value } : c)),
+                  })}
+                />
+                <button
+                  className="btn ghost"
+                  type="button"
+                  title="Remove this barcode"
+                  disabled={draft.barcodes.length === 1}
+                  onClick={() => setDraft({ ...draft, barcodes: draft.barcodes.filter((_, i) => i !== index) })}
+                >✕</button>
+              </div>
+            ))}
+            <button
+              className="btn ghost sm"
+              type="button"
+              onClick={() => setDraft({ ...draft, barcodes: [...draft.barcodes, { barcode: '', label: '' }] })}
+            >Another barcode</button>
           </div>
 
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>

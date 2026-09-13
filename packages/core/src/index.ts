@@ -113,6 +113,9 @@ export { saveDraft } from './services/billing.js'
 export type { SaveDraftResult } from './services/billing.js'
 export { listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts } from './services/drafts.js'
 export type { OpenDraft, DraftDetail, DraftLine } from './services/drafts.js'
+export { listBarcodes, setBarcodes, productIdForBarcode } from './services/barcodes.js'
+export type { Barcode, BarcodeInput, SetBarcodesResult } from './services/barcodes.js'
+
 export { stockValue, issuedUnitCost } from './services/stock.js'
 
 export {

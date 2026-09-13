@@ -46,6 +46,14 @@ export async function makeProduct(
       overrides.discountBlocked ? 1 : 0, overrides.loyaltyBlocked ? 1 : 0, now, now,
     ],
   )
+  // The scanner reads product_barcodes; a product with a printed code and no row
+  // here is not findable, which is exactly the bug this mirrors in the app.
+  if (overrides.barcode) {
+    await db.execute(
+      `INSERT INTO product_barcodes (id, product_id, barcode, is_primary, created_at) VALUES (?, ?, ?, 1, ?)`,
+      [newId(), id, overrides.barcode, now],
+    )
+  }
   return id
 }
 
