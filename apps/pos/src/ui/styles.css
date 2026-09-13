@@ -538,3 +538,62 @@ tbody tr:hover { background: var(--accent-soft); }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* --- bill format designer ------------------------------------------------ */
+
+/* The editor and the preview side by side, so a switch and its effect are in
+   the same glance. The preview is fixed-width because the receipt is: it is a
+   column count, not a proportion of the window. */
+.formats {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+}
+@media (max-width: 1100px) { .formats { grid-template-columns: minmax(0, 1fr); } }
+.formats-edit { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.format-meta { font-size: 11.5px; color: var(--ink-3); }
+.format-note { margin: 0 0 12px; font-size: 12.5px; color: var(--ink-3); }
+
+.block-list { display: flex; flex-direction: column; }
+.block-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--rule);
+}
+.block-row:first-child { border-top: 0; }
+.block-switch { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.block-switch input:disabled + span { color: var(--ink-3); }
+.block-move { display: flex; gap: 4px; }
+.block-note { grid-column: 1 / -1; margin: 0; font-size: 11.5px; color: var(--ink-3); }
+.block-opts { grid-column: 1 / -1; }
+
+.format-danger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+/* Monospace and pre-wrapped: the receipt is aligned by counting characters, so
+   anything proportional here would show a layout the printer will not produce. */
+.receipt-preview {
+  margin: 0;
+  padding: 14px;
+  overflow-x: auto;
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 1;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+}
+.receipt-preview.paper-thermal_58 { max-width: 30em; }
+.receipt-preview.paper-thermal_80 { max-width: 39em; }

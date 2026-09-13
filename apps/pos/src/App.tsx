@@ -7,6 +7,7 @@ import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
 import { ICONS, BrandMark } from './ui/icons'
 import { AdminGate } from './ui/AdminGate'
+import { Formats } from './pages/Formats'
 import { lock } from './core/adminGate'
 import Billing from './pages/Billing'
 import Bills from './pages/Bills'
@@ -34,7 +35,7 @@ const NAV_GROUPS: { label: string; pages: Page[] }[] = [
   { label: 'Stock', pages: ['inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers'] },
   { label: 'Money', pages: ['credit', 'cash_counter'] },
   { label: 'Review', pages: ['dashboard', 'reports', 'audit'] },
-  { label: 'Setup', pages: ['pricing', 'registers', 'users', 'roles', 'settings'] },
+  { label: 'Setup', pages: ['pricing', 'registers', 'users', 'roles', 'formats', 'settings'] },
 ]
 
 const PAGE_TITLES: Record<string, string> = {
@@ -55,6 +56,7 @@ const PAGE_TITLES: Record<string, string> = {
   audit: 'History',
   users: 'Staff',
   roles: 'Roles & Permissions',
+  formats: 'Bill Formats',
   settings: 'Settings',
 }
 
@@ -289,6 +291,12 @@ function PageBody({ page }: { page: Page }) {
        deliberately not among them: resetting a cashier's forgotten password is a
        daily job, and a second password in front of it is how an owner ends up
        turning the whole gate off. */
+    case 'formats': return (
+      /* Behind the same gate as Settings: this screen decides what every bill
+         printed from now on looks like, which is not a thing for whoever was
+         left at the counter. */
+      <AdminGate scope="formats" title="Bill Formats"><Formats /></AdminGate>
+    )
     case 'settings': return (
       <AdminGate scope="settings" title="Settings"><Settings /></AdminGate>
     )

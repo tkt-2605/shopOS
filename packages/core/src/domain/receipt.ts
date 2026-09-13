@@ -1,6 +1,7 @@
 import { type Money, format as fmtMoney } from '../money.js'
 import { type Qty, formatQty } from '../quantity.js'
-import type { DocFormat, Block } from './docFormat.js'
+import type { Block, DocFormat, Facts } from './docFormat.js'
+import { PAPER_COLUMNS, STANDARD_RECEIPT, fillTokens } from './docFormat.js'
 
 /**
  * ESC/POS receipt for an 80mm thermal printer, Font A = 42 columns.
@@ -28,13 +29,18 @@ const MODE_TALL = `${ESC}!\x18`
 const MODE_SMALL = `${ESC}!\x01`
 const CUT = `${GS}V\x01`
 
-const feed = (n: number, _width?: number) => `${ESC}d${String.fromCharCode(n)}`
+const feed = (n: number) => `${ESC}d${String.fromCharCode(n)}`
 
-export const WIDTH = 42
+/** The 80mm roll, which is what the statement and every legacy caller assume. */
+export const WIDTH = PAPER_COLUMNS.thermal_80
 const SNO = 2
 const INDENT = SNO + 1
-/** (42 - 3) / 3 — three equal number columns under the item name. */
-const COL = 13
+
+/** Three equal number columns under the item name, whatever the paper. */
+function itemColumn(width: number): number {
+  return Math.floor((width - INDENT) / 3)
+}
+const COL = itemColumn(WIDTH)
 
 export interface ReceiptShop {
   name: string
@@ -72,164 +78,157 @@ export interface ReceiptDoc {
   footer?: string | null
 }
 
-export function buildReceipt(doc: ReceiptDoc): string {
+/**
+ * The receipt, block by block.
+ *
+ * There is one builder, not one per format. The format decides which blocks
+ * appear and in what order; the blocks themselves are the same code that has
+ * always printed them. Two builders kept in step by hand is how the paper and
+ * the preview start disagreeing, and the preview is the thing a shopkeeper
+ * trusts when deciding whether to change anything.
+ *
+ * Called with no format, this prints exactly what it printed before formats
+ * existed. `receiptFormat.test.ts` asserts that byte for byte.
+ */
+export function buildReceipt(doc: ReceiptDoc, format: DocFormat = STANDARD_RECEIPT): string {
+  const width = PAPER_COLUMNS[format.paper]
   const out: string[] = [INIT]
 
-  out.push(ALIGN_CENTER, MODE_BANNER, cut(doc.shop.name, 21), LF, MODE_NORMAL)
-  if (doc.shop.address) out.push(wrap(doc.shop.address))
-  if (doc.shop.phone) out.push(`Ph: ${doc.shop.phone}${LF}`)
-  if (doc.shop.gstin) out.push(`GSTIN: ${doc.shop.gstin}${LF}`)
-
-  out.push(ALIGN_LEFT, rule())
-  out.push(kv(doc.docNo, formatDate(doc.postingDate)))
-  if (doc.customerName) out.push(kv(cut(doc.customerName, 28), doc.cashier ?? ''))
-  else if (doc.cashier) out.push(kv('', doc.cashier))
-  out.push(rule())
-
-  out.push(`${' '.repeat(INDENT)}${'Qty'.padStart(COL)}${'Rate'.padStart(COL)}${'Amount'.padStart(COL)}${LF}`)
-  out.push(rule())
-  doc.items.forEach((item, i) => out.push(itemRows(i, item)))
-  out.push(rule())
-
-  out.push(kv('Subtotal', fmtMoney(doc.subtotal)))
-  if (doc.discount > 0) out.push(kv('Discount', `-${fmtMoney(doc.discount)}`))
-  out.push(kv('Taxable value', fmtMoney(doc.taxableTotal)))
-  if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst)))
-  if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst)))
-  if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst)))
-  out.push(rule('='))
-
-  out.push(MODE_TALL, kv('TOTAL', fmtMoney(doc.grandTotal), 21), MODE_NORMAL)
-  out.push(rule('='))
-
-  for (const p of doc.payments) {
-    out.push(kv(titleCase(p.method), fmtMoney(p.amount)))
+  for (const block of format.blocks) {
+    if (block.on) out.push(renderBlock(block, doc, width))
   }
 
-  if (doc.pointsEarned) {
-    out.push(LF, kv('Points earned', String(doc.pointsEarned)))
-    if (doc.pointsBalance !== undefined) out.push(kv('Points balance', String(doc.pointsBalance)))
-  }
-
-  out.push(LF, ALIGN_CENTER, MODE_SMALL)
-  out.push(wrap(doc.footer ?? 'Thank you. Goods once sold are not returnable without this bill.'))
-  out.push(MODE_NORMAL, ALIGN_LEFT, feed(3), CUT)
-
+  out.push(feed(3), CUT)
   return out.join('')
 }
 
-/**
- * Build a receipt using a format definition. Each enabled block contributes its
- * lines to the output. This allows shops to customize which fields appear and in
- * what order without touching code.
- */
-export function buildReceiptWithFormat(doc: ReceiptDoc, format: DocFormat): string {
-  const out: string[] = [INIT]
-  const width = format.paper === 'thermal_58' ? 32 : 48
+const DEFAULT_FOOTER = 'Thank you. Goods once sold are not returnable without this bill.'
 
-  for (const block of format.blocks) {
-    if (!block.on) continue
-
-    switch (block.kind) {
-      case 'logo':
-        // Logo handling deferred: requires image support
-        break
-
-      case 'shop':
-        out.push(ALIGN_CENTER, MODE_BANNER, cut(doc.shop.name, Math.floor(width / 2)), LF, MODE_NORMAL)
-        if (doc.shop.address) out.push(wrap(doc.shop.address, width))
-        if (doc.shop.phone) out.push(`Ph: ${doc.shop.phone}${LF}`)
-        if (doc.shop.gstin) out.push(`GSTIN: ${doc.shop.gstin}${LF}`)
-        break
-
-      case 'title':
-        out.push(ALIGN_CENTER, `${block.opts?.label ?? 'BILL'}${LF}`)
-        break
-
-      case 'meta':
-        out.push(ALIGN_LEFT, rule('-', width))
-        out.push(kv(doc.docNo, formatDate(doc.postingDate), width))
-        if (doc.customerName) out.push(kv(cut(doc.customerName, Math.floor(width * 0.67)), doc.cashier ?? '', width))
-        else if (doc.cashier) out.push(kv('', doc.cashier, width))
-        out.push(rule('-', width))
-        break
-
-      case 'party':
-        if (doc.customerName) {
-          out.push(kv('Customer', cut(doc.customerName, width - 12), width))
-        }
-        break
-
-      case 'items':
-        const indent = 3
-        const col = Math.floor((width - indent) / 3)
-        out.push(
-          `${' '.repeat(indent)}${'Qty'.padStart(col)}${'Rate'.padStart(col)}${'Amt'.padStart(col)}${LF}`,
-        )
-        out.push(rule('-', width))
-        doc.items.forEach((item, i) => out.push(itemRows(i, item, width)))
-        out.push(rule('-', width))
-        break
-
-      case 'totals':
-        out.push(kv('Subtotal', fmtMoney(doc.subtotal), width))
-        if (doc.discount > 0) out.push(kv('Discount', `-${fmtMoney(doc.discount)}`, width))
-        out.push(kv('Taxable', fmtMoney(doc.taxableTotal), width))
-        if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
-        if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
-        if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
-        out.push(rule('=', width))
-        out.push(MODE_TALL, kv('TOTAL', fmtMoney(doc.grandTotal), Math.floor(width * 0.5)), MODE_NORMAL)
-        out.push(rule('=', width))
-        break
-
-      case 'tax_summary':
-        if (doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0) {
-          out.push(ALIGN_CENTER, 'TAX SUMMARY', LF)
-          if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
-          if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
-          if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
-        }
-        break
-
-      case 'payments':
-        for (const p of doc.payments) {
-          out.push(kv(titleCase(p.method), fmtMoney(p.amount), width))
-        }
-        break
-
-      case 'amount_in_words':
-        // TODO: rupees-in-words library
-        break
-
-      case 'terms':
-        if (doc.footer) {
-          out.push(LF, ALIGN_CENTER, MODE_SMALL)
-          out.push(wrap(doc.footer, width))
-          out.push(MODE_NORMAL, ALIGN_LEFT)
-        }
-        break
-
-      case 'signature':
-        out.push(LF, `Authorized Signature${LF}`, LF)
-        break
-
-      case 'space':
-        const lines = (block.opts?.lines as number) ?? 1
-        for (let i = 0; i < lines; i++) out.push(LF)
-        break
-
-      case 'text':
-        // Custom text block: render as-is for now
-        if (block.opts?.text) {
-          out.push(String(block.opts.text), LF)
-        }
-        break
+function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
+  switch (block.kind) {
+    case 'shop': {
+      const out = [ALIGN_CENTER, MODE_BANNER, cut(doc.shop.name, Math.floor(width / 2)), LF, MODE_NORMAL]
+      // Double-width banner, so the name gets half the columns and no more.
+      if (doc.shop.address) out.push(wrap(doc.shop.address, width))
+      if (doc.shop.phone) out.push(`Ph: ${doc.shop.phone}${LF}`)
+      if (doc.shop.gstin) out.push(`GSTIN: ${doc.shop.gstin}${LF}`)
+      return out.join('')
     }
-  }
 
-  out.push(feed(3, width), CUT)
-  return out.join('')
+    case 'title': {
+      const label = block.opts?.label?.trim()
+      if (!label) return ''
+      return [ALIGN_CENTER, MODE_TALL, cut(label, Math.floor(width / 2)), LF, MODE_NORMAL, ALIGN_LEFT].join('')
+    }
+
+    case 'meta': {
+      const out = [ALIGN_LEFT, rule('-', width), kv(doc.docNo, formatDate(doc.postingDate), width)]
+      if (doc.customerName) {
+        out.push(kv(cut(doc.customerName, Math.floor((width * 2) / 3)), doc.cashier ?? '', width))
+      } else if (doc.cashier) {
+        out.push(kv('', doc.cashier, width))
+      }
+      out.push(rule('-', width))
+      return out.join('')
+    }
+
+    case 'party': {
+      if (!doc.customerName) return ''
+      return [
+        ALIGN_LEFT,
+        `${BOLD_ON}Customer${BOLD_OFF}${LF}`,
+        wrap(doc.customerName, width),
+        rule('-', width),
+      ].join('')
+    }
+
+    case 'items': {
+      const col = itemColumn(width)
+      const out = [
+        `${' '.repeat(INDENT)}${'Qty'.padStart(col)}${'Rate'.padStart(col)}${'Amount'.padStart(col)}${LF}`,
+        rule('-', width),
+      ]
+      doc.items.forEach((item, i) => out.push(itemRows(i, item, width)))
+      out.push(rule('-', width))
+      return out.join('')
+    }
+
+    case 'totals': {
+      const out = [kv('Subtotal', fmtMoney(doc.subtotal), width)]
+      if (doc.discount > 0) out.push(kv('Discount', `-${fmtMoney(doc.discount)}`, width))
+      out.push(kv('Taxable value', fmtMoney(doc.taxableTotal), width))
+      if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
+      if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
+      if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
+      out.push(rule('=', width))
+      out.push(MODE_TALL, kv('TOTAL', fmtMoney(doc.grandTotal), Math.floor(width / 2)), MODE_NORMAL)
+      out.push(rule('=', width))
+      return out.join('')
+    }
+
+    case 'tax_summary': {
+      // Deliberately not the same lines as `totals`: this one is the block a
+      // shop turns on *instead*, having turned the tax lines off up there.
+      if (doc.cgst === 0 && doc.sgst === 0 && doc.igst === 0) return ''
+      const out = [`${BOLD_ON}Tax${BOLD_OFF}${LF}`, kv('Taxable value', fmtMoney(doc.taxableTotal), width)]
+      if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
+      if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
+      if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
+      out.push(rule('-', width))
+      return out.join('')
+    }
+
+    case 'payments':
+      return doc.payments.map((p) => kv(titleCase(p.method), fmtMoney(p.amount), width)).join('')
+
+    case 'loyalty': {
+      if (!doc.pointsEarned) return ''
+      const out = [LF, kv('Points earned', String(doc.pointsEarned), width)]
+      if (doc.pointsBalance !== undefined) {
+        out.push(kv('Points balance', String(doc.pointsBalance), width))
+      }
+      return out.join('')
+    }
+
+    case 'terms':
+      return [
+        LF, ALIGN_CENTER, MODE_SMALL,
+        wrap(doc.footer ?? DEFAULT_FOOTER, width),
+        MODE_NORMAL, ALIGN_LEFT,
+      ].join('')
+
+    case 'signature':
+      return [LF, LF, kv('', '________________', width), kv('', 'Signature', width)].join('')
+
+    case 'space':
+      return LF.repeat(Math.min(Math.max(block.opts?.lines ?? 1, 1), 6))
+
+    case 'text': {
+      const body = block.opts?.body?.trim()
+      if (!body) return ''
+      return wrap(fillTokens(body, factsFor(doc)), width)
+    }
+
+    /* No renderer yet, and `checkFormat` refuses to save a format with either of
+       these switched on — so reaching here means a format written by hand. */
+    case 'logo':
+    case 'amount_in_words':
+      return ''
+  }
+}
+
+/** The flat record a `text` block's {{tokens}} are looked up in. */
+function factsFor(doc: ReceiptDoc): Facts {
+  return {
+    'shop.name': doc.shop.name,
+    'shop.address': doc.shop.address ?? '',
+    'shop.phone': doc.shop.phone ?? '',
+    'shop.gstin': doc.shop.gstin ?? '',
+    'doc.no': doc.docNo,
+    'doc.date': formatDate(doc.postingDate),
+    'customer.name': doc.customerName ?? '',
+    total: fmtMoney(doc.grandTotal),
+  }
 }
 
 /* ------------------------------------------------------- the statement --- */
@@ -333,12 +332,10 @@ function shortDate(iso: string): string {
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
 }
 
-function itemRows(index: number, item: ReceiptItem, width?: number): string {
-  const w = width ?? WIDTH
+function itemRows(index: number, item: ReceiptItem, width = WIDTH): string {
   const sno = String(index + 1).padStart(SNO)
-  const indent = 3
-  const col = Math.floor((w - indent) / 3)
-  const name = cut(item.name, w - indent)
+  const col = itemColumn(width)
+  const name = cut(item.name, width - INDENT)
 
   const qtyText = formatQty(item.qty)
   const unit = cut(item.saleUnit, Math.max(1, col - qtyText.length - 1))
@@ -346,28 +343,26 @@ function itemRows(index: number, item: ReceiptItem, width?: number): string {
   const rate = fmtMoney(item.rate).padStart(col)
   const amount = fmtMoney(item.lineTotal).padStart(col)
 
-  let rows = `${sno} ${name}${LF}${' '.repeat(indent)}${qty}${rate}${amount}${LF}`
+  let rows = `${sno} ${name}${LF}${' '.repeat(INDENT)}${qty}${rate}${amount}${LF}`
 
   if (item.mrp && item.mrp > item.rate) {
     const units = item.lineTotal / item.rate
     const saved = Math.round((item.mrp - item.rate) * units)
     const left = `MRP ${fmtMoney(item.mrp)}`
     const right = `Save ${fmtMoney(saved as Money)}`
-    const gap = Math.max(1, w - indent - left.length - right.length)
-    rows += `${' '.repeat(indent)}${left}${' '.repeat(gap)}${right}${LF}`
+    const gap = Math.max(1, width - INDENT - left.length - right.length)
+    rows += `${' '.repeat(INDENT)}${left}${' '.repeat(gap)}${right}${LF}`
   }
 
   return rows
 }
 
-function rule(ch = '-', width?: number): string {
-  const w = width ?? WIDTH
-  return ch.repeat(w) + LF
+function rule(ch = '-', width = WIDTH): string {
+  return ch.repeat(width) + LF
 }
 
-/** Left text, right text, padded apart to exactly `colWidth` columns. */
-function kv(left: string, right: string, colWidth?: number): string {
-  const width = colWidth ?? WIDTH
+/** Left text, right text, padded apart to exactly `width` columns. */
+function kv(left: string, right: string, width = WIDTH): string {
   const gap = Math.max(1, width - left.length - right.length)
   return `${left}${' '.repeat(gap)}${right}${LF}`
 }
@@ -376,8 +371,7 @@ function cut(text: string, max: number): string {
   return String(text ?? '').slice(0, max)
 }
 
-function wrap(text: string, colWidth?: number): string {
-  const width = colWidth ?? WIDTH
+function wrap(text: string, width = WIDTH): string {
   const words = String(text).split(/\s+/).filter(Boolean)
   const lines: string[] = []
   let line = ''

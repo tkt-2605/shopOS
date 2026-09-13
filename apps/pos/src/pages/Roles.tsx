@@ -41,7 +41,7 @@ const PAGE_GROUPS: { label: string; pages: Page[] }[] = [
   { label: 'Stock', pages: ['inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers'] },
   { label: 'Money', pages: ['credit', 'cash_counter'] },
   { label: 'Review', pages: ['dashboard', 'reports', 'audit'] },
-  { label: 'Setup', pages: ['pricing', 'registers', 'users', 'roles', 'settings'] },
+  { label: 'Setup', pages: ['pricing', 'registers', 'users', 'roles', 'formats', 'settings'] },
 ]
 
 const PAGE_LABELS: Record<Page, string> = {
@@ -62,6 +62,7 @@ const PAGE_LABELS: Record<Page, string> = {
   audit: 'History',
   users: 'Staff',
   roles: 'Roles & Permissions',
+  formats: 'Bill Formats',
   settings: 'Settings',
 }
 

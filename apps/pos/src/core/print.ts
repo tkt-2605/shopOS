@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
-  Receipt, getSetting, loadShopProfile, loadBillDetail, customerAccount, businessDate,
+  Receipt, getSetting, loadShopProfile, loadBillDetail, customerAccount, businessDate, formatFor,
   type SqlDriver, type ReceiptDoc, type ReceiptItem,
 } from '@shopos/core'
 
@@ -61,7 +61,12 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
     footer: shop.receiptFooter,
   }
 
-  return send(Receipt.buildReceipt(doc), await printerName(db))
+  /* Which layout, rather than the one layout. A shop that has designed its own
+     receipt gets it here; one that never opened the designer gets the format the
+     product has always printed, which is what `formatFor` falls back to. */
+  const format = await formatFor(db, { kind: 'bill' })
+
+  return send(Receipt.buildReceipt(doc, format), await printerName(db))
 }
 
 /**

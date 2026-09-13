@@ -15,6 +15,7 @@ export type Resource = (typeof RESOURCES)[number]
 export const PAGES = [
   'dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers',
   'customers', 'credit', 'cash_counter', 'pricing', 'registers', 'reports', 'audit', 'users', 'roles', 'settings',
+  'formats',
 ] as const
 export type Page = (typeof PAGES)[number]
 

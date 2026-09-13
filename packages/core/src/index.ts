@@ -14,6 +14,7 @@ export * as Loyalty from './domain/loyalty.js'
 export * as Credit from './domain/credit.js'
 export * as Returns from './domain/returns.js'
 export * as DocFormat from './domain/docFormat.js'
+export type { Block, BlockKind, DocFormat as DocFormatDef, PaperSize, FormatProblem } from './domain/docFormat.js'
 
 export * as DocStatus from './integrity/docstatus.js'
 export * as Permissions from './integrity/permissions.js'
@@ -87,7 +88,12 @@ export type {
 export { loadShopProfile, saveShopProfile, stateName, STATES } from './services/shop.js'
 export type { ShopProfile, SaveShopResult } from './services/shop.js'
 
-export { listFormats, loadFormat, getDefaultFormat, saveFormat, deleteFormat } from './services/formats.js'
+export {
+  listFormats, loadFormat, formatFor, saveFormat, deleteFormat, chooseFormat, chosenFormatId,
+} from './services/formats.js'
+export type {
+  StoredFormat, FormatInput, SaveFormatResult, DeleteFormatResult, ChooseResult,
+} from './services/formats.js'
 
 export {
   searchProducts, findByBarcode, productsByIds, saleUnitsFor, searchCustomers,
