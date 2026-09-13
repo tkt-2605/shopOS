@@ -1,7 +1,7 @@
 import { type Money, format as fmtMoney } from '../money.js'
 import { type Qty, formatQty } from '../quantity.js'
 import type { Block, DocFormat, Facts } from './docFormat.js'
-import { PAPER_COLUMNS, STANDARD_RECEIPT, fillTokens } from './docFormat.js'
+import { rollColumns, STANDARD_RECEIPT, fillTokens } from './docFormat.js'
 
 /**
  * ESC/POS receipt for an 80mm thermal printer, Font A = 42 columns.
@@ -32,7 +32,7 @@ const CUT = `${GS}V\x01`
 const feed = (n: number) => `${ESC}d${String.fromCharCode(n)}`
 
 /** The 80mm roll, which is what the statement and every legacy caller assume. */
-export const WIDTH = PAPER_COLUMNS.thermal_80
+export const WIDTH = rollColumns('thermal_80')
 const SNO = 2
 const INDENT = SNO + 1
 
@@ -56,6 +56,15 @@ export interface ReceiptItem {
   rate: Money
   lineTotal: Money
   mrp?: Money | null
+
+  /* A sheet has room for a column per line that a 42-column roll does not, so
+     these are optional: the thermal renderer never reads them, and the A4 one
+     leaves the column out when they are absent. */
+  hsnCode?: string | null
+  taxableValue?: Money
+  cgst?: Money
+  sgst?: Money
+  igst?: Money
 }
 
 export interface ReceiptDoc {
@@ -76,6 +85,12 @@ export interface ReceiptDoc {
   pointsEarned?: number
   pointsBalance?: number
   footer?: string | null
+
+  /* Sheet-only, for the same reason as the item fields above. */
+  customerAddress?: string | null
+  customerGstin?: string | null
+  placeOfSupply?: string | null
+  terms?: string | null
 }
 
 /**
@@ -91,7 +106,7 @@ export interface ReceiptDoc {
  * existed. `receiptFormat.test.ts` asserts that byte for byte.
  */
 export function buildReceipt(doc: ReceiptDoc, format: DocFormat = STANDARD_RECEIPT): string {
-  const width = PAPER_COLUMNS[format.paper]
+  const width = rollColumns(format.paper)
   const out: string[] = [INIT]
 
   for (const block of format.blocks) {

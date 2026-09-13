@@ -64,7 +64,7 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
   /* Which layout, rather than the one layout. A shop that has designed its own
      receipt gets it here; one that never opened the designer gets the format the
      product has always printed, which is what `formatFor` falls back to. */
-  const format = await formatFor(db, { kind: 'bill' })
+  const format = await formatFor(db, { kind: 'bill', channel: 'roll' })
 
   return send(Receipt.buildReceipt(doc, format), await printerName(db))
 }

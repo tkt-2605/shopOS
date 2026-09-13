@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  STANDARD_RECEIPT, PAPER_COLUMNS, NOT_YET,
+  STANDARD_RECEIPT, rollColumns, NOT_YET,
   checkFormat, fillTokens, moveBlock, withEveryBlock,
   type Block, type DocFormat,
 } from '../src/domain/docFormat.js'
@@ -55,7 +55,7 @@ describe('what a format is allowed to be', () => {
 describe('the shipped format', () => {
   it('prints on the 80mm roll the product has always assumed', () => {
     expect(STANDARD_RECEIPT.paper).toBe('thermal_80')
-    expect(PAPER_COLUMNS[STANDARD_RECEIPT.paper]).toBe(42)
+    expect(rollColumns(STANDARD_RECEIPT.paper)).toBe(42)
   })
 
   it('leaves off the blocks that would print a second copy of something', () => {

@@ -32,7 +32,7 @@ export interface Block {
   opts?: BlockOpts
 }
 
-export type PaperSize = 'thermal_58' | 'thermal_80'
+export type PaperSize = 'thermal_58' | 'thermal_80' | 'a4' | 'a5'
 
 export interface DocFormat {
   /** Stable across renames; what the print path stores and looks up. */
@@ -45,20 +45,47 @@ export interface DocFormat {
 }
 
 /**
- * Printable columns per paper size, in Font A.
+ * What a paper size is, which is two different kinds of thing.
  *
- * Hardware facts, not preferences. A 43rd character on 80mm paper wraps and
- * takes the whole column alignment with it, which is why every pad and every
- * rule in `receipt.ts` is computed from this number rather than guessed.
+ * A roll is measured in characters: 42 of them on 80mm in Font A, and a 43rd
+ * wraps and takes the whole column alignment with it. Every pad and every rule
+ * in `receipt.ts` is computed from that number rather than guessed.
+ *
+ * A sheet is measured in millimetres and laid out by the browser, so the count
+ * that matters there is not characters but the page box CSS is given.
  */
-export const PAPER_COLUMNS: Record<PaperSize, number> = {
-  thermal_58: 32,
-  thermal_80: 42,
+export type PaperSpec =
+  | { kind: 'roll'; columns: number; label: string }
+  | { kind: 'sheet'; css: string; label: string }
+
+export const PAPER: Record<PaperSize, PaperSpec> = {
+  thermal_58: { kind: 'roll', columns: 32, label: '58mm roll, 32 columns' },
+  thermal_80: { kind: 'roll', columns: 42, label: '80mm roll, 42 columns' },
+  a4: { kind: 'sheet', css: 'A4', label: 'A4 sheet' },
+  a5: { kind: 'sheet', css: 'A5', label: 'A5 sheet' },
 }
 
-export const PAPER_LABEL: Record<PaperSize, string> = {
-  thermal_58: '58mm roll, 32 columns',
-  thermal_80: '80mm roll, 42 columns',
+export const PAPER_SIZES = Object.keys(PAPER) as PaperSize[]
+
+export function paperLabel(paper: PaperSize): string {
+  return PAPER[paper].label
+}
+
+export function isRoll(paper: PaperSize): boolean {
+  return PAPER[paper].kind === 'roll'
+}
+
+/**
+ * Columns for the thermal renderer.
+ *
+ * A sheet format should have gone to the HTML renderer instead, and the print
+ * path picks by paper kind so it does. This answers the 80mm count rather than
+ * nothing for the case where one arrives here anyway: printing has to put paper
+ * out of the machine, and a receipt at the wrong width beats no receipt.
+ */
+export function rollColumns(paper: PaperSize): number {
+  const spec = PAPER[paper]
+  return spec.kind === 'roll' ? spec.columns : 42
 }
 
 /**
@@ -135,6 +162,60 @@ export const STANDARD_RECEIPT: DocFormat = {
     { kind: 'terms', on: true },
     { kind: 'signature', on: false },
   ],
+}
+
+/**
+ * The sheet equivalent: what an A4 invoice looks like before anyone edits it.
+ *
+ * Seeded by migration 015, and kept here as the floor the sheet print path
+ * lands on when the row is missing or unreadable — the same job
+ * `STANDARD_RECEIPT` does for the roll.
+ *
+ * The customer gets a block of their own here rather than sharing the
+ * bill-number line, because a sheet has the room and an invoice a business
+ * files needs the party stated plainly. `loyalty` is off for the opposite
+ * reason: points belong on the slip handed across the counter, not on the copy
+ * that goes into a ledger.
+ */
+export const STANDARD_INVOICE: DocFormat = {
+  id: 'a4_invoice',
+  name: 'A4 invoice',
+  paper: 'a4',
+  kinds: ['bill'],
+  blocks: [
+    { kind: 'logo', on: false },
+    { kind: 'shop', on: true },
+    { kind: 'title', on: true, opts: { label: 'Tax Invoice' } },
+    { kind: 'meta', on: true },
+    { kind: 'party', on: true },
+    { kind: 'items', on: true },
+    { kind: 'tax_summary', on: true },
+    { kind: 'totals', on: true },
+    { kind: 'payments', on: true },
+    { kind: 'loyalty', on: false },
+    { kind: 'amount_in_words', on: false },
+    { kind: 'terms', on: true },
+    { kind: 'signature', on: true },
+  ],
+}
+
+/**
+ * Which machine a format is destined for.
+ *
+ * A shop needs one answer for the till printer and a different one for the
+ * sheet it hands a business customer, so "the format bills use" is two choices,
+ * not one. The channel is settled by which button was pressed rather than
+ * guessed from the paper.
+ */
+export type Channel = 'roll' | 'sheet'
+
+export function channelOf(paper: PaperSize): Channel {
+  return PAPER[paper].kind === 'roll' ? 'roll' : 'sheet'
+}
+
+export const STANDARD_FOR: Record<Channel, DocFormat> = {
+  roll: STANDARD_RECEIPT,
+  sheet: STANDARD_INVOICE,
 }
 
 /**

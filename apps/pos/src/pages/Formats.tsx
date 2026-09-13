@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  DocFormat as Fmt, Receipt,
+  DocFormat as Fmt, Receipt, buildInvoiceHtml,
   listFormats, saveFormat, deleteFormat, chooseFormat, chosenFormatId,
   type Block, type PaperSize, type StoredFormat, type FormatProblem,
   type ReceiptDoc,
@@ -9,13 +9,17 @@ import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Alert, Field, Empty } from '../ui/components'
 
 /**
- * Designing the receipt.
+ * Designing what gets printed.
  *
- * The preview on the right is not an approximation: it is the bytes that would
- * go to the printer with the ESC/POS control codes stripped out, laid into a
- * monospace box at the paper's own column count. What is on screen is what comes
- * out of the machine, character for character — which is the only reason a
- * shopkeeper can be asked to make these choices without printing a test roll
+ * One block list, two papers. A roll and a sheet are laid out by completely
+ * different renderers — ESC/POS columns against HTML and CSS — but they are
+ * driven by the same switches in the same order, so a shop that turns the
+ * footer off turns it off on both.
+ *
+ * Neither preview is a drawing of the output. The roll shows the bytes the
+ * printer is sent, with the control codes read rather than discarded; the sheet
+ * shows the very page the print dialog would be handed. That is the only reason
+ * a shopkeeper can be asked to make these choices without burning a test roll
  * after each one.
  */
 
@@ -75,7 +79,8 @@ export function Formats() {
   const user = useUser()
 
   const [formats, setFormats] = useState<StoredFormat[]>([])
-  const [chosen, setChosen] = useState<string | null>(null)
+  /* One per machine: what the till prints, and what the sheet prints. */
+  const [chosen, setChosen] = useState<Record<Fmt.Channel, string | null>>({ roll: null, sheet: null })
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saved, setSaved] = useState<Draft | null>(null)
   const [problems, setProblems] = useState<FormatProblem[]>([])
@@ -89,7 +94,10 @@ export function Formats() {
     try {
       const all = await listFormats(db)
       setFormats(all)
-      setChosen(await chosenFormatId(db, 'bill'))
+      setChosen({
+        roll: await chosenFormatId(db, 'bill', 'roll'),
+        sheet: await chosenFormatId(db, 'bill', 'sheet'),
+      })
 
       const open = all.find((f) => f.id === keepOpen) ?? all[0]
       if (open) {
@@ -109,14 +117,24 @@ export function Formats() {
     [draft, saved],
   )
 
-  /* The bytes that would go to the printer, with the control codes taken out.
-     Recomputed on every keystroke, which is free: no IO, no printer, and the
-     whole receipt is a few hundred characters. */
+  /* Recomputed on every keystroke, which is free: no IO, no printer, and either
+     document is a few kilobytes. A roll previews as the printer's own bytes; a
+     sheet previews as the very page that would be printed, in a frame. */
   const preview = useMemo(() => {
-    if (!draft) return []
-    const format = { id: draft.id ?? 'preview', name: draft.name, paper: draft.paper, kinds: draft.kinds, blocks: draft.blocks }
+    if (!draft) return null
+
+    const format = {
+      id: draft.id ?? 'preview',
+      name: draft.name,
+      paper: draft.paper,
+      kinds: draft.kinds,
+      blocks: draft.blocks,
+    }
     const doc = sampleDoc({ name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin })
-    return Receipt.previewLines(Receipt.buildReceipt(doc, format))
+
+    return Fmt.isRoll(draft.paper)
+      ? { kind: 'roll' as const, lines: Receipt.previewLines(Receipt.buildReceipt(doc, format)) }
+      : { kind: 'sheet' as const, html: buildInvoiceHtml(doc, format, { preview: true }) }
   }, [draft, shop])
 
   function patch(change: Partial<Draft>) {
@@ -181,11 +199,25 @@ export function Formats() {
     await refresh(formats.find((f) => f.id !== draft.id)?.id)
   }
 
+  /**
+   * Whether this format is the one that machine currently prints with.
+   *
+   * Nothing chosen means the print path takes the first format for that
+   * channel, so the marker has to say the same thing rather than showing every
+   * format as unused until someone presses the button once.
+   */
+  function isInUse(id: string, paper: PaperSize): boolean {
+    const channel = Fmt.channelOf(paper)
+    const pick = chosen[channel]
+    if (pick) return pick === id
+    return formats.find((f) => Fmt.channelOf(f.paper) === channel)?.id === id
+  }
+
   if (error && formats.length === 0) return <Alert>{error}</Alert>
   if (!draft) return <Empty>Loading the formats…</Empty>
 
   const builtIn = formats.find((f) => f.id === draft.id)?.builtIn ?? false
-  const inUse = draft.id !== null && (chosen === draft.id || (chosen === null && builtIn))
+  const inUse = draft.id !== null && isInUse(draft.id, draft.paper)
 
   return (
     <div className="formats">
@@ -201,8 +233,8 @@ export function Formats() {
               >
                 <span>{f.name}</span>
                 <span className="format-meta">
-                  {Fmt.PAPER_LABEL[f.paper]}
-                  {(chosen === f.id || (chosen === null && f.builtIn)) ? ' · in use' : ''}
+                  {Fmt.paperLabel(f.paper)}
+                  {isInUse(f.id, f.paper) ? ' · in use' : ''}
                 </span>
               </button>
             ))}
@@ -214,7 +246,9 @@ export function Formats() {
           actions={
             <>
               {!inUse && draft.id && !dirty && (
-                <button type="button" className="btn" onClick={() => void use()}>Print bills with this</button>
+                <button type="button" className="btn" onClick={() => void use()}>
+                  {Fmt.isRoll(draft.paper) ? "Use on the till printer" : "Use for A4 bills"}
+                </button>
               )}
               <button type="button" className="btn" onClick={() => void save(true)}>Save as a copy</button>
               <button type="button" className="btn primary" disabled={!dirty} onClick={() => void save(false)}>
@@ -229,8 +263,11 @@ export function Formats() {
 
           {inUse && (
             <p className="format-note">
-              Bills print with this format. Changes take effect on the next bill printed —
-              bills already on paper are unaffected.
+              {Fmt.isRoll(draft.paper)
+                ? 'The till printer uses this format.'
+                : 'Print A4 on a bill uses this format.'}
+              {' '}Changes take effect on the next bill printed — bills already on
+              paper are unaffected.
             </p>
           )}
 
@@ -248,8 +285,8 @@ export function Formats() {
                 value={draft.paper}
                 onChange={(e) => patch({ paper: e.target.value as PaperSize })}
               >
-                {(Object.keys(Fmt.PAPER_COLUMNS) as PaperSize[]).map((paper) => (
-                  <option key={paper} value={paper}>{Fmt.PAPER_LABEL[paper]}</option>
+                {Fmt.PAPER_SIZES.map((paper) => (
+                  <option key={paper} value={paper}>{Fmt.paperLabel(paper)}</option>
                 ))}
               </select>
             </Field>
@@ -307,30 +344,52 @@ export function Formats() {
         </Card>
       </div>
 
-      <Card title={`Preview — ${Fmt.PAPER_LABEL[draft.paper]}`}>
-        <p className="format-note">
-          The characters and the columns are exactly what the printer will
-          produce. Type size is shown close to it rather than to the millimetre.
-          Tamil and the ₹ sign are not available on a thermal receipt — the
-          printer carries neither.
-        </p>
-        <div className={`receipt-preview paper-${draft.paper}`}>
-          {preview.map((line, i) => (
-            <div
-              key={i}
-              className={[
-                'receipt-line',
-                `align-${line.align}`,
-                line.banner ? 'banner' : '',
-                line.tall ? 'tall' : '',
-                line.small ? 'small' : '',
-                line.bold ? 'bold' : '',
-              ].filter(Boolean).join(' ')}
-            >
-              {line.text || ' '}
+      <Card title={`Preview — ${Fmt.paperLabel(draft.paper)}`}>
+        {preview?.kind === 'roll' && (
+          <>
+            <p className="format-note">
+              The characters and the columns are exactly what the printer will
+              produce. Type size is shown close to it rather than to the
+              millimetre. Tamil and the ₹ sign are not available on a thermal
+              receipt — the printer carries neither.
+            </p>
+            <div className={`receipt-preview paper-${draft.paper}`}>
+              {preview.lines.map((line, i) => (
+                <div
+                  key={i}
+                  className={[
+                    'receipt-line',
+                    `align-${line.align}`,
+                    line.banner ? 'banner' : '',
+                    line.tall ? 'tall' : '',
+                    line.small ? 'small' : '',
+                    line.bold ? 'bold' : '',
+                  ].filter(Boolean).join(' ')}
+                >
+                  {line.text || ' '}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
+
+        {preview?.kind === 'sheet' && (
+          <>
+            <p className="format-note">
+              This is the page itself, not a drawing of it — the same HTML the
+              printer is handed. A sheet goes through the print dialog, where it
+              can be sent to a printer or saved as a PDF. Tamil and the ₹ sign
+              work here, unlike on the thermal roll.
+            </p>
+            {/* srcdoc, so the page is its own document and the app's own
+                styling cannot leak into what is meant to be the printed sheet. */}
+            <iframe
+              className={`sheet-preview paper-${draft.paper}`}
+              title="Invoice preview"
+              srcDoc={preview.html}
+            />
+          </>
+        )}
       </Card>
     </div>
   )

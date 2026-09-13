@@ -116,7 +116,9 @@ export {
 export type { Register, RegisterResult } from './services/registers.js'
 
 export * as Receipt from './domain/receipt.js'
-export type { ReceiptDoc, ReceiptItem, ReceiptShop } from './domain/receipt.js'
+export type { ReceiptDoc, ReceiptItem, ReceiptShop, PreviewLine } from './domain/receipt.js'
+export { buildInvoiceHtml } from './domain/invoiceHtml.js'
+export type { InvoiceHtmlOptions } from './domain/invoiceHtml.js'
 
 export {
   listRoles, loadRoleMatrix, createRole, renameRole, saveRoleMatrix, deleteRole,

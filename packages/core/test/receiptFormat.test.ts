@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildReceipt, visibleLines, type ReceiptDoc } from '../src/domain/receipt.js'
-import { STANDARD_RECEIPT, PAPER_COLUMNS, type Block, type DocFormat } from '../src/domain/docFormat.js'
+import { STANDARD_RECEIPT, rollColumns, type Block, type DocFormat } from '../src/domain/docFormat.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
 
@@ -144,14 +144,14 @@ describe('the narrower roll', () => {
 
   it('keeps every line inside 32 columns, where 42 would wrap and break the alignment', () => {
     for (const line of visibleLines(buildReceipt(doc, narrow))) {
-      expect(line.length, `too wide for 58mm: "${line}"`).toBeLessThanOrEqual(PAPER_COLUMNS.thermal_58)
+      expect(line.length, `too wide for 58mm: "${line}"`).toBeLessThanOrEqual(rollColumns('thermal_58'))
     }
   })
 
   it('draws its rules to the narrower width, not the wider one', () => {
     const rules = visibleLines(buildReceipt(doc, narrow)).filter((l) => /^-+$/.test(l))
     expect(rules.length).toBeGreaterThan(0)
-    for (const line of rules) expect(line.length).toBe(PAPER_COLUMNS.thermal_58)
+    for (const line of rules) expect(line.length).toBe(rollColumns('thermal_58'))
   })
 
   it('still carries everything a bill must carry', () => {

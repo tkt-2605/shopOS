@@ -3,8 +3,8 @@ import { newId } from '../ids.js'
 import { getSetting, setSetting } from './bootstrap.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import {
-  STANDARD_RECEIPT, checkFormat, withEveryBlock,
-  type Block, type DocFormat, type FormatProblem, type PaperSize,
+  STANDARD_FOR, channelOf, checkFormat, withEveryBlock,
+  type Block, type Channel, type DocFormat, type FormatProblem, type PaperSize,
 } from '../domain/docFormat.js'
 
 /**
@@ -32,7 +32,9 @@ interface Row {
   updated_at: string
 }
 
-const BUILT_IN = STANDARD_RECEIPT.id
+/* Both shipped formats. Each is the floor its own print path lands on when
+   anything else is missing, so neither can be deleted. */
+const BUILT_IN = new Set(Object.values(STANDARD_FOR).map((f) => f.id))
 
 export async function listFormats(db: SqlDriver, paper?: PaperSize): Promise<StoredFormat[]> {
   const rows = await db.query<Row>(
@@ -54,17 +56,23 @@ export async function loadFormat(db: SqlDriver, id: string): Promise<StoredForma
 }
 
 /**
- * Which format a document kind is currently printed with.
+ * Which format a document is currently printed with, per machine.
  *
- * One setting per kind rather than a column on the table, because "the format
- * bills use" is a single choice about the shop, not a property of any one
- * format. A flag on the row would need every other row cleared on each change,
- * and a moment mid-write where two are active or none is.
+ * A setting per kind and channel rather than a column on the table, because
+ * "the format bills use" is a choice about the shop, not a property of any one
+ * format — and it is two choices, since the till roll and the sheet handed to a
+ * business customer are different documents. A flag on the row would need every
+ * other row cleared on each change, with a moment mid-write where two are
+ * active or none is.
  */
-const CHOICE = (kind: string) => `format_${kind}`
+const CHOICE = (kind: string, channel: Channel) => `format_${kind}_${channel}`
 
-export async function chosenFormatId(db: SqlDriver, kind: string): Promise<string | null> {
-  return (await getSetting(db, CHOICE(kind))) || null
+export async function chosenFormatId(
+  db: SqlDriver,
+  kind: string,
+  channel: Channel,
+): Promise<string | null> {
+  return (await getSetting(db, CHOICE(kind, channel))) || null
 }
 
 export type ChooseResult = { ok: true } | { ok: false; code: 'NOT_FOUND' | 'WRONG_KIND' }
@@ -79,17 +87,20 @@ export async function chooseFormat(
   if (!format) return { ok: false, code: 'NOT_FOUND' }
   if (!format.kinds.includes(kind)) return { ok: false, code: 'WRONG_KIND' }
 
-  const before = await chosenFormatId(db, kind)
+  // The format's own paper says which machine this is a choice about, so
+  // picking an A4 layout cannot quietly change what the till prints.
+  const channel = channelOf(format.paper)
+  const before = await chosenFormatId(db, kind, channel)
   const now = ctx.now?.() ?? new Date().toISOString()
 
   await db.transaction(async (tx) => {
-    await setSetting(tx, CHOICE(kind), id, now)
+    await setSetting(tx, CHOICE(kind, channel), id, now)
     await writeAudit(tx, ctx, {
       entity: 'doc_format',
       entityId: id,
       action: 'update',
-      before: { [`chosen_for_${kind}`]: before },
-      after: { [`chosen_for_${kind}`]: id },
+      before: { [`chosen_${kind}_${channel}`]: before },
+      after: { [`chosen_${kind}_${channel}`]: id },
     })
   })
 
@@ -107,15 +118,16 @@ export async function chooseFormat(
  */
 export async function formatFor(
   db: SqlDriver,
-  want: { kind: string; paper?: PaperSize },
+  want: { kind: string; channel: Channel },
 ): Promise<DocFormat> {
-  const candidates = await listFormats(db, want.paper)
-  const usable = candidates.filter((f) => f.kinds.includes(want.kind))
+  const usable = (await listFormats(db)).filter(
+    (f) => f.kinds.includes(want.kind) && channelOf(f.paper) === want.channel,
+  )
 
-  const chosen = await chosenFormatId(db, want.kind)
+  const chosen = await chosenFormatId(db, want.kind, want.channel)
   const picked = (chosen && usable.find((f) => f.id === chosen)) || usable[0]
 
-  return picked ?? STANDARD_RECEIPT
+  return picked ?? STANDARD_FOR[want.channel]
 }
 
 export type SaveFormatResult =
@@ -187,7 +199,7 @@ export async function deleteFormat(
   /* The shipped format stays. It is the fallback the print path lands on when
      anything else is missing, and a shop that deleted it would have removed the
      floor it was standing on. */
-  if (id === BUILT_IN) return { ok: false, code: 'BUILT_IN' }
+  if (BUILT_IN.has(id)) return { ok: false, code: 'BUILT_IN' }
 
   const before = await loadFormat(db, id)
   if (!before) return { ok: false, code: 'NOT_FOUND' }
@@ -200,8 +212,11 @@ export async function deleteFormat(
     /* A choice pointing at a format that is gone would print the standard while
        the screen still named the deleted one. Clearing it here keeps the two
        from disagreeing. */
+    const channel = channelOf(before.paper)
     for (const kind of before.kinds) {
-      if ((await getSetting(tx, CHOICE(kind))) === id) await setSetting(tx, CHOICE(kind), '', now)
+      if ((await getSetting(tx, CHOICE(kind, channel))) === id) {
+        await setSetting(tx, CHOICE(kind, channel), '', now)
+      }
     }
 
     await writeAudit(tx, ctx, {
@@ -242,7 +257,7 @@ function readRow(row: Row): StoredFormat | null {
     }
 
     // A format saved before a block existed must not silently lose it.
-    return { ...withEveryBlock(format), updatedAt: row.updated_at, builtIn: row.id === BUILT_IN }
+    return { ...withEveryBlock(format), updatedAt: row.updated_at, builtIn: BUILT_IN.has(row.id) }
   } catch {
     return null
   }

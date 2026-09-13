@@ -607,3 +607,15 @@ tbody tr:hover { background: var(--accent-soft); }
 .receipt-line.tall { font-size: 1.35em; line-height: 1.25; font-weight: 700; }
 .receipt-preview.paper-thermal_58 { max-width: 30em; }
 .receipt-preview.paper-thermal_80 { max-width: 39em; }
+
+/* The sheet preview is the printed page itself in a frame, not a drawing of it,
+   so it is given the page's own proportions rather than the panel's. */
+.sheet-preview {
+  display: block;
+  width: 460px;
+  max-width: 100%;
+  height: 650px;
+  background: #fff;
+  border: 1px solid var(--rule);
+}
+.sheet-preview.paper-a5 { height: 460px; }

@@ -9,6 +9,7 @@ import {
   Modal, Empty, Alert, Rupees, DocStatusBadge, DateRangePicker, rangePreset, type Range,
 } from '../ui/components'
 import { printBill } from '../core/print'
+import { printBillSheet } from '../core/printHtml'
 import { Attachments } from '../ui/Attachments'
 import { ReturnSheet } from '../ui/ReturnSheet'
 import { usePickList } from '../ui/PickList'
@@ -119,6 +120,19 @@ export default function Bills() {
     const result = await printBill(db, billId)
     if (result.ok) {
       setNote('Sent to the printer.')
+      setTimeout(() => setNote(null), 5000)
+      return
+    }
+    setError(result.message)
+  }
+
+  /* The roll goes straight to the till printer; a sheet goes through the
+     operating system's print dialog, because choosing a tray or Save as PDF is
+     the point of asking for one. */
+  async function printSheet(billId: string) {
+    const result = await printBillSheet(db, billId)
+    if (result.ok) {
+      setNote('Opening the print dialog.')
       setTimeout(() => setNote(null), 5000)
       return
     }
@@ -263,6 +277,7 @@ export default function Bills() {
                   the counter. A customer who has lost their bill was, until
                   now, told to find it. */}
               <button className="btn" onClick={() => void reprint(open.id)}>Print again</button>
+              <button className="btn" onClick={() => void printSheet(open.id)}>Print A4</button>
               {canSell && open.docstatus === 1 && (
                 <button className="btn" onClick={() => sellAgain(open)}>Sell these again</button>
               )}

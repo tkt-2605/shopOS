@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   listFormats, loadFormat, formatFor, saveFormat, deleteFormat, chooseFormat, chosenFormatId,
 } from '../src/services/formats.js'
-import { STANDARD_RECEIPT, PAPER_COLUMNS, type Block } from '../src/domain/docFormat.js'
+import { STANDARD_RECEIPT, rollColumns, type Block } from '../src/domain/docFormat.js'
 import { buildReceipt, visibleLines, type ReceiptDoc } from '../src/domain/receipt.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
@@ -29,14 +29,24 @@ async function auditRows(entityId: string) {
 }
 
 describe('what a new shop starts with', () => {
-  it('has the format the product has always printed, written down', () => {
+  it('has the format the product has always printed, written down', async () => {
     // Not seeded as a blank slate: a shop must be able to see what it prints
     // today before it is asked to change any of it.
-    return listFormats(fx.db).then((all) => {
-      expect(all).toHaveLength(1)
-      expect(all[0]!.id).toBe(STANDARD_RECEIPT.id)
-      expect(all[0]!.paper).toBe('thermal_80')
-    })
+    const roll = await listFormats(fx.db, 'thermal_80')
+    expect(roll).toHaveLength(1)
+    expect(roll[0]!.id).toBe(STANDARD_RECEIPT.id)
+  })
+
+  it('also has a sheet invoice, which is a different document from a receipt', async () => {
+    const sheet = await listFormats(fx.db, 'a4')
+    expect(sheet).toHaveLength(1)
+    expect(sheet[0]!.name).toBe('A4 invoice')
+  })
+
+  it('puts the customer in a block of their own on the sheet, where there is room', async () => {
+    const sheet = (await listFormats(fx.db, 'a4'))[0]!
+    expect(sheet.blocks.find((b) => b.kind === 'party')!.on).toBe(true)
+    expect(sheet.blocks.find((b) => b.kind === 'signature')!.on).toBe(true)
   })
 
   it('stores that format exactly as the code describes it', async () => {
@@ -87,7 +97,7 @@ describe('saving a format the shop designed', () => {
       id: saved.id, name: 'Counter slip v2', paper: 'thermal_58', kinds: ['bill'], blocks: [ITEMS],
     })
 
-    expect(await listFormats(fx.db)).toHaveLength(2)
+    expect(await listFormats(fx.db, 'thermal_58')).toHaveLength(1)
     expect((await auditRows(saved.id)).map((r) => r.action)).toEqual(['create', 'update'])
   })
 
@@ -132,7 +142,7 @@ describe('what the shop is not allowed to save', () => {
     await saveFormat(fx.db, ctx(), {
       name: '', paper: 'thermal_58', kinds: ['bill'], blocks: [ITEMS],
     })
-    expect(await listFormats(fx.db)).toHaveLength(1)
+    expect(await listFormats(fx.db, 'thermal_58')).toHaveLength(0)
   })
 
   it('writes no history for a save that did not happen', async () => {
@@ -179,32 +189,28 @@ describe('deleting a format', () => {
 
 describe('choosing the format to print with', () => {
   it('uses the one that says it prints bills', async () => {
-    const chosen = await formatFor(fx.db, { kind: 'bill' })
+    const chosen = await formatFor(fx.db, { kind: 'bill', channel: 'roll' })
     expect(chosen.id).toBe(STANDARD_RECEIPT.id)
   })
 
-  it('narrows to the roll that is in the printer', async () => {
-    const saved = await saveFormat(fx.db, ctx(), {
-      name: 'Counter slip', paper: 'thermal_58', kinds: ['bill'], blocks: [ITEMS],
-    })
-    if (!saved.ok) throw new Error('the save did not go through')
-
-    expect((await formatFor(fx.db, { kind: 'bill', paper: 'thermal_58' })).id).toBe(saved.id)
-    expect((await formatFor(fx.db, { kind: 'bill', paper: 'thermal_80' })).id).toBe(STANDARD_RECEIPT.id)
+  it('keeps the till and the sheet as separate choices', async () => {
+    // Picking an A4 layout must not quietly change what the till prints.
+    expect((await formatFor(fx.db, { kind: 'bill', channel: 'roll' })).paper).toBe('thermal_80')
+    expect((await formatFor(fx.db, { kind: 'bill', channel: 'sheet' })).paper).toBe('a4')
   })
 
   it('falls back to the shipped format rather than failing, when nothing matches', async () => {
     // Printing is not a place to fail. A shop mid-sale needs paper out of the
     // machine more than it needs to be told a row is missing.
-    const chosen = await formatFor(fx.db, { kind: 'quotation' })
+    const chosen = await formatFor(fx.db, { kind: 'quotation', channel: 'roll' })
     expect(chosen).toEqual(STANDARD_RECEIPT)
   })
 
   it('falls back rather than crashing on a format that cannot be read', async () => {
     await fx.db.execute(`UPDATE doc_formats SET blocks = 'not json at all' WHERE id = ?`, [STANDARD_RECEIPT.id])
 
-    expect(await listFormats(fx.db)).toHaveLength(0)
-    expect(await formatFor(fx.db, { kind: 'bill' })).toEqual(STANDARD_RECEIPT)
+    expect(await listFormats(fx.db, 'thermal_80')).toHaveLength(0)
+    expect(await formatFor(fx.db, { kind: 'bill', channel: 'roll' })).toEqual(STANDARD_RECEIPT)
   })
 })
 
@@ -230,15 +236,15 @@ describe('choosing which format bills print with', () => {
   }
 
   it('starts on the format the product ships with', async () => {
-    expect(await chosenFormatId(fx.db, 'bill')).toBeNull()
-    expect((await formatFor(fx.db, { kind: 'bill' })).id).toBe(STANDARD_RECEIPT.id)
+    expect(await chosenFormatId(fx.db, 'bill', 'roll')).toBeNull()
+    expect((await formatFor(fx.db, { kind: 'bill', channel: 'roll' })).id).toBe(STANDARD_RECEIPT.id)
   })
 
   it('prints with the one the shop picked', async () => {
     const id = await aSecondFormat()
     expect(await chooseFormat(fx.db, ctx(), 'bill', id)).toEqual({ ok: true })
 
-    expect((await formatFor(fx.db, { kind: 'bill' })).id).toBe(id)
+    expect((await formatFor(fx.db, { kind: 'bill', channel: 'roll' })).id).toBe(id)
   })
 
   it('refuses a format that does not print that kind of document', async () => {
@@ -271,8 +277,8 @@ describe('choosing which format bills print with', () => {
     await chooseFormat(fx.db, ctx(), 'bill', id)
     await deleteFormat(fx.db, ctx(), id)
 
-    expect(await chosenFormatId(fx.db, 'bill')).toBeNull()
-    expect((await formatFor(fx.db, { kind: 'bill' })).id).toBe(STANDARD_RECEIPT.id)
+    expect(await chosenFormatId(fx.db, 'bill', 'roll')).toBeNull()
+    expect((await formatFor(fx.db, { kind: 'bill', channel: 'roll' })).id).toBe(STANDARD_RECEIPT.id)
   })
 
   it('leaves a choice for another document kind alone when one is deleted', async () => {
@@ -287,7 +293,7 @@ describe('choosing which format bills print with', () => {
 
     await deleteFormat(fx.db, ctx(), billFormat)
 
-    expect(await chosenFormatId(fx.db, 'quotation')).toBe(other.id)
+    expect(await chosenFormatId(fx.db, 'quotation', 'roll')).toBe(other.id)
   })
 })
 
@@ -311,7 +317,7 @@ describe('what the printer actually receives', () => {
 
   /** What `print.ts` does: ask which format, then render with it. */
   async function whatWouldPrint() {
-    return buildReceipt(doc, await formatFor(fx.db, { kind: 'bill' }))
+    return buildReceipt(doc, await formatFor(fx.db, { kind: 'bill', channel: 'roll' }))
   }
 
   it('prints the shipped receipt for a shop that has changed nothing', async () => {
@@ -339,7 +345,7 @@ describe('what the printer actually receives', () => {
     await chooseFormat(fx.db, ctx(), 'bill', saved.id)
 
     for (const line of visibleLines(await whatWouldPrint())) {
-      expect(line.length).toBeLessThanOrEqual(PAPER_COLUMNS.thermal_58)
+      expect(line.length).toBeLessThanOrEqual(rollColumns('thermal_58'))
     }
   })
 
