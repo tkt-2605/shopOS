@@ -13,8 +13,8 @@ export const RESOURCES = [
 export type Resource = (typeof RESOURCES)[number]
 
 export const PAGES = [
-  'dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'suppliers', 'customers',
-  'credit', 'cash_counter', 'pricing', 'reports', 'users', 'roles', 'settings',
+  'dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'suppliers',
+  'customers', 'credit', 'cash_counter', 'pricing', 'reports', 'users', 'roles', 'settings',
 ] as const
 export type Page = (typeof PAGES)[number]
 
@@ -136,7 +136,7 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
       report: { read: true },
       settings: { read: true },
     },
-    pages: ['dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'suppliers', 'customers', 'credit', 'cash_counter', 'pricing', 'reports'],
+    pages: ['dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'suppliers', 'customers', 'credit', 'cash_counter', 'pricing', 'reports'],
   },
   {
     name: 'Cashier',
@@ -160,6 +160,6 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
       supplier: { read: true, create: true, write: true },
       report: { read: true },
     },
-    pages: ['dashboard', 'inventory', 'stock_in', 'suppliers', 'reports'],
+    pages: ['dashboard', 'inventory', 'stock_in', 'stock_count', 'suppliers', 'reports'],
   },
 ]

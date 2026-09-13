@@ -38,7 +38,7 @@ const CAPABILITY_LABELS: Record<Capability, string> = {
 
 const PAGE_GROUPS: { label: string; pages: Page[] }[] = [
   { label: 'Sell', pages: ['billing', 'bills', 'customers'] },
-  { label: 'Stock', pages: ['inventory', 'stock_in', 'suppliers'] },
+  { label: 'Stock', pages: ['inventory', 'stock_in', 'stock_count', 'suppliers'] },
   { label: 'Money', pages: ['credit', 'cash_counter'] },
   { label: 'Review', pages: ['dashboard', 'reports'] },
   { label: 'Setup', pages: ['pricing', 'users', 'roles', 'settings'] },
@@ -50,6 +50,7 @@ const PAGE_LABELS: Record<Page, string> = {
   bills: 'Bills',
   inventory: 'Inventory',
   stock_in: 'Stock In',
+  stock_count: 'Stock Count',
   suppliers: 'Suppliers',
   customers: 'Customers',
   credit: 'Credit',

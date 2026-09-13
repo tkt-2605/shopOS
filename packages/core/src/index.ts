@@ -113,6 +113,14 @@ export type { OpenDraft, DraftDetail, DraftLine } from './services/drafts.js'
 export { stockValue, issuedUnitCost } from './services/stock.js'
 
 export {
+  openCount, loadCount, listCounts, openSheet, setCounted, submitCount, cancelCount,
+} from './services/stockCount.js'
+export type {
+  CountScope, OpenCountInput, OpenCountResult, CountLine, CountSheet,
+  CountSummary, SubmitCountResult, MovedLine,
+} from './services/stockCount.js'
+
+export {
   listAttachments, countAttachments, recordAttachment, removeAttachment,
   attachmentsToCarry, ATTACHMENT_ENTITIES, ACCEPTED_MIME, MAX_BYTES, CARRY_WINDOW_DAYS,
 } from './services/attachments.js'
