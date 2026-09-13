@@ -127,6 +127,12 @@ export type {
   ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice,
 } from './services/pricing.js'
 
+export {
+  listCategories, createCategory, renameCategory, removeCategory, setProductCategory,
+  setVariantOf, variantFamily,
+} from './services/grouping.js'
+export type { Category, CategoryResult, VariantMember, VariantResult } from './services/grouping.js'
+
 export { listBarcodes, setBarcodes, productIdForBarcode } from './services/barcodes.js'
 export type { Barcode, BarcodeInput, SetBarcodesResult } from './services/barcodes.js'
 

@@ -3,6 +3,8 @@ import {
   Money, Quantity, Tax, Permissions,
   searchProducts, productValuation, recomputeStock, newId,
   listBarcodes, setBarcodes, listUnits, setUnits,
+  listCategories, createCategory, setProductCategory, setVariantOf,
+  type Category,
   type ProductListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -27,6 +29,10 @@ interface Draft {
   barcodes: BarcodeDraft[]
   /** Bigger units this item also sells in. The base unit is not one of them. */
   units: UnitDraft[]
+  categoryId: string
+  /** The item this one is a version of, and what makes it different. */
+  parentProductId: string
+  variantLabel: string
   hsnCode: string
   taxPercent: string
   baseRate: string
@@ -38,7 +44,8 @@ interface Draft {
 }
 
 const BLANK: Draft = {
-  id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [], hsnCode: '', taxPercent: '12',
+  id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
+  categoryId: '', parentProductId: '', variantLabel: '', hsnCode: '', taxPercent: '12',
   baseRate: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   reorderLevel: '', reorderQty: '',
 }
@@ -58,17 +65,34 @@ export default function Inventory() {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [valuation, setValuation] = useState<{ name: string; qty: number; value: number; avg: number } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [categories, setCategories] = useState<Category[]>([])
+  const [newCategory, setNewCategory] = useState('')
+  const [parentSearch, setParentSearch] = useState('')
+  const [parentResults, setParentResults] = useState<ProductListItem[]>([])
+  const [browsing, setBrowsing] = useState('')
 
   const canWrite = Permissions.can(user.permissions, 'product', 'write')
 
   const refresh = useCallback(async () => {
-    setRows(await searchProducts(db, { term, limit: 200, includeInactive: true }))
-  }, [db, term])
+    setRows(await searchProducts(db, {
+      term, limit: 200, includeInactive: true, ...(browsing ? { categoryId: browsing } : {}),
+    }))
+  }, [db, term, browsing])
 
   useEffect(() => {
     const id = setTimeout(() => void refresh(), term === '' ? 0 : 140)
     return () => clearTimeout(id)
-  }, [refresh, term])
+  }, [refresh, term, browsing])
+
+  const refreshCategories = useCallback(async () => setCategories(await listCategories(db)), [db])
+  useEffect(() => { void refreshCategories() }, [refreshCategories])
+
+  useEffect(() => {
+    const id = setTimeout(async () => {
+      setParentResults(parentSearch.trim() === '' ? [] : await searchProducts(db, { term: parentSearch, limit: 8 }))
+    }, 140)
+    return () => clearTimeout(id)
+  }, [db, parentSearch])
 
   async function save() {
     if (!draft || draft.name.trim() === '') return
@@ -129,8 +153,38 @@ export default function Inventory() {
       return
     }
 
+    await setProductCategory(db, { actorId: user.id }, productId, draft.categoryId || null)
+
+    const variant = await setVariantOf(db, { actorId: user.id }, {
+      productId,
+      parentProductId: draft.parentProductId || null,
+      variantLabel: draft.variantLabel,
+    })
+    if (!variant.ok) {
+      setNotice(
+        variant.code === 'PARENT_IS_A_VARIANT'
+          ? 'That item is already a version of something else. Group this one under the original.'
+          : variant.code === 'HAS_VARIANTS'
+            ? `This item already has ${variant.count} version(s), so it cannot become a version of another.`
+            : 'An item cannot be a version of itself.',
+      )
+    }
+
     setDraft(null)
+    setParentSearch('')
     await refresh()
+  }
+
+  async function addCategory() {
+    if (!draft) return
+    const made = await createCategory(db, { actorId: user.id }, { name: newCategory })
+    if (!made.ok) {
+      setNotice(made.code === 'NAME_TAKEN' ? 'There is already a group with that name.' : 'Give the group a name.')
+      return
+    }
+    setNewCategory('')
+    await refreshCategories()
+    setDraft({ ...draft, categoryId: made.categoryId })
   }
 
   async function edit(p: ProductListItem) {
@@ -141,6 +195,9 @@ export default function Inventory() {
         ? codes.map((c) => ({ barcode: c.barcode, label: c.label ?? '' }))
         : [{ barcode: '', label: '' }],
       units: units.map((u) => ({ saleUnit: u.saleUnit, baseUnits: Quantity.formatQty(u.baseUnits) })),
+      categoryId: p.categoryId ?? '',
+      parentProductId: p.parentProductId ?? '',
+      variantLabel: p.variantLabel ?? '',
       hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
       baseRate: Money.format(p.baseRate), baseUnit: p.baseUnit,
       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
@@ -172,6 +229,15 @@ export default function Inventory() {
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <input className="input" style={{ maxWidth: 320 }} placeholder="Search products"
           value={term} onChange={(e) => setTerm(e.target.value)} id="product-search" />
+        <select className="input" style={{ maxWidth: 200 }} value={browsing}
+          onChange={(e) => setBrowsing(e.target.value)} aria-label="Group">
+          <option value="">Every group</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.parentName ? `${c.parentName} — ${c.name}` : c.name} ({c.productCount})
+            </option>
+          ))}
+        </select>
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{rows.length} items</span>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>
@@ -190,8 +256,14 @@ export default function Inventory() {
             {rows.map((p) => (
               <tr key={p.id}>
                 <td>
-                  <div>{p.name}</div>
-                  {p.brand && <div className="src">{p.brand}</div>}
+                  <div>
+                    {p.name}
+                    {p.variantLabel && <span className="badge" style={{ marginLeft: 6 }}>{p.variantLabel}</span>}
+                  </div>
+                  <div className="src">
+                    {[p.parentName ? `version of ${p.parentName}` : null, p.categoryName, p.brand]
+                      .filter(Boolean).join(' · ')}
+                  </div>
                 </td>
                 <td className="num">{p.barcode ?? '—'}</td>
                 <td className="num">{p.hsnCode ?? '—'}</td>
@@ -249,6 +321,63 @@ export default function Inventory() {
                   onChange={(e) => setDraft({ ...draft, baseUnit: e.target.value })} />
               </Field>
             )}
+          </div>
+
+          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Grouping</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
+              A group is what the item is — stationery, cold drinks. A version is what it is a
+              version of: the same pen in six colours stays six items, because there really are six
+              on the shelf, but searching the main item&rsquo;s name finds all of them.
+            </div>
+
+            <Field label="Group">
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select className="input" value={draft.categoryId} style={{ flex: 1, minWidth: 0 }}
+                  onChange={(e) => setDraft({ ...draft, categoryId: e.target.value })}>
+                  <option value="">Not grouped</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.parentName ? `${c.parentName} — ${c.name}` : c.name}
+                    </option>
+                  ))}
+                </select>
+                <input className="input" placeholder="Or a new one" value={newCategory}
+                  style={{ width: 150 }} onChange={(e) => setNewCategory(e.target.value)} />
+                <button className="btn" type="button" disabled={newCategory.trim() === ''}
+                  onClick={() => void addCategory()}>Add</button>
+              </div>
+            </Field>
+
+            <Field label="Version of" hint="Leave empty unless this is one of several versions of the same item.">
+              {draft.parentProductId ? (
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span style={{ flex: 1, fontSize: 12.5 }}>
+                    {rows.find((r) => r.id === draft.parentProductId)?.name ?? 'the chosen item'}
+                  </span>
+                  <input className="input" style={{ width: 150 }} placeholder="blue, 500g, large"
+                    value={draft.variantLabel}
+                    onChange={(e) => setDraft({ ...draft, variantLabel: e.target.value })} />
+                  <button className="btn ghost" type="button"
+                    onClick={() => setDraft({ ...draft, parentProductId: '', variantLabel: '' })}>Cut loose</button>
+                </div>
+              ) : (
+                <>
+                  <input className="input" placeholder="Search the main item" value={parentSearch}
+                    onChange={(e) => setParentSearch(e.target.value)} />
+                  {parentResults.length > 0 && (
+                    <div className="results" style={{ marginTop: 6 }}>
+                      {parentResults.filter((r) => r.id !== draft.id).map((r) => (
+                        <div key={r.id} className="pickable" style={{ padding: '6px 10px' }}
+                          onClick={() => { setDraft({ ...draft, parentProductId: r.id }); setParentSearch('') }}>
+                          {r.name}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </Field>
           </div>
 
           <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>

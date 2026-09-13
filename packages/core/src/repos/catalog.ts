@@ -21,6 +21,12 @@ export interface ProductListItem {
   /** Null means the owner has not set one, which is not the same as zero. */
   reorderLevel: Qty | null
   reorderQty: Qty | null
+  categoryId: string | null
+  categoryName: string | null
+  /** Set when this item is a version of another — the blue one of the pen. */
+  parentProductId: string | null
+  parentName: string | null
+  variantLabel: string | null
 }
 
 export interface SearchOptions {
@@ -28,6 +34,8 @@ export interface SearchOptions {
   limit?: number
   offset?: number
   includeInactive?: boolean
+  /** Browse one group rather than search: what a touch screen and an app need. */
+  categoryId?: string
 }
 
 /**
@@ -36,26 +44,38 @@ export interface SearchOptions {
  *
  * "Exact" means any of the item's barcodes, not just the printed one — the
  * manufacturer's EAN and the shop's own label are the same product.
+ *
+ * A search also matches an item's parent, so typing the pen's name offers all
+ * six colours rather than only the ones whose own name repeats it, and versions
+ * of the same thing sort together rather than scattering through the alphabet.
  */
 export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): Promise<ProductListItem[]> {
   const term = opts.term?.trim() ?? ''
   const like = `%${term}%`
   const limit = opts.limit ?? 50
   const activeClause = opts.includeInactive ? '' : 'AND p.is_active = 1'
+  const categoryClause = opts.categoryId ? 'AND p.category_id = ?' : ''
 
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
             p.discount_blocked, p.loyalty_blocked, p.reorder_level, p.reorder_qty,
+            p.category_id, cat.name AS category_name,
+            p.parent_product_id, parent.name AS parent_name, p.variant_label,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
        FROM products p
        LEFT JOIN product_stock ps ON ps.product_id = p.id
+       LEFT JOIN categories cat ON cat.id = p.category_id
+       LEFT JOIN products parent ON parent.id = p.parent_product_id
        LEFT JOIN product_barcodes pb ON pb.product_id = p.id AND pb.barcode = ?
-      WHERE p.deleted_at IS NULL ${activeClause}
-        AND (? = '' OR pb.id IS NOT NULL OR p.name LIKE ? OR p.brand LIKE ? OR p.code LIKE ?)
-      ORDER BY CASE WHEN pb.id IS NOT NULL THEN 0 ELSE 1 END, p.name
+      WHERE p.deleted_at IS NULL ${activeClause} ${categoryClause}
+        AND (? = '' OR pb.id IS NOT NULL OR p.name LIKE ? OR p.brand LIKE ? OR p.code LIKE ?
+             OR parent.name LIKE ?)
+      ORDER BY CASE WHEN pb.id IS NOT NULL THEN 0 ELSE 1 END,
+               COALESCE(parent.name, p.name), p.variant_label, p.name
       LIMIT ? OFFSET ?`,
-    [term, term, like, like, like, limit, opts.offset ?? 0],
+    [term, ...(opts.categoryId ? [opts.categoryId] : []), term, like, like, like, like,
+     limit, opts.offset ?? 0],
   )
 
   return rows.map(toProduct)
@@ -70,9 +90,13 @@ export async function productsByIds(db: SqlDriver, ids: string[]): Promise<Produ
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
             p.discount_blocked, p.loyalty_blocked, p.reorder_level, p.reorder_qty,
+            p.category_id, cat.name AS category_name,
+            p.parent_product_id, parent.name AS parent_name, p.variant_label,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
        FROM products p
        LEFT JOIN product_stock ps ON ps.product_id = p.id
+       LEFT JOIN categories cat ON cat.id = p.category_id
+       LEFT JOIN products parent ON parent.id = p.parent_product_id
       WHERE p.id IN (${holes}) AND p.deleted_at IS NULL`,
     ids,
   )
@@ -84,9 +108,13 @@ export async function findByBarcode(db: SqlDriver, barcode: string): Promise<Pro
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
             p.discount_blocked, p.loyalty_blocked, p.reorder_level, p.reorder_qty,
+            p.category_id, cat.name AS category_name,
+            p.parent_product_id, parent.name AS parent_name, p.variant_label,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
        FROM products p
        LEFT JOIN product_stock ps ON ps.product_id = p.id
+       LEFT JOIN categories cat ON cat.id = p.category_id
+       LEFT JOIN products parent ON parent.id = p.parent_product_id
        JOIN product_barcodes pb ON pb.product_id = p.id AND pb.barcode = ?
       WHERE p.deleted_at IS NULL AND p.is_active = 1`,
     [barcode.trim()],
@@ -312,6 +340,11 @@ interface ProductRow {
   loyalty_blocked: number
   reorder_level: number | null
   reorder_qty: number | null
+  category_id: string | null
+  category_name: string | null
+  parent_product_id: string | null
+  parent_name: string | null
+  variant_label: string | null
 }
 
 function toProduct(r: ProductRow): ProductListItem {
@@ -332,5 +365,10 @@ function toProduct(r: ProductRow): ProductListItem {
     loyaltyBlocked: r.loyalty_blocked === 1,
     reorderLevel: r.reorder_level === null ? null : qty(r.reorder_level),
     reorderQty: r.reorder_qty === null ? null : qty(r.reorder_qty),
+    categoryId: r.category_id,
+    categoryName: r.category_name,
+    parentProductId: r.parent_product_id,
+    parentName: r.parent_name,
+    variantLabel: r.variant_label,
   }
 }
