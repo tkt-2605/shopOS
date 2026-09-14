@@ -16,8 +16,14 @@ export default function Registers() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
+  /* What this machine picked, as against what it ended up on. They are two
+     different facts and the screen showed only the second, which is how the
+     fallback became invisible — see `settled` below. */
+  const [chosen, setChosen] = useState<string | null>(null)
+
   const refresh = useCallback(async () => {
     setRows(await listRegisters(db, true))
+    setChosen(chosenRegister())
     setDeviceId(await resolveDeviceRegister(db, chosenRegister()))
   }, [db])
 
@@ -44,10 +50,19 @@ export default function Registers() {
     /* Written to this machine, not to the shop's database — two tills sharing
        one database must be able to sit on different counters. */
     if (!(await chooseRegister(id))) {
+      /* The choice did not happen at all: nothing was written and this machine
+         is still on the counter it was on. Saying "it will go back at the next
+         start" would describe a move that never took place, and the green
+         notice below used to appear alongside this, so the screen said the
+         choice had been made and had failed, at once. */
+      const staying = rows.find((r) => r.id === chosenRegister())
       setError(
-        'This machine could not record which counter it is, so it will go back to the '
-        + 'one it was on when ShopOS next starts. Billing is unaffected in the meantime.',
+        'This machine could not record which counter it is, so the choice was not made. '
+        + `It is still on ${staying ? staying.name : 'the counter it resolved to'}, and `
+        + 'billing is unaffected. The banner above says why.',
       )
+      await refresh()
+      return
     }
     await reloadRegister()
     await refresh()
@@ -80,6 +95,24 @@ export default function Registers() {
       {error && <Alert>{error}</Alert>}
       {notice && <Alert kind="ok">{notice}</Alert>}
 
+      {/* A machine that has never been told which counter it is falls back to the
+          first one that is switched on. That is the right thing to do — a till
+          that refuses to sell because nobody pressed a button here would be
+          worse — but it was indistinguishable from a deliberate choice, and two
+          tills quietly sharing one counter share its drawer: both days are
+          reconciled as one and neither can be closed. */}
+      {deviceId !== null && chosen !== deviceId && (
+        <Alert>
+          This machine has not been told which counter it is, so it is billing on{' '}
+          <strong>{rows.find((r) => r.id === deviceId)?.name ?? 'the first counter'}</strong>{' '}
+          because that is the first one switched on. Its bills carry that counter's
+          number series and its cash goes into that counter's drawer. Press
+          <strong> Use here</strong> on the counter this machine actually sits at —
+          if it is that one, press it there too, and it will stop moving when the
+          list changes.
+        </Alert>
+      )}
+
       <Card
         title="Counters"
         actions={<button className="btn primary sm" onClick={() => setAdding({ name: '', prefix: '' })}>Add counter</button>}
@@ -108,8 +141,22 @@ export default function Registers() {
                       : <span style={{ color: 'var(--ink-3)' }}>closed</span>}
                   </td>
                   <td>
-                    {deviceId === r.id
+                    {deviceId === r.id && chosen === r.id
                       ? <span className="badge ok">billing here</span>
+                      : deviceId === r.id
+                        /* Billing here without having chosen it. Shown apart from a
+                           real choice, and still offering the button, because the
+                           two used to look identical — so a second till that fell
+                           back onto the first one's counter said "billing here" in
+                           green and nobody ever pressed anything. */
+                        ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                            <span className="badge">falling back here</span>
+                            {r.isActive && (
+                              <button className="btn sm" onClick={() => void useHere(r.id)}>Use here</button>
+                            )}
+                          </div>
+                        )
                       : r.isActive
                         ? <button className="btn sm" onClick={() => void useHere(r.id)}>Use here</button>
                         : <span style={{ color: 'var(--ink-3)' }}>—</span>}

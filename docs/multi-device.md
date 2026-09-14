@@ -86,6 +86,14 @@ schema keeps the promise:
 | `stock_policy` is a shop-level choice of block / warn / allow | The hardest merge conflict — two tills selling the last one — already has a policy switch and an answer the shop chose |
 | `EXPECTED_SCHEMA_VERSION` and `staleBuild()` | Two tills on different builds is the sync bug that corrupts data. The guard for it is already written |
 
+**`sync_queue` is reserved, not built.** It has existed since `001_initial.sql`
+with a unique partial index and a status machine, and nothing has ever written a
+row to it or read one. It is listed here rather than quietly left in the schema
+because it is the same shape as the faults this document is about — a thing that
+looks finished and does nothing — and a reader who finds it is entitled to know
+which. The table shape is a guess made on day one; Phase 1 should expect to
+replace it rather than fill it in.
+
 ## What is wrong today
 
 - ~~**`setDeviceRegister` writes to `settings`**, which is a shared table. Two
@@ -177,11 +185,18 @@ conflicts**:
   double-count.
 
 **Deliberately not done in Phase 0:** per-row `origin_id`. It is the tiebreaker
-a last-writer-wins merge needs, and it is only needed once a merge exists — and
-because the audit trail now carries the device on every write, it can be derived
-when that day comes. Writing it now would mean touching every INSERT in the
-service layer for a column nothing reads, which is the exact mistake being
-corrected above.
+a last-writer-wins merge needs, and it is only needed once a merge exists.
+Writing it now would mean touching every INSERT in the service layer for a
+column nothing reads, which is the exact mistake being corrected above.
+
+An earlier version of this paragraph added that origin could be *derived* from
+the audit trail when the day came. That is false and worth recording as false:
+`bootstrap.ts` and `seed.ts` write no audit rows and between them insert into
+ten of the twenty-one rev-bearing tables. The consequence is small — under one
+database per shop a replica never re-bootstraps, because `bootstrap` keys on
+`SELECT id FROM roles WHERE name = ?` and finds the replicated rows — but the
+argument for deferring should not rest on it. The argument that holds is that
+the merge will be written knowing which rows predate it.
 
 **Which counter this machine is** has moved off `settings` and into
 `device.json` beside the identity. `resolveDeviceRegister(db, chosen)` keeps the

@@ -1,6 +1,6 @@
 export * as Money from './money.js'
 export * as Quantity from './quantity.js'
-export { newId, newDeviceId, timestampOf } from './ids.js'
+export { newId, timestampOf } from './ids.js'
 export { setDeviceId, deviceId } from './device.js'
 
 export type { SqlDriver, Row, SqlValue, ExecResult } from './db/driver.js'

@@ -3,6 +3,7 @@ import { login, Permissions, type Page } from '@shopos/core'
 import { useCore } from './core/CoreProvider'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
+import { DeviceTroubleBanner } from './ui/DeviceTrouble'
 import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
@@ -289,6 +290,10 @@ function Shell() {
           )}
           <div className="spacer" />
         </div>
+        {/* On every screen, not on Settings alone: the till that cannot record
+            who it is also stops running its backup and prints somewhere else,
+            and nobody goes to Settings to find that out. */}
+        <DeviceTroubleBanner />
         <div className={current === 'billing' ? 'content flush' : 'content'}>
           <PageBody page={current} />
         </div>

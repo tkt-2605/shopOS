@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { createTauriDriver, migrate, type SqlDriver } from '@shopos/core'
 import {
   DEVICE_LOCAL_KEYS, chooseRegister, chosenRegister, deviceSetting,
-  establishDevice, setDeviceSetting,
+  establishDevice, recordStranded, setDeviceSetting,
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup } from './backup'
@@ -149,8 +149,11 @@ async function adoptDeviceSettings(db: SqlDriver): Promise<void> {
     has: deviceSetting,
     put: setDeviceSetting,
   })
+  // Left in the shared table on purpose; the next start tries again. Recorded
+  // rather than only logged, because what the shopkeeper actually sees when this
+  // fails is a till that printed somewhere else and stopped backing up.
+  recordStranded(stranded)
   if (stranded.length > 0) {
-    // Left in the shared table on purpose; the next start tries again.
     console.error('This machine could not take over its own settings:', stranded.join(', '))
   }
 }

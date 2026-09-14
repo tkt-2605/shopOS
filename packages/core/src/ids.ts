@@ -31,9 +31,12 @@ export function newId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-export function newDeviceId(): string {
-  return globalThis.crypto.randomUUID()
-}
+/* There was a `newDeviceId()` here, exported and called by nothing. A device
+   identity is minted by `src-tauri/src/device.rs` and nowhere else — core is
+   explicitly not allowed to mint one, because an id minted in the webview would
+   have nowhere to live but the database, which is the one place it must never
+   be. Two minters, one of them dead and contradicting the other's reason for
+   existing, is worse than none. */
 
 export function timestampOf(id: string): Date | null {
   const hex = id.replace(/-/g, '')

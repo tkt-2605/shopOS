@@ -128,6 +128,30 @@ describe('a question before something that cannot be undone', () => {
     expect(answers).toEqual([false])
   })
 
+  it('answers the first question when a second one takes its place', async () => {
+    /* Double-click a destructive button and `ask` is called twice. The second
+       question replaces the first, and the first one's promise used to be
+       dropped unanswered — the caller left awaiting for the rest of the session,
+       still holding whatever it was holding. Only the newest is settled on
+       unmount, so nothing else was ever going to answer it. */
+    const answers: boolean[] = []
+    render(<Page onDone={(a) => answers.push(a)} />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Cancel this bill'))
+      fireEvent.click(screen.getByText('Cancel this bill'))
+    })
+
+    // The first one is answered no rather than left hanging.
+    expect(answers).toEqual([false])
+
+    // And the one still on screen is a live question, not a leftover.
+    await act(async () => {
+      fireEvent.click(screen.getByText('Yes, go ahead'))
+    })
+    expect(answers).toEqual([false, true])
+  })
+
   it('asks again the next time, rather than remembering the last answer', async () => {
     const answers: boolean[] = []
     render(<Page onDone={(a) => answers.push(a)} />)

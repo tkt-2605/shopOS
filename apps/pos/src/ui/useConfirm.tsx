@@ -60,7 +60,7 @@ export function useConfirm(): [ReactNode, Ask] {
   const ask = useCallback<Ask>((request) => {
     const asked = typeof request === 'string' ? { message: request } : request
     return new Promise<boolean>((resolve) => {
-      setPending({
+      const next: Pending = {
         request: {
           message: asked.message,
           title: asked.title ?? 'Are you sure?',
@@ -68,7 +68,17 @@ export function useConfirm(): [ReactNode, Ask] {
           cancelLabel: asked.cancelLabel ?? 'No, leave it',
         },
         settle: resolve,
-      })
+      }
+
+      /* A second question while one is open replaces it, and the first one's
+         promise would otherwise be dropped unanswered — the unmount cleanup
+         settles only the newest. Double-click a "Cancel this bill" button and
+         the first await never returns, holding whatever it was holding for the
+         rest of the session. It is answered no, which is what the dialog it is
+         losing its place to would have meant by default anyway. */
+      live.current?.settle(false)
+      live.current = next
+      setPending(next)
     })
   }, [])
 

@@ -38,33 +38,98 @@ export const DEVICE_LOCAL_KEYS = [
 
 let problem: string | null = null
 let identity: DeviceIdentity | null = null
+let stranded: readonly string[] = []
+
+export interface DeviceTrouble {
+  /** Why the machine could not be identified, or null when it could. */
+  problem: string | null
+  /** Settings still in the shop's table because this machine could not take them. */
+  stranded: readonly string[]
+}
+
+const watchers = new Set<(trouble: DeviceTrouble) => void>()
 
 /**
- * Why the machine could not be identified, or null when it could.
+ * What is wrong with this machine's record of itself, for a screen to say.
  *
  * A till that cannot name itself must still be able to sell — a shop losing a
  * Saturday evening because a JSON file went bad would be a far worse failure
- * than an unattributed bill. So this records the reason and the counter carries
- * on, writing audit rows with no device against them, which is exactly what
- * every row written before migration 019 already looks like.
+ * than an unattributed bill. So nothing here throws and nothing here blocks: the
+ * counter carries on, writing audit rows with no device against them, which is
+ * exactly what every row written before migration 019 already looks like.
+ *
+ * But carrying on quietly is its own fault, and it was this one. When the file
+ * cannot be read, **five other things change with it and none of them announces
+ * itself**: the theme and density go back to their defaults, the receipt printer
+ * falls back to whatever Windows calls default, and `backup_hook` reads as
+ * nothing — so the nightly copy to the USB stick stops running. What the
+ * shopkeeper sees is a till that changed colour, printed somewhere else and
+ * stopped backing up, with nothing on any screen connecting the three. A desktop
+ * app has no console for them to open.
+ *
+ * So the trouble is published, and `DeviceTroubleBanner` in `App.tsx` says it on
+ * every screen until it is fixed.
  */
+export function deviceTrouble(): DeviceTrouble {
+  return { problem, stranded }
+}
+
+/** Why the machine could not be identified, or null when it could. */
 export function deviceProblem(): string | null {
   return problem
+}
+
+/** Subscribe a screen to the above. Returns the unsubscribe. */
+export function onDeviceTrouble(fn: (trouble: DeviceTrouble) => void): () => void {
+  watchers.add(fn)
+  return () => { watchers.delete(fn) }
+}
+
+/**
+ * The settings that could not be moved onto this machine and are still sitting
+ * in the shop's table — see `moveSettingsToDevice`. Same failure as `problem`,
+ * reported the same way.
+ */
+export function recordStranded(keys: readonly string[]): void {
+  stranded = keys
+  announce()
+}
+
+function announce(): void {
+  const trouble = deviceTrouble()
+  for (const fn of watchers) fn(trouble)
 }
 
 export async function establishDevice(): Promise<DeviceIdentity | null> {
   try {
     identity = await invoke<DeviceIdentity>('device_identity')
-    setDeviceId(identity.id)
-    problem = null
+    adopt(identity)
     return identity
   } catch (err) {
     problem = err instanceof Error ? err.message : String(err)
     identity = null
     setDeviceId(null)
     console.error('Could not establish this machine\'s identity:', problem)
+    announce()
     return null
   }
+}
+
+/**
+ * Takes an answer from the Rust side as this machine's own.
+ *
+ * `setDeviceId` is the part that is easy to leave out of the later two callers,
+ * and leaving it out is invisible: identification fails at startup, a person
+ * then changes the printer on the Settings screen and the file writes perfectly
+ * well — so the app knows which machine it is and core does not, and every audit
+ * row for the rest of the session still carries no device. One function, so
+ * there is one place for it.
+ */
+function adopt(got: DeviceIdentity): void {
+  identity = got
+  setDeviceId(got.id)
+  problem = null
+  announce()
 }
 
 export function thisDevice(): DeviceIdentity | null {
@@ -89,12 +154,12 @@ export function chosenRegister(): string | null {
  */
 export async function chooseRegister(registerId: string | null): Promise<boolean> {
   try {
-    identity = await invoke<DeviceIdentity>('device_set_register', { registerId })
-    problem = null
+    adopt(await invoke<DeviceIdentity>('device_set_register', { registerId }))
     return true
   } catch (err) {
     problem = err instanceof Error ? err.message : String(err)
     console.error('Could not record which counter this machine is:', problem)
+    announce()
     return false
   }
 }
@@ -114,12 +179,12 @@ export function deviceSetting(key: string): string | null {
  */
 export async function setDeviceSetting(key: string, value: string | null): Promise<boolean> {
   try {
-    identity = await invoke<DeviceIdentity>('device_set_setting', { key, value })
-    problem = null
+    adopt(await invoke<DeviceIdentity>('device_set_setting', { key, value }))
     return true
   } catch (err) {
     problem = err instanceof Error ? err.message : String(err)
     console.error(`Could not record ${key} for this machine:`, problem)
+    announce()
     return false
   }
 }

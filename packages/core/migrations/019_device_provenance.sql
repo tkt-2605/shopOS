@@ -13,9 +13,7 @@
 --    transaction as every service write, so from this migration onward every
 --    change carries the machine that made it. That is the part that cannot be
 --    retrofitted: a bill rung up before today can never be attributed to a till,
---    because nothing recorded it. It also makes row-level origin_id recoverable
---    later from the audit trail, which is why this migration does not attempt to
---    backfill 20 tables of it.
+--    because nothing recorded it.
 --
 -- 2. rev is bumped by a trigger instead of by hand. A convention that 48 call
 --    sites have to remember is not a convention, it is a list of future bugs --
@@ -31,13 +29,24 @@
 -- Not done here: origin_id per row. It is the tiebreaker a last-writer-wins
 -- merge needs, and it is only needed when a merge exists. Writing it now would
 -- mean touching every INSERT in the service layer for a column nothing reads,
--- which is precisely the mistake being corrected above.
+-- which is precisely the mistake being corrected above. The merge will be
+-- written knowing which rows predate it, which is the whole argument -- an
+-- earlier draft of this header also claimed row origin would be recoverable from
+-- the audit trail, and that is false: bootstrap.ts and seed.ts write no audit
+-- rows and between them insert into ten of these tables.
 
 ALTER TABLE audit_log ADD COLUMN device_id TEXT;
 
 CREATE INDEX idx_audit_device ON audit_log(device_id, at);
 
--- 20 replicated tables; every one of them, with no exceptions to remember.
+-- Every table that already carries rev, with no exceptions to remember. That is
+-- 20 of them, and it is not the same thing as "every replicated table":
+-- bill_items, bill_payments, payment_allocations, sales_return_items,
+-- stock_entry_items, stock_count_items, stock_ledger and loyalty_entries are
+-- shop data with no rev of their own. They travel with their parent document,
+-- which is submitted once and never updated, so a revision per line would be a
+-- column that never changes -- but that is a decision, not an omission, and this
+-- migration does not cover them.
 
 CREATE TRIGGER bump_rev_attachments AFTER UPDATE ON attachments FOR EACH ROW
 WHEN NEW.rev = OLD.rev

@@ -76,8 +76,32 @@ pub struct Identity {
     pub minted: bool,
 }
 
+/// Every write here is read-modify-write: the whole file is loaded, one field is
+/// changed, and the whole file is written back. Two of those running at once and
+/// the second overwrites the first with what it read before the first landed —
+/// the shape of "saved one thing, lost another".
+///
+/// The Settings screen is where that becomes reachable. Its fields save as they
+/// are changed, so a person moving quickly between the printer and the backup
+/// command has two of these in flight. Tauri answers commands on a thread pool,
+/// so they genuinely overlap.
+///
+/// A mutex covers this process. It does not cover two copies of the app, which
+/// `write_new`'s `create_new` handles for the one case that matters — minting —
+/// and which nothing else here can lose, because a second copy writing settings
+/// would be a second copy the user opened on purpose.
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Poisoning means another call panicked mid-write, which tells us nothing about
+/// the file; the next read will find out for itself. Refusing to identify the
+/// machine for the rest of the session would be the larger harm.
+fn writing() -> std::sync::MutexGuard<'static, ()> {
+    WRITING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[tauri::command]
 pub fn device_identity(app: tauri::AppHandle) -> Result<Identity, String> {
+    let _guard = writing();
     load_or_mint(&paths::data_dir(&app)?)
 }
 
@@ -88,6 +112,7 @@ pub fn device_set_register(
     app: tauri::AppHandle,
     register_id: Option<String>,
 ) -> Result<Identity, String> {
+    let _guard = writing();
     set_register(&paths::data_dir(&app)?, register_id)
 }
 
@@ -99,6 +124,7 @@ pub fn device_set_setting(
     key: String,
     value: Option<String>,
 ) -> Result<Identity, String> {
+    let _guard = writing();
     let dir = paths::data_dir(&app)?;
     put(&dir, &key, value.as_deref())
 }
@@ -150,15 +176,59 @@ fn write_back(dir: &Path, stored: Stored) -> Result<Identity, String> {
 fn load_or_mint(dir: &Path) -> Result<Identity, String> {
     let path = dir.join(FILE);
 
-    match std::fs::read_to_string(&path) {
+    if let Some(identity) = read_identity(&path)? {
+        return Ok(identity);
+    }
+
+    let stored = Stored {
+        device_id: mint(),
+        label: hostname(),
+        register_id: None,
+        settings: BTreeMap::new(),
+    };
+
+    if write_new(&path, &stored)? {
+        return Ok(Identity {
+            id: stored.device_id,
+            label: stored.label,
+            register_id: stored.register_id,
+            settings: stored.settings,
+            minted: true,
+        });
+    }
+
+    /* Another process created the file between the read above and the write —
+       the app launched twice in quick succession on a first run, which nothing
+       in this build prevents. The id on disk is this machine's; the one just
+       minted is discarded unused.
+
+       Handing back the minted id instead is the mirror of the fault this module
+       exists to prevent: one machine appearing in the history as two. It would
+       also be silent, because the counter and the settings this process went on
+       to record are read back off the file and land on the *other* id, while its
+       audit rows name an id no file has ever held. */
+    read_identity(&path)?.ok_or_else(|| {
+        format!(
+            "{} was created by another start and then went missing.",
+            path.display()
+        )
+    })
+}
+
+/// The identity on disk, or `None` when there is not a file yet.
+///
+/// Keeping "no file" apart from "a file I cannot read" is the whole reason this
+/// is its own function: the first is a first run, and the second is damage.
+fn read_identity(path: &Path) -> Result<Option<Identity>, String> {
+    match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<Stored>(&text) {
-            Ok(stored) if is_device_id(&stored.device_id) => Ok(Identity {
+            Ok(stored) if is_device_id(&stored.device_id) => Ok(Some(Identity {
                 id: stored.device_id,
                 label: stored.label,
                 register_id: stored.register_id,
                 settings: stored.settings,
                 minted: false,
-            }),
+            })),
             // A file that exists but cannot be read as an identity is never
             // quietly replaced. Minting over it would give this machine a second
             // identity and orphan everything already attributed to the first,
@@ -170,22 +240,7 @@ fn load_or_mint(dir: &Path) -> Result<Identity, String> {
                 path.display()
             )),
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let stored = Stored {
-                device_id: mint(),
-                label: hostname(),
-                register_id: None,
-                settings: BTreeMap::new(),
-            };
-            write_new(&path, &stored)?;
-            Ok(Identity {
-                id: stored.device_id,
-                label: stored.label,
-                register_id: stored.register_id,
-                settings: stored.settings,
-                minted: true,
-            })
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         // Unreadable for any other reason — permissions, a locked file, a failing
         // disk — is also not a reason to mint. Same damage, same refusal.
         Err(e) => Err(format!("Could not read {}: {e}", path.display())),
@@ -193,20 +248,29 @@ fn load_or_mint(dir: &Path) -> Result<Identity, String> {
 }
 
 /// `create_new` rather than a write: if two processes start together, exactly one
-/// creates the file and the other is told it exists and re-reads it. A plain
-/// write would let the second overwrite the first's identity after the first had
-/// already begun stamping rows with it.
-fn write_new(path: &Path, stored: &Stored) -> Result<(), String> {
+/// creates the file. A plain write would let the second overwrite the first's
+/// identity after the first had already begun stamping rows with it.
+///
+/// **False means the file was already there and nothing was written**, and the
+/// caller has to read it rather than keep what it minted. Answering `Ok(())` to
+/// both outcomes is what made this wrong to begin with: the caller could not
+/// tell the two apart, so it kept an id that had never been stored.
+fn write_new(path: &Path, stored: &Stored) -> Result<bool, String> {
     let json = serde_json::to_string_pretty(stored).map_err(|e| e.to_string())?;
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
     {
-        Ok(mut f) => f
-            .write_all(json.as_bytes())
-            .map_err(|e| format!("Could not write {}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Ok(mut f) => {
+            f.write_all(json.as_bytes())
+                .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+            // On the disk before anything reads it back and acts on it.
+            f.sync_all()
+                .map_err(|e| format!("Could not save {}: {e}", path.display()))?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(format!("Could not create {}: {e}", path.display())),
     }
 }
@@ -214,12 +278,38 @@ fn write_new(path: &Path, stored: &Stored) -> Result<(), String> {
 /// Replaces the file through a temporary and a rename, so a machine that loses
 /// power mid-write keeps the identity it had rather than half of one. A
 /// truncating write in place is the one way this file could become the
-/// unreadable thing `load_or_mint` refuses.
+/// unreadable thing `read_identity` refuses.
+///
+/// Two details the first version left out, each of which turns that promise back
+/// into a hope:
+///
+/// * The temporary is **flushed before the rename**. Without it the rename can
+///   reach the disk while the bytes have not, leaving a zero-length
+///   `device.json` — refused for ever afterwards, which is exactly the halted
+///   state the rename was there to prevent.
+/// * Its name carries the process id, so two saves running at once cannot write
+///   over one another. `device_set_setting` is called from a screen, and a
+///   person pressing two things quickly is not an unusual event.
+///
+/// The temporary stays beside `device.json` rather than in the work directory
+/// `paths.rs` keeps for half-written files, and that is the one deliberate
+/// exception to what that module says: a rename is only atomic within a single
+/// directory, and the work directory is swept wholesale at startup, which would
+/// delete a temporary another process was in the middle of writing.
 fn save(path: &Path, stored: &Stored) -> Result<(), String> {
     let json = serde_json::to_string_pretty(stored).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.writing");
-    std::fs::write(&tmp, json.as_bytes())
-        .map_err(|e| format!("Could not write {}: {e}", tmp.display()))?;
+    let tmp = path.with_extension(format!("json.writing.{}", std::process::id()));
+
+    let write_then_flush = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()
+    };
+    write_then_flush().map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Could not write {}: {e}", tmp.display())
+    })?;
+
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("Could not replace {}: {e}", path.display())
@@ -322,6 +412,63 @@ mod tests {
             // And the file it refused is still there to be rescued.
             assert!(path.exists());
         }
+    }
+
+    /// Two starts at once on a first run: one of them creates the file, and the
+    /// loser has to adopt what the winner wrote rather than the id it minted
+    /// and could not store.
+    ///
+    /// The damage this guards against is quiet. The loser would spend its whole
+    /// session stamping audit rows with an id no file holds, while the counter
+    /// and settings it recorded went to the winner's id — one machine appearing
+    /// in the history as two, which is the mirror of the fault this module is
+    /// built to prevent.
+    #[test]
+    fn a_start_that_loses_the_race_takes_the_identity_that_was_written() {
+        let dir = temp("race");
+        let path = dir.join(FILE);
+
+        // The winner, already on disk.
+        let winner = load_or_mint(&dir).unwrap();
+
+        // The loser reaches write_new with an id of its own and is refused.
+        let mine = Stored {
+            device_id: mint(),
+            label: hostname(),
+            register_id: None,
+            settings: BTreeMap::new(),
+        };
+        assert_ne!(mine.device_id, winner.id);
+        assert!(
+            !write_new(&path, &mine).unwrap(),
+            "the file was there; nothing should have been written"
+        );
+
+        // And what it goes on to use is the winner's, not its own.
+        let got = load_or_mint(&dir).unwrap();
+        assert_eq!(got.id, winner.id);
+        assert!(!got.minted);
+        assert!(
+            std::fs::read_to_string(&path).unwrap().contains(&winner.id),
+            "the loser must not have overwritten the file either"
+        );
+    }
+
+    /// A save in flight must not be reachable by another process's save, and
+    /// must leave nothing behind once it has landed.
+    #[test]
+    fn a_half_written_identity_is_never_the_file_itself() {
+        let dir = temp("save-temp");
+        load_or_mint(&dir).unwrap();
+        put(&dir, "thermal_printer", Some("EPSON TM-T82")).unwrap();
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
     }
 
     /// The register choice is device-local state, which is the whole reason this
