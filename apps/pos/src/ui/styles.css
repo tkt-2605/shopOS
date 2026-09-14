@@ -113,6 +113,12 @@
 
 * { box-sizing: border-box; }
 
+/* The browser's own rule for this is `[hidden] { display: none }`, which any
+   explicit `display` beats — so `hidden` on an element styled `display: flex`
+   does nothing at all, silently. That is what the block list on the Bill
+   Formats screen did while a template was in use. */
+[hidden] { display: none !important; }
+
 html, body, #root { height: 100%; width: 100%; margin: 0; overflow: hidden; }
 
 body {
