@@ -460,6 +460,133 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
   }
 }
 
+/**
+ * Marks an order off against the bill that is paying for it.
+ *
+ * Runs inside `submitBill`'s own transaction, and that is the entire point: an
+ * order is marked off by the payment, never by the cart. A cashier who pulls an
+ * order onto the counter and is then interrupted has delivered nothing, and an
+ * order the shop believes it has already sent out is a worse record than one
+ * that says nothing at all.
+ *
+ * Matching is by item, taking the oldest unfinished line first. Quantities go
+ * through each order line's own base ratio, so a bill written in pieces marks
+ * off an order written in dozens.
+ *
+ * What it took is written down rather than inferred, because cancelling the
+ * bill has to give back exactly what this bill took — and by then another bill
+ * may have consumed the rest of the line, so the share cannot be worked out
+ * again afterwards.
+ */
+export async function applyBillFulfilment(
+  tx: SqlDriver,
+  input: { billId: string; documentId: string; actorId: string; now: Date },
+): Promise<void> {
+  /* Summed per item: one order line can be billed across two lines of the same
+     cart, and two cart lines competing for the same remainder would each see it
+     as whole. */
+  const billed = await tx.query<{ product_id: string; base_qty: number }>(
+    `SELECT product_id, SUM(base_qty) AS base_qty
+       FROM bill_items WHERE bill_id = ? GROUP BY product_id`,
+    [input.billId],
+  )
+  if (billed.length === 0) return
+
+  const lines = await tx.query<{
+    id: string; product_id: string; qty: number; base_qty: number; fulfilled_qty: number
+  }>(
+    `SELECT id, product_id, qty, base_qty, fulfilled_qty
+       FROM document_items WHERE document_id = ? ORDER BY idx`,
+    [input.documentId],
+  )
+  if (lines.length === 0) return
+
+  const nowIso = input.now.toISOString()
+  let marked = 0
+
+  for (const sold of billed) {
+    let leftInBase = sold.base_qty
+
+    for (const line of lines) {
+      if (leftInBase <= 0) break
+      if (line.product_id !== sold.product_id) continue
+
+      const remaining = line.qty - line.fulfilled_qty
+      if (remaining <= 0) continue
+
+      const remainingInBase = Math.round((remaining * line.base_qty) / line.qty)
+      const takenInBase = Math.min(leftInBase, remainingInBase)
+      const taken = Math.min(remaining, Math.round((takenInBase * line.qty) / line.base_qty))
+      /* A bill line smaller than one thousandth of an order line's unit rounds
+         to nothing here. It is left alone rather than marked off as zero: an
+         order that says it is short by an amount nobody can see is still true. */
+      if (taken <= 0) continue
+
+      await tx.execute(
+        `UPDATE document_items SET fulfilled_qty = fulfilled_qty + ? WHERE id = ?`,
+        [taken, line.id],
+      )
+      await tx.execute(
+        `INSERT INTO bill_fulfilments (id, bill_id, document_id, document_item_id, qty, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [newId(), input.billId, input.documentId, line.id, taken, nowIso],
+      )
+
+      line.fulfilled_qty += taken
+      leftInBase -= takenInBase
+      marked += 1
+    }
+  }
+
+  /* Nothing on the bill answered anything still open on the order — a cart
+     emptied and refilled with other items, most often. The bill stands; the
+     order is simply not touched, and the audit row is not written either,
+     because no change was made to record. */
+  if (marked === 0) return
+
+  await writeAudit(tx, { actorId: input.actorId }, {
+    entity: 'document',
+    entityId: input.documentId,
+    action: 'update',
+    after: { billed_by: input.billId },
+  })
+}
+
+/**
+ * Gives back what a cancelled bill had taken.
+ *
+ * Reads the working rather than recomputing the share: this bill's rows say
+ * exactly what it marked off, and they are the only answer that stays right
+ * once a later bill has taken the rest of the line.
+ */
+export async function reverseBillFulfilment(
+  tx: SqlDriver,
+  input: { billId: string; actorId: string },
+): Promise<void> {
+  const taken = await tx.query<{ document_id: string; document_item_id: string; qty: number }>(
+    `SELECT document_id, document_item_id, qty FROM bill_fulfilments WHERE bill_id = ?`,
+    [input.billId],
+  )
+  if (taken.length === 0) return
+
+  for (const row of taken) {
+    await tx.execute(
+      `UPDATE document_items SET fulfilled_qty = MAX(0, fulfilled_qty - ?) WHERE id = ?`,
+      [row.qty, row.document_item_id],
+    )
+  }
+  await tx.execute(`DELETE FROM bill_fulfilments WHERE bill_id = ?`, [input.billId])
+
+  for (const documentId of new Set(taken.map((t) => t.document_id))) {
+    await writeAudit(tx, { actorId: input.actorId }, {
+      entity: 'document',
+      entityId: documentId,
+      action: 'update',
+      after: { unbilled_by: input.billId },
+    })
+  }
+}
+
 /* ------------------------------------------------------------ private --- */
 
 interface PricedLine {

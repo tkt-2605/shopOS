@@ -70,14 +70,27 @@ export interface DraftDetail {
   customerId: string | null
   customerName: string | null
   billDiscount: Money
+  /**
+   * The order this draft is fulfilling, if it was loaded from one.
+   *
+   * Restored with the draft, so a counter that lost power comes back still
+   * knowing which order it was billing — otherwise the order would be left open
+   * by a bill that was paid for.
+   */
+  fromOrder: { id: string; docNo: string } | null
   lines: DraftLine[]
 }
 
 export async function loadDraft(db: SqlDriver, billId: string): Promise<DraftDetail | null> {
   const bill = await db.get<{
-    id: string; docstatus: number; customer_id: string | null; customer_name: string | null; discount: number
+    id: string; docstatus: number; customer_id: string | null; customer_name: string | null
+    discount: number; converted_from: string | null; order_no: string | null
   }>(
-    `SELECT id, docstatus, customer_id, customer_name, discount FROM bills WHERE id = ?`,
+    `SELECT b.id, b.docstatus, b.customer_id, b.customer_name, b.discount, b.converted_from,
+            d.doc_no AS order_no
+       FROM bills b
+       LEFT JOIN documents d ON d.id = b.converted_from
+      WHERE b.id = ?`,
     [billId],
   )
   if (!bill || bill.docstatus !== DRAFT) return null
@@ -97,6 +110,7 @@ export async function loadDraft(db: SqlDriver, billId: string): Promise<DraftDet
     customerId: bill.customer_id,
     customerName: bill.customer_name,
     billDiscount: bill.discount as Money,
+    fromOrder: bill.converted_from ? { id: bill.converted_from, docNo: bill.order_no ?? '' } : null,
     lines: lines.map((l) => ({
       productId: l.product_id,
       productName: l.product_name,

@@ -471,6 +471,15 @@ export default function Billing() {
               Outstanding <Rupees value={active.customer.outstanding} />
             </div>
           )}
+          {/* Which order this tab is settling, said plainly and permanently:
+              the notice that announced it is gone by the time the customer
+              finishes at the shelf, and a counter restarted after a power cut
+              would otherwise have nothing to go on. */}
+          {active.fromOrder && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--ink-2)' }}>
+              Billing order <strong>{active.fromOrder.docNo}</strong> — marked off when this is paid.
+            </div>
+          )}
         </div>
 
         <div className="totals">

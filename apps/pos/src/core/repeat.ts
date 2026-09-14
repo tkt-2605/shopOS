@@ -15,6 +15,12 @@
  * sell at March's rates; every line is re-priced at today's, through the same
  * resolver the counter always uses. The quantities are the starting point and
  * every one of them is still editable before anyone pays.
+ *
+ * The one exception is an order. A quotation or a sales order arrives here with
+ * its rates attached and they are kept, because the shop promised them — which
+ * is the opposite of the rule above and for the opposite reason: an old bill is
+ * a record of the past, while an order is a promise about now. Such a request
+ * also names the order, so the draft can carry it and paying can mark it off.
  */
 
 export interface RepeatLine {
@@ -22,6 +28,11 @@ export interface RepeatLine {
   saleUnit: string
   /** Display units, as they were billed. */
   qty: number
+  /**
+   * The rate to keep, in paise. Present only on an order, where it is the price
+   * that was promised; absent on a repeat, which is re-priced at today's.
+   */
+  rate?: number
 }
 
 export interface RepeatRequest {
@@ -29,6 +40,14 @@ export interface RepeatRequest {
   docNo: string
   customerId: string | null
   lines: RepeatLine[]
+  /**
+   * The order being billed, when that is what this is.
+   *
+   * Rides on the draft as `bills.converted_from` until the bill is submitted,
+   * which is the moment the order is marked off. Loading a cart promises
+   * nothing; taking the money is the delivery.
+   */
+  order?: { id: string; docNo: string } | null
 }
 
 let pending: RepeatRequest | null = null

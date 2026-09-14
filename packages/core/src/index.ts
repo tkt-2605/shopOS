@@ -218,8 +218,8 @@ export type {
   DocumentListItem, DocumentFilter, DocumentDetail, DocumentItemRow, DocumentStatus,
 } from './services/documents.js'
 
-export { quotationToSalesOrder, receivePurchaseOrder } from './services/convert.js'
-export type { ConvertResult, ReceiveResult } from './services/convert.js'
+export { quotationToSalesOrder, receivePurchaseOrder, documentToCart } from './services/convert.js'
+export type { ConvertResult, ReceiveResult, ToCartResult, OrderCartLine } from './services/convert.js'
 
 export { applyUpgrades } from './services/upgrade.js'
 

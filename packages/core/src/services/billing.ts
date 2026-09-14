@@ -15,6 +15,7 @@ import { loadStockPolicy } from './features.js'
 import { checkAvailability, postMovement, reverseVoucher, type StockShortfall } from './stock.js'
 import { nextDocNo } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
+import { applyBillFulfilment, reverseBillFulfilment } from './documents.js'
 import { getSetting } from './bootstrap.js'
 
 export type PaymentMethod = 'cash' | 'upi' | 'card' | 'credit' | 'loyalty'
@@ -44,6 +45,15 @@ export interface CreateBillInput {
   billDiscount?: Money
   postingDate?: string
   notes?: string
+  /**
+   * The sales order or quotation this bill is fulfilling.
+   *
+   * Carried on the draft from the moment the cart is loaded, so that it
+   * survives the power going out the way the rest of the draft does — and so
+   * that the order is marked off by the payment rather than by the loading.
+   * Nothing happens to the order until `submitBill`.
+   */
+  convertedFrom?: string | null
   actorId: string
   now?: Date
 }
@@ -288,13 +298,13 @@ export async function createBill(db: SqlDriver, input: CreateBillInput): Promise
       `INSERT INTO bills
          (id, doc_no, docstatus, register_id, session_id, customer_id, customer_name, posting_date,
           subtotal, discount, taxable_total, tax_total, grand_total, place_of_supply, notes,
-          created_by, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, ?, ?, ?, ?, ?)`,
+          converted_from, created_by, created_at, updated_at)
+       VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?)`,
       [
         billId, `DRAFT-${billId}`, input.registerId, meta.sessionId,
         meta.customerId, meta.customerName, meta.postingDate,
         meta.billDiscount, meta.placeOfSupply, meta.notes,
-        input.actorId, nowIso, nowIso,
+        input.convertedFrom ?? null, input.actorId, nowIso, nowIso,
       ],
     )
 
@@ -354,12 +364,16 @@ export async function saveDraft(
     await tx.execute(
       `UPDATE bills SET session_id = ?, customer_id = ?, customer_name = ?, posting_date = ?,
               subtotal = ?, discount = ?, taxable_total = ?, tax_total = ?, grand_total = ?,
-              place_of_supply = ?, notes = ?, updated_at = ?
+              place_of_supply = ?, notes = ?, converted_from = ?, updated_at = ?
          WHERE id = ? AND docstatus = 0`,
       [
         meta.sessionId, meta.customerId, meta.customerName, meta.postingDate,
         subtotal, totals.discount, totals.taxableTotal, totals.taxTotal, totals.grandTotal,
-        meta.placeOfSupply, meta.notes, meta.now.toISOString(), input.billId,
+        // Written plainly rather than kept: a cart cleared of the order's items
+        // and refilled with others is no longer that order's bill, and the
+        // counter is what knows which it is.
+        meta.placeOfSupply, meta.notes, input.convertedFrom ?? null,
+        meta.now.toISOString(), input.billId,
       ],
     )
   })
@@ -538,6 +552,17 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
       [docNo, sub(bill.grandTotal, creditTotal), creditTotal, input.idempotencyKey ?? null, nowIso, input.billId],
     )
 
+    /* The order is marked off here and nowhere earlier. Loading an order onto
+       the counter promises nothing; taking the money is the delivery. */
+    if (bill.convertedFrom) {
+      await applyBillFulfilment(tx, {
+        billId: input.billId,
+        documentId: bill.convertedFrom,
+        actorId: input.actorId,
+        now,
+      })
+    }
+
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'bills', entityId: input.billId, action: 'submit',
       docstatusFrom: DRAFT, docstatusTo: SUBMITTED,
@@ -625,6 +650,10 @@ export async function cancelBill(
       [nowIso, input.billId],
     )
 
+    /* What this bill took off an order goes back. Otherwise a cancelled bill
+       leaves an order claiming it was delivered, and the goods are never sent. */
+    await reverseBillFulfilment(tx, { billId: input.billId, actorId: input.actorId })
+
     await tx.execute(
       `UPDATE bills SET docstatus = 2, cancelled_by = ?, cancelled_at = ?, cancel_reason = ?, updated_at = ? WHERE id = ?`,
       [input.actorId, nowIso, input.reason ?? null, nowIso, input.billId],
@@ -660,6 +689,10 @@ export async function amendBill(
   const created = await createBill(db, {
     registerId: source.registerId,
     customerId: source.customerId,
+    /* The order comes with it. Cancelling the original gave the order back what
+       it had taken, so an amendment that dropped the link would leave the order
+       open for goods the shop is about to send out again. */
+    convertedFrom: source.convertedFrom,
     lines: lines.map((l) => ({
       productId: l.product_id,
       saleUnit: l.sale_unit,
@@ -692,14 +725,18 @@ interface BillRow {
   customerId: string | null
   postingDate: string
   grandTotal: Money
+  convertedFrom: string | null
 }
 
 async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
   const row = await db.get<{
     id: string; doc_no: string; docstatus: number; register_id: string; session_id: string | null
     customer_id: string | null; posting_date: string; grand_total: number
+    converted_from: string | null
   }>(
-    `SELECT id, doc_no, docstatus, register_id, session_id, customer_id, posting_date, grand_total FROM bills WHERE id = ?`,
+    `SELECT id, doc_no, docstatus, register_id, session_id, customer_id, posting_date, grand_total,
+            converted_from
+       FROM bills WHERE id = ?`,
     [billId],
   )
   if (!row) throw new Error(`unknown bill: ${billId}`)
@@ -712,6 +749,7 @@ async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
     customerId: row.customer_id,
     postingDate: row.posting_date,
     grandTotal: row.grand_total as Money,
+    convertedFrom: row.converted_from,
   }
 }
 

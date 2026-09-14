@@ -40,6 +40,12 @@ export interface Cart {
   customer: CustomerListItem | null
   discount: string
   error: string | null
+  /**
+   * The order this cart is billing, if it came from one. Saved with the draft,
+   * so a counter that lost power comes back still knowing — and marked off by
+   * `submitBill` when the money is taken, never before.
+   */
+  fromOrder: { id: string; docNo: string } | null
   /** True while being rebuilt from a draft; autosave must not run. */
   hydrating: boolean
 }
@@ -67,11 +73,14 @@ function emptyCart(): Cart {
     customer: null,
     discount: '',
     error: null,
+    fromOrder: null,
     hydrating: false,
   }
 }
 
-function snapshotOf(cart: Cart): { customerId: string | null; billDiscount: number; lines: BillLineInput[] } {
+function snapshotOf(
+  cart: Cart,
+): { customerId: string | null; billDiscount: number; convertedFrom: string | null; lines: BillLineInput[] } {
   const lines = cart.lines.map((line): BillLineInput => ({
     productId: line.product.id,
     saleUnit: line.saleUnit,
@@ -100,6 +109,7 @@ function snapshotOf(cart: Cart): { customerId: string | null; billDiscount: numb
   return {
     customerId: cart.customer?.id ?? null,
     billDiscount: totals.discount,
+    convertedFrom: cart.fromOrder?.id ?? null,
     lines,
   }
 }
@@ -171,6 +181,7 @@ export function useBillTabs(db: SqlDriver, registerId: string, actorId: string):
       customerId: snap.customerId,
       lines: snap.lines,
       billDiscount: Money.paise(snap.billDiscount),
+      convertedFrom: snap.convertedFrom,
       actorId,
     }
 
@@ -246,6 +257,7 @@ export function useBillTabs(db: SqlDriver, registerId: string, actorId: string):
       customer,
       discount: detail.billDiscount > 0 ? Money.format(detail.billDiscount) : '',
       error: null,
+      fromOrder: detail.fromOrder,
       hydrating: false,
     }
     billIds.current.set(cart.tabId, detail.billId)
@@ -287,11 +299,17 @@ export function useBillTabs(db: SqlDriver, registerId: string, actorId: string):
         ?? units.find((u) => u.isDefault)?.saleUnit
         ?? product.baseUnit
 
-      const resolved = await resolveLinePrice(db, pricing, {
-        productId: product.id,
-        saleUnit: unit,
-        qty: Quantity.fromUnits(wanted.qty),
-      })
+      /* An order arrives with its rate and keeps it; anything else is priced
+         at today's. The line is not marked manual either way — nobody at this
+         counter typed it, and calling it a cashier's override would put an
+         unusual price against the wrong person's name. */
+      const priced = wanted.rate != null && request.order
+        ? { rate: wanted.rate, source: 'order_rate' as Pricing.PriceSource, sourceId: request.order.id }
+        : await resolveLinePrice(db, pricing, {
+          productId: product.id,
+          saleUnit: unit,
+          qty: Quantity.fromUnits(wanted.qty),
+        })
 
       lines.push({
         key: `${product.id}-repeat-${i}-${Date.now()}`,
@@ -299,15 +317,15 @@ export function useBillTabs(db: SqlDriver, registerId: string, actorId: string):
         saleUnit: unit,
         units,
         qty: wanted.qty,
-        rate: resolved.rate,
-        source: resolved.source,
-        sourceId: resolved.sourceId,
+        rate: priced.rate,
+        source: priced.source,
+        sourceId: priced.sourceId,
         manual: false,
       })
     }
 
     return {
-      cart: { ...emptyCart(), lines, customer },
+      cart: { ...emptyCart(), lines, customer, fromOrder: request.order ?? null },
       missing,
     }
   }, [db])
@@ -336,10 +354,15 @@ export function useBillTabs(db: SqlDriver, registerId: string, actorId: string):
     // Saved as a draft straight away, so the tab survives the power going out
     // exactly as a typed one does.
     queue(cart)
+    const dropped = missing === 0
+      ? ''
+      : ` ${missing} item${missing === 1 ? ' is' : 's are'} no longer in the catalogue and could not be added.`
     setNotice(
-      missing === 0
-        ? `${request.docNo} again — ${cart.lines.length} item${cart.lines.length === 1 ? '' : 's'}, at today's prices.`
-        : `${request.docNo} again, at today's prices. ${missing} item${missing === 1 ? ' is' : 's are'} no longer in the catalogue and could not be added.`,
+      request.order
+        ? `Billing ${request.docNo} — what is still outstanding, at the rates it promised.`
+          + ` The order is marked off when this bill is paid.${dropped}`
+        : `${request.docNo} again — ${cart.lines.length} item${cart.lines.length === 1 ? '' : 's'},`
+          + ` at today's prices.${dropped}`,
     )
   }, [buildRepeat, queue])
 

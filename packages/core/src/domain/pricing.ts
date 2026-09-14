@@ -23,6 +23,15 @@ export type PriceSource =
   | 'base_rate'
   /** A cashier typed the rate. Recorded so an unusual price is traceable to a person. */
   | 'manual_override'
+  /**
+   * The rate a quotation or a sales order promised.
+   *
+   * Never returned by the resolver — it is carried onto the bill by the
+   * conversion, and it outranks everything the resolver would say. A quotation
+   * is a promise the shop made, and honouring it is the entire point of having
+   * quoted. `price_source_id` holds the document it came from.
+   */
+  | 'order_rate'
 
 export interface PriceTier {
   id: string
@@ -128,5 +137,7 @@ export function describeSource(source: PriceSource): string {
       return 'Product base price'
     case 'manual_override':
       return 'Entered by cashier'
+    case 'order_rate':
+      return 'Rate promised on the order'
   }
 }

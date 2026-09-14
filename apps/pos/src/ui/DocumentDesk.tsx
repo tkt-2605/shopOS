@@ -3,12 +3,13 @@ import {
   Money, Quantity, Permissions,
   searchProducts, searchCustomers, listSuppliers,
   createDocument, submitDocument, cancelDocument, listDocuments, loadDocument,
-  quotationToSalesOrder, receivePurchaseOrder,
+  quotationToSalesOrder, receivePurchaseOrder, documentToCart,
   type ProductListItem, type CustomerListItem, type Supplier,
   type DocumentKind, type DocumentStatus, type DocumentListItem, type DocumentDetail,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { printDocumentSheet } from '../core/printHtml'
+import { requestRepeat } from '../core/repeat'
 import {
   Card, Field, Modal, Empty, Alert, Rupees, DocStatusBadge,
   DateRangePicker, rangePreset, type Range,
@@ -50,6 +51,11 @@ export function DocumentDesk({ config }: { config: DeskConfig }) {
   const user = useUser()
   const canWrite = Permissions.can(user.permissions, 'document', 'create')
   const canCancel = Permissions.can(user.permissions, 'document', 'cancel')
+  /* Billing an order is a sale, so it is the counter's permission that decides
+     it — not this screen's. A stockist who may raise a purchase order has no
+     business ringing one up. */
+  const canBill = Permissions.can(user.permissions, 'bill', 'create')
+    && Permissions.visiblePages(user.permissions).includes('billing')
 
   const [kind, setKind] = useState<DocumentKind>(config.kinds[0]!)
   const [status, setStatus] = useState<DocumentStatus>('issued')
@@ -165,6 +171,7 @@ export function DocumentDesk({ config }: { config: DeskConfig }) {
           config={config}
           canCancel={canCancel}
           canWrite={canWrite}
+          canBill={canBill}
           onClose={() => setOpen(null)}
           onChanged={(message) => { setNotice(message); void reopen(open.id) }}
           onError={setError}
@@ -383,11 +390,12 @@ function Draft({ config, kind, onClose, onDone, onError, registerId, userId }: {
 
 /* ------------------------------------------------------------- the detail --- */
 
-function Detail({ doc, config, canCancel, canWrite, onClose, onChanged, onError, userId }: {
+function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onChanged, onError, userId }: {
   doc: DocumentDetail
   config: DeskConfig
   canCancel: boolean
   canWrite: boolean
+  canBill: boolean
   onClose: () => void
   onChanged: (message: string) => void
   onError: (message: string | null) => void
@@ -430,6 +438,44 @@ function Detail({ doc, config, canCancel, canWrite, onClose, onChanged, onError,
       return
     }
     onChanged(`Sales order ${result.docNo} raised from ${doc.docNo}, at the quoted rates.`)
+  }
+
+  /**
+   * Puts what is still outstanding on the counter, at the rates that were
+   * promised.
+   *
+   * It creates nothing. The order is marked off when the bill is paid, not when
+   * the cart is loaded — a cashier who is interrupted halfway has delivered
+   * nothing, and an order the shop believes it has already sent out is worse
+   * than one that says nothing at all.
+   */
+  async function bill() {
+    setBusy(true)
+    const result = await documentToCart(db, { documentId: doc.id })
+    setBusy(false)
+    if (!result.ok) {
+      onError(
+        result.code === 'EXPIRED' ? 'That quotation is past its valid-until date. Raise a fresh one at today’s prices.'
+        : result.code === 'NOTHING_LEFT' ? 'Everything on this has already been billed.'
+        : result.code === 'NOT_SUBMITTED' ? 'Issue it first.'
+        : 'That could not be put on the counter.',
+      )
+      return
+    }
+    /* The counter claims this as it mounts; the shell is what switches to it.
+       Closing first so the cashier arrives at the till, not at a dialog. */
+    onClose()
+    requestRepeat({
+      docNo: result.docNo,
+      customerId: result.customerId,
+      order: { id: result.documentId, docNo: result.docNo },
+      lines: result.lines.map((l) => ({
+        productId: l.productId,
+        saleUnit: l.saleUnit,
+        qty: Quantity.toUnits(l.qty),
+        rate: l.rate,
+      })),
+    })
   }
 
   async function receive() {
@@ -479,7 +525,10 @@ function Detail({ doc, config, canCancel, canWrite, onClose, onChanged, onError,
           <button className="btn" disabled={busy} onClick={() => setCancelling('')}>Cancel it</button>
         )}
         {isIssued && anythingLeft && canWrite && doc.kind === 'quotation' && (
-          <button className="btn primary" disabled={busy} onClick={() => void toOrder()}>Make a sales order</button>
+          <button className="btn" disabled={busy} onClick={() => void toOrder()}>Make a sales order</button>
+        )}
+        {isIssued && anythingLeft && canBill && config.party === 'customer' && (
+          <button className="btn primary" disabled={busy} onClick={() => void bill()}>Bill it</button>
         )}
         {isIssued && anythingLeft && canWrite && doc.kind === 'purchase_order' && (
           <button className="btn primary" disabled={busy} onClick={() => void receive()}>Receive into stock</button>

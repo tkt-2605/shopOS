@@ -1,4 +1,5 @@
 import type { SqlDriver } from '../db/driver.js'
+import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
 import { createDocument, loadDocument } from './documents.js'
@@ -85,6 +86,69 @@ export async function quotationToSalesOrder(
   })
 
   return { ok: true, documentId: created.documentId, docNo: created.docNo }
+}
+
+export interface OrderCartLine {
+  productId: string
+  saleUnit: string
+  /** What is still to be billed, in the order's own sale unit. */
+  qty: Qty
+  /** The rate the shop promised, to be kept rather than resolved again. */
+  rate: Money
+}
+
+export type ToCartResult =
+  | { ok: true; documentId: string; docNo: string; customerId: string | null; lines: OrderCartLine[] }
+  | {
+    ok: false
+    code: 'NOT_FOUND' | 'NOT_SUBMITTED' | 'CANCELLED' | 'WRONG_KIND' | 'NOTHING_LEFT' | 'EXPIRED'
+  }
+
+/**
+ * An order, as a cart to be rung up.
+ *
+ * The one conversion that does not create anything. It hands the counter what
+ * is still owed on the order and the rates that were promised, and then stops —
+ * the bill is made by the counter, out of a draft that can be edited, split,
+ * held overnight or abandoned like any other.
+ *
+ * Which is why nothing is marked off here. The draft carries the order's id
+ * (`bills.converted_from`) from the moment it is loaded, and `submitBill` marks
+ * the order off when the money is taken. A cart loaded and walked away from
+ * leaves the order exactly as open as it was.
+ */
+export async function documentToCart(
+  db: SqlDriver,
+  input: { documentId: string; on?: string },
+): Promise<ToCartResult> {
+  const source = await loadDocument(db, input.documentId)
+  if (!source) return { ok: false, code: 'NOT_FOUND' }
+  /* A purchase order is money the shop owes, not money it is owed. It is
+     received into stock; billing one would invoice the supplier for goods the
+     shop is buying. */
+  if (source.kind === 'purchase_order') return { ok: false, code: 'WRONG_KIND' }
+  if (source.docstatus === 2) return { ok: false, code: 'CANCELLED' }
+  if (source.docstatus !== 1) return { ok: false, code: 'NOT_SUBMITTED' }
+
+  if (source.validUntil && source.validUntil < (input.on ?? isoDate(new Date()))) {
+    return { ok: false, code: 'EXPIRED' }
+  }
+
+  const remaining = source.items.filter((i) => i.remainingQty > 0)
+  if (remaining.length === 0) return { ok: false, code: 'NOTHING_LEFT' }
+
+  return {
+    ok: true,
+    documentId: source.id,
+    docNo: source.docNo,
+    customerId: source.customerId,
+    lines: remaining.map((i) => ({
+      productId: i.productId,
+      saleUnit: i.saleUnit,
+      qty: i.remainingQty,
+      rate: i.rate,
+    })),
+  }
 }
 
 export type ReceiveResult =
