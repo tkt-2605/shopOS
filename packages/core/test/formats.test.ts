@@ -3,7 +3,9 @@ import {
   listFormats, loadFormat, formatFor, saveFormat, deleteFormat, chooseFormat, chosenFormatId,
 } from '../src/services/formats.js'
 import { STANDARD_RECEIPT, rollColumns, type Block } from '../src/domain/docFormat.js'
-import { buildReceipt, visibleLines, type ReceiptDoc } from '../src/domain/receipt.js'
+import {
+  buildReceipt, visibleLines, previewLines, smallColumns, type ReceiptDoc,
+} from '../src/domain/receipt.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
 import { freshDb, type Fixture } from './helpers.js'
@@ -26,6 +28,15 @@ async function auditRows(entityId: string) {
     `SELECT action, actor_id, diff FROM audit_log WHERE entity = 'doc_format' AND entity_id = ?`,
     [entityId],
   )
+}
+
+/** Every printed line inside the columns its own face allows: the small print
+    is set in font B, which fits a third more than the wide face. */
+function expectFitsPaper(receipt: string, columns: number) {
+  for (const line of previewLines(receipt)) {
+    const limit = line.small ? smallColumns(columns) : columns
+    expect(line.text.length, `too wide for ${limit} columns: "${line.text}"`).toBeLessThanOrEqual(limit)
+  }
 }
 
 describe('what a new shop starts with', () => {
@@ -344,9 +355,7 @@ describe('what the printer actually receives', () => {
     if (!saved.ok) throw new Error('the save did not go through')
     await chooseFormat(fx.db, ctx(), 'bill', saved.id)
 
-    for (const line of visibleLines(await whatWouldPrint())) {
-      expect(line.length).toBeLessThanOrEqual(rollColumns('thermal_58'))
-    }
+    expectFitsPaper(await whatWouldPrint(), rollColumns('thermal_58'))
   })
 
   it('still prints when the chosen format has been deleted out from under it', async () => {

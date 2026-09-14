@@ -41,6 +41,8 @@ interface Draft {
   hsnCode: string
   taxPercent: string
   baseRate: string
+  /** The printed price on the packet. Blank when there is none. */
+  mrp: string
   baseUnit: string
   discountBlocked: boolean
   loyaltyBlocked: boolean
@@ -51,7 +53,7 @@ interface Draft {
 const BLANK: Draft = {
   id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
   categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', taxPercent: '12',
-  baseRate: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
+  baseRate: '', mrp: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   reorderLevel: '', reorderQty: '',
 }
 
@@ -136,6 +138,9 @@ export default function Inventory() {
     if (!draft || draft.name.trim() === '') return
     const now = new Date().toISOString()
     const rate = Money.parseMoney(draft.baseRate) ?? 0
+    /* Null, not zero. A packet with no printed price is not a packet printed
+       with ₹0, and the receipt only shows the MRP line when there is one. */
+    const mrp = draft.mrp.trim() === '' ? null : Money.parseMoney(draft.mrp)
     const bp = Math.round((Number(draft.taxPercent) || 0) * 100)
 
     // The barcode column is not written here. setBarcodes owns the pair of
@@ -144,24 +149,24 @@ export default function Inventory() {
     let productId = draft.id
     if (productId) {
       await db.execute(
-        `UPDATE products SET name = ?, brand = ?, hsn_code = ?, tax_rate_bp = ?, base_rate = ?,
+        `UPDATE products SET name = ?, brand = ?, hsn_code = ?, tax_rate_bp = ?, base_rate = ?, mrp = ?,
                              discount_blocked = ?, loyalty_blocked = ?,
                              reorder_level = ?, reorder_qty = ?, updated_at = ?
          WHERE id = ?`,
         [draft.name.trim(), draft.brand.trim() || null,
-         draft.hsnCode.trim() || null, bp, rate,
+         draft.hsnCode.trim() || null, bp, rate, mrp,
          draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
          levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, productId],
       )
     } else {
       productId = newId()
       await db.execute(
-        `INSERT INTO products (id, name, brand, hsn_code, tax_rate_bp, base_rate, base_unit,
+        `INSERT INTO products (id, name, brand, hsn_code, tax_rate_bp, base_rate, mrp, base_unit,
                                discount_blocked, loyalty_blocked, reorder_level, reorder_qty,
                                created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [productId, draft.name.trim(), draft.brand.trim() || null,
-         draft.hsnCode.trim() || null, bp, rate, draft.baseUnit,
+         draft.hsnCode.trim() || null, bp, rate, mrp, draft.baseUnit,
          draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
          levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, now],
       )
@@ -251,7 +256,8 @@ export default function Inventory() {
       parentProductId: p.parentProductId ?? '',
       variantLabel: p.variantLabel ?? '',
       hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
-      baseRate: Money.format(p.baseRate), baseUnit: p.baseUnit,
+      baseRate: Money.format(p.baseRate), mrp: p.mrp === null ? '' : Money.format(p.mrp),
+      baseUnit: p.baseUnit,
       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
       reorderLevel: p.reorderLevel === null ? '' : Quantity.formatQty(p.reorderLevel),
       reorderQty: p.reorderQty === null ? '' : Quantity.formatQty(p.reorderQty),
@@ -372,6 +378,14 @@ export default function Inventory() {
               <input className="input num" id="p-rate" value={draft.baseRate}
                 onChange={(e) => setDraft({ ...draft, baseRate: e.target.value })} />
             </Field>
+            <Field
+              label="MRP"
+              hint="The price printed on the packet. Leave blank if there is none. When it is
+                    above the selling rate, the receipt shows it and what the customer saved."
+            >
+              <input className="input num" id="p-mrp" value={draft.mrp}
+                onChange={(e) => setDraft({ ...draft, mrp: e.target.value })} />
+            </Field>
             {!draft.id && (
               <Field label="Unit">
                 <input className="input" id="p-unit" value={draft.baseUnit}
@@ -448,12 +462,12 @@ export default function Inventory() {
                     onClick={() => setDraft({ ...draft, parentProductId: '', variantLabel: '' })}>Cut loose</button>
                 </div>
               ) : (
-                <>
+                <div className="results-anchor">
                   <input className="input" placeholder="Search the main item" value={parentSearch}
                     onChange={(e) => setParentSearch(e.target.value)}
                     onKeyDown={parentPick.searchKeyDown} />
                   {parentOptions.length > 0 && (
-                    <div className="results" style={{ marginTop: 6 }} {...parentPick.listProps}>
+                    <div className="results" {...parentPick.listProps}>
                       {parentOptions.map((r, i) => (
                         <div key={r.id} style={{ padding: '6px 10px' }} {...parentPick.rowProps(i)}>
                           {r.name}
@@ -461,7 +475,7 @@ export default function Inventory() {
                       ))}
                     </div>
                   )}
-                </>
+                </div>
               )}
             </Field>
           </div>

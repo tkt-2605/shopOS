@@ -199,22 +199,24 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
   return (
     <>
       <Card title="Which item">
-        <input className="input" id="price-search" autoFocus
-          placeholder="Search an item by name, code or barcode"
-          value={term} onChange={(e) => setTerm(e.target.value)}
-          onKeyDown={pick.searchKeyDown} />
-        {results.length > 0 && (
-          <div className="results" style={{ marginTop: 8 }} {...pick.listProps}>
-            {results.map((p, i) => (
-              <div key={p.id} style={{ padding: '7px 10px' }} {...pick.rowProps(i)}>
-                {p.name}
-                <span style={{ float: 'right', color: 'var(--ink-3)' }}>
-                  base <Rupees value={p.baseRate} /> / {p.baseUnit}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
+        <div className="results-anchor">
+          <input className="input" id="price-search" autoFocus
+            placeholder="Search an item by name, code or barcode"
+            value={term} onChange={(e) => setTerm(e.target.value)}
+            onKeyDown={pick.searchKeyDown} />
+          {results.length > 0 && (
+            <div className="results" {...pick.listProps}>
+              {results.map((p, i) => (
+                <div key={p.id} style={{ padding: '7px 10px' }} {...pick.rowProps(i)}>
+                  {p.name}
+                  <span style={{ float: 'right', color: 'var(--ink-3)' }}>
+                    base <Rupees value={p.baseRate} /> / {p.baseUnit}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </Card>
 
       {chosen && (
@@ -488,18 +490,20 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
   return (
     <>
       <Card title="Which customer">
-        <input className="input" placeholder="Search a customer by name or phone"
-          value={term} onChange={(e) => setTerm(e.target.value)}
-          onKeyDown={customerPick.searchKeyDown} />
-        {results.length > 0 && (
-          <div className="results" style={{ marginTop: 8 }} {...customerPick.listProps}>
-            {results.map((c, i) => (
-              <div key={c.id} style={{ padding: '7px 10px' }} {...customerPick.rowProps(i)}>
-                {c.name}<span style={{ float: 'right', color: 'var(--ink-3)' }}>{c.phone ?? ''}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        <div className="results-anchor">
+          <input className="input" placeholder="Search a customer by name or phone"
+            value={term} onChange={(e) => setTerm(e.target.value)}
+            onKeyDown={customerPick.searchKeyDown} />
+          {results.length > 0 && (
+            <div className="results" {...customerPick.listProps}>
+              {results.map((c, i) => (
+                <div key={c.id} style={{ padding: '7px 10px' }} {...customerPick.rowProps(i)}>
+                  {c.name}<span style={{ float: 'right', color: 'var(--ink-3)' }}>{c.phone ?? ''}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </Card>
 
       {chosen && (
@@ -555,19 +559,19 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
           {canWrite && (
             <div style={{ marginTop: 15, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
               {!picked ? (
-                <>
+                <div className="results-anchor" style={{ maxWidth: 420 }}>
                   <input className="input" placeholder="Add a rate — search the item"
-                    value={productTerm} onChange={(e) => setProductTerm(e.target.value)} style={{ maxWidth: 420 }}
+                    value={productTerm} onChange={(e) => setProductTerm(e.target.value)}
                     onKeyDown={productPick.searchKeyDown} />
                   {productResults.length > 0 && (
-                    <div className="results" style={{ marginTop: 8, maxWidth: 420 }} {...productPick.listProps}>
+                    <div className="results" {...productPick.listProps}>
                       {productResults.map((p, i) => (
                         <div key={p.id} style={{ padding: '7px 10px' }}
                           {...productPick.rowProps(i)}>{p.name}</div>
                       ))}
                     </div>
                   )}
-                </>
+                </div>
               ) : (
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                   <div style={{ minWidth: 180 }}>

@@ -619,21 +619,23 @@ function OpeningBalance({
         </div>
       ) : (
         <>
-          <Field label="Customer">
-            <input className="input" autoFocus placeholder="Name, phone or code"
-              value={term} onChange={(e) => setTerm(e.target.value)}
-              onKeyDown={pick.searchKeyDown} />
-          </Field>
-          {found.length > 0 && (
-            <div className="results" {...pick.listProps}>
-              {found.map((c, i) => (
-                <div key={c.id} style={{ padding: '7px 10px' }} {...pick.rowProps(i)}>
-                  {c.name}
-                  <span style={{ float: 'right', color: 'var(--ink-3)' }}>{c.code ?? c.phone ?? ''}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          <div className="results-anchor">
+            <Field label="Customer">
+              <input className="input" autoFocus placeholder="Name, phone or code"
+                value={term} onChange={(e) => setTerm(e.target.value)}
+                onKeyDown={pick.searchKeyDown} />
+            </Field>
+            {found.length > 0 && (
+              <div className="results" {...pick.listProps}>
+                {found.map((c, i) => (
+                  <div key={c.id} style={{ padding: '7px 10px' }} {...pick.rowProps(i)}>
+                    {c.name}
+                    <span style={{ float: 'right', color: 'var(--ink-3)' }}>{c.code ?? c.phone ?? ''}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </>
       )}
 

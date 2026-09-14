@@ -145,7 +145,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .brand-name { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
 .brand-sub { font-size: 11px; color: var(--ink-3); }
 
-.nav { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; overflow-y: auto; }
+/* `min-height: 0` is what lets this actually scroll: a flex item's floor is its
+   content, so without it the nav refuses to be shorter than its list and the
+   footer below is squeezed off the bottom of the window instead. */
+.nav { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; overflow-y: auto; }
 .nav-group {
   padding: 12px 9px 4px; font-size: 10px; font-weight: 600;
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3);
@@ -160,7 +163,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .nav button[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-ink); font-weight: 600; }
 .nav svg { flex-shrink: 0; }
 
-.sidebar-foot { display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-top: 1px solid var(--rule); }
+/* Never shrinks. Who is signed in and the way to sign out are not optional,
+   and a flex item shrinks by default — which is how "Sign out" ended up sliced
+   in half once the sidebar grew past seventeen entries. */
+.sidebar-foot {
+  display: flex; align-items: center; gap: 9px; flex-shrink: 0;
+  padding: 12px 14px; border-top: 1px solid var(--rule);
+}
 .avatar {
   display: grid; place-items: center; width: 26px; height: 26px; flex-shrink: 0;
   background: var(--accent-soft); border-radius: 0;
@@ -270,6 +279,14 @@ tbody tr:hover { background: var(--accent-soft); }
 /* Search is a transient overlay, not a permanent half of the screen — the cart is
    what the cashier watches, so it keeps the space. */
 .scan-wrap { position: relative; flex-shrink: 0; }
+/* A dropdown needs something to hang from. An absolutely-positioned list with
+   no positioned ancestor falls back to the page itself, which is how the item
+   search on Special Prices ended up at the foot of the window, half off-screen,
+   a thousand pixels below the box it belongs to. Every `.results` sits inside
+   one of these; the ones that happened to work did so only because a modal was
+   positioned somewhere above them. */
+.results-anchor { position: relative; }
+
 .results {
   position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 20;
   max-height: 46vh; overflow: auto;
@@ -614,7 +631,10 @@ tbody tr:hover { background: var(--accent-soft); }
 .receipt-line.align-centre { text-align: center; }
 .receipt-line.align-right { text-align: right; }
 .receipt-line.bold { font-weight: 700; }
-.receipt-line.small { font-size: 0.85em; }
+/* Font B is 9 dots wide against font A's 12 — exactly three quarters, not the
+   0.85 that was here. A preview that sets the small print wider than the
+   printer will makes a centred line look off-centre. */
+.receipt-line.small { font-size: 0.75em; }
 /* Double width and height on the printer; double height alone for `tall`. */
 .receipt-line.banner { font-size: 2em; line-height: 1.15; font-weight: 700; }
 .receipt-line.tall { font-size: 1.35em; line-height: 1.25; font-weight: 700; }

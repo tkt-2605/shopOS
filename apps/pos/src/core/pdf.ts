@@ -118,8 +118,11 @@ export async function statementPdf(
     meta,
     columns: [
       { label: 'Date', width: 1.1 },
-      { label: 'Document', width: 1.3 },
-      { label: 'What it was', width: 3.2 },
+      /* Wide enough for a real document number. "INV/MR/26-27/00016" sets at
+         about 85 points, and the old 1.3 share gave it 67 — so every row on
+         every statement ran its number across the description beside it. */
+      { label: 'Document', width: 1.8 },
+      { label: 'What it was', width: 2.7 },
       { label: 'Charged', width: 1.2, alignRight: true },
       { label: 'Paid', width: 1.2, alignRight: true },
       { label: 'Balance', width: 1.3, alignRight: true },

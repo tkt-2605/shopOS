@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { buildReceipt, visibleLines, type ReceiptDoc } from '../src/domain/receipt.js'
+import {
+  buildReceipt, visibleLines, previewLines, smallColumns, type ReceiptDoc,
+} from '../src/domain/receipt.js'
 import { STANDARD_RECEIPT, rollColumns, type Block, type DocFormat } from '../src/domain/docFormat.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
@@ -50,6 +52,15 @@ function withBlocks(changes: Partial<Record<Block['kind'], boolean>>): DocFormat
 /** How many lines carry this label, so "printed twice" is a number not a guess. */
 function countLines(receipt: string, startsWith: string): number {
   return visibleLines(receipt).filter((l) => l.startsWith(startsWith)).length
+}
+
+/** Every printed line inside the columns its own face allows: the small print
+    is set in font B, which fits a third more than the wide face. */
+function expectFitsPaper(receipt: string, columns: number) {
+  for (const line of previewLines(receipt)) {
+    const limit = line.small ? smallColumns(columns) : columns
+    expect(line.text.length, `too wide for ${limit} columns: "${line.text}"`).toBeLessThanOrEqual(limit)
+  }
 }
 
 describe('a shop that has never opened the designer', () => {
@@ -125,6 +136,28 @@ describe('switching a block on', () => {
   })
 })
 
+describe('the small print', () => {
+  it('is wrapped in the condensed face’s own columns, not the wide face’s', () => {
+    const long = {
+      ...doc,
+      footer: 'Thank you. Goods once sold are not returnable without this bill. Please keep it safe.',
+    }
+    const lines = previewLines(buildReceipt(long)).filter((l) => l.small && l.text.trim() !== '')
+
+    // Font B fits 56 columns on an 80mm roll. Measured against font A's 42 the
+    // sentence broke a third of the way early, and the ragged edge that left
+    // reads as a centring fault rather than as the wrong ruler.
+    expect(lines.some((l) => l.text.length > 42)).toBe(true)
+    for (const line of lines) expect(line.text.length).toBeLessThanOrEqual(smallColumns(42))
+  })
+
+  it('is centred, every line of it', () => {
+    for (const line of previewLines(buildReceipt(doc)).filter((l) => l.small && l.text.trim() !== '')) {
+      expect(line.align).toBe('centre')
+    }
+  })
+})
+
 describe('the amount in words on the roll', () => {
   const spelled = withBlocks({ amount_in_words: true })
 
@@ -134,9 +167,7 @@ describe('the amount in words on the roll', () => {
 
   it('wraps inside the narrow roll rather than running off it', () => {
     const narrow: DocFormat = { ...spelled, paper: 'thermal_58' }
-    for (const line of visibleLines(buildReceipt(doc, narrow))) {
-      expect(line.length, `too wide for 58mm: "${line}"`).toBeLessThanOrEqual(rollColumns('thermal_58'))
-    }
+    expectFitsPaper(buildReceipt(doc, narrow), rollColumns('thermal_58'))
   })
 })
 
@@ -158,9 +189,7 @@ describe('the narrower roll', () => {
   const narrow: DocFormat = { ...STANDARD_RECEIPT, paper: 'thermal_58' }
 
   it('keeps every line inside 32 columns, where 42 would wrap and break the alignment', () => {
-    for (const line of visibleLines(buildReceipt(doc, narrow))) {
-      expect(line.length, `too wide for 58mm: "${line}"`).toBeLessThanOrEqual(rollColumns('thermal_58'))
-    }
+    expectFitsPaper(buildReceipt(doc, narrow), rollColumns('thermal_58'))
   })
 
   it('draws its rules to the narrower width, not the wider one', () => {

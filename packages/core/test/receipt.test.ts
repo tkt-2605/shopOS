@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { buildReceipt, visibleLines, WIDTH, type ReceiptDoc } from '../src/domain/receipt.js'
+import {
+  buildReceipt, visibleLines, previewLines, smallColumns, WIDTH, type ReceiptDoc,
+} from '../src/domain/receipt.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
 
@@ -31,11 +33,24 @@ const doc: ReceiptDoc = {
   pointsBalance: 198,
 }
 
+
+/**
+ * Every printed line inside the columns its own face allows.
+ *
+ * The small print is set in font B, which fits a third more characters than
+ * font A — so measuring it against the wide face's column count is measuring
+ * with the wrong ruler, and would pass a line the printer will not take.
+ */
+function expectFitsPaper(receipt: string, columns: number) {
+  for (const line of previewLines(receipt)) {
+    const limit = line.small ? smallColumns(columns) : columns
+    expect(line.text.length, `too wide for ${limit} columns: "${line.text}"`).toBeLessThanOrEqual(limit)
+  }
+}
+
 describe('receipt width', () => {
   it('never exceeds 42 columns — a 43rd character wraps and breaks every column', () => {
-    for (const line of visibleLines(buildReceipt(doc))) {
-      expect(line.length, `too wide: "${line}"`).toBeLessThanOrEqual(WIDTH)
-    }
+    expectFitsPaper(buildReceipt(doc), WIDTH)
   })
 
   it('holds 42 columns even with a very long product name', () => {
@@ -46,16 +61,12 @@ describe('receipt width', () => {
         qty: fromUnits(3), saleUnit: 'piece', rate: rupees(245), lineTotal: rupees(735),
       }],
     }
-    for (const line of visibleLines(buildReceipt(long))) {
-      expect(line.length).toBeLessThanOrEqual(WIDTH)
-    }
+    expectFitsPaper(buildReceipt(long), WIDTH)
   })
 
   it('holds 42 columns on a large total', () => {
     const big = { ...doc, grandTotal: rupees(9_99_999.99), subtotal: rupees(9_99_999.99) }
-    for (const line of visibleLines(buildReceipt(big))) {
-      expect(line.length).toBeLessThanOrEqual(WIDTH)
-    }
+    expectFitsPaper(buildReceipt(big), WIDTH)
   })
 
   it('draws separator rules at exactly the full width', () => {

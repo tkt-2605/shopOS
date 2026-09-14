@@ -251,7 +251,12 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     case 'terms':
       return [
         LF, ALIGN_CENTER, MODE_SMALL,
-        wrap(doc.footer ?? DEFAULT_FOOTER, width),
+        /* Measured in font B's columns, not font A's. This block is the only
+           one that switches the printer to the condensed face, and wrapping it
+           against the wide face broke the sentence a third of the way early —
+           two ragged lines where one and a bit would do, and the ragged edge
+           reads as a centring fault rather than as the wrong ruler. */
+        wrap(doc.footer ?? DEFAULT_FOOTER, smallColumns(width)),
         MODE_NORMAL, ALIGN_LEFT,
       ].join('')
 
@@ -426,6 +431,16 @@ function rule(ch = '-', width = WIDTH): string {
 function kv(left: string, right: string, width = WIDTH): string {
   const gap = Math.max(1, width - left.length - right.length)
   return `${left}${' '.repeat(gap)}${right}${LF}`
+}
+
+/**
+ * How many characters fit on a line of the condensed face.
+ *
+ * Font B is 9 dots wide where font A is 12, so it fits a third more: 56 columns
+ * on an 80mm roll against 42, and 42 on a 58mm roll against 32.
+ */
+export function smallColumns(width: number): number {
+  return Math.floor((width * 4) / 3)
 }
 
 function cut(text: string, max: number): string {

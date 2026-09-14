@@ -61,6 +61,77 @@ const FONT_MONO: &str = "F3";
 /// Courier is metrically fixed at 0.6 em; that is the whole reason figures use it.
 const MONO_EM: f64 = 0.6;
 
+/// Helvetica advance widths in 1/1000 em, ASCII 32..=126, from the Adobe metrics.
+///
+/// Carried because a left-aligned cell has to know when it has run out of
+/// column. Without it every long value was simply drawn past its own column and
+/// over the top of the next one — a statement whose document numbers sat across
+/// the description beside them, which is what a reader sees as a broken page
+/// rather than as a missing width table.
+const HELVETICA_W: [u16; 95] = [
+    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+    556, 556, 556, 556, 556, 556, 556, 556, 556, 556,
+    278, 278, 584, 584, 584, 556, 1015,
+    667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667,
+    778, 722, 667, 611, 722, 667, 944, 667, 667, 611,
+    278, 278, 278, 469, 556, 333,
+    556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556,
+    556, 333, 500, 278, 556, 500, 722, 500, 500, 500,
+    334, 260, 334, 584,
+];
+
+const HELVETICA_BOLD_W: [u16; 95] = [
+    278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278,
+    556, 556, 556, 556, 556, 556, 556, 556, 556, 556,
+    333, 333, 584, 584, 584, 611, 975,
+    722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667,
+    778, 722, 667, 611, 722, 667, 944, 667, 667, 611,
+    333, 278, 333, 584, 556, 333,
+    556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611,
+    611, 389, 556, 333, 611, 556, 778, 556, 556, 500,
+    389, 280, 389, 584,
+];
+
+/// How wide this string sets, in points.
+fn text_width(font: &str, size: f64, s: &str) -> f64 {
+    if font == FONT_MONO {
+        return s.chars().count() as f64 * size * MONO_EM;
+    }
+    let table = if font == FONT_BOLD { &HELVETICA_BOLD_W } else { &HELVETICA_W };
+    let mils: f64 = s
+        .chars()
+        .map(|c| {
+            let i = c as usize;
+            // Anything outside printable ASCII is charged the common width; the
+            // encoding is WinAnsi and the shop's own text is Latin either way.
+            if (32..=126).contains(&i) { table[i - 32] as f64 } else { 556.0 }
+        })
+        .sum();
+    mils * size / 1000.0
+}
+
+/// The string cut to the room it has, with an ellipsis so nobody reads a
+/// truncated document number as a whole one.
+fn fit(font: &str, size: f64, s: &str, max: f64) -> String {
+    if max <= 0.0 || text_width(font, size, s) <= max {
+        return s.to_string();
+    }
+    let tail = "...";
+    let tail_w = text_width(font, size, tail);
+    let mut out = String::new();
+    let mut used = 0.0;
+    for c in s.chars() {
+        let w = text_width(font, size, c.encode_utf8(&mut [0u8; 4]));
+        if used + w + tail_w > max {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push_str(tail);
+    out
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Column {
@@ -185,7 +256,7 @@ pub fn render(doc: &PdfDoc) -> Vec<u8> {
             if col.align_right {
                 page.text_right(8.5, x + w - 3.0, y, &col.label);
             } else {
-                page.text(FONT_BOLD, 8.5, x, y, &col.label);
+                page.text(FONT_BOLD, 8.5, x, y, &fit(FONT_BOLD, 8.5, &col.label, w - 4.0));
             }
         }
         page.line(MARGIN, y - 4.0, PAGE_W - MARGIN, 0.7);
@@ -213,7 +284,10 @@ pub fn render(doc: &PdfDoc) -> Vec<u8> {
             if doc.columns[i].align_right {
                 page.text_right(9.0, x + w - 3.0, y, cell);
             } else {
-                page.text(if bold { FONT_BOLD } else { FONT_REGULAR }, 9.0, x, y, cell);
+                let font = if bold { FONT_BOLD } else { FONT_REGULAR };
+                // Four points of gutter, so two columns never touch even when
+                // one of them is full.
+                page.text(font, 9.0, x, y, &fit(font, 9.0, cell, w - 4.0));
             }
         }
         y -= 13.5;
@@ -369,6 +443,33 @@ mod tests {
             totals: vec![("Balance due".into(), "3,400.00".into())],
             footer: Some("Please check and tell us at once if anything here is wrong.".into()),
         }
+    }
+
+    #[test]
+    fn measures_a_proportional_string_rather_than_counting_its_characters() {
+        // "MMM" and "iii" are the same three characters and nothing like the
+        // same width; a column that assumed otherwise is what put document
+        // numbers across the description beside them.
+        assert!(text_width(FONT_REGULAR, 9.0, "MMM") > text_width(FONT_REGULAR, 9.0, "iii") * 3.0);
+        // Courier stays exact, which is why figures are set in it.
+        assert_eq!(text_width(FONT_MONO, 10.0, "1234"), 4.0 * 10.0 * MONO_EM);
+    }
+
+    #[test]
+    fn cuts_a_cell_that_will_not_fit_rather_than_drawing_over_the_next_column() {
+        let long = "INV/MR/26-27/00016";
+        let room = text_width(FONT_REGULAR, 9.0, long) / 2.0;
+        let cut = fit(FONT_REGULAR, 9.0, long, room);
+
+        assert!(cut.ends_with("..."));
+        assert!(text_width(FONT_REGULAR, 9.0, &cut) <= room);
+    }
+
+    #[test]
+    fn leaves_a_cell_that_fits_exactly_as_it_was() {
+        let s = "2026-09-14";
+        let room = text_width(FONT_REGULAR, 9.0, s) + 1.0;
+        assert_eq!(fit(FONT_REGULAR, 9.0, s, room), s);
     }
 
     #[test]
