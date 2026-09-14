@@ -327,6 +327,38 @@ describe('finding documents again', () => {
     expect(await listDocuments(fx.db, { search: 'nobody' })).toHaveLength(0)
   })
 
+  it('finds a draft when the draft is what is being looked for', async () => {
+    // A quotation started while the customer is on the phone and finished
+    // after somebody has checked a price has to be findable in between.
+    await createDocument(fx.db, {
+      kind: 'quotation', registerId: fx.seed.registerId, customerId,
+      lines: [{ productId, qty: fromUnits(1) }], actorId: fx.adminId,
+    })
+
+    expect(await listDocuments(fx.db, { status: 'draft' })).toHaveLength(1)
+    expect(await listDocuments(fx.db, { status: 'issued' })).toHaveLength(0)
+  })
+
+  it('lists a cancelled document only when cancelled ones are asked for', async () => {
+    const made = await quote()
+    await cancelDocument(fx.db, {
+      documentId: made.documentId, reason: 'The school went elsewhere', actorId: fx.adminId,
+    })
+
+    expect(await listDocuments(fx.db, {})).toHaveLength(0)
+    expect(await listDocuments(fx.db, { status: 'cancelled' })).toHaveLength(1)
+  })
+
+  it('shows every state at once when asked for all of them', async () => {
+    await quote()
+    await createDocument(fx.db, {
+      kind: 'quotation', registerId: fx.seed.registerId, customerId,
+      lines: [{ productId, qty: fromUnits(1) }], actorId: fx.adminId,
+    })
+
+    expect(await listDocuments(fx.db, { status: 'all' })).toHaveLength(2)
+  })
+
   it('shows what is left on each line', async () => {
     const po = await purchaseOrder(20)
     const doc = await loadDocument(fx.db, po.documentId)

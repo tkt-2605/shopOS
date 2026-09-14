@@ -116,7 +116,8 @@ export {
 export type { Register, RegisterResult } from './services/registers.js'
 
 export * as Receipt from './domain/receipt.js'
-export type { ReceiptDoc, ReceiptItem, ReceiptShop, PreviewLine } from './domain/receipt.js'
+export type { ReceiptDoc, ReceiptItem, ReceiptShop, PreviewLine, DocWording } from './domain/receipt.js'
+export { BILL_WORDING } from './domain/receipt.js'
 export { buildInvoiceHtml } from './domain/invoiceHtml.js'
 export type { InvoiceHtmlOptions } from './domain/invoiceHtml.js'
 
@@ -214,7 +215,7 @@ export {
 export type {
   DocumentKind, DocumentLineInput, CreateDocumentInput, CreateDocumentResult,
   SubmitDocumentResult, CancelDocumentResult,
-  DocumentListItem, DocumentFilter, DocumentDetail, DocumentItemRow,
+  DocumentListItem, DocumentFilter, DocumentDetail, DocumentItemRow, DocumentStatus,
 } from './services/documents.js'
 
 export { quotationToSalesOrder, receivePurchaseOrder } from './services/convert.js'

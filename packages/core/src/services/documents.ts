@@ -282,8 +282,19 @@ export interface DocumentListItem {
   progress: 'open' | 'part' | 'done'
 }
 
+/**
+ * Which documents a screen is asking for.
+ *
+ * A draft is a real state here in a way it is not for a bill: a quotation gets
+ * started while the customer is on the phone and finished after someone has
+ * checked a price, so it has to be findable in between. `issued` is the default
+ * because that is what a list of quotations usually means.
+ */
+export type DocumentStatus = 'draft' | 'issued' | 'cancelled' | 'all'
+
 export interface DocumentFilter {
   kind?: DocumentKind
+  status?: DocumentStatus
   from?: string
   to?: string
   search?: string
@@ -291,12 +302,23 @@ export interface DocumentFilter {
   offset?: number
 }
 
+const DOCSTATUS_OF: Record<Exclude<DocumentStatus, 'all'>, number> = {
+  draft: 0, issued: 1, cancelled: 2,
+}
+
 export async function listDocuments(
   db: SqlDriver,
   filter: DocumentFilter = {},
 ): Promise<DocumentListItem[]> {
-  const where: string[] = ['d.docstatus > 0']
+  // Seeded, because asking for everything with no other filter would otherwise
+  // leave a bare WHERE.
+  const where: string[] = ['1 = 1']
   const params: (string | number)[] = []
+
+  // Unasked, the list is what has been issued — not drafts, which are somebody
+  // midway through a job, and not cancelled ones.
+  const status = filter.status ?? 'issued'
+  if (status !== 'all') { where.push('d.docstatus = ?'); params.push(DOCSTATUS_OF[status]) }
 
   if (filter.kind) { where.push('d.kind = ?'); params.push(filter.kind) }
   if (filter.from) { where.push('d.posting_date >= ?'); params.push(filter.from) }

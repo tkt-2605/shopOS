@@ -9,13 +9,18 @@ import type { SqlDriver } from '../db/driver.js'
 export const RESOURCES = [
   'bill', 'sales_return', 'payment', 'stock_entry', 'product', 'customer',
   'supplier', 'price_list', 'cash_session', 'user', 'role', 'report', 'settings',
+  /* Quotations, sales orders and purchase orders. Separate from `bill` on
+     purpose: a purchase order commits the shop's money to a supplier, and
+     somebody trusted to ring up a sale is not automatically somebody trusted to
+     do that. */
+  'document',
 ] as const
 export type Resource = (typeof RESOURCES)[number]
 
 export const PAGES = [
   'dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers',
   'customers', 'credit', 'cash_counter', 'pricing', 'registers', 'reports', 'audit', 'users', 'roles', 'settings',
-  'formats',
+  'formats', 'orders', 'purchase_orders',
 ] as const
 export type Page = (typeof PAGES)[number]
 
@@ -134,10 +139,11 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
       supplier: fullPermissions(),
       price_list: fullPermissions(),
       cash_session: fullPermissions(),
+      document: fullPermissions(),
       report: { read: true },
       settings: { read: true },
     },
-    pages: ['dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers', 'customers', 'credit', 'cash_counter', 'pricing', 'registers', 'reports'],
+    pages: ['dashboard', 'billing', 'bills', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers', 'customers', 'credit', 'cash_counter', 'pricing', 'registers', 'reports', 'orders', 'purchase_orders'],
   },
   {
     name: 'Cashier',
@@ -164,8 +170,11 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
       product: { read: true, create: true, write: true },
       stock_entry: { read: true, create: true, write: true, submit: true },
       supplier: { read: true, create: true, write: true },
+      /* A stockist raises the purchase order for what the shelf is short of.
+         Nothing here lets them sell, and a purchase order moves no money. */
+      document: { read: true, create: true, write: true, submit: true },
       report: { read: true },
     },
-    pages: ['dashboard', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers', 'reports'],
+    pages: ['dashboard', 'inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers', 'reports', 'purchase_orders'],
   },
 ]

@@ -1,6 +1,7 @@
 import {
-  buildInvoiceHtml, formatFor, loadBillDetail, loadShopProfile, stateName,
+  buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadShopProfile, stateName,
   type SqlDriver, type ReceiptDoc, type ReceiptItem, type BillDetailItem,
+  type DocWording, type DocumentKind,
 } from '@shopos/core'
 import type { PrintResult } from './print'
 
@@ -29,6 +30,78 @@ export async function printBillSheet(db: SqlDriver, billId: string): Promise<Pri
   // The sheet the shop chose, which carries its own paper size with it.
   const format = await formatFor(db, { kind: 'bill', channel: 'sheet' })
   return printHtml(buildInvoiceHtml(doc, format, { autoPrint: true }))
+}
+
+/**
+ * What each kind of document calls itself on paper.
+ *
+ * A purchase order is the one that reads oddly until it is written down: the
+ * party named on it is the supplier, and the shop is the one who will be
+ * billed, so "Billed to" would name the wrong side of the deal.
+ */
+const WORDING: Record<DocumentKind, DocWording> = {
+  quotation: {
+    title: 'Quotation', docNo: 'Quotation no.', party: 'Quoted to', by: 'Raised by',
+  },
+  sales_order: {
+    title: 'Sales Order', docNo: 'Order no.', party: 'Ordered by', by: 'Raised by',
+  },
+  purchase_order: {
+    title: 'Purchase Order', docNo: 'Order no.', party: 'Ordered from', by: 'Raised by',
+  },
+}
+
+/**
+ * A quotation, a sales order or a purchase order, on a sheet.
+ *
+ * Always a sheet and never the roll: these are handed to a customer or emailed
+ * to a supplier, and a 42-column slip of thermal paper that fades in a year is
+ * not what either expects. There is no thermal equivalent and there is
+ * deliberately no button offering one.
+ */
+export async function printDocumentSheet(db: SqlDriver, documentId: string): Promise<PrintResult> {
+  const doc = await loadDocument(db, documentId)
+  if (!doc) return { ok: false, message: 'That document could not be found.' }
+
+  const shop = await loadShopProfile(db)
+  const format = await formatFor(db, { kind: doc.kind, channel: 'sheet' })
+
+  const sheet: ReceiptDoc = {
+    shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin },
+    docNo: doc.docNo,
+    postingDate: doc.postingDate,
+    cashier: doc.createdBy,
+    customerName: doc.partyName,
+    items: doc.items.map((i): ReceiptItem => ({
+      name: i.productName,
+      qty: i.qty,
+      saleUnit: i.saleUnit,
+      rate: i.rate,
+      lineTotal: i.lineTotal,
+      hsnCode: i.hsnCode,
+      taxableValue: i.taxableValue,
+      cgst: i.cgst,
+      sgst: i.sgst,
+      igst: i.igst,
+    })),
+    subtotal: doc.subtotal,
+    discount: doc.discount,
+    taxableTotal: doc.taxableTotal,
+    cgst: doc.items.reduce((t, i) => t + i.cgst, 0) as never,
+    sgst: doc.items.reduce((t, i) => t + i.sgst, 0) as never,
+    igst: doc.items.reduce((t, i) => t + i.igst, 0) as never,
+    grandTotal: doc.grandTotal,
+    /* Nothing has been paid. The block is left in the format and renders as
+       nothing, rather than the format needing a separate copy without it. */
+    payments: [],
+    validUntil: doc.validUntil,
+    notes: doc.notes,
+    terms: doc.terms ?? shop.terms,
+    placeOfSupply: shop.stateCode ? stateName(shop.stateCode) : null,
+    wording: WORDING[doc.kind],
+  }
+
+  return printHtml(buildInvoiceHtml(sheet, format, { autoPrint: true }))
 }
 
 /**

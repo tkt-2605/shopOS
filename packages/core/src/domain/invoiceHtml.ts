@@ -1,6 +1,6 @@
 import { format as fmtMoney } from '../money.js'
 import { formatQty } from '../quantity.js'
-import type { ReceiptDoc, ReceiptItem } from './receipt.js'
+import { BILL_WORDING, type DocWording, type ReceiptDoc, type ReceiptItem } from './receipt.js'
 import { fillTokens, PAPER, type Block, type DocFormat, type Facts } from './docFormat.js'
 
 /**
@@ -73,22 +73,25 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
       </header>`
 
     case 'title': {
-      const label = block.opts?.label?.trim()
+      /* A document that knows what it is outranks the wording the shop chose,
+         which was chosen for its bills. A bill carries no wording and keeps it. */
+      const label = doc.wording?.title ?? block.opts?.label?.trim()
       return label ? `<h1 class="title">${esc(label)}</h1>` : ''
     }
 
     case 'meta':
       return `<table class="meta"><tbody>
-        <tr><th>Invoice no.</th><td>${esc(doc.docNo)}</td></tr>
+        <tr><th>${esc(wordsFor(doc).docNo)}</th><td>${esc(doc.docNo)}</td></tr>
         <tr><th>Date</th><td>${esc(formatDate(doc.postingDate))}</td></tr>
+        ${doc.validUntil ? `<tr><th>Valid until</th><td>${esc(formatDate(doc.validUntil))}</td></tr>` : ''}
         ${doc.placeOfSupply ? `<tr><th>Place of supply</th><td>${esc(doc.placeOfSupply)}</td></tr>` : ''}
-        ${doc.cashier ? `<tr><th>Billed by</th><td>${esc(doc.cashier)}</td></tr>` : ''}
+        ${doc.cashier ? `<tr><th>${esc(wordsFor(doc).by)}</th><td>${esc(doc.cashier)}</td></tr>` : ''}
       </tbody></table>`
 
     case 'party': {
       if (!doc.customerName) return ''
       return `<section class="party">
-        <div class="party-label">Billed to</div>
+        <div class="party-label">${esc(wordsFor(doc).party)}</div>
         <div class="party-name">${esc(doc.customerName)}</div>
         ${line(doc.customerAddress)}
         ${doc.customerGstin ? line(`GSTIN ${doc.customerGstin}`) : ''}
@@ -341,4 +344,9 @@ function styles(pageSize: string, preview: boolean): string {
     .sign-rule { margin-top: 40px; border-top: 1px solid #111; }
     .sign-label { margin-top: 3px; font-size: 8.5pt; color: #555; }
   `
+}
+
+/** What this kind of document calls its number, its party and its author. */
+function wordsFor(doc: ReceiptDoc): DocWording {
+  return doc.wording ?? BILL_WORDING
 }

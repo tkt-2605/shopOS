@@ -91,6 +91,40 @@ export interface ReceiptDoc {
   customerGstin?: string | null
   placeOfSupply?: string | null
   terms?: string | null
+
+  /** After this date a quoted price is no longer the shop's promise. */
+  validUntil?: string | null
+  notes?: string | null
+
+  /**
+   * What this document calls itself. Left out, it calls itself a bill, which is
+   * what every caller before documents existed meant.
+   */
+  wording?: DocWording
+}
+
+/**
+ * The handful of words that differ between one kind of document and another.
+ *
+ * A quotation printed under "Invoice no." and "Billed to" says something untrue
+ * about itself, and a purchase order says it twice over — the party named on it
+ * is the supplier, and the shop is the one that will be billed. This travels
+ * with the document and not with the format, because the shop chooses its
+ * format and does not get to choose what a purchase order is.
+ */
+export interface DocWording {
+  /** Across the head of the sheet: TAX INVOICE, QUOTATION, PURCHASE ORDER. */
+  title: string
+  /** Beside the number: "Invoice no.", "Quotation no.". */
+  docNo: string
+  /** On the party box: "Billed to", "Ordered from". */
+  party: string
+  /** On whoever raised it: "Billed by", "Raised by". */
+  by: string
+}
+
+export const BILL_WORDING: DocWording = {
+  title: 'Tax Invoice', docNo: 'Invoice no.', party: 'Billed to', by: 'Billed by',
 }
 
 /**

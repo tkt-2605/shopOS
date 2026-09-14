@@ -1,6 +1,7 @@
 import type { SqlDriver } from '../db/driver.js'
-import { ROLE_TEMPLATES, PAGES } from '../integrity/permissions.js'
+import { ROLE_TEMPLATES, PAGES, RESOURCES, type Resource, type ResourcePermissions } from '../integrity/permissions.js'
 import { backfillCustomerCodes } from './customers.js'
+import { newId } from '../ids.js'
 
 /**
  * What a new version of ShopOS has to do to a shop that is already running.
@@ -25,7 +26,8 @@ export async function applyUpgrades(db: SqlDriver): Promise<{ pagesGranted: stri
 
   await db.transaction(async (tx) => {
     const newPages = await pagesNotYetKnown(tx)
-    if (newPages.size === 0) return
+    const newResources = await resourcesNotYetKnown(tx)
+    if (newPages.size === 0 && newResources.size === 0) return
 
     for (const template of ROLE_TEMPLATES) {
       const role = await tx.get<{ id: string }>(`SELECT id FROM roles WHERE name = ?`, [template.name])
@@ -34,6 +36,11 @@ export async function applyUpgrades(db: SqlDriver): Promise<{ pagesGranted: stri
       const pages = template.pages.filter((p) => newPages.has(p))
       await grantPages(tx, role.id, pages)
       granted.push(...pages)
+
+      for (const resource of newResources) {
+        const allowed = template.resources[resource as Resource]
+        if (allowed) await grantResource(tx, role.id, resource, allowed)
+      }
     }
   })
 
@@ -52,6 +59,45 @@ export async function pagesNotYetKnown(tx: SqlDriver): Promise<Set<string>> {
   const seen = await tx.query<{ page_key: string }>(`SELECT DISTINCT page_key FROM role_pages`)
   const known = new Set(seen.map((r) => r.page_key))
   return new Set(PAGES.filter((p) => !known.has(p)))
+}
+
+/**
+ * The same idea for what a role may *do*, not only what it may see.
+ *
+ * A version that adds a resource — quotations and purchase orders added
+ * `document` — leaves every existing role with no row for it, and a missing row
+ * reads as "not permitted". Without this the owner of a shop that has been
+ * running for a year would find the new screen granted and every button on it
+ * refused.
+ *
+ * Read once and across all roles, for the reason `pagesNotYetKnown` is: the
+ * first grant makes the resource known, so asking per role would give it to
+ * whichever role was looked at first and to nobody else.
+ */
+export async function resourcesNotYetKnown(tx: SqlDriver): Promise<Set<string>> {
+  const seen = await tx.query<{ resource: string }>(`SELECT DISTINCT resource FROM role_permissions`)
+  const known = new Set(seen.map((r) => r.resource))
+  return new Set(RESOURCES.filter((r) => !known.has(r)))
+}
+
+export async function grantResource(
+  tx: SqlDriver,
+  roleId: string,
+  resource: string,
+  allowed: Partial<ResourcePermissions>,
+): Promise<void> {
+  await tx.execute(
+    `INSERT INTO role_permissions
+       (id, role_id, resource, can_read, can_create, can_write, can_delete, can_submit, can_cancel, can_amend)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (role_id, resource) DO NOTHING`,
+    [
+      newId(), roleId, resource,
+      allowed.read ? 1 : 0, allowed.create ? 1 : 0, allowed.write ? 1 : 0,
+      allowed.delete ? 1 : 0, allowed.submit ? 1 : 0, allowed.cancel ? 1 : 0,
+      allowed.amend ? 1 : 0,
+    ],
+  )
 }
 
 export async function grantPages(tx: SqlDriver, roleId: string, pages: readonly string[]): Promise<void> {

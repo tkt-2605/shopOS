@@ -56,3 +56,63 @@ describe('applying an upgrade to a running shop', () => {
     expect(row).toBeUndefined()
   })
 })
+
+describe('a version that adds something a role may do', () => {
+  /**
+   * Quotations and purchase orders added a `document` resource. A role with no
+   * row for a resource is refused it, so without this an owner whose shop has
+   * been running for a year would be given the new screen and then refused
+   * every button on it.
+   */
+
+  it('grants a resource the shop has never seen, to the roles whose template names it', async () => {
+    const { db, seed } = await freshDb()
+    await db.execute(`DELETE FROM role_permissions WHERE resource = 'document'`)
+
+    await applyUpgrades(db)
+
+    expect((await loadRoleMatrix(db, seed.roleIds['Admin']!))!.resources.document!.create).toBe(true)
+    expect((await loadRoleMatrix(db, seed.roleIds['Stockist']!))!.resources.document!.submit).toBe(true)
+  })
+
+  it('does not give it to a role whose template is silent about it', async () => {
+    // A cashier rings up sales. Committing the shop's money to a supplier is a
+    // different job and the owner ticks the box if they want it done.
+    const { db, seed } = await freshDb()
+    await db.execute(`DELETE FROM role_permissions WHERE resource = 'document'`)
+
+    await applyUpgrades(db)
+
+    const cashier = (await loadRoleMatrix(db, seed.roleIds['Cashier']!))!
+    expect(cashier.resources.document?.create ?? false).toBe(false)
+  })
+
+  it('leaves a permission the owner took away taken away', async () => {
+    const { db, seed, adminId } = await freshDb()
+    const admin = (await loadRoleMatrix(db, seed.roleIds['Admin']!))!
+    admin.resources.document = {
+      read: true, create: false, write: false, delete: false,
+      submit: false, cancel: false, amend: false,
+    }
+    await saveRoleMatrix(db, {
+      roleId: admin.id, resources: admin.resources, pages: admin.pages, actorId: adminId,
+    })
+
+    await applyUpgrades(db)
+
+    expect((await loadRoleMatrix(db, seed.roleIds['Admin']!))!.resources.document!.create).toBe(false)
+  })
+
+  it('is safe to run twice', async () => {
+    const { db, seed } = await freshDb()
+    await db.execute(`DELETE FROM role_permissions WHERE resource = 'document'`)
+    await applyUpgrades(db)
+    await applyUpgrades(db)
+
+    const rows = await db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM role_permissions WHERE role_id = ? AND resource = 'document'`,
+      [seed.roleIds['Admin']!],
+    )
+    expect(rows[0]!.n).toBe(1)
+  })
+})

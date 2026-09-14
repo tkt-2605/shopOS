@@ -24,6 +24,7 @@ const RESOURCE_LABELS: Record<Resource, { name: string; note: string }> = {
   role: { name: 'Roles', note: 'This screen' },
   report: { name: 'Reports', note: 'Sales and tax figures' },
   settings: { name: 'Settings', note: 'Shop-wide configuration' },
+  document: { name: 'Orders & quotations', note: 'Quotations, sales orders, purchase orders' },
 }
 
 const CAPABILITY_LABELS: Record<Capability, string> = {
@@ -37,8 +38,8 @@ const CAPABILITY_LABELS: Record<Capability, string> = {
 }
 
 const PAGE_GROUPS: { label: string; pages: Page[] }[] = [
-  { label: 'Sell', pages: ['billing', 'bills', 'customers'] },
-  { label: 'Stock', pages: ['inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers'] },
+  { label: 'Sell', pages: ['billing', 'bills', 'orders', 'customers'] },
+  { label: 'Stock', pages: ['inventory', 'stock_in', 'stock_count', 'reorder', 'purchase_orders', 'suppliers'] },
   { label: 'Money', pages: ['credit', 'cash_counter'] },
   { label: 'Review', pages: ['dashboard', 'reports', 'audit'] },
   { label: 'Setup', pages: ['pricing', 'registers', 'users', 'roles', 'formats', 'settings'] },
@@ -57,6 +58,8 @@ const PAGE_LABELS: Record<Page, string> = {
   credit: 'Credit',
   cash_counter: 'Cash Counter',
   pricing: 'Prices',
+  orders: 'Quotations & Orders',
+  purchase_orders: 'Purchase Orders',
   registers: 'Counters',
   reports: 'Reports',
   audit: 'History',
