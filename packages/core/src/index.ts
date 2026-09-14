@@ -34,7 +34,7 @@ export { bootstrap, setSetting, getSetting, forgetSetting } from './services/boo
 export { moveSettingsToDevice, type DeviceStore, type MoveResult } from './services/deviceSettings.js'
 export {
   changesSince, feedHead, pendingCount, applyingRemote, isApplyingRemote,
-  resetSyncState, pruneFeed, type Change, type ChangeOp,
+  resetSyncState, pruneFeed, seedFeedWithEverything, type Change, type ChangeOp,
 } from './services/changefeed.js'
 export type { BootstrapOptions, BootstrapResult } from './services/bootstrap.js'
 

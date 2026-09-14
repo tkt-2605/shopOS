@@ -3,6 +3,7 @@ import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { deviceId } from '../device.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import { applyBatch, changedHere, collectChanges } from './sync.js'
+import { seedFeedWithEverything } from './changefeed.js'
 import { getSetting } from './bootstrap.js'
 import {
   constantTimeEquals, mintPairingCode, mintSecret, verify,
@@ -132,6 +133,12 @@ async function handlePair(
      ON CONFLICT (device_id) DO UPDATE SET label = excluded.label, secret = excluded.secret`,
     [theirDevice, asked.label ?? null, secret, new Date(now).toISOString()],
   )
+
+  /* A till that has just joined has none of the shop, and the feed only holds
+     what has changed since migration 021 -- on a shop that had been selling for
+     a year, two rows. Without this, pairing succeeds, syncing succeeds, and
+     nothing arrives. */
+  await seedFeedWithEverything(db)
 
   return ok({
     secret,

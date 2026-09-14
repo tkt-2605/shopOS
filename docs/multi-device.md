@@ -419,6 +419,41 @@ Confusing those is how somebody pairs a till with itself. It says plainly that
 bills cross the network unencrypted, and when a sync drops somebody's edit it
 lists what was dropped rather than saying "done".
 
+**Three bugs that only a real shop's database could find.** The protocol was
+tested over real sockets and the listener had sixty tests, and pointing a second
+till at the actual app still broke immediately:
+
+1. **A batch was applied in feed order, which is not dependency order.** A
+   `users` row landing before its `roles` row failed on a foreign key, and since
+   the batch is one transaction, one such row failed the whole sync — the same
+   way, every time. `REPLICATED` is now in dependency order, checked against the
+   schema's own foreign keys by `replicaShape.test.ts`, and `applyBatch` turns on
+   `defer_foreign_keys` for the one genuine cycle (`loyalty_redemptions` points
+   at `loyalty_entries`, which points back at `bills`).
+
+   Worse than the bug: `sync.test.ts` had *accommodated* it. It synced twice with
+   a comment saying the register and the user "have to land first". The symptom
+   was seen, worked around, and called a test. It syncs once now.
+
+2. **A joining till got none of the shop.** The feed holds what has *changed* and
+   began empty at migration 021, so a shop a year into trading had two rows in it
+   and twenty products outside it. Pairing worked, syncing worked, nothing
+   arrived. `seedFeedWithEverything` now puts every replicated row into the feed
+   when a till pairs — in dependency order, so sequence numbers come out
+   parents-first, and without touching the rows, because raising every `rev` in
+   the shop would make that till look newer than every other one.
+
+3. **The port outlived the thing answering it.** The listener is in the Rust
+   process and the subscription is in the webview, and a reload ends one but not
+   the other — leaving a till listening with nobody behind it, every request
+   waiting the full minute for a 503, and the screen saying "Listening on
+   192.168.1.11". `resumeServing` re-attaches at startup.
+
+**Then it worked, against the real shop:** a second till paired with a typed
+code over the LAN and took 189 records in one round — 20 products, 6 customers,
+29 bills, 51 bill lines, the staff, the counter and the shop's own id — with
+nothing contested.
+
 **Still owed:** finding the other till without typing its address, and a
 scheduled catch-up rather than a button. Both are conveniences; neither changes
 what is true about the data.

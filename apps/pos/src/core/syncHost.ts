@@ -39,11 +39,7 @@ let listening: UnlistenFn | null = null
  * out against a webview that is not listening yet.
  */
 export async function startServing(db: SqlDriver, port = 7801): Promise<ServeInfo> {
-  if (listening === null) {
-    listening = await listen<Forwarded>('sync-request', (event) => {
-      void answer(db, event.payload)
-    })
-  }
+  await attend(db)
 
   try {
     return await invoke<ServeInfo>('sync_serve_start', { port })
@@ -52,6 +48,34 @@ export async function startServing(db: SqlDriver, port = 7801): Promise<ServeInf
     await stopServing()
     throw err
   }
+}
+
+/**
+ * Picks the port back up after the webview has reloaded underneath it.
+ *
+ * The listener lives in the Rust process and the subscription lives in the
+ * webview, and those two do not have the same lifetime. A reload — a refresh
+ * while developing, a webview that crashed and came back — leaves the port open
+ * with nobody behind it, and every request from the other till then waits the
+ * full minute and gets a 503. The screen would say "Listening on 192.168.1.11",
+ * the port would genuinely be open, and nothing would work: a switch that is on
+ * and does nothing, which is this product's own worst failure.
+ *
+ * Called at startup, so the window between a reload and the first request is as
+ * small as it can be.
+ */
+export async function resumeServing(db: SqlDriver): Promise<ServeInfo | null> {
+  const info = await servingOn()
+  if (info === null) return null
+  await attend(db)
+  return info
+}
+
+async function attend(db: SqlDriver): Promise<void> {
+  if (listening !== null) return
+  listening = await listen<Forwarded>('sync-request', (event) => {
+    void answer(db, event.payload)
+  })
 }
 
 export async function stopServing(): Promise<void> {

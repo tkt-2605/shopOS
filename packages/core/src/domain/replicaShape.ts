@@ -34,7 +34,21 @@ export interface RecordShape {
 }
 
 /**
- * Every table whose rows travel on their own.
+ * Every table whose rows travel on their own, **in dependency order**.
+ *
+ * The order is load-bearing, not tidiness. A batch is applied in the order it
+ * arrives, so a `users` row landing before the `roles` row it points at fails on
+ * a foreign key — and since the whole batch is one transaction, that one row
+ * fails the entire sync, identically, every time, for ever.
+ *
+ * That is not hypothetical. It is exactly what happened the first time two real
+ * tills were pointed at each other: `FOREIGN KEY constraint failed` on the first
+ * user. The in-process tests had not caught it because they synced twice and the
+ * second round happened to pick up what the first had dropped — a workaround
+ * written into a test, which is the most expensive kind of green.
+ *
+ * `replicaShape.test.ts` now checks this order against the schema's own foreign
+ * keys, so it cannot quietly stop being true when a table is added.
  *
  * `stock_ledger` and `loyalty_entries` carry no `rev` and do not need one: they
  * are append-only and never edited, so two tills cannot disagree about a row —
@@ -42,7 +56,37 @@ export interface RecordShape {
  * than a merge.
  */
 export const REPLICATED: readonly RecordShape[] = [
-  { table: 'attachments', key: 'id', lines: [] },
+  { table: 'settings', key: 'key', lines: [] },
+  {
+    table: 'roles',
+    key: 'id',
+    lines: [
+      { table: 'role_pages', parentKey: 'role_id' },
+      { table: 'role_permissions', parentKey: 'role_id' },
+    ],
+  },
+  { table: 'categories', key: 'id', lines: [] },
+  { table: 'price_lists', key: 'id', lines: [] },
+  { table: 'suppliers', key: 'id', lines: [] },
+  { table: 'doc_formats', key: 'id', lines: [] },
+  { table: 'registers', key: 'id', lines: [] },
+  { table: 'users', key: 'id', lines: [] },
+  { table: 'products', key: 'id', lines: [] },
+  { table: 'product_barcodes', key: 'id', lines: [] },
+  { table: 'product_units', key: 'id', lines: [] },
+  { table: 'customers', key: 'id', lines: [] },
+  { table: 'item_prices', key: 'id', lines: [] },
+  { table: 'customer_item_prices', key: 'id', lines: [] },
+  {
+    table: 'cash_sessions',
+    key: 'id',
+    lines: [{ table: 'cash_movements', parentKey: 'session_id' }],
+  },
+  {
+    table: 'documents',
+    key: 'id',
+    lines: [{ table: 'document_items', parentKey: 'document_id' }],
+  },
   {
     table: 'bills',
     key: 'id',
@@ -54,58 +98,28 @@ export const REPLICATED: readonly RecordShape[] = [
     ],
   },
   {
-    table: 'cash_sessions',
-    key: 'id',
-    lines: [{ table: 'cash_movements', parentKey: 'session_id' }],
-  },
-  { table: 'categories', key: 'id', lines: [] },
-  { table: 'customer_item_prices', key: 'id', lines: [] },
-  { table: 'customers', key: 'id', lines: [] },
-  { table: 'doc_formats', key: 'id', lines: [] },
-  {
-    table: 'documents',
-    key: 'id',
-    lines: [{ table: 'document_items', parentKey: 'document_id' }],
-  },
-  { table: 'item_prices', key: 'id', lines: [] },
-  { table: 'loyalty_entries', key: 'id', lines: [] },
-  {
     table: 'payment_entries',
     key: 'id',
     lines: [{ table: 'payment_allocations', parentKey: 'payment_id' }],
-  },
-  { table: 'price_lists', key: 'id', lines: [] },
-  { table: 'product_barcodes', key: 'id', lines: [] },
-  { table: 'product_units', key: 'id', lines: [] },
-  { table: 'products', key: 'id', lines: [] },
-  { table: 'registers', key: 'id', lines: [] },
-  {
-    table: 'roles',
-    key: 'id',
-    lines: [
-      { table: 'role_pages', parentKey: 'role_id' },
-      { table: 'role_permissions', parentKey: 'role_id' },
-    ],
   },
   {
     table: 'sales_returns',
     key: 'id',
     lines: [{ table: 'sales_return_items', parentKey: 'return_id' }],
   },
-  { table: 'settings', key: 'key', lines: [] },
-  {
-    table: 'stock_counts',
-    key: 'id',
-    lines: [{ table: 'stock_count_items', parentKey: 'count_id' }],
-  },
   {
     table: 'stock_entries',
     key: 'id',
     lines: [{ table: 'stock_entry_items', parentKey: 'entry_id' }],
   },
+  {
+    table: 'stock_counts',
+    key: 'id',
+    lines: [{ table: 'stock_count_items', parentKey: 'count_id' }],
+  },
   { table: 'stock_ledger', key: 'id', lines: [] },
-  { table: 'suppliers', key: 'id', lines: [] },
-  { table: 'users', key: 'id', lines: [] },
+  { table: 'loyalty_entries', key: 'id', lines: [] },
+  { table: 'attachments', key: 'id', lines: [] },
 ]
 
 const BY_TABLE = new Map(REPLICATED.map((r) => [r.table, r]))

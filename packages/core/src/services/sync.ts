@@ -280,6 +280,18 @@ export async function applyBatch(
     let applied = 0
     const contested: ContestedChange[] = []
 
+    /* Foreign keys are checked at COMMIT rather than per statement, for the rows
+       written inside this transaction only.
+
+       `REPLICATED` is in dependency order and the feed is seeded in that order,
+       so a batch normally arrives parents-first anyway. This is the safety net
+       for the cases that ordering cannot cover: a row whose parent changed in
+       the same batch and sorted after it, and `bills.amended_from`, which points
+       at another bill. Without it one such row fails the whole batch — every
+       time, in the same way, for ever. The check still happens; it happens once,
+       at the end, when the batch is whole. */
+    await tx.execute(`PRAGMA defer_foreign_keys = ON`)
+
     for (const record of batch.records) {
       const shape = shapeOf(record.table)
       if (shape === undefined) continue

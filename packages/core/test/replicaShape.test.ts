@@ -100,6 +100,67 @@ describe('the shape agrees with the schema', () => {
   })
 })
 
+describe('the order records are applied in', () => {
+  /* Applying a batch in the order it arrives means a `users` row landing before
+     the `roles` row it points at fails on a foreign key — and the whole batch is
+     one transaction, so one such row fails the entire sync, the same way, every
+     time. That is what happened the first time two real tills were pointed at
+     each other, and the in-process tests had missed it because they synced twice
+     and the second round picked up what the first had dropped. */
+
+  async function dependencies(table: string): Promise<string[]> {
+    const rows = await fx.db.query<{ table: string }>(`PRAGMA foreign_key_list("${table}")`)
+    return rows.map((r) => r.table).filter((t) => t !== table)
+  }
+
+  it('puts every table after the tables it points at', async () => {
+    const position = new Map(REPLICATED.map((r, i) => [r.table, i]))
+    const wrong: string[] = []
+
+    for (const record of REPLICATED) {
+      for (const parent of await dependencies(record.table)) {
+        const mine = position.get(record.table)!
+        const theirs = position.get(parent)
+        if (theirs !== undefined && theirs > mine) {
+          wrong.push(`${record.table} is applied before ${parent}, which it points at`)
+        }
+      }
+    }
+    expect(wrong).toEqual([])
+  })
+
+  /**
+   * The one dependency no ordering can satisfy, kept here by name.
+   *
+   * `loyalty_redemptions` is a line of a bill and points at `loyalty_entries`,
+   * which points back at `bills`. That is a genuine cycle in the schema, not a
+   * list in the wrong order, and it is why `applyBatch` turns on
+   * `defer_foreign_keys` — the check still happens, once, at the end, when the
+   * batch is whole.
+   *
+   * Written down rather than allowed for in general, so that a *new* cycle fails
+   * this test instead of being silently covered by the deferral.
+   */
+  const KNOWN_CYCLE = ['loyalty_redemptions needs loyalty_entries, applied after bills']
+
+  it('puts a line table after the record that owns it, bar one real cycle', async () => {
+    const position = new Map(REPLICATED.map((r, i) => [r.table, i]))
+    const wrong: string[] = []
+
+    for (const record of REPLICATED) {
+      for (const line of record.lines) {
+        for (const parent of await dependencies(line.table)) {
+          const theirs = position.get(parent)
+          if (theirs !== undefined && theirs > position.get(record.table)!) {
+            wrong.push(`${line.table} needs ${parent}, applied after ${record.table}`)
+          }
+        }
+      }
+    }
+    expect(wrong).toEqual(KNOWN_CYCLE)
+  })
+})
+
 describe('lines belong to exactly one record', () => {
   it('never lets two records claim the same line table', () => {
     /* A line table claimed twice would be deleted and rewritten by whichever

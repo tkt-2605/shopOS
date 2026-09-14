@@ -7,6 +7,7 @@ import {
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup } from './backup'
+import { resumeServing } from './syncHost'
 import {
   isFirstRun, firstRun, seedDemoData, applyUpgrades, login,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
@@ -190,6 +191,11 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 
         await loadRegister()
         await applyAppearance()
+
+        /* The port is held by Rust and the subscription by the webview, and a
+           reload ends one without ending the other. Left alone that is a till
+           listening with nobody behind it. */
+        void resumeServing(db).catch(() => undefined)
         setFeatures(await loadFeatures(db))
         setPolicy(await loadStockPolicy(db))
         setRound(await loadRounding(db))

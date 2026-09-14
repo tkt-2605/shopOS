@@ -1,4 +1,5 @@
 import type { SqlDriver } from '../db/driver.js'
+import { REPLICATED } from '../domain/replicaShape.js'
 
 /**
  * What has changed on this machine since another till last asked.
@@ -142,6 +143,48 @@ export async function isApplyingRemote(db: SqlDriver): Promise<boolean> {
  */
 export async function resetSyncState(db: SqlDriver): Promise<void> {
   await db.execute(`UPDATE sync_state SET applying = 0 WHERE id = 1`)
+}
+
+/**
+ * Puts the whole shop into the feed, so a till that has just joined receives it.
+ *
+ * The feed records what has *changed*, and it began empty at migration 021. A
+ * shop that had been selling for a year therefore had two rows in it and twenty
+ * products, six customers and twenty-nine bills outside it — so a new till
+ * pairing with that shop received the two rows and none of the shop. Pairing
+ * worked, syncing worked, and nothing arrived.
+ *
+ * Rather than a second protocol for first contact, the answer is to say that
+ * everything is new: one INSERT per replicated table, in dependency order, so
+ * the sequence numbers come out parents-first and a batch cannot carry a bill
+ * before the customer it belongs to.
+ *
+ * Every peer is behind these entries, not only the new one, so an existing till
+ * is sent the shop again. That is bandwidth on a LAN, once, when somebody adds a
+ * till — and applying a record identical to the one already held loses the
+ * tiebreak and writes nothing. The alternative is a feed per peer, which is the
+ * same data multiplied by the number of tills to save a few seconds once.
+ */
+export async function seedFeedWithEverything(db: SqlDriver): Promise<number> {
+  return db.transaction(async (tx) => {
+    let marked = 0
+    for (const shape of REPLICATED) {
+      /* Deliberately not inside `applyingRemote`, and deliberately not touching
+         the rows: these have not changed. A write to the rows themselves would
+         raise every `rev` in the shop and make this till look newer than every
+         other one, which is a lie that then wins every merge. */
+      const result = await tx.execute(
+        `INSERT INTO change_feed (table_name, row_id, op, at)
+         SELECT ?, "${shape.key}", 'upsert', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+           FROM "${shape.table}"
+          WHERE "${shape.key}" NOT IN (
+                SELECT row_id FROM change_feed WHERE table_name = ?)`,
+        [shape.table, shape.table],
+      )
+      marked += result.rowsAffected
+    }
+    return marked
+  })
 }
 
 /**

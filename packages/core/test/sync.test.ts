@@ -5,7 +5,7 @@ import {
 } from '../src/services/sync.js'
 import { setDeviceId, deviceId } from '../src/device.js'
 import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
-import { changesSince, feedHead } from '../src/services/changefeed.js'
+import { changesSince, feedHead, pruneFeed, seedFeedWithEverything } from '../src/services/changefeed.js'
 import { setSetting, getSetting } from '../src/services/bootstrap.js'
 import { createBill } from '../src/services/billing.js'
 import { fromUnits } from '../src/quantity.js'
@@ -183,8 +183,10 @@ describe('a bill travels whole', () => {
       return made.billId
     })
 
-    // Twice: the bill references a register and a user that have to land first.
-    await bothWays()
+    /* Once. This used to be twice, with a comment saying the register and the
+       user "have to land first" — which was a foreign-key ordering bug being
+       accommodated by the test rather than caught by it. One round must carry a
+       bill whole, or something is wrong. */
     await bothWays()
 
     const bill = await b.db.get<{ id: string }>(`SELECT id FROM bills WHERE id = ?`, [billId])
@@ -206,7 +208,6 @@ describe('a bill travels whole', () => {
       if (!made.ok) throw new Error(made.code)
       return made.billId
     })
-    await bothWays()
     await bothWays()
 
     // A second line on A only. B must end with two, not three.
@@ -236,7 +237,6 @@ describe('when both tills changed the same thing', () => {
   it('leaves them agreeing, whichever way it goes', async () => {
     const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
     await bothWays()
-    await bothWays()
 
     await as(a, () => a.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['From A', id]))
     await as(b, () => b.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['From B', id]))
@@ -252,7 +252,6 @@ describe('when both tills changed the same thing', () => {
 
   it('says an edit was dropped rather than dropping it quietly', async () => {
     const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
-    await bothWays()
     await bothWays()
 
     await as(a, () => a.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['From A', id]))
@@ -270,7 +269,6 @@ describe('when both tills changed the same thing', () => {
 
   it('does not cry conflict when one till was simply behind', async () => {
     const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
-    await bothWays()
     await bothWays()
 
     await as(a, () => a.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['Only A', id]))
@@ -353,6 +351,81 @@ describe('what must never happen', () => {
     // Higher on the receiving side would make it look newer than the machine
     // that wrote it, and the next round would send it back as an edit nobody made.
     expect(theirs?.rev).toBe(mine?.rev)
+  })
+})
+
+describe('a till joining a shop that was already selling', () => {
+  /* The feed holds what has *changed*, and it started empty at migration 021. A
+     shop a year into trading had two rows in its feed and twenty products, six
+     customers and twenty-nine bills outside it — so a new till paired, synced,
+     and received none of the shop. Pairing worked. Syncing worked. Nothing
+     arrived, and nothing said so. */
+
+  it('is sent the whole shop, not only what has changed lately', async () => {
+    const productId = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await as(a, async () => {
+      const made = await createBill(a.db, {
+        registerId: a.fx!.seed.registerId,
+        lines: [{ productId, qty: fromUnits(1) }],
+        actorId: a.fx!.adminId,
+      })
+      if (!made.ok) throw new Error(made.code)
+    })
+
+    // Everything settles, and then the feed is emptied — a shop that has been
+    // running for a year, with nothing left to say to anybody.
+    await pruneFeed(a.db, await feedHead(a.db))
+    expect(await changesSince(a.db, 0, 10)).toEqual([])
+
+    // A till joins now.
+    const marked = await as(a, () => seedFeedWithEverything(a.db))
+    expect(marked).toBeGreaterThan(0)
+    await bothWays()
+
+    for (const table of ['products', 'bills', 'bill_items', 'users', 'roles', 'registers']) {
+      const there = await b.db.query(`SELECT * FROM "${table}"`)
+      const here = await a.db.query(`SELECT * FROM "${table}"`)
+      expect(there.length, `${table} did not arrive`).toBe(here.length)
+    }
+  })
+
+  it('seeds parents before children, so nothing arrives orphaned', async () => {
+    await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await pruneFeed(a.db, await feedHead(a.db))
+    await as(a, () => seedFeedWithEverything(a.db))
+
+    const order = (await changesSince(a.db, 0, 10_000)).map((c) => c.table)
+    // A user cannot be offered before the role it points at.
+    expect(order.indexOf('roles')).toBeLessThan(order.indexOf('users'))
+    expect(order.indexOf('categories')).toBeLessThan(order.indexOf('products'))
+  })
+
+  it('does not offer the same row twice when run again', async () => {
+    await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await pruneFeed(a.db, await feedHead(a.db))
+
+    await as(a, () => seedFeedWithEverything(a.db))
+    const first = (await changesSince(a.db, 0, 10_000)).length
+    // A second till joins later; the first till's entries are still pending.
+    expect(await as(a, () => seedFeedWithEverything(a.db))).toBe(0)
+    expect((await changesSince(a.db, 0, 10_000)).length).toBe(first)
+  })
+
+  it('never raises a revision, because nothing actually changed', async () => {
+    const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    const before = await a.db.get<{ rev: number }>(
+      `SELECT rev FROM products WHERE id = ?`, [id],
+    )
+
+    await as(a, () => seedFeedWithEverything(a.db))
+
+    /* Touching the rows would have been the easy way to fill the feed, and it
+       would have made this till look newer than every other one — a lie that
+       then wins every merge it is in. */
+    const after = await a.db.get<{ rev: number }>(
+      `SELECT rev FROM products WHERE id = ?`, [id],
+    )
+    expect(after?.rev).toBe(before?.rev)
   })
 })
 
