@@ -8,6 +8,7 @@ import {
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup } from './backup'
 import { resumeServing } from './syncHost'
+import { startSyncLoop, stopSyncLoop } from './syncLoop'
 import {
   isFirstRun, firstRun, seedDemoData, applyUpgrades, login,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
@@ -196,6 +197,11 @@ export function CoreProvider({ children }: { children: ReactNode }) {
            reload ends one without ending the other. Left alone that is a till
            listening with nobody behind it. */
         void resumeServing(db).catch(() => undefined)
+
+        /* Catching up on its own, because nobody presses a button every ninety
+           seconds all day. Does nothing at all until a shop has paired, which
+           is most shops. */
+        startSyncLoop(db)
         setFeatures(await loadFeatures(db))
         setPolicy(await loadStockPolicy(db))
         setRound(await loadRounding(db))
@@ -213,6 +219,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true
+      stopSyncLoop()
     }
   }, [])
 

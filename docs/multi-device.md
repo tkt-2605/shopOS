@@ -488,8 +488,46 @@ Checked both ways against the real app: silent with sync off; found at
 ignored; and the app's own **Find tills** button listing another till and filling
 in its address.
 
-**Still owed:** a scheduled catch-up rather than a button. A convenience; it
-changes nothing about what is true of the data.
+**Phase 3 — the catch-up, and what a person sees. Built (migration 026).**
+
+A button is honest and it is not enough. The point of two tills is that a bill
+rung up at the front counter is on the back one before anybody goes looking, and
+nobody presses "catch up now" every ninety seconds all day. `core/syncLoop.ts`
+runs a round every 45 seconds, and it is careful about four things:
+
+- **It backs off a till that is not there.** A counter switched off at four
+  would otherwise be dialled every 45 seconds until closing. Each peer has its
+  own wait, doubling to ten minutes, reset the moment it answers. A *refusal* —
+  a schema mismatch — does not back off: that is fixed by updating a till, and
+  until somebody does, saying so every round is the right amount of noise.
+- **It never overlaps itself**, because two syncs with one peer fight over the
+  same cursors.
+- **It is the same code the button runs.** A "catch up now" that took its own
+  path would be a second implementation to keep in step, and the one people
+  press least would be the one that rots.
+- **It does nothing at all until a shop has paired**, which is most shops.
+
+Once nobody is watching, the failures that matter are the ones nothing
+interrupts: the other till switched off at four and nobody notices until Friday;
+two people changed one price and one of those changes is gone. So:
+
+**`sync_conflicts` records where an edit was dropped.** Written inside the same
+transaction that applies the batch, so a merge that rolls back cannot leave a
+complaint about a change it did not make. It is a record and not a queue —
+nothing retries it and nothing repairs it, and the only thing to be done is for
+a person to look and decide whether it mattered. Acknowledged rather than
+deleted: what the two tills disagreed about is worth having afterwards.
+
+**`last_error` and `last_tried_at` on `sync_peers`** separate the two states that
+look identical at a glance: a till that agreed at four and has been unreachable
+since five past, and one that agreed at four and has had nothing to say since.
+The screen shows *talking* or *not answering*, how long ago they last agreed, and
+how much is still queued — in words (“four minutes ago”) rather than a clock
+time, because a person at a counter mid-queue will not do the subtraction.
+
+**Still owed:** the oversell list — two tills each selling the last one. The
+policy answer already exists (`stock_policy`), and what is missing is the screen
+that names which items it happened to.
 
 **Phase 2d — discovery.** The host advertises itself on the LAN; a till pairs
 with it once. A small HTTP server on the Rust side, no cloud, no account, no

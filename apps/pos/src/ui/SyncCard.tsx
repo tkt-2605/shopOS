@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  syncUntilDone, httpTransport, pairWith, pairedPeers, listPeers,
-  offerPairing, withdrawPairing, pruneAcknowledged,
-  SyncHttpError, getSetting, type ContestedChange,
+  httpTransport, pairWith, listPeers,
+  offerPairing, withdrawPairing,
+  recentConflicts, acknowledgeConflicts,
+  SyncHttpError, getSetting,
+  type PeerHealth, type RecordedConflict,
 } from '@shopos/core'
+import { runOnce, onSyncRound } from '../core/syncLoop'
 import {
   startServing, stopServing, servingOn, lookAround,
   type ServeInfo, type FoundTill,
@@ -27,12 +30,12 @@ export function SyncCard() {
   const { db, shop } = useCore()
   const [serving, setServing] = useState<ServeInfo | null>(null)
   const [code, setCode] = useState<string | null>(null)
-  const [peers, setPeers] = useState<Array<{ deviceId: string; label: string | null; lastAgreedAt: string | null }>>([])
+  const [peers, setPeers] = useState<PeerHealth[]>([])
+  const [conflicts, setConflicts] = useState<RecordedConflict[]>([])
   const [joining, setJoining] = useState({ address: '', code: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [contested, setContested] = useState<ContestedChange[]>([])
   const [found, setFound] = useState<FoundTill[] | null>(null)
   const [looking, setLooking] = useState(false)
   /* Which shop this is, so a till already in this shop is not offered back to
@@ -42,10 +45,18 @@ export function SyncCard() {
   const refresh = useCallback(async () => {
     setServing(await servingOn())
     setPeers(await listPeers(db))
+    setConflicts(await recentConflicts(db, { limit: 20 }))
     setShopId(await getSetting(db, 'shop_id'))
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  /* The catch-up runs whether or not this screen is open, so the screen follows
+     it rather than keeping its own idea of when the tills last agreed. */
+  useEffect(() => {
+    onSyncRound(() => { void refresh() })
+    return () => onSyncRound(null)
+  }, [refresh])
 
   // A code that lapses on the Rust side should stop being shown here too.
   useEffect(() => {
@@ -123,31 +134,28 @@ export function SyncCard() {
     }
   }
 
+  /* The same code the background loop runs. A "catch up now" that took its own
+     path would be a second implementation to keep in step, and the one people
+     press least would be the one that rots. */
   async function syncNow() {
     setError(null)
     setBusy(true)
-    setContested([])
     try {
-      const found: ContestedChange[] = []
-      for (const peer of await pairedPeers(db)) {
-        const round = await syncUntilDone(db, httpTransport(peer))
-        if (!round.ok) {
-          setError(explainRefusal(round.code))
-          continue
-        }
-        found.push(...round.contested)
-      }
-      // Only what every till has confirmed having. A change dropped early is one
-      // a switched-off till never learns about.
-      await pruneAcknowledged(db)
-      setContested(found)
-      if (found.length === 0) setNotice('Both tills agree.')
+      const reports = await runOnce(db, true)
+      const refused = reports.find((r) => !r.ok)
+      if (refused?.error) setError(explainRefusal(refused.error))
+      else if (reports.every((r) => r.contested === 0)) setNotice('Both tills agree.')
       await refresh()
     } catch (err) {
       setError(explain(err))
     } finally {
       setBusy(false)
     }
+  }
+
+  async function dismissConflicts() {
+    await acknowledgeConflicts(db)
+    await refresh()
   }
 
   return (
@@ -269,12 +277,30 @@ export function SyncCard() {
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Paired with</div>
             <div className="card">
               <table>
-                <thead><tr><th>Till</th><th>Last agreed</th></tr></thead>
+                <thead>
+                  <tr><th>Till</th><th>Last agreed</th><th>Waiting</th><th /></tr>
+                </thead>
                 <tbody>
                   {peers.map((p) => (
                     <tr key={p.deviceId}>
                       <td>{p.label ?? p.deviceId.slice(0, 8)}</td>
-                      <td>{p.lastAgreedAt ? new Date(p.lastAgreedAt).toLocaleString() : 'never'}</td>
+                      <td>{ago(p.lastAgreedAt)}</td>
+                      <td className="num">{p.waiting === 0 ? '—' : p.waiting}</td>
+                      <td>
+                        {/* A till that agreed at four and has been unreachable
+                            since five past looks, at a glance, exactly like one
+                            that agreed at four and had nothing to say after. */}
+                        {p.lastError === null
+                          ? <span className="badge ok">talking</span>
+                          : (
+                            <span title={p.lastError}>
+                              <span className="badge">not answering</span>
+                              <span style={{ fontSize: 12, color: 'var(--ink-3)', marginLeft: 7 }}>
+                                last agreed {ago(p.lastAgreedAt)}
+                              </span>
+                            </span>
+                          )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -291,15 +317,26 @@ export function SyncCard() {
           </section>
         )}
 
-        {contested.length > 0 && (
+        {conflicts.length > 0 && (
           <Alert kind="warn">
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              {contested.length} {contested.length === 1 ? 'thing was' : 'things were'} changed
-              on both tills, so one change was dropped.
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4, flex: 1 }}>
+                {conflicts.length} {conflicts.length === 1 ? 'thing was' : 'things were'} changed
+                on both tills, so one of the two changes was dropped.
+              </div>
+              <button className="link-btn" onClick={() => void dismissConflicts()}>
+                I have seen these
+              </button>
             </div>
+            {/* Nothing retries these and nothing repairs them. The only thing to
+                be done is for a person to look and decide whether it mattered,
+                which is why they are listed rather than counted. */}
             <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12.5 }}>
-              {contested.slice(0, 10).map((c) => (
-                <li key={`${c.table}/${c.rowId}`}>{c.table} — {c.explain}</li>
+              {conflicts.slice(0, 10).map((c) => (
+                <li key={c.id}>
+                  <strong>{c.table}</strong> — {c.explain}{' '}
+                  <span style={{ color: 'var(--ink-3)' }}>({ago(c.at)})</span>
+                </li>
               ))}
             </ul>
           </Alert>
@@ -347,4 +384,23 @@ function explain(err: unknown): string {
   }
   return 'Could not reach that till. Check the address, and that it is switched on and '
     + `answering. ${String(err)}`
+}
+
+/**
+ * "four minutes ago", not a timestamp.
+ *
+ * The question being asked is "is this working", and a clock time makes a person
+ * do the subtraction themselves — at a counter, mid-queue, which is where they
+ * will get it wrong or not bother.
+ */
+function ago(at: string | null): string {
+  if (at === null) return 'never'
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(at).getTime()) / 1000))
+  if (seconds < 60) return 'just now'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.round(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
 }

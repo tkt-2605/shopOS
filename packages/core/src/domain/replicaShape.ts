@@ -140,6 +140,7 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   change_feed: 'what this machine still has to send',
   sync_state: 'whether a merge is running right now',
   sync_peers: 'who this machine has paired with, and how far each has read',
+  sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
   sync_queue: 'reserved on day one and never used. See docs/multi-device.md',
 }
 

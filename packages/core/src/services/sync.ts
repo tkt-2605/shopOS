@@ -1,11 +1,12 @@
 import type { Row, SqlDriver, SqlValue } from '../db/driver.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { deviceId } from '../device.js'
+import { newId } from '../ids.js'
 import { decideRow, decideDeletion } from '../domain/merge.js'
 import {
   REPLICATED, shapeOf, type ChangeBatch, type ChangeRecord,
 } from '../domain/replicaShape.js'
-import { applyingRemote, changesSince, pruneFeed } from './changefeed.js'
+import { applyingRemote, changesSince, pendingCount, pruneFeed } from './changefeed.js'
 import { getSetting } from './bootstrap.js'
 
 /**
@@ -356,8 +357,100 @@ export async function applyBatch(
       applied += 1
     }
 
+    /* Written inside the same transaction that applied the batch, so a merge
+       that rolls back cannot leave a complaint about a change it did not make.
+
+       This matters more once the catch-up runs on its own: up to here a person
+       was watching the answer, and from here nobody is. A dropped edit that is
+       only ever returned from a function is a dropped edit nobody hears about. */
+    for (const complaint of contested) {
+      await tx.execute(
+        `INSERT INTO sync_conflicts
+           (id, at, peer_device, table_name, row_id, winner, explain)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newId(), new Date().toISOString(), batch.fromDevice,
+          complaint.table, complaint.rowId, complaint.winner, complaint.explain,
+        ],
+      )
+    }
+
     return { applied, contested }
   })
+}
+
+export interface RecordedConflict extends ContestedChange {
+  id: string
+  at: string
+  peerDevice: string | null
+}
+
+/**
+ * Where two tills disagreed and one side's change was dropped.
+ *
+ * Nothing retries these and nothing repairs them. The only thing that can be
+ * done is for a person to look and decide whether it mattered, which is why they
+ * are kept rather than counted.
+ */
+export async function recentConflicts(
+  db: SqlDriver,
+  options: { unreadOnly?: boolean; limit?: number } = {},
+): Promise<RecordedConflict[]> {
+  const rows = await db.query<{
+    id: string; at: string; peer_device: string | null
+    table_name: string; row_id: string; winner: 'mine' | 'theirs'; explain: string
+  }>(
+    `SELECT id, at, peer_device, table_name, row_id, winner, explain
+       FROM sync_conflicts
+      WHERE acknowledged = 0 OR ? = 0
+      ORDER BY at DESC
+      LIMIT ?`,
+    [options.unreadOnly === false ? 0 : 1, options.limit ?? 50],
+  )
+  return rows.map((r) => ({
+    id: r.id,
+    at: r.at,
+    peerDevice: r.peer_device,
+    table: r.table_name,
+    rowId: r.row_id,
+    winner: r.winner,
+    explain: r.explain,
+  }))
+}
+
+/** Marks them read. Kept rather than deleted — what the tills disagreed about
+ *  is worth having later, even once somebody has seen it. */
+export async function acknowledgeConflicts(db: SqlDriver): Promise<number> {
+  const result = await db.execute(
+    `UPDATE sync_conflicts SET acknowledged = 1 WHERE acknowledged = 0`,
+  )
+  return result.rowsAffected
+}
+
+/** How many nobody has looked at. For a badge, and for the screen's headline. */
+export async function unreadConflictCount(db: SqlDriver): Promise<number> {
+  const row = await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM sync_conflicts WHERE acknowledged = 0`,
+  )
+  return row?.n ?? 0
+}
+
+/**
+ * Records that a peer could not be reached, or that it now can.
+ *
+ * One fact per peer rather than a history, because the useful question is "is it
+ * working, and since when has it not been" — and a thousand rows saying the same
+ * till was off all weekend answer that worse than one row saying so.
+ */
+export async function recordAttempt(
+  db: SqlDriver,
+  peerDeviceId: string,
+  error: string | null,
+): Promise<void> {
+  await db.execute(
+    `UPDATE sync_peers SET last_error = ?, last_tried_at = ? WHERE device_id = ?`,
+    [error, new Date().toISOString(), peerDeviceId],
+  )
 }
 
 /** Which records have also changed here since the peer last read our feed. */
@@ -413,16 +506,48 @@ async function rememberPeer(
   return { theirCursor: row?.their_cursor ?? 0, myCursor: row?.my_cursor ?? 0 }
 }
 
-/** Everyone this machine has agreed with, for the screen Phase 3 owes. */
-export async function listPeers(db: SqlDriver): Promise<Array<{
-  deviceId: string; label: string | null; lastAgreedAt: string | null
-}>> {
-  const rows = await db.query<{ device_id: string; label: string | null; last_agreed_at: string | null }>(
-    `SELECT device_id, label, last_agreed_at FROM sync_peers ORDER BY created_at`,
+export interface PeerHealth {
+  deviceId: string
+  label: string | null
+  /** When the two tills last actually agreed about everything. */
+  lastAgreedAt: string | null
+  /** When this till last tried, whether or not it worked. */
+  lastTriedAt: string | null
+  /** Why the last attempt failed, or null when it did not. */
+  lastError: string | null
+  /** How much this till still has to tell that one. */
+  waiting: number
+}
+
+/**
+ * Every till this one knows, and whether it is actually working.
+ *
+ * `lastAgreedAt` on its own is the number that lies most comfortably: a till
+ * that agreed at 4pm and has been unreachable since 4:05 looks, at a glance,
+ * exactly like one that agreed at 4pm and had nothing to say afterwards. So the
+ * last attempt and its error come with it, and so does how much is queued.
+ */
+export async function listPeers(db: SqlDriver): Promise<PeerHealth[]> {
+  const rows = await db.query<{
+    device_id: string; label: string | null; last_agreed_at: string | null
+    last_tried_at: string | null; last_error: string | null; my_cursor: number
+  }>(
+    `SELECT device_id, label, last_agreed_at, last_tried_at, last_error, my_cursor
+       FROM sync_peers ORDER BY created_at`,
   )
-  return rows.map((r) => ({
-    deviceId: r.device_id, label: r.label, lastAgreedAt: r.last_agreed_at,
-  }))
+
+  const out: PeerHealth[] = []
+  for (const r of rows) {
+    out.push({
+      deviceId: r.device_id,
+      label: r.label,
+      lastAgreedAt: r.last_agreed_at,
+      lastTriedAt: r.last_tried_at,
+      lastError: r.last_error,
+      waiting: await pendingCount(db, r.my_cursor),
+    })
+  }
+  return out
 }
 
 /**

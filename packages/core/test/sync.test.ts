@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   syncWith, syncUntilDone, collectChanges, applyBatch, changedHere, listPeers, pruneAcknowledged,
+  recentConflicts, acknowledgeConflicts, unreadConflictCount, recordAttempt,
   type SyncTransport, type PeerHello,
 } from '../src/services/sync.js'
 import { setDeviceId, deviceId } from '../src/device.js'
@@ -491,6 +492,115 @@ describe('a till that has been switched off for a fortnight', () => {
 
     await as(a, () => syncUntilDone(a.db, endless, 4))
     expect(rounds).toBe(4)
+  })
+})
+
+describe('what a person is told afterwards', () => {
+  /* Up to here a sync happened because somebody pressed a button and watched the
+     answer. Once it runs on its own, nobody is watching — and the failures that
+     matter are the ones nothing interrupts. */
+
+  it('keeps a record of an edit it dropped, rather than only returning it', async () => {
+    const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await bothWays()
+
+    await as(a, () => a.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['From A', id]))
+    await as(b, () => b.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['From B', id]))
+    await as(a, () => syncWith(a.db, wireTo(b, a)))
+
+    const kept = await recentConflicts(a.db)
+    const mine = kept.find((c) => c.rowId === id)
+    expect(mine).toBeDefined()
+    expect(mine?.table).toBe('products')
+    expect(mine?.explain).toMatch(/dropped/)
+    expect(mine?.peerDevice).toBe(TILL_B)
+  })
+
+  it('writes nothing when the merge it belonged to rolled back', async () => {
+    /* A complaint about a change that was never applied would send somebody
+       looking for something that did not happen. */
+    const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await bothWays()
+
+    // Changed here too, so the incoming one is a genuine conflict.
+    await as(a, () => a.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['Mine', id]))
+    const row = await a.db.get<Row>(`SELECT * FROM products WHERE id = ?`, [id])
+
+    const broken: SyncTransport = {
+      ...wireTo(b, a),
+      async fetch() {
+        return {
+          fromDevice: TILL_B,
+          schemaVersion: EXPECTED_SCHEMA_VERSION,
+          records: [
+            // Wins, and is contested: this is the conflict that must not survive.
+            { table: 'products', rowId: id, op: 'upsert',
+              row: { ...row!, name: 'Theirs', rev: Number(row!['rev']) + 5 } },
+            // And a user pointing at a role that does not exist. Foreign keys are
+            // deferred inside the batch, so this fails at the commit and takes
+            // everything written before it with it.
+            { table: 'users', rowId: 'ghost', op: 'upsert', row: {
+              id: 'ghost', username: 'ghost', full_name: 'Ghost',
+              role_id: 'no-such-role', password_hash: 'x', is_active: 1,
+              failed_logins: 0, rev: 1,
+              created_at: '2026-01-01T00:00:00.000Z',
+              updated_at: '2026-01-01T00:00:00.000Z',
+            } },
+          ],
+          upTo: 99, complete: true,
+        }
+      },
+    }
+
+    await expect(as(a, () => syncWith(a.db, broken))).rejects.toThrow()
+
+    expect(await recentConflicts(a.db)).toEqual([])
+    // And the product it would have overwritten is untouched.
+    expect(await nameOf(a, id)).toBe('Mine')
+  })
+
+  it('counts only what nobody has looked at', async () => {
+    const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await bothWays()
+    await as(a, () => a.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['A', id]))
+    await as(b, () => b.db.execute(`UPDATE products SET name = ? WHERE id = ?`, ['B', id]))
+    await as(a, () => syncWith(a.db, wireTo(b, a)))
+
+    expect(await unreadConflictCount(a.db)).toBeGreaterThan(0)
+    await acknowledgeConflicts(a.db)
+    expect(await unreadConflictCount(a.db)).toBe(0)
+
+    // Kept, not deleted: what the tills disagreed about is worth having later.
+    expect((await recentConflicts(a.db, { unreadOnly: false })).length).toBeGreaterThan(0)
+  })
+
+  it('tells a till that is not answering apart from one with nothing to say', async () => {
+    /* The number that lies most comfortably: a till that agreed at four and has
+       been unreachable since five past looks, at a glance, exactly like one that
+       agreed at four and has been quiet since. */
+    await bothWays()
+    const settled = (await listPeers(a.db))[0]!
+    expect(settled.lastError).toBeNull()
+    expect(settled.lastAgreedAt).not.toBeNull()
+
+    await recordAttempt(a.db, TILL_B, 'fetch failed')
+
+    const broken = (await listPeers(a.db))[0]!
+    expect(broken.lastError).toBe('fetch failed')
+    // And the moment it works again, it stops complaining.
+    await recordAttempt(a.db, TILL_B, null)
+    expect((await listPeers(a.db))[0]!.lastError).toBeNull()
+  })
+
+  it('says how much this till still has to tell that one', async () => {
+    await bothWays()
+    expect((await listPeers(a.db))[0]!.waiting).toBe(0)
+
+    await as(a, () => makeProduct(a.db, { name: 'Not sent yet' }))
+    expect((await listPeers(a.db))[0]!.waiting).toBeGreaterThan(0)
+
+    await bothWays()
+    expect((await listPeers(a.db))[0]!.waiting).toBe(0)
   })
 })
 
