@@ -152,7 +152,12 @@ export function Formats() {
       kinds: draft.kinds,
       blocks: draft.blocks,
     }
-    const doc = sampleDoc({ name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin })
+    /* The real logo, not a placeholder. A preview that leaves it out makes the
+       logo switch look like a switch that does nothing, which is the one thing
+       this screen must never do. */
+    const doc = sampleDoc({
+      name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo,
+    })
 
     return Fmt.isRoll(draft.paper)
       ? { kind: 'roll' as const, lines: Receipt.previewLines(Receipt.buildReceipt(doc, format)) }
@@ -368,6 +373,12 @@ export function Formats() {
               /* Per paper: the sheet carries a logo and the roll cannot, and
                  the switch should say which of the two this format is. */
               const unfinished = Fmt.notYet(block.kind, draft.paper)
+              /* A logo block switched on with no logo uploaded prints nothing,
+                 and a switch that appears to do nothing is how a shopkeeper
+                 learns not to trust the switches. Say where the logo is set. */
+              const missing = block.kind === 'logo' && !unfinished && !shop.logo
+                ? 'No logo uploaded yet — choose one under Settings, on the Shop card.'
+                : undefined
               return (
                 <div key={`${block.kind}-${i}`} className={`block-row ${block.on ? 'on' : ''}`}>
                   <label className="block-switch">
@@ -394,8 +405,10 @@ export function Formats() {
                     </button>
                   </div>
 
-                  {(unfinished || Fmt.BLOCK_NOTE[block.kind]) && (
-                    <p className="block-note">{unfinished ?? Fmt.BLOCK_NOTE[block.kind]}</p>
+                  {(unfinished || missing || Fmt.BLOCK_NOTE[block.kind]) && (
+                    <p className="block-note">
+                      {unfinished ?? missing ?? Fmt.BLOCK_NOTE[block.kind]}
+                    </p>
                   )}
 
                   {block.on && <BlockOptions block={block} onChange={(opts) => setBlock(i, { opts })} />}
