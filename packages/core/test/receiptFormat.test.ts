@@ -125,6 +125,21 @@ describe('switching a block on', () => {
   })
 })
 
+describe('the amount in words on the roll', () => {
+  const spelled = withBlocks({ amount_in_words: true })
+
+  it('spells the total out', () => {
+    expect(buildReceipt(doc, spelled)).toContain('Rupees Eight Hundred Only')
+  })
+
+  it('wraps inside the narrow roll rather than running off it', () => {
+    const narrow: DocFormat = { ...spelled, paper: 'thermal_58' }
+    for (const line of visibleLines(buildReceipt(doc, narrow))) {
+      expect(line.length, `too wide for 58mm: "${line}"`).toBeLessThanOrEqual(rollColumns('thermal_58'))
+    }
+  })
+})
+
 describe('the order the shop arranged them in', () => {
   it('puts the blocks on the paper in that order', () => {
     const reversed: DocFormat = {

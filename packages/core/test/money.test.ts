@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { paise, rupees, parseMoney, add, sub, scale, allocate, format, toRupees } from '../src/money.js'
+import { paise, rupees, parseMoney, add, sub, scale, allocate, format, toRupees, inWords } from '../src/money.js'
 
 describe('money', () => {
   it('rejects non-integer paise', () => {
@@ -77,5 +77,34 @@ describe('scale', () => {
 describe('sub', () => {
   it('goes negative for refunds', () => {
     expect(sub(paise(100), paise(250))).toBe(paise(-150))
+  })
+})
+
+describe('the amount in words', () => {
+  it('spells a plain amount', () => {
+    expect(inWords(rupees(1000))).toBe('Rupees One Thousand Only')
+    expect(inWords(rupees(21))).toBe('Rupees Twenty One Only')
+  })
+
+  it('groups in lakhs and crores, not in millions', () => {
+    expect(inWords(rupees(1_200_000))).toBe('Rupees Twelve Lakh Only')
+    expect(inWords(rupees(25_000_000))).toBe('Rupees Two Crore Fifty Lakh Only')
+    expect(inWords(rupees(123_456))).toBe('Rupees One Lakh Twenty Three Thousand Four Hundred Fifty Six Only')
+  })
+
+  it('carries the paise', () => {
+    expect(inWords(paise(125_050))).toBe('Rupees One Thousand Two Hundred Fifty and Fifty Paise Only')
+  })
+
+  it('says zero rather than nothing at all', () => {
+    expect(inWords(paise(0))).toBe('Rupees Zero Only')
+  })
+
+  it('says so when the figure is a refund', () => {
+    expect(inWords(paise(-15000))).toBe('Minus Rupees One Hundred Fifty Only')
+  })
+
+  it('ends in Only, so nothing can be added after it', () => {
+    expect(inWords(rupees(7))).toMatch(/ Only$/)
   })
 })

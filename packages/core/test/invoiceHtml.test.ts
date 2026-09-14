@@ -223,3 +223,13 @@ describe('what the browser must not print around it', () => {
     expect(html()).toContain('.edge { height: 0; }')
   })
 })
+
+describe('the amount in words', () => {
+  it('spells the total out when the shop switches the block on', () => {
+    expect(html(withBlocks({ amount_in_words: true }))).toContain('Rupees Six Hundred Eighty Only')
+  })
+
+  it('is absent by default, so a shop that never opened the designer sees no change', () => {
+    expect(html()).not.toContain('Amount in words')
+  })
+})

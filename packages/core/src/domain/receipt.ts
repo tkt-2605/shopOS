@@ -1,4 +1,4 @@
-import { type Money, format as fmtMoney } from '../money.js'
+import { type Money, format as fmtMoney, inWords } from '../money.js'
 import { type Qty, formatQty } from '../quantity.js'
 import type { Block, DocFormat, Facts } from './docFormat.js'
 import { rollColumns, STANDARD_RECEIPT, fillTokens } from './docFormat.js'
@@ -258,10 +258,12 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
       return wrap(fillTokens(body, factsFor(doc)), width)
     }
 
-    /* No renderer yet, and `checkFormat` refuses to save a format with either of
-       these switched on — so reaching here means a format written by hand. */
-    case 'logo':
     case 'amount_in_words':
+      return wrap(inWords(doc.grandTotal), width)
+
+    /* No renderer yet, and `checkFormat` refuses to save a format with it
+       switched on — so reaching here means a format written by hand. */
+    case 'logo':
       return ''
   }
 }

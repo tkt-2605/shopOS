@@ -98,7 +98,6 @@ export function rollColumns(paper: PaperSize): number {
  */
 export const NOT_YET: Partial<Record<BlockKind, string>> = {
   logo: 'Needs the logo upload, which lands with the A4 designer.',
-  amount_in_words: 'Needs rupees spelled out, which is its own job.',
 }
 
 export const BLOCK_LABEL: Record<BlockKind, string> = {
@@ -121,6 +120,8 @@ export const BLOCK_LABEL: Record<BlockKind, string> = {
 
 /** One line each, shown under the switch, saying what turning it off costs. */
 export const BLOCK_NOTE: Partial<Record<BlockKind, string>> = {
+  amount_in_words: 'The total spelled out — “Rupees One Thousand Only”. What a customer and a shop '
+    + 'fall back on when the digits are argued about.',
   meta: 'The bill number. A receipt without one cannot be looked up again.',
   items: 'What was sold. Switching this off leaves only a total.',
   totals: 'Subtotal, tax, and the amount due.',
@@ -140,7 +141,7 @@ export const BLOCK_NOTE: Partial<Record<BlockKind, string>> = {
  *
  * The blocks left off are off for a reason, not by oversight: `tax_summary` and
  * `party` would print a second copy of something already on the paper, and
- * `logo` and `amount_in_words` have no renderer yet.
+ * `logo` has no renderer yet.
  */
 export const STANDARD_RECEIPT: DocFormat = {
   id: 'standard_receipt',

@@ -131,3 +131,66 @@ export function format(m: Money): string {
 export function formatWithSymbol(m: Money): string {
   return `₹${format(m)}`
 }
+
+/* --------------------------------------------------------- words --- */
+
+const ONES = [
+  '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+  'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
+  'Seventeen', 'Eighteen', 'Nineteen',
+]
+const TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety']
+
+/** Under a thousand, which is as far as any single Indian group goes. */
+function underThousand(n: number): string {
+  if (n === 0) return ''
+  if (n < 20) return ONES[n]!
+  if (n < 100) return TENS[Math.floor(n / 10)]! + (n % 10 ? ` ${ONES[n % 10]!}` : '')
+  return `${ONES[Math.floor(n / 100)]!} Hundred` + (n % 100 ? ` ${underThousand(n % 100)}` : '')
+}
+
+/**
+ * A whole number in Indian words: crore, lakh, thousand, hundred.
+ *
+ * Not the western grouping. Twelve lakh is not "one point two million" on an
+ * invoice a shop hands a customer in Tamil Nadu, and a figure in words exists
+ * precisely so that the two readings cannot differ.
+ */
+export function numberInWords(n: number): string {
+  if (!Number.isFinite(n)) return ''
+  if (n < 0) return `Minus ${numberInWords(-n)}`
+  if (n === 0) return 'Zero'
+
+  const parts: string[] = []
+  const crore = Math.floor(n / 10_000_000)
+  const lakh = Math.floor((n % 10_000_000) / 100_000)
+  const thousand = Math.floor((n % 100_000) / 1000)
+  const rest = n % 1000
+
+  if (crore > 0) parts.push(`${numberInWords(crore)} Crore`)
+  if (lakh > 0) parts.push(`${underThousand(lakh)} Lakh`)
+  if (thousand > 0) parts.push(`${underThousand(thousand)} Thousand`)
+  if (rest > 0) parts.push(underThousand(rest))
+
+  return parts.join(' ')
+}
+
+/**
+ * The amount spelled out, the way an invoice spells it.
+ *
+ * The figure in words is not decoration. It is the line a customer and a shop
+ * fall back on when the digits are argued about — a smudged 7, a 1 that could
+ * be a 4 — which is why it carries the paise too, and why it ends in "Only":
+ * nothing can be added after it.
+ */
+export function inWords(m: Money): string {
+  const negative = m < 0
+  const total = Math.abs(Math.round(m))
+  const whole = Math.floor(total / 100)
+  const fraction = total % 100
+
+  const rupeesPart = `Rupees ${numberInWords(whole)}`
+  const paisePart = fraction > 0 ? ` and ${numberInWords(fraction)} Paise` : ''
+
+  return `${negative ? 'Minus ' : ''}${rupeesPart}${paisePart} Only`
+}

@@ -1,4 +1,4 @@
-import { format as fmtMoney } from '../money.js'
+import { format as fmtMoney, inWords } from '../money.js'
 import { formatQty } from '../quantity.js'
 import { BILL_WORDING, type DocWording, type ReceiptDoc, type ReceiptItem } from './receipt.js'
 import { fillTokens, PAPER, type Block, type DocFormat, type Facts } from './docFormat.js'
@@ -180,10 +180,12 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
     case 'space':
       return `<div class="space" style="height:${Math.min(Math.max(block.opts?.lines ?? 1, 1), 6) * 1.4}em"></div>`
 
-    /* Neither has a renderer on either paper yet, and `checkFormat` refuses to
-       save a format with one switched on. */
-    case 'logo':
     case 'amount_in_words':
+      return `<p class="words"><span class="k">Amount in words</span>${esc(inWords(doc.grandTotal))}</p>`
+
+    /* No renderer on either paper yet, and `checkFormat` refuses to save a
+       format with it switched on. */
+    case 'logo':
       return ''
   }
 }
@@ -338,6 +340,10 @@ function styles(pageSize: string, preview: boolean): string {
     .tax th, .tax td { padding: 4px 6px; border: 1px solid #bbb; text-align: left; }
     .tax thead th { background: #f2f2f2; }
     .note { margin: 8px 0 0; font-size: 9.5pt; color: #555; }
+    /* Boxed, because it is the line that settles an argument about the figures
+       above it, and it has to be findable at a glance to do that. */
+    .words { margin: 10px 0 0; padding: 6px 8px; border: 1px solid #000; font-size: 10pt; }
+    .words .k { display: block; font-size: 8pt; letter-spacing: .06em; text-transform: uppercase; color: #555; }
     .terms { margin: 16px 0 0; padding-top: 8px; font-size: 9pt; color: #555; border-top: 1px solid #ddd; }
     .signature { margin-top: 34px; width: 210px; margin-left: auto; text-align: center; break-inside: avoid; }
     .sign-for { font-size: 9.5pt; color: #444; }
