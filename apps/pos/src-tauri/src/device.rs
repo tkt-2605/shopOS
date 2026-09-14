@@ -14,6 +14,7 @@
 /// adopts the identity of the machine it lands on, which is the truth, rather
 /// than carrying the identity of the machine it came from, which is a lie that
 /// gets written into every row created afterwards.
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -40,6 +41,27 @@ struct Stored {
     /// rather than being refused as damaged.
     #[serde(default)]
     register_id: Option<String>,
+    /// Settings that describe this machine rather than the shop.
+    ///
+    /// Four of them were in the `settings` table, which the whole shop shares,
+    /// and every one is a thing that differs from counter to counter:
+    ///
+    ///   * `thermal_printer` — the printer plugged into *this* till. Shared, the
+    ///     second till prints on the first one's printer, or on nothing.
+    ///   * `backup_hook` — a command run after this machine's backup. It carries
+    ///     the file to a USB stick, a NAS share or a syncing folder, none of
+    ///     which are the same on the next machine. Shared, both tills fire the
+    ///     shop's one command against their own backup and the last to finish is
+    ///     the copy that survives.
+    ///   * `backup_folder` — a folder on this machine.
+    ///   * `ui_density`, `ui_theme` — how this screen is set up. A 10-inch till
+    ///     at the counter and the owner's laptop want different answers.
+    ///
+    /// A map rather than a field each, because the list is four long and every
+    /// value is a string the webview already had a name for. `BTreeMap` so the
+    /// file is written in a stable order and a person can read it.
+    #[serde(default)]
+    settings: BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -48,6 +70,7 @@ pub struct Identity {
     pub label: String,
     #[serde(rename = "registerId")]
     pub register_id: Option<String>,
+    pub settings: BTreeMap<String, String>,
     /// True only on the run that minted it, so a caller can record a first
     /// sighting once instead of on every start.
     pub minted: bool,
@@ -68,20 +91,58 @@ pub fn device_set_register(
     set_register(&paths::data_dir(&app)?, register_id)
 }
 
+/// Records one setting about this machine. A null or blank value forgets it
+/// rather than storing an empty string, which would read as "set to nothing".
+#[tauri::command]
+pub fn device_set_setting(
+    app: tauri::AppHandle,
+    key: String,
+    value: Option<String>,
+) -> Result<Identity, String> {
+    let dir = paths::data_dir(&app)?;
+    put(&dir, &key, value.as_deref())
+}
+
+fn put(dir: &Path, key: &str, value: Option<&str>) -> Result<Identity, String> {
+    let existing = load_or_mint(dir)?;
+    let mut settings = existing.settings;
+    match value.map(str::to_string).filter(|v| !v.trim().is_empty()) {
+        Some(v) => settings.insert(key.to_string(), v),
+        None => settings.remove(key),
+    };
+    write_back(
+        dir,
+        Stored {
+            device_id: existing.id,
+            label: existing.label,
+            register_id: existing.register_id,
+            settings,
+        },
+    )
+}
+
 fn set_register(dir: &Path, register_id: Option<String>) -> Result<Identity, String> {
     // Minting first rather than refusing: a machine choosing its counter before
     // it has ever been identified is just a machine on its first run.
     let existing = load_or_mint(dir)?;
-    let stored = Stored {
-        device_id: existing.id,
-        label: existing.label,
-        register_id,
-    };
+    write_back(
+        dir,
+        Stored {
+            device_id: existing.id,
+            label: existing.label,
+            register_id,
+            settings: existing.settings,
+        },
+    )
+}
+
+fn write_back(dir: &Path, stored: Stored) -> Result<Identity, String> {
     save(&dir.join(FILE), &stored)?;
     Ok(Identity {
         id: stored.device_id,
         label: stored.label,
         register_id: stored.register_id,
+        settings: stored.settings,
         minted: false,
     })
 }
@@ -95,6 +156,7 @@ fn load_or_mint(dir: &Path) -> Result<Identity, String> {
                 id: stored.device_id,
                 label: stored.label,
                 register_id: stored.register_id,
+                settings: stored.settings,
                 minted: false,
             }),
             // A file that exists but cannot be read as an identity is never
@@ -113,12 +175,14 @@ fn load_or_mint(dir: &Path) -> Result<Identity, String> {
                 device_id: mint(),
                 label: hostname(),
                 register_id: None,
+                settings: BTreeMap::new(),
             };
             write_new(&path, &stored)?;
             Ok(Identity {
                 id: stored.device_id,
                 label: stored.label,
                 register_id: stored.register_id,
+                settings: stored.settings,
                 minted: true,
             })
         }
@@ -312,6 +376,44 @@ mod tests {
         assert_eq!(got.label, "COUNTER1");
         assert_eq!(got.register_id, None);
         assert!(!got.minted);
+    }
+
+    /// Every write rebuilds the whole struct, which is the shape a
+    /// "saved one thing, lost another" bug takes.
+    #[test]
+    fn one_answer_never_clears_another() {
+        let dir = temp("settings-and-register");
+
+        set_register(&dir, Some("reg-a".into())).unwrap();
+        put(&dir, "thermal_printer", Some("EPSON TM-T82")).unwrap();
+        put(&dir, "backup_hook", Some("copy-to-usb.bat")).unwrap();
+
+        let got = load_or_mint(&dir).unwrap();
+        assert_eq!(got.register_id.as_deref(), Some("reg-a"));
+        assert_eq!(got.settings.get("thermal_printer").map(String::as_str), Some("EPSON TM-T82"));
+        assert_eq!(got.settings.get("backup_hook").map(String::as_str), Some("copy-to-usb.bat"));
+
+        // Changing the counter leaves both settings alone.
+        set_register(&dir, Some("reg-b".into())).unwrap();
+        let after = load_or_mint(&dir).unwrap();
+        assert_eq!(after.register_id.as_deref(), Some("reg-b"));
+        assert_eq!(after.settings.len(), 2);
+    }
+
+    #[test]
+    fn a_blank_setting_is_forgotten_rather_than_stored_as_nothing() {
+        let dir = temp("settings-blank");
+
+        for blank in [Some("   "), Some(""), None] {
+            put(&dir, "backup_hook", Some("run.bat")).unwrap();
+            assert!(load_or_mint(&dir).unwrap().settings.contains_key("backup_hook"));
+
+            put(&dir, "backup_hook", blank).unwrap();
+            assert!(
+                !load_or_mint(&dir).unwrap().settings.contains_key("backup_hook"),
+                "{blank:?} should forget it"
+            );
+        }
     }
 
     #[test]

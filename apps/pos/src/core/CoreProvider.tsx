@@ -1,12 +1,15 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { createTauriDriver, migrate, type SqlDriver } from '@shopos/core'
-import { chooseRegister, chosenRegister, establishDevice } from './device'
+import {
+  DEVICE_LOCAL_KEYS, chooseRegister, chosenRegister, deviceSetting,
+  establishDevice, setDeviceSetting,
+} from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup } from './backup'
 import {
-  isFirstRun, firstRun, seedDemoData, applyUpgrades, login, getSetting,
-  resolveDeviceRegister, takeLegacyDeviceRegister,
+  isFirstRun, firstRun, seedDemoData, applyUpgrades, login,
+  resolveDeviceRegister, takeLegacyDeviceRegister, takeLocalSetting,
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
@@ -121,6 +124,7 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
     await establishDevice()
 
     await migrate(db, MIGRATIONS)
+    await adoptDeviceSettings(db)
     const needsSetup = await isFirstRun(db)
     // A shop that upgrades into a new screen should find it there, without the
     // owner's own permission choices being reset to make room for it.
@@ -128,6 +132,24 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
     return { needsSetup }
   })()
   return startup
+}
+
+/**
+ * Moves the settings that describe a machine out of the table that describes the
+ * shop, once.
+ *
+ * Runs after `migrate` because it writes to `settings`, and before any screen
+ * reads one, so nothing sees the value in two places. A key already recorded on
+ * this machine is left alone: the machine's own answer outranks whatever the
+ * shared row happens to say, which matters on the second till to be upgraded.
+ */
+async function adoptDeviceSettings(db: SqlDriver): Promise<void> {
+  for (const key of DEVICE_LOCAL_KEYS) {
+    const shared = await takeLocalSetting(db, key)
+    if (shared !== null && deviceSetting(key) === null) {
+      await setDeviceSetting(key, shared)
+    }
+  }
 }
 
 export function CoreProvider({ children }: { children: ReactNode }) {
@@ -192,8 +214,10 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 
   /** Theme and density are settings, so a shop can be re-skinned without a build. */
   async function applyAppearance() {
-    const theme = (await getSetting(db, 'ui_theme')) ?? 'daylight'
-    const density = (await getSetting(db, 'ui_density')) ?? 'compact'
+    // How this screen is set up is a fact about this screen: a 10-inch till at
+    // the counter and the owner's laptop want different answers.
+    const theme = deviceSetting('ui_theme') ?? 'daylight'
+    const density = deviceSetting('ui_density') ?? 'compact'
     document.documentElement.dataset['theme'] = theme
     document.documentElement.dataset['density'] = density
     await refreshShop()

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
+import { deviceSetting } from './device'
 import {
-  Receipt, getSetting, loadShopProfile, loadBillDetail, customerAccount, businessDate, formatFor,
+  Receipt, loadShopProfile, loadBillDetail, customerAccount, businessDate, formatFor,
   type SqlDriver, type ReceiptDoc, type ReceiptItem,
 } from '@shopos/core'
 
@@ -121,7 +122,8 @@ export async function printStatement(
 
 /** Blank means "whatever Windows calls the default", which is what `send` expects. */
 async function printerName(db: SqlDriver): Promise<string | null> {
-  return (await getSetting(db, 'thermal_printer')) || null
+  // The printer is plugged into this machine, so the answer is this machine's.
+  return deviceSetting('thermal_printer')
 }
 
 /** The one place bytes go to a printer, so both documents fail the same way. */

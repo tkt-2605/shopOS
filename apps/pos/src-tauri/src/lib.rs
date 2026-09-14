@@ -48,6 +48,7 @@ pub fn run() {
             db::backup_database,
             device::device_identity,
             device::device_set_register,
+            device::device_set_setting,
             printing::list_printers,
             printing::default_printer,
             printing::print_receipt,

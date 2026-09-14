@@ -126,7 +126,8 @@ describe('rev, on every replicated table', () => {
 
   it('has a trigger on every table that carries it, with none left out', async () => {
     const tables = await replicatedTables()
-    expect(tables.length).toBe(20)
+    // 020 added `settings`, the one mutable table 019 left out.
+    expect(tables.length).toBe(21)
 
     const triggers = new Set(
       (await fx.db.query<{ name: string }>(

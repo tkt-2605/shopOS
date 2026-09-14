@@ -15,8 +15,26 @@ export interface DeviceIdentity {
   label: string
   /** Which counter this machine bills on, or null if it has never been asked. */
   registerId: string | null
+  /** Settings that describe this machine rather than the shop. */
+  settings: Record<string, string>
   minted: boolean
 }
+
+/**
+ * The settings that were in the shop's `settings` table and never belonged to
+ * the shop. Each one differs from counter to counter, and sharing them means the
+ * second till prints on the first till's printer and fires its backup command.
+ *
+ * They are moved across once, on the first start after this change, so a shop
+ * already running keeps the printer it had.
+ */
+export const DEVICE_LOCAL_KEYS = [
+  'thermal_printer',
+  'backup_hook',
+  'backup_folder',
+  'ui_density',
+  'ui_theme',
+] as const
 
 let problem: string | null = null
 let identity: DeviceIdentity | null = null
@@ -77,6 +95,31 @@ export async function chooseRegister(registerId: string | null): Promise<boolean
   } catch (err) {
     problem = err instanceof Error ? err.message : String(err)
     console.error('Could not record which counter this machine is:', problem)
+    return false
+  }
+}
+
+/** What this machine has recorded for a setting of its own. */
+export function deviceSetting(key: string): string | null {
+  const value = identity?.settings?.[key]
+  return value === undefined || value === '' ? null : value
+}
+
+/**
+ * Records a setting about this machine. A blank value forgets it rather than
+ * storing an empty string, which would read as "set to nothing".
+ *
+ * Returns false when the file could not be written, so a screen can say the
+ * choice will not survive a restart instead of pretending it was saved.
+ */
+export async function setDeviceSetting(key: string, value: string | null): Promise<boolean> {
+  try {
+    identity = await invoke<DeviceIdentity>('device_set_setting', { key, value })
+    problem = null
+    return true
+  } catch (err) {
+    problem = err instanceof Error ? err.message : String(err)
+    console.error(`Could not record ${key} for this machine:`, problem)
     return false
   }
 }

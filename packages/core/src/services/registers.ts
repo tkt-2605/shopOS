@@ -2,7 +2,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { newId } from '../ids.js'
 import { writeAudit } from '../integrity/audit.js'
 import { assertDeletable } from '../integrity/links.js'
-import { getSetting } from './bootstrap.js'
+import { getSetting, takeLocalSetting } from './bootstrap.js'
 
 /**
  * A shop can run several counters. Each gets its own prefix, because that prefix
@@ -166,13 +166,7 @@ const LEGACY_DEVICE_REGISTER = 'device_register_id'
  * up the first one's counter.
  */
 export async function takeLegacyDeviceRegister(db: SqlDriver): Promise<string | null> {
-  return db.transaction(async (tx) => {
-    const chosen = await getSetting(tx, LEGACY_DEVICE_REGISTER)
-    if (chosen !== null) {
-      await tx.execute(`DELETE FROM settings WHERE key = ?`, [LEGACY_DEVICE_REGISTER])
-    }
-    return chosen
-  })
+  return takeLocalSetting(db, LEGACY_DEVICE_REGISTER)
 }
 
 async function exists(db: SqlDriver, column: 'name' | 'prefix', value: string, exceptId?: string): Promise<boolean> {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { deviceSetting, setDeviceSetting } from '../core/device'
 import {
-  Money, Backup, getSetting, setSetting, loadLoyaltyProgram, CARRY_WINDOW_DAYS,
+  Money, Backup, setSetting, loadLoyaltyProgram, CARRY_WINDOW_DAYS,
   saveShopProfile, stateName, STATES, Permissions,
   type Loyalty, type ShopProfile, type Page,
 } from '@shopos/core'
@@ -51,14 +52,14 @@ export default function Settings() {
 
   useEffect(() => {
     void (async () => {
-      setTheme(((await getSetting(db, 'ui_theme')) as Theme) ?? 'daylight')
-      setDensity(((await getSetting(db, 'ui_density')) as Density) ?? 'compact')
+      setTheme((deviceSetting('ui_theme') as Theme) ?? 'daylight')
+      setDensity((deviceSetting('ui_density') as Density) ?? 'compact')
       setProgram(await loadLoyaltyProgram(db))
       setPrinters(await listPrinters())
       setSystemDefault(await defaultPrinter())
-      setPrinter((await getSetting(db, 'thermal_printer')) ?? '')
-      setCopyTo((await getSetting(db, 'backup_folder')) ?? '')
-      setHookCommand((await getSetting(db, HOOK_SETTING)) ?? '')
+      setPrinter(deviceSetting('thermal_printer') ?? '')
+      setCopyTo(deviceSetting('backup_folder') ?? '')
+      setHookCommand(deviceSetting(HOOK_SETTING) ?? '')
     })()
   }, [db])
 
@@ -73,13 +74,13 @@ export default function Settings() {
   function chooseTheme(next: Theme) {
     setTheme(next)
     document.documentElement.dataset['theme'] = next
-    void setSetting(db, 'ui_theme', next)
+    void setDeviceSetting('ui_theme', next)
   }
 
   function chooseDensity(next: Density) {
     setDensity(next)
     document.documentElement.dataset['density'] = next
-    void setSetting(db, 'ui_density', next)
+    void setDeviceSetting('ui_density', next)
   }
 
   async function saveProgram() {
@@ -138,18 +139,18 @@ export default function Settings() {
   async function pickFolder(clear = false) {
     if (clear) {
       setCopyTo('')
-      await setSetting(db, 'backup_folder', '')
+      await setDeviceSetting('backup_folder', null)
       return
     }
     const folder = await chooseFolder()
     if (!folder) return
     setCopyTo(folder)
-    await setSetting(db, 'backup_folder', folder)
+    await setDeviceSetting('backup_folder', folder)
   }
 
   async function saveHook(value: string) {
     setHookCommand(value)
-    await setSetting(db, HOOK_SETTING, value.trim())
+    await setDeviceSetting(HOOK_SETTING, value.trim())
   }
 
   async function testHook() {
@@ -486,7 +487,7 @@ export default function Settings() {
           <select
             className="select" id="printer"
             value={printer}
-            onChange={(e) => { setPrinter(e.target.value); void setSetting(db, 'thermal_printer', e.target.value) }}
+            onChange={(e) => { setPrinter(e.target.value); void setDeviceSetting('thermal_printer', e.target.value) }}
           >
             <option value="">Use the Windows default</option>
             {printers.map((p) => <option key={p} value={p}>{p}</option>)}

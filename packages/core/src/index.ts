@@ -25,7 +25,7 @@ export { checkLinks, assertDeletable, LinkedRecordError, LINK_RULES } from './in
 export { writeAudit, writeActivity, diffFields } from './integrity/audit.js'
 export type { AuditAction, AuditContext, AuditRecord, FieldDiff } from './integrity/audit.js'
 
-export { bootstrap, setSetting, getSetting } from './services/bootstrap.js'
+export { bootstrap, setSetting, getSetting, takeLocalSetting } from './services/bootstrap.js'
 export type { BootstrapOptions, BootstrapResult } from './services/bootstrap.js'
 
 export {

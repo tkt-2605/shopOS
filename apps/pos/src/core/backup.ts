@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
+import { deviceSetting } from './device'
 import {
-  Backup, backupDatabase, attachmentsToCarry, CARRY_WINDOW_DAYS, getSetting,
+  Backup, backupDatabase, attachmentsToCarry, CARRY_WINDOW_DAYS,
   type BackupFile, type BackupEntry, type SqlDriver,
 } from '@shopos/core'
 
@@ -71,7 +72,15 @@ export async function takeBackup(
   await backupDatabase(invoke, await backupPath(name))
 }
 
-/** The setting holding the command to run after a backup. Empty means none. */
+/**
+ * The command to run after a backup, held on this machine and not in the shop's
+ * database.
+ *
+ * It carries the file to a USB stick, a NAS share or a syncing folder — none of
+ * which are the same on the next counter. Shared, two tills would both fire the
+ * shop's one command against their own backup, and the last to finish would be
+ * the copy that survived.
+ */
 export const HOOK_SETTING = 'backup_hook'
 
 export interface HookResult {
@@ -113,7 +122,7 @@ export async function takeBackupNow(
   const carry = await carryList(db, now)
   await takeBackup(name, now, carry)
 
-  const command = (await getSetting(db, HOOK_SETTING))?.trim()
+  const command = deviceSetting(HOOK_SETTING)?.trim()
   if (command) void runHook(command, name).catch(() => undefined)
 
   return { attachments: carry.length }

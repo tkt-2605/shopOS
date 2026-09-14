@@ -193,12 +193,29 @@ transaction with its own deletion: leaving it in both places is the state where
 a second till would later pick up the first one's counter and mint its invoice
 numbers.
 
-**Still owed before two tills can share a database:** `settings` carries no
-`rev` and no `origin_id` at all, yet it holds the shop name, the GSTIN, the
-rounding rule and the stock policy — all things that have to replicate. It is
-the one table that is replicated in practice and not in the schema, and it needs
-a decision rather than a trigger, because two tills changing two different
-settings must not overwrite each other's row.
+**`settings` was not one thing**, and migration 020 splits it (Phase 0 again).
+
+The shop's own rows — name, state code, stock policy, rounding rule, loyalty
+programme, every feature switch — now carry `rev` and `origin_id` with a
+trigger, so `settings` stops being the one table a merge has to special-case.
+One row per setting was already the right granularity: two tills changing two
+different settings never collide, and the same setting changed twice is a real
+disagreement that someone has to lose, which is exactly what row-level
+last-writer-wins decides.
+
+Five rows were never the shop's business and went to `device.json` instead:
+
+| Row | Why it is the machine's |
+|---|---|
+| `thermal_printer` | The printer plugged into *this* till. Shared, the second till prints on the first one's printer, or on nothing |
+| `backup_hook` | A command that carries this machine's backup to a USB stick, a NAS share or a syncing folder. Shared, both tills fire the shop's one command against their own backup and the last to finish is the copy that survives |
+| `backup_folder` | A folder on this machine |
+| `ui_density`, `ui_theme` | How this screen is set up. A 10-inch till at the counter and the owner's laptop want different answers |
+
+They move across once on the first start after the upgrade, so a shop already
+running keeps the printer it had. A machine that has already recorded its own
+answer keeps it, which is what stops the second till to be upgraded adopting the
+first one's.
 
 **Phase 1 — the changefeed.** One table recording `(table, row id, rev, origin,
 at)`, written by the same service-layer seam that writes the audit row. Sync
