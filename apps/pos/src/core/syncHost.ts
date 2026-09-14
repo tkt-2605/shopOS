@@ -31,18 +31,52 @@ interface Forwarded {
 
 let listening: UnlistenFn | null = null
 
+export interface FoundTill {
+  /** `192.168.1.11:7801`, ready to be handed straight to `pairWith`. */
+  address: string
+  device: string
+  label: string
+  shop: string | null
+  shopId: string | null
+  port: number
+}
+
+/**
+ * Asks the network whether any other till is answering.
+ *
+ * A shopkeeper should not have to know what 192.168.1.11 is, and the address
+ * changes whenever the router feels like it — so typing it turns a one-off setup
+ * into a thing that breaks on a Tuesday for no visible reason.
+ *
+ * Finding a till grants nothing. It says where to knock; pairing still needs a
+ * code read off that till's screen, and every request after that is signed.
+ */
+export async function lookAround(waitMs = 1200): Promise<FoundTill[]> {
+  return invoke<FoundTill[]>('sync_look_around', { waitMs })
+}
+
 /**
  * Starts answering, and keeps answering until told to stop.
  *
  * The event subscription goes up *before* the port does, so a request that
  * arrives in the first millisecond has somebody to answer it rather than timing
  * out against a webview that is not listening yet.
+ *
+ * `shop` is what this till says about itself when another one shouts on the
+ * network. It is only a name and an opaque id — enough for a person to tell two
+ * shops apart on one wire, and no use to anybody without a pairing code.
  */
-export async function startServing(db: SqlDriver, port = 7801): Promise<ServeInfo> {
+export async function startServing(
+  db: SqlDriver,
+  port = 7801,
+  shop: { name: string | null; id: string | null } = { name: null, id: null },
+): Promise<ServeInfo> {
   await attend(db)
 
   try {
-    return await invoke<ServeInfo>('sync_serve_start', { port })
+    return await invoke<ServeInfo>('sync_serve_start', {
+      port, shop: shop.name, shopId: shop.id,
+    })
   } catch (err) {
     // The port is taken, or the firewall said no. Stop pretending to listen.
     await stopServing()

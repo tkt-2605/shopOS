@@ -36,6 +36,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use crate::{device, discovery, paths};
 use tauri::{Emitter, Manager};
 
 /// A batch of two hundred bills with their lines is comfortably inside this.
@@ -85,7 +87,12 @@ struct Running {
 }
 
 #[tauri::command]
-pub fn sync_serve_start(app: tauri::AppHandle, port: u16) -> Result<ServeInfo, String> {
+pub fn sync_serve_start(
+    app: tauri::AppHandle,
+    port: u16,
+    shop: Option<String>,
+    shop_id: Option<String>,
+) -> Result<ServeInfo, String> {
     let host = app.state::<SyncHost>();
     let mut running = host.running.lock().map_err(|_| "sync host is wedged")?;
 
@@ -106,6 +113,7 @@ pub fn sync_serve_start(app: tauri::AppHandle, port: u16) -> Result<ServeInfo, S
 
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
+    let announce_stop = Arc::clone(&stop);
     let handle = app.clone();
 
     std::thread::spawn(move || {
@@ -127,6 +135,23 @@ pub fn sync_serve_start(app: tauri::AppHandle, port: u16) -> Result<ServeInfo, S
             }
         }
     });
+
+    /* Answering the shout and answering HTTP start and stop together, sharing
+       one flag. There is deliberately no state where a till announces itself on
+       the network and then does not answer when somebody knocks. */
+    if let Ok(identity) = device::identity_of(&paths::data_dir(&app)?) {
+        discovery::respond_while(
+            discovery::Announcement {
+                v: 1,
+                device: identity.id,
+                label: identity.label,
+                shop,
+                shop_id,
+                port: bound,
+            },
+            Arc::clone(&announce_stop),
+        );
+    }
 
     *running = Some(Running { port: bound, stop });
 

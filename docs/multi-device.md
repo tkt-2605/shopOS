@@ -454,9 +454,42 @@ code over the LAN and took 189 records in one round — 20 products, 6 customers
 29 bills, 51 bill lines, the staff, the counter and the shop's own id — with
 nothing contested.
 
-**Still owed:** finding the other till without typing its address, and a
-scheduled catch-up rather than a button. Both are conveniences; neither changes
-what is true about the data.
+**Phase 2d — finding the other till. Built.**
+
+A shopkeeper should not have to know what 192.168.1.11 is, and the address
+changes whenever the router feels like it — so typing it once turns a one-off
+setup into a thing that breaks on a Tuesday for no visible reason.
+
+`src-tauri/src/discovery.rs` answers a shout on the local network with its
+label, its shop's name and id, and the port. UDP broadcast rather than mDNS: the
+proper answer is a dependency, a second protocol, and a service that Windows,
+routers and antivirus all have opinions about, and the question here is one
+question asked across one shop's network by a handful of machines.
+
+Three properties it is built around:
+
+- **It answers only while the till is answering HTTP.** Same flag, same
+  lifetime, so there is no state where a till announces itself and then does not
+  answer when somebody knocks. A shop that has not turned sync on says nothing
+  about itself to anyone.
+- **It ignores anything that is not the probe**, without replying. A responder
+  that answers everything can be pointed at a victim with a forged source
+  address.
+- **Being findable grants nothing.** It says where to knock. Pairing still needs
+  a code read off that till's screen, and every request after that is signed.
+  Discovery sits on top of the security and is never part of it.
+
+What it gives away is the shop's name, an opaque id and a port — and anybody
+already on the shop's wifi could find the open port with a scanner in seconds,
+while the shop's name is printed on every receipt it hands out.
+
+Checked both ways against the real app: silent with sync off; found at
+`192.168.1.11:7801` by a separate process once it was on, with the noise packets
+ignored; and the app's own **Find tills** button listing another till and filling
+in its address.
+
+**Still owed:** a scheduled catch-up rather than a button. A convenience; it
+changes nothing about what is true of the data.
 
 **Phase 2d — discovery.** The host advertises itself on the LAN; a till pairs
 with it once. A small HTTP server on the Rust side, no cloud, no account, no

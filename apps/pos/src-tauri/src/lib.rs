@@ -3,6 +3,7 @@ mod attachments;
 mod backup;
 mod db;
 mod device;
+mod discovery;
 mod exports;
 mod hook;
 mod paths;
@@ -58,6 +59,7 @@ pub fn run() {
             sync_server::sync_serve_stop,
             sync_server::sync_serve_status,
             sync_server::sync_reply,
+            discovery::sync_look_around,
             printing::list_printers,
             printing::default_printer,
             printing::print_receipt,

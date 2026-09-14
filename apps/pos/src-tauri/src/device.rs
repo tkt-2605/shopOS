@@ -173,6 +173,12 @@ fn write_back(dir: &Path, stored: Stored) -> Result<Identity, String> {
     })
 }
 
+/// This machine's identity, for anything that needs to name it without going
+/// through a Tauri command — discovery announcing which till is answering.
+pub fn identity_of(dir: &Path) -> Result<Identity, String> {
+    load_or_mint(dir)
+}
+
 fn load_or_mint(dir: &Path) -> Result<Identity, String> {
     let path = dir.join(FILE);
 

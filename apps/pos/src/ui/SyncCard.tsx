@@ -2,9 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   syncUntilDone, httpTransport, pairWith, pairedPeers, listPeers,
   offerPairing, withdrawPairing, pruneAcknowledged,
-  SyncHttpError, type ContestedChange,
+  SyncHttpError, getSetting, type ContestedChange,
 } from '@shopos/core'
-import { startServing, stopServing, servingOn, type ServeInfo } from '../core/syncHost'
+import {
+  startServing, stopServing, servingOn, lookAround,
+  type ServeInfo, type FoundTill,
+} from '../core/syncHost'
 import { useCore } from '../core/CoreProvider'
 import { Card, Field, Alert } from './components'
 
@@ -21,7 +24,7 @@ import { Card, Field, Alert } from './components'
  */
 
 export function SyncCard() {
-  const { db } = useCore()
+  const { db, shop } = useCore()
   const [serving, setServing] = useState<ServeInfo | null>(null)
   const [code, setCode] = useState<string | null>(null)
   const [peers, setPeers] = useState<Array<{ deviceId: string; label: string | null; lastAgreedAt: string | null }>>([])
@@ -30,10 +33,16 @@ export function SyncCard() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [contested, setContested] = useState<ContestedChange[]>([])
+  const [found, setFound] = useState<FoundTill[] | null>(null)
+  const [looking, setLooking] = useState(false)
+  /* Which shop this is, so a till already in this shop is not offered back to
+     itself, and so two shops on one network are told apart. */
+  const [shopId, setShopId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setServing(await servingOn())
     setPeers(await listPeers(db))
+    setShopId(await getSetting(db, 'shop_id'))
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -53,7 +62,7 @@ export function SyncCard() {
         setCode(null)
         await stopServing()
       } else {
-        await startServing(db)
+        await startServing(db, 7801, { name: shop.name, id: shopId })
       }
       await refresh()
     } catch (err) {
@@ -67,6 +76,33 @@ export function SyncCard() {
 
   function showCode() {
     setCode(offerPairing())
+  }
+
+  /**
+   * Asks the network rather than asking the shopkeeper.
+   *
+   * Nobody should have to read 192.168.1.11 off one screen and type it into
+   * another, and the address changes whenever the router feels like it — so
+   * typing it once turns into a thing that breaks on a Tuesday. A till found
+   * here still has to be paired with a code; being findable grants nothing.
+   */
+  async function findTills() {
+    setError(null)
+    setLooking(true)
+    try {
+      const tills = await lookAround()
+      // This till answers the shout too, and pairing with itself is refused
+      // anyway — but offering it would be a puzzle rather than a choice.
+      const others = tills.filter((t) => t.shopId === null || t.shopId !== shopId)
+      setFound(others)
+      if (others.length === 1) {
+        setJoining((was) => ({ ...was, address: others[0]!.address }))
+      }
+    } catch (err) {
+      setError(`Could not look for tills on this network. ${String(err)}`)
+    } finally {
+      setLooking(false)
+    }
   }
 
   async function join() {
@@ -181,6 +217,9 @@ export function SyncCard() {
                 onChange={(e) => setJoining({ ...joining, address: e.target.value })}
               />
             </Field>
+            <button className="btn sm" disabled={looking} onClick={() => void findTills()}>
+              {looking ? 'Looking…' : 'Find tills'}
+            </button>
             <Field label="The code it is showing">
               <input
                 className="input"
@@ -198,6 +237,27 @@ export function SyncCard() {
               Join
             </button>
           </div>
+          {found !== null && (
+            <div style={{ fontSize: 12.5, marginTop: 8 }}>
+              {found.length === 0
+                ? 'No other till answered. Check it is switched on and that "Start answering" is pressed on it.'
+                : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {found.map((t) => (
+                      <button
+                        key={t.device}
+                        className="link-btn"
+                        style={{ textAlign: 'left' }}
+                        onClick={() => setJoining((was) => ({ ...was, address: t.address }))}
+                      >
+                        {t.shop ?? 'A till'} — {t.label} at {t.address}
+                      </button>
+                    ))}
+                  </div>
+                )}
+            </div>
+          )}
+
           <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>
             Only on a till that has <em>not</em> been set up with its own shop. A till
             that has already been set up is a second shop, and the two cannot be merged.
