@@ -1,6 +1,7 @@
 import type { SqlDriver } from '../db/driver.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { getSetting, setSetting } from './bootstrap.js'
+import type { Rounding } from '../domain/billTotals.js'
 
 /**
  * The capabilities a shop has chosen to use.
@@ -154,6 +155,46 @@ export async function setStockPolicy(
       action: 'update',
       before: { 'Selling below the count': before },
       after: { 'Selling below the count': policy },
+    })
+  })
+}
+
+/**
+ * What the counter does with the last few paise.
+ *
+ * `bills.round_off` has been a column since migration 001 and the reports have
+ * summed it since they were written; nothing ever put a number in it. This is
+ * what fills it. The arithmetic and the reasoning are in `billTotals.ts` —
+ * here is only the shop's answer, and the default is the honest one: `none`,
+ * which charges what the bill comes to.
+ */
+const ROUNDING = 'round_off_rule'
+
+const RULES: readonly Rounding[] = ['none', 'nearest', 'up', 'down']
+
+export const ROUNDING_DEFAULT: Rounding = 'none'
+
+export async function loadRounding(db: SqlDriver): Promise<Rounding> {
+  const value = await getSetting(db, ROUNDING)
+  return RULES.includes(value as Rounding) ? (value as Rounding) : ROUNDING_DEFAULT
+}
+
+export async function setRounding(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  rule: Rounding,
+): Promise<void> {
+  const before = await loadRounding(db)
+  if (before === rule) return
+
+  await db.transaction(async (tx) => {
+    await setSetting(tx, ROUNDING, rule, ctx.now?.())
+    await writeAudit(tx, ctx, {
+      entity: 'settings',
+      entityId: ROUNDING,
+      action: 'update',
+      before: { 'Rounding the total': before },
+      after: { 'Rounding the total': rule },
     })
   })
 }

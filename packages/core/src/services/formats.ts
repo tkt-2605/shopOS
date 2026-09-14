@@ -29,8 +29,12 @@ interface Row {
   paper: string
   kinds: string
   blocks: string
+  template: string | null
   updated_at: string
 }
+
+/** The columns every read of this table wants. One list, so they cannot drift. */
+const COLUMNS = 'id, name, paper, kinds, blocks, template, updated_at'
 
 /* Both shipped formats. Each is the floor its own print path lands on when
    anything else is missing, so neither can be deleted. */
@@ -38,7 +42,7 @@ const BUILT_IN = new Set(Object.values(STANDARD_FOR).map((f) => f.id))
 
 export async function listFormats(db: SqlDriver, paper?: PaperSize): Promise<StoredFormat[]> {
   const rows = await db.query<Row>(
-    `SELECT id, name, paper, kinds, blocks, updated_at
+    `SELECT ${COLUMNS}
        FROM doc_formats
       ${paper ? 'WHERE paper = ?' : ''}
       ORDER BY created_at`,
@@ -49,7 +53,7 @@ export async function listFormats(db: SqlDriver, paper?: PaperSize): Promise<Sto
 
 export async function loadFormat(db: SqlDriver, id: string): Promise<StoredFormat | null> {
   const row = await db.get<Row>(
-    `SELECT id, name, paper, kinds, blocks, updated_at FROM doc_formats WHERE id = ?`,
+    `SELECT ${COLUMNS} FROM doc_formats WHERE id = ?`,
     [id],
   )
   return row ? readRow(row) : null
@@ -141,6 +145,8 @@ export interface FormatInput {
   paper: PaperSize
   kinds: string[]
   blocks: Block[]
+  /** The shop's own HTML for a sheet. Blank or absent means the blocks lay it out. */
+  template?: string | null
 }
 
 export async function saveFormat(
@@ -148,7 +154,16 @@ export async function saveFormat(
   ctx: AuditContext & { actorId: string },
   input: FormatInput,
 ): Promise<SaveFormatResult> {
-  const clean: FormatInput = { ...input, name: input.name.trim() }
+  /* An all-whitespace template is no template: it is what a shop leaves behind
+     when it selects everything in the box and deletes it, and storing it would
+     leave a format that renders a blank sheet rather than going back to the
+     blocks. Normalised here rather than at four call sites. */
+  const template = (input.template ?? '').trim()
+  const clean: FormatInput = {
+    ...input,
+    name: input.name.trim(),
+    template: template === '' ? null : template,
+  }
 
   const problems = checkFormat(clean)
   if (problems.length > 0) return { ok: false, problems }
@@ -160,15 +175,19 @@ export async function saveFormat(
   await db.transaction(async (tx) => {
     if (before) {
       await tx.execute(
-        `UPDATE doc_formats SET name = ?, paper = ?, kinds = ?, blocks = ?, updated_at = ?
+        `UPDATE doc_formats
+            SET name = ?, paper = ?, kinds = ?, blocks = ?, template = ?, updated_at = ?
           WHERE id = ?`,
-        [clean.name, clean.paper, json(clean.kinds), json(clean.blocks), now, id],
+        [clean.name, clean.paper, json(clean.kinds), json(clean.blocks), clean.template ?? null, now, id],
       )
     } else {
       await tx.execute(
-        `INSERT INTO doc_formats (id, name, paper, kinds, blocks, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [id, clean.name, clean.paper, json(clean.kinds), json(clean.blocks), now, now],
+        `INSERT INTO doc_formats (id, name, paper, kinds, blocks, template, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, clean.name, clean.paper, json(clean.kinds), json(clean.blocks),
+          clean.template ?? null, now, now,
+        ],
       )
     }
 
@@ -179,8 +198,16 @@ export async function saveFormat(
       entity: 'doc_format',
       entityId: id,
       action: before ? 'update' : 'create',
-      before: before ? { name: before.name, paper: before.paper, blocks: json(before.blocks) } : null,
-      after: { name: clean.name, paper: clean.paper, blocks: json(clean.blocks) },
+      /* The template goes in as "yes there is one" rather than as the markup.
+         A history page is for "Ravi changed the A4 sheet on Tuesday"; four
+         kilobytes of HTML in an audit row is four kilobytes nobody reads. */
+      before: before
+        ? { name: before.name, paper: before.paper, blocks: json(before.blocks), template: had(before.template) }
+        : null,
+      after: {
+        name: clean.name, paper: clean.paper, blocks: json(clean.blocks),
+        template: had(clean.template),
+      },
     })
   })
 
@@ -235,6 +262,11 @@ function json(value: unknown): string {
   return JSON.stringify(value)
 }
 
+/** What the history says about a template, which is not the template. */
+function had(template: string | null | undefined): string {
+  return (template ?? '').trim() === '' ? 'laid out by blocks' : 'the shop’s own HTML'
+}
+
 /**
  * A row as a format, or null if the row cannot be believed.
  *
@@ -254,6 +286,7 @@ function readRow(row: Row): StoredFormat | null {
       paper: row.paper as PaperSize,
       kinds: kinds as string[],
       blocks: blocks as Block[],
+      template: row.template,
     }
 
     // A format saved before a block existed must not silently lose it.

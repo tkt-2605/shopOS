@@ -14,6 +14,8 @@ export * as Loyalty from './domain/loyalty.js'
 export * as Credit from './domain/credit.js'
 export * as Returns from './domain/returns.js'
 export * as DocFormat from './domain/docFormat.js'
+export * as HtmlTemplate from './domain/htmlTemplate.js'
+export type { TemplateProblem } from './domain/htmlTemplate.js'
 export type { Block, BlockKind, DocFormat as DocFormatDef, PaperSize, FormatProblem } from './domain/docFormat.js'
 
 export * as DocStatus from './integrity/docstatus.js'
@@ -55,6 +57,8 @@ export type {
 export { loadFeatures, isOn, setFeature, FEATURES_OFF } from './services/features.js'
 export { loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT } from './services/features.js'
 export type { StockPolicy } from './services/features.js'
+export { loadRounding, setRounding, ROUNDING_DEFAULT } from './services/features.js'
+export type { Rounding } from './domain/billTotals.js'
 export type { Features, FeatureKey } from './services/features.js'
 
 export {

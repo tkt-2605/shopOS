@@ -4,6 +4,7 @@ import { businessDate } from '../dates.js'
 import { ZERO, type Money } from '../money.js'
 import { QTY_SCALE, qty as asQty, type Qty } from '../quantity.js'
 import { computeTotals } from '../domain/billTotals.js'
+import { loadRounding } from './features.js'
 import { supplyTypeFor, type SupplyType } from '../domain/tax.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
 import { getSetting } from './bootstrap.js'
@@ -119,7 +120,10 @@ export async function createDocument(
     })
   }
 
-  const totals = computeTotals(priced, ZERO, supply)
+  /* Rounded by the shop's own rule, like a bill. A quotation for ₹99.60 that
+     becomes a bill for ₹100 has quoted the wrong number, and the difference is
+     the one a customer notices. */
+  const totals = computeTotals(priced, ZERO, supply, await loadRounding(db))
   const documentId = newId()
   let docNo = ''
 
@@ -137,7 +141,7 @@ export async function createDocument(
          subtotal, discount, taxable_total, tax_total, round_off, grand_total,
          place_of_supply, notes, terms, converted_from,
          created_by, created_at, updated_at
-       ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         documentId, docNo, input.kind, input.registerId,
         forSupplier ? null : input.customerId ?? null,
@@ -145,7 +149,8 @@ export async function createDocument(
         forSupplier ? input.supplierId ?? null : null,
         forSupplier ? party?.name ?? null : null,
         postingDate, input.validUntil ?? null,
-        totals.subtotal, totals.discount, totals.taxableTotal, totals.taxTotal, totals.grandTotal,
+        totals.subtotal, totals.discount, totals.taxableTotal, totals.taxTotal,
+        totals.roundOff, totals.grandTotal,
         supply === 'inter_state' ? 'inter_state' : 'intra_state',
         input.notes ?? null, input.terms ?? null, input.convertedFrom ?? null,
         input.actorId, nowIso, nowIso,

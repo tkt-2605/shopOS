@@ -18,6 +18,8 @@ export interface ProductListItem {
   /** Margin too thin to carry a discount, or to pay loyalty points on. */
   discountBlocked: boolean
   loyaltyBlocked: boolean
+  /** A recharge, a cut length, anything perishable. The return screen refuses it. */
+  returnBlocked: boolean
   /** Null means the owner has not set one, which is not the same as zero. */
   reorderLevel: Qty | null
   reorderQty: Qty | null
@@ -59,7 +61,8 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
-            p.discount_blocked, p.loyalty_blocked, p.reorder_level, p.reorder_qty,
+            p.discount_blocked, p.loyalty_blocked, p.return_blocked,
+            p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
             p.parent_product_id, parent.name AS parent_name, p.variant_label,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
@@ -89,7 +92,8 @@ export async function productsByIds(db: SqlDriver, ids: string[]): Promise<Produ
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
-            p.discount_blocked, p.loyalty_blocked, p.reorder_level, p.reorder_qty,
+            p.discount_blocked, p.loyalty_blocked, p.return_blocked,
+            p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
             p.parent_product_id, parent.name AS parent_name, p.variant_label,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
@@ -107,7 +111,8 @@ export async function findByBarcode(db: SqlDriver, barcode: string): Promise<Pro
   const row = await db.get<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
             p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
-            p.discount_blocked, p.loyalty_blocked, p.reorder_level, p.reorder_qty,
+            p.discount_blocked, p.loyalty_blocked, p.return_blocked,
+            p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
             p.parent_product_id, parent.name AS parent_name, p.variant_label,
             COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
@@ -331,6 +336,8 @@ export interface BillDetail extends BillListItem {
   discount: Money
   taxableTotal: Money
   taxTotal: Money
+  /** The paise added or dropped to reach a round figure. Signed; usually zero. */
+  roundOff: Money
   cancelReason: string | null
   items: BillDetailItem[]
   payments: { method: string; amount: Money; reference: string | null }[]
@@ -359,11 +366,13 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     id: string; doc_no: string; docstatus: number; posting_date: string
     customer_id: string | null; customer_name: string | null
     subtotal: number; discount: number; taxable_total: number; tax_total: number
+    round_off: number
     grand_total: number; credit_total: number; cancel_reason: string | null; username: string | null
   }>(
     `SELECT b.id, b.doc_no, b.docstatus, b.posting_date, b.customer_id, b.customer_name,
             b.subtotal, b.discount,
-            b.taxable_total, b.tax_total, b.grand_total, b.credit_total, b.cancel_reason, u.username
+            b.taxable_total, b.tax_total, b.round_off, b.grand_total, b.credit_total,
+            b.cancel_reason, u.username
        FROM bills b LEFT JOIN users u ON u.id = b.created_by
       WHERE b.id = ?`,
     [billId],
@@ -398,6 +407,7 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     // `returned_qty` is the same fact the EXISTS on the list answers.
     returned: items.some((i) => i.returned_qty > 0),
     subtotal: head.subtotal as Money,
+    roundOff: head.round_off as Money,
     discount: head.discount as Money,
     taxableTotal: head.taxable_total as Money,
     taxTotal: head.tax_total as Money,
@@ -440,6 +450,7 @@ interface ProductRow {
   qty_on_hand: number
   discount_blocked: number
   loyalty_blocked: number
+  return_blocked: number
   reorder_level: number | null
   reorder_qty: number | null
   category_id: string | null
@@ -465,6 +476,7 @@ function toProduct(r: ProductRow): ProductListItem {
     qtyOnHand: qty(r.qty_on_hand),
     discountBlocked: r.discount_blocked === 1,
     loyaltyBlocked: r.loyalty_blocked === 1,
+    returnBlocked: r.return_blocked === 1,
     reorderLevel: r.reorder_level === null ? null : qty(r.reorder_level),
     reorderQty: r.reorder_qty === null ? null : qty(r.reorder_qty),
     categoryId: r.category_id,

@@ -1,4 +1,5 @@
 import { type Money, format as fmtMoney, inWords } from '../money.js'
+import type { DocWording } from './wording.js'
 import { type Qty, formatQty } from '../quantity.js'
 import type { Block, DocFormat, Facts } from './docFormat.js'
 import { rollColumns, STANDARD_RECEIPT, fillTokens } from './docFormat.js'
@@ -46,6 +47,9 @@ export interface ReceiptShop {
   name: string
   address?: string | null
   phone?: string | null
+  /* Sheet-only: no block prints it, but a shop that writes its own A4 template
+     can ask for it, and a token that resolves to nothing is a token that lies. */
+  email?: string | null
   gstin?: string | null
   /**
    * The shop's mark, as a `data:` URI.
@@ -89,6 +93,15 @@ export interface ReceiptDoc {
   cgst: Money
   sgst: Money
   igst: Money
+  /**
+   * The paise added or dropped to reach a round figure, signed.
+   *
+   * Printed on its own line whenever it is not zero, because a customer
+   * comparing the lines to the total has to be able to find the difference.
+   * Absent means a document raised before the shop had an answer, and prints
+   * nothing — not a zero.
+   */
+  roundOff?: Money
   grandTotal: Money
   payments: { method: string; amount: Money }[]
   pointsEarned?: number
@@ -121,20 +134,10 @@ export interface ReceiptDoc {
  * with the document and not with the format, because the shop chooses its
  * format and does not get to choose what a purchase order is.
  */
-export interface DocWording {
-  /** Across the head of the sheet: TAX INVOICE, QUOTATION, PURCHASE ORDER. */
-  title: string
-  /** Beside the number: "Invoice no.", "Quotation no.". */
-  docNo: string
-  /** On the party box: "Billed to", "Ordered from". */
-  party: string
-  /** On whoever raised it: "Billed by", "Raised by". */
-  by: string
-}
-
-export const BILL_WORDING: DocWording = {
-  title: 'Tax Invoice', docNo: 'Invoice no.', party: 'Billed to', by: 'Billed by',
-}
+/* Declared in `wording.ts` and re-exported here, where every caller already
+   looks for them. See that file for why they had to leave this one. */
+export type { DocWording } from './wording.js'
+export { BILL_WORDING } from './wording.js'
 
 /**
  * The receipt, block by block.
@@ -218,6 +221,9 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
       if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
       if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
       if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
+      /* Signed, and shown with its sign: "Round off -0.40" says the shop gave
+         forty paise up, which is a different sentence from "Round off 0.40". */
+      if (doc.roundOff) out.push(kv('Round off', signed(doc.roundOff), width))
       out.push(rule('=', width))
       out.push(MODE_TALL, kv('TOTAL', fmtMoney(doc.grandTotal), Math.floor(width / 2)), MODE_NORMAL)
       out.push(rule('=', width))
@@ -580,4 +586,9 @@ export function visibleLines(receipt: string): string[] {
     .replace(/\x1Bd[\s\S]/g, '')
     .replace(/\x1DV[\s\S]/g, '')
     .split('\n')
+}
+
+/** An amount that means something different when it is negative. */
+export function signed(amount: Money): string {
+  return amount < 0 ? `-${fmtMoney(Math.abs(amount) as Money)}` : `+${fmtMoney(amount)}`
 }

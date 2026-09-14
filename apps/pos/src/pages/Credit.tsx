@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Money, searchCustomers, customerStatement, customerAccount, recordPayment,
   Permissions,
@@ -7,7 +7,7 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees, Stat } from '../ui/components'
-import { usePickList } from '../ui/PickList'
+import { usePickList, Results } from '../ui/PickList'
 import { printStatement } from '../core/print'
 import { statementPdf } from '../core/pdf'
 
@@ -574,6 +574,8 @@ function OpeningBalance({
     return () => clearTimeout(id)
   }, [db, term])
 
+  const box = useRef<HTMLInputElement>(null)
+
   const pick = usePickList({
     count: found.length,
     resetKey: term,
@@ -631,14 +633,14 @@ function OpeningBalance({
         </div>
       ) : (
         <>
-          <div className="results-anchor">
+          <>
             <Field label="Customer">
-              <input className="input" autoFocus placeholder="Name, phone or code"
+              <input className="input" autoFocus ref={box} placeholder="Name, phone or code"
                 value={term} onChange={(e) => setTerm(e.target.value)}
                 onKeyDown={pick.searchKeyDown} />
             </Field>
-            {found.length > 0 && (
-              <div className="results" {...pick.listProps}>
+            <Results anchor={box} open={found.length > 0}>
+              <div {...pick.listProps}>
                 {found.map((c, i) => (
                   <div key={c.id} style={{ padding: '7px 10px' }} {...pick.rowProps(i)}>
                     {c.name}
@@ -646,8 +648,8 @@ function OpeningBalance({
                   </div>
                 ))}
               </div>
-            )}
-          </div>
+            </Results>
+          </>
         </>
       )}
 

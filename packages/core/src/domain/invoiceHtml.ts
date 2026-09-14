@@ -1,7 +1,8 @@
 import { format as fmtMoney, inWords } from '../money.js'
 import { formatQty } from '../quantity.js'
 import { BILL_WORDING, type DocWording, type ReceiptDoc, type ReceiptItem } from './receipt.js'
-import { fillTokens, PAPER, type Block, type DocFormat, type Facts } from './docFormat.js'
+import { fillTokens, PAPER, usesTemplate, type Block, type DocFormat, type Facts } from './docFormat.js'
+import { renderTemplate, templateData } from './htmlTemplate.js'
 
 /**
  * The same document, on a sheet.
@@ -38,7 +39,13 @@ export function buildInvoiceHtml(
   const spec = PAPER[format.paper]
   const pageSize = spec.kind === 'sheet' ? spec.css : 'A4'
 
-  const body = format.blocks
+  /* The shop's own markup, when it has written some. `renderTemplate` answers
+     null for a template with a fault in it, and then the blocks are what prints
+     — a bill that looks like the standard one beats a bill with a hole in it,
+     and the designer is where a shop is told which of the two it is getting. */
+  const own = usesTemplate(format) ? renderTemplate(format.template!, templateData(doc)) : null
+
+  const body = own ?? format.blocks
     .filter((b) => b.on)
     .map((b) => renderBlock(b, doc))
     .filter((html) => html !== '')
@@ -48,6 +55,9 @@ export function buildInvoiceHtml(
     '<!doctype html>',
     '<html lang="en"><head><meta charset="utf-8">',
     `<title>${esc(doc.docNo)}</title>`,
+    /* The shop's own page still gets the page box, the margin trick and a plain
+       set of defaults to build on. What it does not get is the block layout's
+       own classes, which its markup does not use. */
     `<style>${styles(pageSize, options.preview ?? false)}</style>`,
     '</head><body>',
     // The spacer rows are what put a margin on the second and later pages; see
@@ -123,6 +133,9 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
       if (doc.cgst > 0) rows.push(row('CGST', doc.cgst))
       if (doc.sgst > 0) rows.push(row('SGST', doc.sgst))
       if (doc.igst > 0) rows.push(row('IGST', doc.igst))
+      /* Only when there is one. A "Round off 0.00" line on an invoice that was
+         never rounded is a line that raises a question and answers nothing. */
+      if (doc.roundOff) rows.push(row('Round off', Math.abs(doc.roundOff), doc.roundOff < 0 ? '-' : '+'))
 
       return `<table class="totals"><tbody>
         ${rows.join('')}

@@ -1,3 +1,5 @@
+import { checkTemplate, type TemplateProblem } from './htmlTemplate.js'
+
 /**
  * What a printed document is made of.
  *
@@ -44,6 +46,20 @@ export interface DocFormat {
   /** Which documents this may print: `bill` today, orders in the next round. */
   kinds: string[]
   blocks: Block[]
+  /**
+   * The shop's own HTML, which replaces the blocks entirely.
+   *
+   * Sheet only, and null on all but a shop that has written one — see
+   * `htmlTemplate.ts` for why the blocks-versus-template argument comes out
+   * differently on a sheet than on a roll. The blocks are kept alongside it
+   * rather than discarded, so a shop can go back.
+   */
+  template?: string | null
+}
+
+/** Whether this format is laid out by its blocks or by the shop's own markup. */
+export function usesTemplate(format: Pick<DocFormat, 'paper' | 'template'>): boolean {
+  return !isRoll(format.paper) && (format.template ?? '').trim() !== ''
 }
 
 /**
@@ -319,6 +335,9 @@ export type FormatProblem =
   | { code: 'NOTHING_ON' }
   | { code: 'NO_ITEMS_BLOCK' }
   | { code: 'NOT_IMPLEMENTED'; kind: BlockKind }
+  /** A roll has no HTML in its path at all, so a template there could never print. */
+  | { code: 'TEMPLATE_ON_ROLL' }
+  | { code: 'TEMPLATE'; problem: TemplateProblem }
 
 /**
  * What a format has to satisfy before it is allowed near a printer.
@@ -327,10 +346,24 @@ export type FormatProblem =
  * slip of paper with a total on it, which is not a bill, and no shop means to
  * print one. Caught here rather than at the counter.
  */
-export function checkFormat(format: Pick<DocFormat, 'name' | 'blocks' | 'paper'>): FormatProblem[] {
+export function checkFormat(
+  format: Pick<DocFormat, 'name' | 'blocks' | 'paper' | 'template'>,
+): FormatProblem[] {
   const problems: FormatProblem[] = []
 
   if (format.name.trim() === '') problems.push({ code: 'NAME_REQUIRED' })
+
+  /* A template replaces the blocks, so the block rules do not apply to it and
+     checking both would refuse a perfectly good sheet for having its items
+     switch off. What it is checked against instead is its own markup. */
+  const template = (format.template ?? '').trim()
+  if (template !== '') {
+    if (isRoll(format.paper)) return [...problems, { code: 'TEMPLATE_ON_ROLL' }]
+    return [
+      ...problems,
+      ...checkTemplate(template).map((problem): FormatProblem => ({ code: 'TEMPLATE', problem })),
+    ]
+  }
 
   const on = format.blocks.filter((b) => b.on)
   if (on.length === 0) problems.push({ code: 'NOTHING_ON' })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   listPriceLists, createPriceList, updatePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
@@ -11,7 +11,7 @@ import {
 import { useCore, useDb, useUser } from '../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
-import { usePickList } from '../ui/PickList'
+import { usePickList, Results } from '../ui/PickList'
 
 /**
  * Where prices are set.
@@ -190,6 +190,10 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
     setPrices(await listItemPrices(db, { productId: chosen.id }))
   }
 
+  /* The search box the results hang from. The list is portalled to the body,
+     so this is how it knows where the box is. */
+  const box = useRef<HTMLInputElement>(null)
+
   const pick = usePickList({
     count: results.length,
     resetKey: term,
@@ -199,24 +203,22 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
   return (
     <>
       <Card title="Which item">
-        <div className="results-anchor">
-          <input className="input" id="price-search" autoFocus
-            placeholder="Search an item by name, code or barcode"
-            value={term} onChange={(e) => setTerm(e.target.value)}
-            onKeyDown={pick.searchKeyDown} />
-          {results.length > 0 && (
-            <div className="results" {...pick.listProps}>
-              {results.map((p, i) => (
-                <div key={p.id} style={{ padding: '7px 10px' }} {...pick.rowProps(i)}>
-                  {p.name}
-                  <span style={{ float: 'right', color: 'var(--ink-3)' }}>
-                    base <Rupees value={p.baseRate} /> / {p.baseUnit}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <input className="input" id="price-search" autoFocus ref={box}
+          placeholder="Search an item by name, code or barcode"
+          value={term} onChange={(e) => setTerm(e.target.value)}
+          onKeyDown={pick.searchKeyDown} />
+        <Results anchor={box} open={results.length > 0}>
+          <div {...pick.listProps}>
+            {results.map((p, i) => (
+              <div key={p.id} style={{ padding: '7px 10px' }} {...pick.rowProps(i)}>
+                {p.name}
+                <span style={{ float: 'right', color: 'var(--ink-3)' }}>
+                  base <Rupees value={p.baseRate} /> / {p.baseUnit}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Results>
       </Card>
 
       {chosen && (
@@ -475,6 +477,9 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
     setRates(await listCustomerPrices(db, { customerId: chosen.id }))
   }
 
+  const box = useRef<HTMLInputElement>(null)
+  const itemBox = useRef<HTMLInputElement>(null)
+
   const customerPick = usePickList({
     count: results.length,
     resetKey: term,
@@ -490,20 +495,18 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
   return (
     <>
       <Card title="Which customer">
-        <div className="results-anchor">
-          <input className="input" placeholder="Search a customer by name or phone"
-            value={term} onChange={(e) => setTerm(e.target.value)}
-            onKeyDown={customerPick.searchKeyDown} />
-          {results.length > 0 && (
-            <div className="results" {...customerPick.listProps}>
-              {results.map((c, i) => (
-                <div key={c.id} style={{ padding: '7px 10px' }} {...customerPick.rowProps(i)}>
-                  {c.name}<span style={{ float: 'right', color: 'var(--ink-3)' }}>{c.phone ?? ''}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <input className="input" ref={box} placeholder="Search a customer by name or phone"
+          value={term} onChange={(e) => setTerm(e.target.value)}
+          onKeyDown={customerPick.searchKeyDown} />
+        <Results anchor={box} open={results.length > 0}>
+          <div {...customerPick.listProps}>
+            {results.map((c, i) => (
+              <div key={c.id} style={{ padding: '7px 10px' }} {...customerPick.rowProps(i)}>
+                {c.name}<span style={{ float: 'right', color: 'var(--ink-3)' }}>{c.phone ?? ''}</span>
+              </div>
+            ))}
+          </div>
+        </Results>
       </Card>
 
       {chosen && (
@@ -559,18 +562,18 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
           {canWrite && (
             <div style={{ marginTop: 15, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
               {!picked ? (
-                <div className="results-anchor" style={{ maxWidth: 420 }}>
-                  <input className="input" placeholder="Add a rate — search the item"
+                <div style={{ maxWidth: 420 }}>
+                  <input className="input" ref={itemBox} placeholder="Add a rate — search the item"
                     value={productTerm} onChange={(e) => setProductTerm(e.target.value)}
                     onKeyDown={productPick.searchKeyDown} />
-                  {productResults.length > 0 && (
-                    <div className="results" {...productPick.listProps}>
+                  <Results anchor={itemBox} open={productResults.length > 0}>
+                    <div {...productPick.listProps}>
                       {productResults.map((p, i) => (
                         <div key={p.id} style={{ padding: '7px 10px' }}
                           {...productPick.rowProps(i)}>{p.name}</div>
                       ))}
                     </div>
-                  )}
+                  </Results>
                 </div>
               ) : (
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>

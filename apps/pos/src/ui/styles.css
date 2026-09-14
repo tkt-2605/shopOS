@@ -279,17 +279,15 @@ tbody tr:hover { background: var(--accent-soft); }
 /* Search is a transient overlay, not a permanent half of the screen — the cart is
    what the cashier watches, so it keeps the space. */
 .scan-wrap { position: relative; flex-shrink: 0; }
-/* A dropdown needs something to hang from. An absolutely-positioned list with
-   no positioned ancestor falls back to the page itself, which is how the item
-   search on Special Prices ended up at the foot of the window, half off-screen,
-   a thousand pixels below the box it belongs to. Every `.results` sits inside
-   one of these; the ones that happened to work did so only because a modal was
-   positioned somewhere above them. */
-.results-anchor { position: relative; }
-
+/* A dropdown hangs off the body, not off the box it belongs to.
+   Anchoring it to the box was the obvious fix and it was not enough: `.card`
+   clips at `overflow: hidden` and `.modal` at `overflow-y: auto`, so the list
+   appeared in the right place and was then sliced off at the card's edge. Out
+   here nothing clips it. `ui/PickList.tsx` measures the box and sets left,
+   width and top — or bottom, when it opens upwards — in viewport coordinates.
+   Above `.backdrop` (50), so a list inside a dialog is not behind it. */
 .results {
-  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 20;
-  max-height: 46vh; overflow: auto;
+  position: fixed; z-index: 60; overflow: auto;
   background: var(--surface); border: 1px solid var(--rule-strong);
   border-radius: var(--radius); box-shadow: var(--shadow);
 }
@@ -652,3 +650,30 @@ tbody tr:hover { background: var(--accent-soft); }
   border: 1px solid var(--rule);
 }
 .sheet-preview.paper-a5 { height: 460px; }
+
+/* ── the shop's own sheet markup ─────────────────────────────────── */
+
+.template-editor { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 14px; }
+.template-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Monospace and tall. This is the one place in the product where a person is
+   editing code rather than filling a field, and a three-line box would make
+   even the starting template unreadable. `resize: vertical` because how much
+   room it wants depends entirely on what they pasted. */
+.template-source {
+  min-height: 340px; padding: 10px 12px; resize: vertical;
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px; line-height: 1.5; tab-size: 2; white-space: pre;
+}
+
+.token-list {
+  max-height: 260px; overflow: auto; padding: 8px 10px;
+  background: var(--surface-2); border: 1px solid var(--rule);
+}
+.token-row { display: flex; gap: 10px; padding: 3px 0; font-size: 11.5px; align-items: baseline; }
+.token-row code {
+  flex: 0 0 168px; color: var(--ink); font-size: 11px;
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+}
+.token-row span { color: var(--ink-2); }
+.token-row em { color: var(--ink-3); font-style: normal; }

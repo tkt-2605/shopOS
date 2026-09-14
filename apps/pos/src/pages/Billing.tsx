@@ -10,10 +10,10 @@ import { printBill } from '../core/print'
 import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBillTabs'
 import { useShortcuts } from '../core/useShortcuts'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
-import { usePickList } from '../ui/PickList'
+import { usePickList, Results } from '../ui/PickList'
 
 export default function Billing() {
-  const { db, registerId, stockPolicy } = useCore()
+  const { db, registerId, stockPolicy, rounding } = useCore()
   const user = useUser()
   const tabs = useBillTabs(db, registerId, user.id)
   const active = tabs.active
@@ -44,9 +44,18 @@ export default function Billing() {
     return () => { cancelled = true; clearTimeout(id) }
   }, [db, term])
 
+  /* The shop's rounding rule, applied here as well as in the service. The
+     cashier is looking at this number while the customer hands over the money,
+     so it has to be the number the bill will carry — not a near miss the
+     receipt then corrects. */
   const totals = useMemo(
-    () => Totals.computeTotals(totalsLinesOf(active.lines), (Money.parseMoney(active.discount) ?? 0) as never),
-    [active.lines, active.discount],
+    () => Totals.computeTotals(
+      totalsLinesOf(active.lines),
+      (Money.parseMoney(active.discount) ?? 0) as never,
+      'intra_state',
+      rounding,
+    ),
+    [active.lines, active.discount, rounding],
   )
 
   /* Lines the shop sells at a few rupees a unit. The discount box has to say so,
@@ -182,6 +191,9 @@ export default function Billing() {
   /* The two lists a cashier chooses from. Enter on the scan box is deliberately
      not the list's Enter: an exact barcode beats whatever is highlighted, which
      is what makes a scanner feel instant. */
+  /* The scan bar, not the input inside it: the list is as wide as the bar. */
+  const scanBox = useRef<HTMLDivElement>(null)
+
   const resultPick = usePickList({
     count: results.length,
     resetKey: term,
@@ -325,7 +337,7 @@ export default function Billing() {
         )}
 
         <div className="scan-wrap">
-          <div className="scan-bar">
+          <div className="scan-bar" ref={scanBox}>
             <input
               ref={scanRef}
               placeholder="Scan a barcode or type to search…"
@@ -336,9 +348,8 @@ export default function Billing() {
             />
           </div>
 
-          {term !== '' && (
-            <div className="results">
-              <table>
+          <Results anchor={scanBox} open={term !== ''}>
+            <table>
                 <tbody {...resultPick.listProps}>
                   {results.map((p, i) => (
                     <tr key={p.id} {...resultPick.rowProps(i)}>
@@ -356,9 +367,8 @@ export default function Billing() {
                     <tr><td colSpan={3}><Empty>Nothing matches “{term}”</Empty></td></tr>
                   )}
                 </tbody>
-              </table>
-            </div>
-          )}
+            </table>
+          </Results>
         </div>
 
         <div className="cart">
@@ -674,14 +684,6 @@ function totalsLinesOf(lines: CartLine[]): Totals.TotalsLine[] {
     taxRateBp: l.product.taxRateBp,
     discountBlocked: l.product.discountBlocked,
   }))
-}
-
-/** A tab's headline figure, computed the same way as the active cart's. */
-function billTotal(cart: Cart): number {
-  return Totals.computeTotals(
-    totalsLinesOf(cart.lines),
-    (Money.parseMoney(cart.discount) ?? 0) as never,
-  ).grandTotal
 }
 
 function submitMessage(result: Extract<Awaited<ReturnType<typeof submitBill>>, { ok: false }>): string {

@@ -31,7 +31,7 @@ const DENSITIES: { id: Density; name: string }[] = [
 ]
 
 export default function Settings() {
-  const { db, features, setFeatureFlag, stockPolicy, setStockPolicyTo } = useCore()
+  const { db, features, setFeatureFlag, stockPolicy, setStockPolicyTo, rounding, setRoundingTo } = useCore()
   const [theme, setTheme] = useState<Theme>('daylight')
   const [density, setDensity] = useState<Density>('compact')
   const [program, setProgram] = useState<Loyalty.LoyaltyProgram | null>(null)
@@ -430,6 +430,45 @@ export default function Settings() {
                 id: 'allow',
                 title: 'Say nothing',
                 note: 'Fastest at the counter. A count that is genuinely wrong is never noticed at the till.',
+              },
+            ]}
+          />
+        </div>
+
+        <div style={{ paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>The last few paise</div>
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 2, marginBottom: 9, lineHeight: 1.5 }}>
+            GST on a round rate almost never lands on a whole rupee, so a bill of
+            ₹99.60 is the ordinary case. There is no 60-paise coin, so a counter
+            settles it somehow — and that should be the shop’s decision rather
+            than whatever the cashier does in the moment. The difference prints
+            on the bill as its own “Round off” line and is totalled on the day’s
+            report, so nothing is quietly kept or quietly given away. The taxable
+            value and the tax do not move: only the total does.
+          </div>
+          <Choice
+            value={rounding}
+            onChange={(next) => void setRoundingTo(next)}
+            options={[
+              {
+                id: 'none',
+                title: 'Charge what it comes to',
+                note: '₹99.60 is ₹99.60. Right for a shop taking card or UPI, where the paise can actually be collected.',
+              },
+              {
+                id: 'nearest',
+                title: 'Nearest rupee',
+                note: '₹99.60 becomes ₹100 and ₹99.40 becomes ₹99. Over a day it comes out roughly even. What most counters do.',
+              },
+              {
+                id: 'up',
+                title: 'Always up',
+                note: '₹99.10 becomes ₹100. The shop never loses a paisa and the customer always pays the difference.',
+              },
+              {
+                id: 'down',
+                title: 'Always down',
+                note: '₹99.90 becomes ₹99. The customer never pays more than the bill; the shop absorbs it.',
               },
             ]}
           />

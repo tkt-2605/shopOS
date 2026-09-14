@@ -1,0 +1,18 @@
+-- A sheet format may carry the shop's own HTML instead of a block list.
+--
+-- Nullable, and null is what every existing row keeps: a format with no
+-- template is a format laid out by its blocks, which is every format that
+-- exists today. Nothing about a shop's current invoice changes because this
+-- column arrived.
+--
+-- Only a sheet uses it. A thermal roll is a column of characters sent as
+-- ESC/POS bytes and there is no HTML anywhere in that path, so a template on a
+-- roll format would be a value nothing could ever read — which is the exact
+-- fault this product keeps finding in itself. `checkFormat` refuses it, and the
+-- designer never offers the field on a roll.
+--
+-- Text, unchecked here. What may be in it is a question about markup rather
+-- than about storage, and `domain/htmlTemplate.ts` is the one place that
+-- answers it — on the way in at the designer, and again on the way out at the
+-- printer, so a row edited by any other means still cannot print a script.
+ALTER TABLE doc_formats ADD COLUMN template TEXT;

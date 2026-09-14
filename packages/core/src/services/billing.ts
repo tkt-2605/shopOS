@@ -11,7 +11,7 @@ import { calculateEarned, planRedemption, type LoyaltyProgram, type LoyaltyEntry
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, assertAmendable, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
-import { loadStockPolicy } from './features.js'
+import { loadStockPolicy, loadRounding } from './features.js'
 import { checkAvailability, postMovement, reverseVoucher, type StockShortfall } from './stock.js'
 import { nextDocNo } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
@@ -219,7 +219,10 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
   }
 
   const billDiscount = input.billDiscount ?? ZERO
-  const totals = computeTotals(computed, billDiscount, supply)
+  /* Read here rather than passed in, so the counter, the draft it saves and the
+     bill it becomes are all rounded by the same answer. The screen reads the
+     same setting through the core context. */
+  const totals = computeTotals(computed, billDiscount, supply, await loadRounding(db))
 
   // computeTotals clamps for the screen's benefit; a service caller asking for
   // more discount than the bill holds is a mistake worth reporting, not silently
@@ -297,9 +300,9 @@ export async function createBill(db: SqlDriver, input: CreateBillInput): Promise
     await tx.execute(
       `INSERT INTO bills
          (id, doc_no, docstatus, register_id, session_id, customer_id, customer_name, posting_date,
-          subtotal, discount, taxable_total, tax_total, grand_total, place_of_supply, notes,
+          subtotal, discount, taxable_total, tax_total, round_off, grand_total, place_of_supply, notes,
           converted_from, created_by, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?)`,
       [
         billId, `DRAFT-${billId}`, input.registerId, meta.sessionId,
         meta.customerId, meta.customerName, meta.postingDate,
@@ -311,8 +314,9 @@ export async function createBill(db: SqlDriver, input: CreateBillInput): Promise
     await writeLines(tx, billId, computed, totals)
 
     await tx.execute(
-      `UPDATE bills SET subtotal = ?, taxable_total = ?, tax_total = ?, grand_total = ? WHERE id = ?`,
-      [subtotal, totals.taxableTotal, totals.taxTotal, totals.grandTotal, billId],
+      `UPDATE bills SET subtotal = ?, taxable_total = ?, tax_total = ?, round_off = ?, grand_total = ?
+         WHERE id = ?`,
+      [subtotal, totals.taxableTotal, totals.taxTotal, totals.roundOff, totals.grandTotal, billId],
     )
 
     await writeAudit(tx, { actorId: input.actorId }, {
@@ -363,12 +367,14 @@ export async function saveDraft(
 
     await tx.execute(
       `UPDATE bills SET session_id = ?, customer_id = ?, customer_name = ?, posting_date = ?,
-              subtotal = ?, discount = ?, taxable_total = ?, tax_total = ?, grand_total = ?,
+              subtotal = ?, discount = ?, taxable_total = ?, tax_total = ?,
+              round_off = ?, grand_total = ?,
               place_of_supply = ?, notes = ?, converted_from = ?, updated_at = ?
          WHERE id = ? AND docstatus = 0`,
       [
         meta.sessionId, meta.customerId, meta.customerName, meta.postingDate,
-        subtotal, totals.discount, totals.taxableTotal, totals.taxTotal, totals.grandTotal,
+        subtotal, totals.discount, totals.taxableTotal, totals.taxTotal,
+        totals.roundOff, totals.grandTotal,
         // Written plainly rather than kept: a cart cleared of the order's items
         // and refilled with others is no longer that order's bill, and the
         // counter is what knows which it is.

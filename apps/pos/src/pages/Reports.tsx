@@ -177,6 +177,16 @@ export default function Reports() {
             />
             <Stat label="GST collected" value={<Rupees value={s.tax} />} sub={`on ${Money.formatWithSymbol(s.taxable)} taxable`} />
             <Stat label="Sold on credit" value={<Rupees value={s.credit} />} sub={`${Money.formatWithSymbol(s.paid)} taken at the counter`} />
+            {/* Only when the shop rounds. A tile reading ₹0.00 every day on a
+                counter that charges what the bill comes to is a tile that
+                teaches people to stop reading the row. */}
+            {s.roundOff !== 0 && (
+              <Stat
+                label="Rounded off"
+                value={<Rupees value={s.roundOff} />}
+                sub={s.roundOff < 0 ? 'given up over the period' : 'collected over the period'}
+              />
+            )}
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

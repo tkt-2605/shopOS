@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
+import { createPortal } from 'react-dom'
 
 /**
  * A list you can choose from without the mouse.
@@ -147,3 +148,91 @@ export function usePickList({
     searchKeyDown,
   }
 }
+
+/* ------------------------------------------------- the floating list --- */
+
+/**
+ * The panel a search list drops into.
+ *
+ * It is portalled to the body and positioned in viewport coordinates, which is
+ * not decoration — it is the only arrangement that survives this app's own
+ * layout. A dropdown rendered where it is written has to escape every ancestor
+ * that clips, and there are two of them everywhere: `.card` sets
+ * `overflow: hidden` so its header rule meets its border cleanly, and `.modal`
+ * sets `overflow-y: auto` so a tall dialog scrolls. Either one slices an
+ * absolutely-positioned child off at the box edge.
+ *
+ * That is what the Special Prices screen was doing: the customer list rendered
+ * correctly, six pixels below the search box, and the card cut all but the top
+ * of the first row. Anchoring it (`.results-anchor`) had fixed *where* it
+ * appeared without fixing *that it was being cut*, because the clip is the
+ * ancestor's, not the anchor's.
+ *
+ * Out here nothing clips it. The cost is that it no longer moves with the page
+ * on its own, so it is re-measured on resize and on any scroll anywhere —
+ * captured, because the scroll that matters is a container's, not the window's,
+ * and a container's scroll event does not bubble.
+ */
+export function Results({ anchor, open, children }: {
+  /** The box it hangs from — the search input, or the bar holding it. */
+  anchor: RefObject<HTMLElement | null>
+  open: boolean
+  children: ReactNode
+}) {
+  const [box, setBox] = useState<CSSProperties | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) { setBox(null); return }
+
+    const place = () => {
+      const el = anchor.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const room = { below: window.innerHeight - r.bottom - GAP - EDGE, above: r.top - GAP - EDGE }
+
+      /* Upwards when there is not enough room below and more of it above. The
+         last row of a list at the foot of the window is the one a cashier
+         reaches for, so "it fits, mostly" is not good enough. */
+      const up = room.below < MIN_DROP && room.above > room.below
+      const height = Math.max(MIN_DROP, Math.min(up ? room.above : room.below, window.innerHeight * 0.46))
+
+      setBox({
+        left: Math.round(r.left),
+        width: Math.round(r.width),
+        maxHeight: Math.round(height),
+        ...(up
+          ? { bottom: Math.round(window.innerHeight - r.top + GAP) }
+          : { top: Math.round(r.bottom + GAP) }),
+      })
+    }
+
+    place()
+    window.addEventListener('resize', place)
+    // Capture: a scrolling `.content` or `.modal` does not bubble its scroll.
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open, anchor, children])
+
+  if (!open || !box) return null
+
+  /* Tab hands the keyboard back to the search box and then carries on, so the
+     next stop is the one after the box rather than wherever the body happens to
+     put this panel. Not prevented: Tab has to keep meaning Tab. */
+  function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (e.key === 'Tab') anchor.current?.focus()
+  }
+
+  return createPortal(
+    <div className="results" style={box} onKeyDown={onKeyDown}>{children}</div>,
+    document.body,
+  )
+}
+
+/** The gap between the box and its list, and the paper edge it will not touch. */
+const GAP = 6
+const EDGE = 10
+/** Less room than this below and the list would rather open upwards. */
+const MIN_DROP = 170

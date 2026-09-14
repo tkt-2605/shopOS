@@ -67,7 +67,10 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
   const format = await formatFor(db, { kind: doc.kind, channel: 'sheet' })
 
   const sheet: ReceiptDoc = {
-    shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo },
+    shop: {
+      name: shop.name, address: shop.address, phone: shop.phone,
+      email: shop.email, gstin: shop.gstin, logo: shop.logo,
+    },
     docNo: doc.docNo,
     postingDate: doc.postingDate,
     cashier: doc.createdBy,
@@ -109,7 +112,11 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
  *
  * Richer than the thermal path builds: HSN, the tax split per line and the
  * place of supply all have a column on a sheet and nowhere to go on 42 columns.
- * Shared with the Formats preview so the designer shows real proportions.
+ *
+ * Exported, though only `printBillSheet` calls it. The Formats preview builds
+ * its own sample instead, deliberately: a shop opening the designer on its
+ * first day has no bill to render, and a preview that is blank until someone
+ * sells something is a preview nobody can design against.
  */
 export async function sheetDocFor(db: SqlDriver, billId: string): Promise<ReceiptDoc | null> {
   const bill = await loadBillDetail(db, billId)
@@ -120,7 +127,10 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     bill.items.reduce((total, i) => total + pick(i), 0) as never
 
   return {
-    shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo },
+    shop: {
+      name: shop.name, address: shop.address, phone: shop.phone,
+      email: shop.email, gstin: shop.gstin, logo: shop.logo,
+    },
     docNo: bill.docNo,
     postingDate: bill.postingDate,
     cashier: bill.createdBy,
@@ -143,6 +153,7 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     cgst: sum((i) => i.cgst),
     sgst: sum((i) => i.sgst),
     igst: sum((i) => i.igst),
+    roundOff: bill.roundOff,
     grandTotal: bill.grandTotal,
     payments: bill.payments.map((p) => ({ method: p.method, amount: p.amount })),
     placeOfSupply: shop.stateCode ? stateName(shop.stateCode) : null,

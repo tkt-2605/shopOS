@@ -104,6 +104,8 @@ function snapshotOf(
       discountBlocked: l.product.discountBlocked,
     })),
     (Money.parseMoney(cart.discount) ?? 0) as never,
+    // No rounding rule: the only figure taken from here is the clamped
+    // discount, which the last few paise of the total cannot change.
   )
 
   return {

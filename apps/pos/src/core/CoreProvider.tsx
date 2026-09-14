@@ -7,9 +7,12 @@ import {
   isFirstRun, firstRun, seedDemoData, applyUpgrades, login, getSetting, getDeviceRegister,
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
+  loadRounding, setRounding, ROUNDING_DEFAULT,
   loadShopProfile,
 } from '@shopos/core'
-import type { SessionUser, Features, FeatureKey, StockPolicy, ShopProfile } from '@shopos/core'
+import type {
+  SessionUser, Features, FeatureKey, StockPolicy, ShopProfile, Rounding,
+} from '@shopos/core'
 
 /** Until the database has been read. Never printed — the setup screen runs first. */
 const NO_SHOP: ShopProfile = {
@@ -50,6 +53,16 @@ interface CoreValue {
   setFeatureFlag: (key: FeatureKey, on: boolean) => Promise<void>
   /** What the counter does when the count says there is nothing left. */
   stockPolicy: StockPolicy
+  /**
+   * What the counter does with the last few paise.
+   *
+   * In context rather than read per screen because the cart computes its own
+   * totals as the cashier works — the service reads the same setting when it
+   * writes the bill, and the two have to agree to the paisa or the counter
+   * shows one figure and charges another.
+   */
+  rounding: Rounding
+  setRoundingTo: (rule: Rounding) => Promise<void>
   setStockPolicyTo: (policy: StockPolicy) => Promise<void>
   reloadRegister: () => Promise<void>
   setUser: (user: SessionUser | null) => void
@@ -116,6 +129,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   const [registerName, setRegisterName] = useState('')
   const [features, setFeatures] = useState<Features>(FEATURES_OFF)
   const [stockPolicy, setPolicy] = useState<StockPolicy>(STOCK_POLICY_DEFAULT)
+  const [rounding, setRound] = useState<Rounding>(ROUNDING_DEFAULT)
 
   useEffect(() => {
     let cancelled = false
@@ -134,6 +148,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         await applyAppearance()
         setFeatures(await loadFeatures(db))
         setPolicy(await loadStockPolicy(db))
+        setRound(await loadRounding(db))
         await devAutoLogin()
         if (!cancelled) setStatus({ phase: 'ready' })
 
@@ -196,6 +211,12 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setPolicy(await loadStockPolicy(db))
   }
 
+  async function setRoundingTo(rule: Rounding) {
+    if (!user) return
+    await setRounding(db, { actorId: user.id }, rule)
+    setRound(await loadRounding(db))
+  }
+
   async function loadRegister() {
     const id = await getDeviceRegister(db)
     setRegisterId(id ?? '')
@@ -210,6 +231,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     await applyAppearance()
     setFeatures(await loadFeatures(db))
     setPolicy(await loadStockPolicy(db))
+    setRound(await loadRounding(db))
     setStatus({ phase: 'ready' })
   }
 
@@ -217,8 +239,9 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={{
       db, status, user, registerId, registerName,
       shop, refreshShop, shopName: shop.name,
-      features, stockPolicy,
-      setFeatureFlag, setStockPolicyTo, reloadRegister: loadRegister, setUser, completeSetup,
+      features, stockPolicy, rounding,
+      setFeatureFlag, setStockPolicyTo, setRoundingTo,
+      reloadRegister: loadRegister, setUser, completeSetup,
     }}>
       {children}
     </Ctx.Provider>

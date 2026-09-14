@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Money, Quantity, Tax, Permissions,
   searchProducts, productValuation, recomputeStock, newId,
@@ -11,7 +11,7 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
-import { usePickList } from '../ui/PickList'
+import { usePickList, Results } from '../ui/PickList'
 
 interface BarcodeDraft {
   barcode: string
@@ -46,6 +46,22 @@ interface Draft {
   baseUnit: string
   discountBlocked: boolean
   loyaltyBlocked: boolean
+  returnBlocked: boolean
+  /**
+   * Whether the shop counts this one.
+   *
+   * `products.is_stock_tracked` has been read since migration 001 — by
+   * `checkAvailability`, which skips an untracked item entirely, and by the
+   * reorder report, which leaves it out — and no screen ever wrote it. So every
+   * item was counted whether or not it had a shelf, and a shop on the `block`
+   * policy could not sell a delivery charge twice.
+   *
+   * It governs those two questions and no others. A sale still posts a stock
+   * movement either way, so the ledger and the valuation are unchanged; what
+   * stops is the counter refusing, and the item appearing on a list of things
+   * to buy more of.
+   */
+  stockTracked: boolean
   reorderLevel: string
   reorderQty: string
 }
@@ -54,6 +70,7 @@ const BLANK: Draft = {
   id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
   categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', taxPercent: '12',
   baseRate: '', mrp: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
+  returnBlocked: false, stockTracked: true,
   reorderLevel: '', reorderQty: '',
 }
 
@@ -79,6 +96,8 @@ export default function Inventory() {
   /* An item cannot be its own main item, so the row is dropped before the list
      is numbered — otherwise ↓ would land on a gap. */
   const parentOptions = parentResults.filter((r) => r.id !== draft?.id)
+  const parentBox = useRef<HTMLInputElement>(null)
+
   const parentPick = usePickList({
     count: parentOptions.length,
     resetKey: parentSearch,
@@ -150,24 +169,28 @@ export default function Inventory() {
     if (productId) {
       await db.execute(
         `UPDATE products SET name = ?, brand = ?, hsn_code = ?, tax_rate_bp = ?, base_rate = ?, mrp = ?,
-                             discount_blocked = ?, loyalty_blocked = ?,
+                             discount_blocked = ?, loyalty_blocked = ?, return_blocked = ?,
+                             is_stock_tracked = ?,
                              reorder_level = ?, reorder_qty = ?, updated_at = ?
          WHERE id = ?`,
         [draft.name.trim(), draft.brand.trim() || null,
          draft.hsnCode.trim() || null, bp, rate, mrp,
          draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
+         draft.returnBlocked ? 1 : 0, draft.stockTracked ? 1 : 0,
          levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, productId],
       )
     } else {
       productId = newId()
       await db.execute(
         `INSERT INTO products (id, name, brand, hsn_code, tax_rate_bp, base_rate, mrp, base_unit,
-                               discount_blocked, loyalty_blocked, reorder_level, reorder_qty,
+                               discount_blocked, loyalty_blocked, return_blocked, is_stock_tracked,
+                               reorder_level, reorder_qty,
                                created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [productId, draft.name.trim(), draft.brand.trim() || null,
          draft.hsnCode.trim() || null, bp, rate, mrp, draft.baseUnit,
          draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
+         draft.returnBlocked ? 1 : 0, draft.stockTracked ? 1 : 0,
          levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, now],
       )
     }
@@ -259,6 +282,7 @@ export default function Inventory() {
       baseRate: Money.format(p.baseRate), mrp: p.mrp === null ? '' : Money.format(p.mrp),
       baseUnit: p.baseUnit,
       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
+      returnBlocked: p.returnBlocked, stockTracked: p.isStockTracked,
       reorderLevel: p.reorderLevel === null ? '' : Quantity.formatQty(p.reorderLevel),
       reorderQty: p.reorderQty === null ? '' : Quantity.formatQty(p.reorderQty),
     })
@@ -462,19 +486,20 @@ export default function Inventory() {
                     onClick={() => setDraft({ ...draft, parentProductId: '', variantLabel: '' })}>Cut loose</button>
                 </div>
               ) : (
-                <div className="results-anchor">
-                  <input className="input" placeholder="Search the main item" value={parentSearch}
+                <div>
+                  <input className="input" ref={parentBox} placeholder="Search the main item"
+                    value={parentSearch}
                     onChange={(e) => setParentSearch(e.target.value)}
                     onKeyDown={parentPick.searchKeyDown} />
-                  {parentOptions.length > 0 && (
-                    <div className="results" {...parentPick.listProps}>
+                  <Results anchor={parentBox} open={parentOptions.length > 0}>
+                    <div {...parentPick.listProps}>
                       {parentOptions.map((r, i) => (
                         <div key={r.id} style={{ padding: '6px 10px' }} {...parentPick.rowProps(i)}>
                           {r.name}
                         </div>
                       ))}
                     </div>
-                  )}
+                  </Results>
                 </div>
               )}
             </Field>
@@ -621,10 +646,46 @@ export default function Inventory() {
                 onChange={(e) => setDraft({ ...draft, discountBlocked: e.target.checked })} />
               <span style={{ fontSize: 12.5 }}>Never discount this item</span>
             </label>
-            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 7 }}>
               <input type="checkbox" checked={draft.loyaltyBlocked}
                 onChange={(e) => setDraft({ ...draft, loyaltyBlocked: e.target.checked })} />
               <span style={{ fontSize: 12.5 }}>Earns no loyalty points</span>
+            </label>
+            {/* `returns.ts` has refused a return on one of these since returns
+                were written, and nothing could ever switch it on. */}
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <input type="checkbox" checked={draft.returnBlocked}
+                onChange={(e) => setDraft({ ...draft, returnBlocked: e.target.checked })} />
+              <span style={{ fontSize: 12.5 }}>
+                Cannot be returned
+                <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)' }}>
+                  A recharge, a cut length, anything perishable. The return screen
+                  refuses the line and says which item it was.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Counting</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
+              Most things on a shelf are counted. A delivery charge, a repair fee or
+              a service is not — it has no shelf to run out of. Every item was
+              counted until now whether or not that made sense, so a shop that
+              refuses sales below the count could not sell a delivery charge twice.
+            </div>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <input type="checkbox" checked={draft.stockTracked}
+                onChange={(e) => setDraft({ ...draft, stockTracked: e.target.checked })} />
+              <span style={{ fontSize: 12.5 }}>
+                Keep a count of this item
+                <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)' }}>
+                  Off, the counter never refuses it for being short and it never
+                  appears on the reorder list. It changes those two things and
+                  nothing else — sales are still recorded against it, so the cost
+                  and margin reports read the same as before.
+                </span>
+              </span>
             </label>
           </div>
         </Modal>
