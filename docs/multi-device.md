@@ -232,9 +232,43 @@ running keeps the printer it had. A machine that has already recorded its own
 answer keeps it, which is what stops the second till to be upgraded adopting the
 first one's.
 
-**Phase 1 — the changefeed.** One table recording `(table, row id, rev, origin,
-at)`, written by the same service-layer seam that writes the audit row. Sync
-then has something to ask for that is not "diff two whole databases".
+**Phase 1 — the changefeed. Built (migration 021).**
+
+One table naming what has changed here, so sync has something to ask for that is
+not "diff two whole databases". Three things about it came out differently from
+the sentence that used to be in this paragraph, and each is worth keeping:
+
+- **It is written by triggers, not by the service layer.** The plan said "the
+  same seam that writes the audit row". That seam is not the complete set of
+  writes: `bootstrap.ts` and `seed.ts` write no audit rows at all and between
+  them insert into ten of these tables. A missing feed row is not a slow sync,
+  it is a row that never replicates and never reports that it did not.
+- **It is a dirty set, not a log** — one row per changed record, replaced each
+  time it changes. A price edited forty times before the other till asks is one
+  row to send. It holds **no payload**: it names what changed and the row is read
+  at send time, because a payload here would be a second copy of the truth.
+- **It records no `rev`**, although that was in the plan. `bump_rev_*` and the
+  feed triggers fire on the same UPDATE and SQLite does not define which runs
+  first, so the rev stored here would be the pre-bump one about half the time. A
+  column that is right most of the time is worse than no column, because it is
+  the kind that gets trusted.
+
+`sync_state.applying` is how a merge says "these writes are not news", without
+which two tills hand one row back and forth for ever. It is set only inside the
+transaction that does the merge, so no failure can leave it stuck on.
+
+**What it covers, and what it does not.** The 21 tables carrying `rev` feed as
+themselves; `stock_ledger` and `loyalty_entries` feed as themselves too, being
+append-only and merging by union; the twelve line tables mark their parent, so a
+bill whose lines changed travels whole. `product_stock` and `doc_sequences` are
+out on purpose — derived, and taking either side of a number series would hand
+two tills the same invoice number. `doc_formats` is in, and is the one that does
+not fit: it is the shop's own bill layouts, authored on a screen, so it has to
+travel, and it carries no `rev` to settle a tie with. **That is owed.**
+
+`changefeed.test.ts` derives the covered set from the schema, so a table added
+later fails the run rather than being quietly left out. It caught `doc_formats`
+the first time it ran.
 
 **Phase 2 — transport.** The host advertises itself on the LAN; a till pairs
 with it once. A small HTTP server on the Rust side, no cloud, no account, no

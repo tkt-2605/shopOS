@@ -10,7 +10,7 @@ import { runDailyBackup } from './backup'
 import {
   isFirstRun, firstRun, seedDemoData, applyUpgrades, login,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
-  moveSettingsToDevice,
+  moveSettingsToDevice, resetSyncState,
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
@@ -125,6 +125,13 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
     await establishDevice()
 
     await migrate(db, MIGRATIONS)
+
+    /* Belt and braces, and cheap. `applyingRemote` only ever sets the flag
+       inside a transaction, so a merge that failed rolled it back and one that
+       lost power never committed it — but the cost of being wrong about that is
+       a till that quietly records nothing to replicate and never says so. */
+    await resetSyncState(db)
+
     await adoptDeviceSettings(db)
     const needsSetup = await isFirstRun(db)
     // A shop that upgrades into a new screen should find it there, without the
