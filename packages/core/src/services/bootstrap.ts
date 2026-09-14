@@ -92,6 +92,17 @@ export async function bootstrap(db: SqlDriver, opts: BootstrapOptions): Promise<
     await setSetting(tx, 'shop_name', opts.shopName, now)
     await setSetting(tx, 'schema_bootstrapped_at', now, now)
 
+    /* Which shop this is, minted once and never again. Setting up is what
+       creates a shop; a second till *joins* one, and the difference is the whole
+       of migration 024 — two databases each bootstrapped separately hold two
+       Admin roles with two ids and one name, and no merge rule can reconcile
+       that because they are not two versions of one thing. A till that has this
+       and a till that has a different one are two shops, and the sync handshake
+       refuses them before a row moves. */
+    if (await getSetting(tx, 'shop_id') === null) {
+      await setSetting(tx, 'shop_id', newId(), now)
+    }
+
     return { roleIds, registerId: register.id, priceListId: priceList.id }
   })
 }

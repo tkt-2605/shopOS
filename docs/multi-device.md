@@ -309,7 +309,47 @@ which is a concurrent edit for certain. Guessing instead would put a warning on
 the screen every time one till was merely behind, and a warning that cries wolf
 is one nobody reads.
 
-**Phase 2 — transport.** The host advertises itself on the LAN; a till pairs
+**Phase 2a — the protocol. Built (migrations 023 and 024).**
+
+Two tills agreeing, with no network anywhere in it. `services/sync.ts` is handed
+a `SyncTransport` — `hello`, `fetch`, `offer` — and everything that can be got
+wrong about replication lives on this side of that line, where two real
+databases are pointed at each other in a test and made to agree. The bugs that
+matter here are not dropped packets. They are a row applied on one till and not
+the other, a cursor moved before the batch arrived, an edit overwritten in
+silence. None of those needs a socket to happen, and none needs one to be caught.
+
+One round is pull, apply, push, then move the cursors — pull first, so a batch
+we send is built from a database that has just taken in everything the other
+side had. A peer's cursor moves **only when that peer confirms it**, never
+because we posted something: a batch that left and never landed has to be sent
+again, and a cursor moved on hope is a row lost with nothing recording that it
+went missing.
+
+**A shop identity, which the tests produced rather than the plan.** Pointing two
+tills at each other failed on `UNIQUE constraint failed: roles.name`, halfway
+through a batch. Not the merge rule's fault — both databases had been
+*bootstrapped separately*, so each had minted its own Admin role, its own
+counter, its own price list: same names, different ids. Every natural key in the
+schema collides that way, and there is no merge rule for it, because the two
+rows are not two versions of one thing. They are two different things with one
+name.
+
+This document had already answered it without noticing it was a question. One
+database per shop means a second till **joins** a shop; it does not create one
+and then reconcile. So a till that has been set up carries a `shop_id` and one
+that has only been migrated does not — and the handshake refuses two different
+shops before a row moves, while letting a till with no shop of its own join
+anybody. A new till is migrated, left empty, and filled by its first sync.
+
+**`domain/replicaShape.ts`** is the one list of what replicates and in what
+shape, because that list had reached four copies — 021's triggers, 022's
+triggers, the sender and the receiver. `replicaShape.test.ts` checks it against
+the triggers actually in the database, both ways, so a table in one and not the
+other fails the run. It caught a `schema_migrations` table that has never
+existed; migrations are tracked in `PRAGMA user_version`.
+
+**Phase 2b — transport.** The host advertises itself on the LAN; a till pairs
 with it once. A small HTTP server on the Rust side, no cloud, no account, no
 subscription, consistent with everything else about this product. Pull, then
 push, then apply in a transaction. **Refuse outright across schema versions** —

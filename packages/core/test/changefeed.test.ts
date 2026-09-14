@@ -6,6 +6,7 @@ import {
 import { setSetting } from '../src/services/bootstrap.js'
 import { createBill } from '../src/services/billing.js'
 import { fromUnits } from '../src/quantity.js'
+import { NOT_REPLICATED } from '../src/domain/replicaShape.js'
 import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 
 /**
@@ -295,9 +296,9 @@ describe('the set of tables it covers', () => {
      cannot be quietly left out — the failure that would cause is a row that
      never replicates and never says it did not. */
 
-  const DERIVED = new Set(['product_stock', 'doc_sequences'])
-  const LOCAL = new Set(['audit_log', 'activity_log', 'change_feed', 'sync_state',
-    'schema_migrations', 'sync_queue', 'settings_backup'])
+  /* The excluded set is not typed out again here. It lives in `replicaShape.ts`
+     with a reason beside each name, and a second copy of it would be one more
+     place to add a table to and forget. */
 
   it('feeds every table that carries a revision', async () => {
     const tables = await fx.db.query<{ name: string }>(
@@ -334,8 +335,8 @@ describe('the set of tables it covers', () => {
     )).map((t) => t.name)
     const fed = new Set(triggers.map((n) => n.replace(/^feed_/, '').replace(/_(ins|upd|del)$/, '')))
 
-    // Every table is either fed, or excluded on purpose with its reason in 021.
-    const unaccounted = tables.filter((t) => !fed.has(t) && !DERIVED.has(t) && !LOCAL.has(t))
+    // Every table is either fed, or excluded on purpose with its reason recorded.
+    const unaccounted = tables.filter((t) => !fed.has(t) && NOT_REPLICATED[t] === undefined)
     expect(unaccounted).toEqual([])
   })
 })

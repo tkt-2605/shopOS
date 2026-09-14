@@ -27,6 +27,21 @@ export async function freshDb(): Promise<Fixture> {
   return { db, seed, adminId }
 }
 
+/**
+ * A till that has been installed and not set up: migrated, and holding nothing.
+ *
+ * This is what a second till in a shop actually is. It must *not* be
+ * bootstrapped — a till that sets itself up has created a second shop, with its
+ * own Admin role and its own counter carrying the same names and different ids,
+ * and no merge rule can reconcile two things that are not two versions of one
+ * thing. Migration 024 is the whole story.
+ */
+export async function emptyDb(): Promise<SqlDriver> {
+  const db = openMemoryDatabase()
+  await migrate(db, MIGRATIONS)
+  return db
+}
+
 export async function makeProduct(
   db: SqlDriver,
   overrides: Partial<{
