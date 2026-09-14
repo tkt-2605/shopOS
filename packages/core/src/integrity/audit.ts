@@ -1,4 +1,5 @@
 import type { SqlDriver, SqlValue } from '../db/driver.js'
+import { deviceId } from '../device.js'
 import { newId } from '../ids.js'
 import type { DocStatus } from './docstatus.js'
 
@@ -10,6 +11,13 @@ export type AuditAction =
 export interface AuditContext {
   actorId: string | null
   now?: () => string
+  /**
+   * Which machine made the change. Left out, the process answers for itself,
+   * which is right for every caller today. It is set explicitly only by
+   * something writing on another device's behalf — a sync applying a till's
+   * changes has to name that till, not the machine running the merge.
+   */
+  deviceId?: string | null
 }
 
 export interface AuditRecord {
@@ -33,8 +41,8 @@ export async function writeAudit(tx: SqlDriver, ctx: AuditContext, record: Audit
   const at = (ctx.now ?? defaultNow)()
 
   await tx.execute(
-    `INSERT INTO audit_log (id, entity, entity_id, action, actor_id, docstatus_from, docstatus_to, diff, at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO audit_log (id, entity, entity_id, action, actor_id, docstatus_from, docstatus_to, diff, at, device_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newId(),
       record.entity,
@@ -45,6 +53,7 @@ export async function writeAudit(tx: SqlDriver, ctx: AuditContext, record: Audit
       record.docstatusTo ?? null,
       diff === null ? null : JSON.stringify(diff),
       at,
+      ctx.deviceId !== undefined ? ctx.deviceId : deviceId(),
     ],
   )
 }

@@ -7,8 +7,13 @@
 --   * documents carry docstatus 0 draft / 1 submitted / 2 cancelled and are never
 --     updated after submit — correction is cancel + amend
 --   * foreign keys RESTRICT; anything a document references is soft-deleted, never removed
---   * rev / origin_id / deleted_at exist on mutable tables for replication and are
---     written but not read until sync ships
+--   * rev / origin_id / deleted_at exist on mutable tables for replication.
+--     This line used to claim all three were "written but not read until sync
+--     ships". That was never true: origin_id was written by nothing at all, and
+--     rev by 16 of the service layer's 64 UPDATE statements. Migration 019 makes
+--     rev a trigger on all 20 of these tables and puts the device on every audit
+--     row instead; origin_id is still written by nothing and is still waiting
+--     for the merge that would read it.
 
 PRAGMA foreign_keys = ON;
 

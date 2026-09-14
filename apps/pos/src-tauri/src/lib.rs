@@ -2,6 +2,7 @@ mod archive;
 mod attachments;
 mod backup;
 mod db;
+mod device;
 mod exports;
 mod hook;
 mod paths;
@@ -45,6 +46,7 @@ pub fn run() {
             db::sql_tx_end,
             db::sql_abandon_tx,
             db::backup_database,
+            device::device_identity,
             printing::list_printers,
             printing::default_printer,
             printing::print_receipt,

@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { createTauriDriver, migrate, type SqlDriver } from '@shopos/core'
+import { establishDevice } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup } from './backup'
 import {
@@ -110,6 +111,13 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
        first, with nothing to connect it to the cause. */
     const stale = staleBuild()
     if (stale) throw new Error(stale)
+
+    /* Before the first row of the session is written, not after. Everything
+       below this line — the upgrade pass, the first sign-in, the first bill —
+       records who did it and on which machine, and a device established late
+       would leave a hole at the start of every session that nothing can fill
+       in afterwards. */
+    await establishDevice()
 
     await migrate(db, MIGRATIONS)
     const needsSetup = await isFirstRun(db)

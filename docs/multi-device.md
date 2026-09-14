@@ -24,6 +24,53 @@ the same job and should not be priced as if it were.
 
 ---
 
+## Where this is going, decided
+
+**A cloud server with many shops on it.** The local-only product is the first
+lane, not the destination, and the design is to be made with the destination in
+mind rather than retrofitted towards it.
+
+### One database per shop, not one database for all shops
+
+Decided, and it is the decision the rest of this document now rests on.
+
+The alternative — every table carrying a `tenant_id`, every `UNIQUE` rewritten
+as `(tenant_id, ...)`, every query in `packages/core` carrying a tenant
+predicate — was rejected for four reasons:
+
+- **The local database already is exactly one tenant.** Database-per-shop means
+  the cloud schema and the local schema stay the *same schema*, migrated by the
+  same hand-kept list. Shared-schema forks them on the first day and keeps them
+  forked for ever.
+- **Offline-first already forces the partition.** Each shop's database has to be
+  independently complete to work with the internet down. That is tenant
+  isolation, achieved as a side effect of something the product had to do anyway.
+- **The one failure that ends this product is shop A seeing shop B's sales.**
+  Row-level security is one forgotten `WHERE` away. A separate database is a
+  wrong connection string away, which is far harder to do by accident and far
+  easier to prove.
+- **It is the cheaper mistake.** Shared-schema wins on idle cost somewhere past
+  a few thousand shops. Going shared later — add `tenant_id`, merge — is much
+  cheaper than splitting a shared database apart afterwards.
+
+**What follows from it, and is now load-bearing:**
+
+- `packages/core` never learns the word "tenant". No `tenant_id` column, no
+  tenant argument, no tenant predicate. If one ever appears in a diff, this
+  decision has been reversed by accident.
+- Every existing global `UNIQUE` is already correct — `users.username`,
+  `registers.prefix`, `roles.name`, `customers.code`, `product_barcodes.barcode`,
+  `bills.doc_no`. Under one shared database every one of them would have been a
+  cross-shop collision.
+- A "device" in everything below is a till today and a **server process**
+  tomorrow. The cloud is one more origin replicating with the shop's tills, not
+  a different mechanism — which is what makes phases 0 to 3 work the shop pays
+  for now and work the cloud is built on later.
+- Per-shop authentication, billing and provisioning live **above** the database,
+  in whatever serves it. None of it reaches `packages/core`.
+
+---
+
 ## What is already right
 
 This was designed for it. `001_initial.sql` says so in its own header, and the
@@ -34,7 +81,7 @@ schema keeps the promise:
 | Every id is a **UUIDv7** | Two tills billing at the same second cannot mint the same key. This is the single hardest thing to retrofit and it was never a problem here |
 | **Document numbers are per register**, per fiscal year (`nextDocNo`) | `FC/26-27/00012` and `TILL2/26-27/00003` cannot collide, even with no network between them |
 | Ledgers are **append-only**; nothing is updated after submit, correction is cancel + amend | Facts merge by union. There is no "which version of this bill is right" question to answer, because a bill is never edited |
-| `rev`, `origin_id`, `deleted_at` on every mutable table | The columns a replicator needs, written since day one and read by nothing |
+| `rev`, `origin_id`, `deleted_at` on 20 mutable tables | The columns a replicator needs — though see below: only one of the three was ever actually written |
 | `SqlDriver` is an interface with two implementations already (`node-driver`, `tauri-driver`) | A third that talks to another machine is a seam that exists, not one that has to be cut |
 | `stock_policy` is a shop-level choice of block / warn / allow | The hardest merge conflict — two tills selling the last one — already has a policy switch and an answer the shop chose |
 | `EXPECTED_SCHEMA_VERSION` and `staleBuild()` | Two tills on different builds is the sync bug that corrupts data. The guard for it is already written |
@@ -47,7 +94,14 @@ schema keeps the promise:
   thing to move.
 - **There is no device identity.** `origin_id` is a column with nothing to put
   in it. Until a device knows its own name, no change can be attributed and no
-  replication can decide anything.
+  replication can decide anything. *(Answered by migration 019 — see Phase 0.)*
+- **`rev` was a promise kept three times in eight.** 001's header says `rev` and
+  `origin_id` are "written but not read until sync ships". `origin_id` was never
+  written by anything at all, and `rev` was bumped by **16 of the 64** UPDATE
+  statements in the service layer. Partially kept is worse than never kept: a
+  merge resolving conflicts by comparing `rev` would have silently discarded
+  every change made through the other 48 and would have looked like it was
+  working. *(Answered by migration 019 — see Phase 0.)*
 - **Nothing has ever been merged.** Every invariant in the product is enforced
   by a SQLite transaction on one machine. The moment two machines write, the
   transaction stops being the thing that protects the invariant.
@@ -102,12 +156,34 @@ conflicts**:
 
 ## Order of work
 
-**Phase 0 — device identity.** A `device_id` minted on first run and kept
-outside the shared database, `origin_id` stamped on every write through the
-`writeAudit` seam that already touches all of them, and `DEVICE_REGISTER` moved
-off `settings`. Cheap, invisible, and **it cannot be retrofitted**: history
-written before it exists can never be attributed. Worth doing on its own, in
-the next round, whatever is decided about the rest.
+**Phase 0 — device identity. Built (migration 019).**
+
+- `device_id` is minted on first run and kept in `device.json` **beside** the
+  database, never inside it. Everything that happens to `shop.db` is a reason
+  not to keep it there — it is backed up nightly, copied onto a replacement
+  machine, restored from a six-month-old file, and will one day be replicated.
+  An identity inside it would be cloned by every one of those, and two tills
+  that each believe they are the same till cannot be told apart in any history.
+  `backup.rs` copies with VACUUM INTO and `restore.rs` replaces the database
+  file alone, so neither touches it: a restored database adopts the identity of
+  the machine it lands on, which is true, rather than the one it came from,
+  which is a lie written into every row created afterwards.
+- **Every audit row carries the device.** `writeAudit` already runs inside the
+  same transaction as every service write, so one line there covers the lot
+  without threading an argument through forty signatures.
+- **`rev` is bumped by a trigger**, on all 20 replicated tables. A convention 48
+  call sites have to remember is not a convention, it is a list of future bugs —
+  this schema had been proving that for eighteen migrations. The `WHEN NEW.rev =
+  OLD.rev` guard means the 16 statements that were already correct do not now
+  double-count.
+
+**Deliberately not done in Phase 0:** per-row `origin_id`. It is the tiebreaker
+a last-writer-wins merge needs, and it is only needed once a merge exists — and
+because the audit trail now carries the device on every write, it can be derived
+when that day comes. Writing it now would mean touching every INSERT in the
+service layer for a column nothing reads, which is the exact mistake being
+corrected above. `DEVICE_REGISTER` is still in `settings` (`registers.ts:124`)
+and still has to move before two tills share a database.
 
 **Phase 1 — the changefeed.** One table recording `(table, row id, rev, origin,
 at)`, written by the same service-layer seam that writes the audit row. Sync
