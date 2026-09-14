@@ -22,6 +22,30 @@
 //! Right-aligned cells are set in Courier, whose every glyph is exactly 0.6 em
 //! wide, so a column of figures can be positioned exactly without carrying a
 //! width table for a proportional face.
+//!
+//! ## Why the invoice is not here
+//!
+//! This was once meant to grow sections — a header band, a bordered party box,
+//! a tax summary, a signature line — and an image XObject, so that it could
+//! print the A4 invoice too. It does not, and it should not.
+//!
+//! The invoice went to HTML instead (`domain/invoiceHtml.ts`), printed through
+//! the webview. Three reasons, in the order they mattered:
+//!
+//!   * The two limits above are fatal for an invoice and merely awkward for a
+//!     report. A tax invoice that cannot print a rupee sign, and cannot print a
+//!     shop's name in Tamil, is not a tax invoice a shop in Tamil Nadu can hand
+//!     anybody. Fixing that here means embedding a font, subsetting it, and
+//!     writing a CID-keyed font dictionary — considerably more than the two
+//!     hundred lines this file is worth.
+//!   * The webview already has a layout engine, a font stack with every script
+//!     on the machine, and a print dialog the shopkeeper already knows.
+//!   * A format the shop designs itself needs a preview that matches the
+//!     printout. With HTML the preview *is* the printout.
+//!
+//! So this file keeps exactly the two documents it was written for: the ones
+//! that are saved silently to a file, where there is no dialog to open and no
+//! Indian-language text to set. It stays deliberately small.
 
 use std::fmt::Write as _;
 
