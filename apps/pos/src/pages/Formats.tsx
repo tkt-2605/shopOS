@@ -62,6 +62,22 @@ function problemText(problem: FormatProblem): string {
   }
 }
 
+/**
+ * Everything this product can print through a format.
+ *
+ * A format declares which of them it is for, and that declaration is what the
+ * print path looks for — so a sheet ticked for quotations is found when a
+ * quotation is printed and not otherwise.
+ */
+const PRINTABLE = ['bill', 'quotation', 'sales_order', 'purchase_order'] as const
+
+const KIND_LABELS: Record<string, string> = {
+  bill: 'Bills',
+  quotation: 'Quotations',
+  sales_order: 'Sales orders',
+  purchase_order: 'Purchase orders',
+}
+
 interface Draft {
   id: string | null
   name: string
@@ -80,7 +96,7 @@ export function Formats() {
 
   const [formats, setFormats] = useState<StoredFormat[]>([])
   /* One per machine: what the till prints, and what the sheet prints. */
-  const [chosen, setChosen] = useState<Record<Fmt.Channel, string | null>>({ roll: null, sheet: null })
+  const [chosen, setChosen] = useState<Record<string, string | null>>({})
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saved, setSaved] = useState<Draft | null>(null)
   const [problems, setProblems] = useState<FormatProblem[]>([])
@@ -94,10 +110,16 @@ export function Formats() {
     try {
       const all = await listFormats(db)
       setFormats(all)
-      setChosen({
-        roll: await chosenFormatId(db, 'bill', 'roll'),
-        sheet: await chosenFormatId(db, 'bill', 'sheet'),
-      })
+      /* Keyed by kind as well as channel, because the till's roll format and
+         the quotation's sheet format are separate choices and always were —
+         the screen simply never asked about anything but bills. */
+      const picks: Record<string, string | null> = {}
+      for (const kind of PRINTABLE) {
+        for (const channel of ['roll', 'sheet'] as Fmt.Channel[]) {
+          picks[`${kind}:${channel}`] = await chosenFormatId(db, kind, channel)
+        }
+      }
+      setChosen(picks)
 
       const open = all.find((f) => f.id === keepOpen) ?? all[0]
       if (open) {
@@ -174,16 +196,33 @@ export function Formats() {
     await refresh(result.id)
   }
 
+  /**
+   * Start printing with this one.
+   *
+   * Applied to every document the format says it prints, not to bills alone.
+   * A shop that designs its own A4 sheet and ticks "quotations" expects a
+   * quotation to come out on it, and before this the choice was recorded
+   * against bills and nothing else ever found it.
+   */
   async function use() {
     if (!draft?.id) return
-    const result = await chooseFormat(db, { actorId: user.id }, 'bill', draft.id)
-    if (!result.ok) {
-      setError(result.code === 'WRONG_KIND'
-        ? 'This format is not set up to print bills.'
-        : 'That format could not be found.')
+    if (draft.kinds.length === 0) {
+      setError('Tick at least one kind of document for this format to print.')
       return
     }
-    setNote('Bills will print with this from now on.')
+
+    for (const kind of draft.kinds) {
+      const result = await chooseFormat(db, { actorId: user.id }, kind, draft.id)
+      if (!result.ok) {
+        setError(result.code === 'WRONG_KIND'
+          ? `This format is not set up to print ${KIND_LABELS[kind] ?? kind}.`
+          : 'That format could not be found.')
+        return
+      }
+    }
+
+    const named = draft.kinds.map((k) => KIND_LABELS[k] ?? k).join(', ')
+    setNote(`${named} will print with this from now on.`)
     await refresh(draft.id)
   }
 
@@ -206,18 +245,24 @@ export function Formats() {
    * channel, so the marker has to say the same thing rather than showing every
    * format as unused until someone presses the button once.
    */
-  function isInUse(id: string, paper: PaperSize): boolean {
-    const channel = Fmt.channelOf(paper)
-    const pick = chosen[channel]
-    if (pick) return pick === id
-    return formats.find((f) => Fmt.channelOf(f.paper) === channel)?.id === id
+  function isInUse(format: { id: string; paper: PaperSize; kinds: string[] }): boolean {
+    const channel = Fmt.channelOf(format.paper)
+    const first = format.kinds[0]
+    if (!first) return false
+
+    const pick = chosen[`${first}:${channel}`]
+    if (pick) return pick === format.id
+    // Nothing chosen: the print path takes the first format that can print it.
+    return formats.find(
+      (f) => Fmt.channelOf(f.paper) === channel && f.kinds.includes(first),
+    )?.id === format.id
   }
 
   if (error && formats.length === 0) return <Alert>{error}</Alert>
   if (!draft) return <Empty>Loading the formats…</Empty>
 
   const builtIn = formats.find((f) => f.id === draft.id)?.builtIn ?? false
-  const inUse = draft.id !== null && isInUse(draft.id, draft.paper)
+  const inUse = draft.id !== null && isInUse({ ...draft, id: draft.id })
 
   return (
     <div className="formats">
@@ -234,7 +279,7 @@ export function Formats() {
                 <span>{f.name}</span>
                 <span className="format-meta">
                   {Fmt.paperLabel(f.paper)}
-                  {isInUse(f.id, f.paper) ? ' · in use' : ''}
+                  {isInUse(f) ? ' · in use' : ''}
                 </span>
               </button>
             ))}
@@ -291,6 +336,32 @@ export function Formats() {
               </select>
             </Field>
           </div>
+
+          {/* Which documents this design is for. Before this the answer was
+              always "bills", so a shop could lay out an A4 sheet and never see
+              it on a quotation — the print path looks for a format that says it
+              prints one. */}
+          <Field
+            label="Prints"
+            hint="Tick what this design is for. Use it, and each of these prints with it."
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+              {PRINTABLE.map((kind) => (
+                <label key={kind} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                  <input
+                    type="checkbox"
+                    checked={draft.kinds.includes(kind)}
+                    onChange={(e) => patch({
+                      kinds: e.target.checked
+                        ? [...draft.kinds, kind]
+                        : draft.kinds.filter((k) => k !== kind),
+                    })}
+                  />
+                  {KIND_LABELS[kind]}
+                </label>
+              ))}
+            </div>
+          </Field>
 
           <div className="block-list">
             {draft.blocks.map((block, i) => {
