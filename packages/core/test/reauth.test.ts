@@ -5,9 +5,14 @@ import { freshDb, type Fixture } from './helpers.js'
 /**
  * Proving again that the person at the keyboard is who signed in.
  *
- * The theme here is that the Settings door counts a wrong password exactly the
- * way the front door does. A gate that forgave guesses would be a softer way in
- * than the sign-in screen, which would make it the way in.
+ * The theme here is that this door checks the password and nothing else. It is
+ * only ever reached by somebody already signed in at the counter, so counting
+ * their attempts would guard against nothing the locked front door does not
+ * already cover — while locking an owner out of their own Settings screen
+ * mid-job is exactly how a gate ends up switched off.
+ *
+ * What it does keep is the record, which is the part that answers "who changed
+ * the receipt on Tuesday".
  */
 
 let fx: Fixture
@@ -26,84 +31,120 @@ beforeEach(async () => {
 
 afterEach(async () => { await fx.db.close() })
 
+async function failedLogins(): Promise<number> {
+  const row = await fx.db.get<{ failed_logins: number }>(
+    `SELECT failed_logins FROM users WHERE id = ?`, [userId],
+  )
+  return row!.failed_logins
+}
+
+async function auditRows() {
+  return fx.db.query<{ action: string; actor_id: string; diff: string | null }>(
+    `SELECT action, actor_id, diff FROM audit_log WHERE entity = 'users' AND entity_id = ? ORDER BY rowid`,
+    [userId],
+  )
+}
+
 describe('unlocking a settings screen', () => {
   it('accepts the signed-in person’s own password', async () => {
     expect(await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' }))
       .toEqual({ ok: true })
   })
 
-  it('refuses a wrong password and says how many tries are left', async () => {
-    expect(await reauthenticate(fx.db, { userId, password: 'wrong', scope: 'settings' }))
-      .toEqual({ ok: false, code: 'WRONG_PASSWORD', attemptsLeft: 4 })
+  it('refuses a wrong one', async () => {
+    expect(await reauthenticate(fx.db, { userId, password: 'guess', scope: 'settings' }))
+      .toEqual({ ok: false, code: 'WRONG_PASSWORD' })
   })
 
-  it('locks the account after five wrong tries, the way signing in does', async () => {
-    for (let i = 0; i < 4; i++) {
-      await reauthenticate(fx.db, { userId, password: 'wrong', scope: 'settings' })
+  it('goes on accepting the right password however many times it is asked', async () => {
+    for (let i = 0; i < 12; i++) {
+      expect(await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' }))
+        .toEqual({ ok: true })
     }
-    const fifth = await reauthenticate(fx.db, { userId, password: 'wrong', scope: 'settings' })
-
-    expect(fifth.ok).toBe(false)
-    expect(fifth).toMatchObject({ code: 'ACCOUNT_LOCKED' })
   })
+})
 
-  it('shuts the front door too when the settings door is what was guessed at', async () => {
-    for (let i = 0; i < 5; i++) {
-      await reauthenticate(fx.db, { userId, password: 'wrong', scope: 'settings' })
-    }
-
-    // The whole point of sharing the counter: guessing here is guessing, and
-    // walking back to the sign-in screen must not reset the count.
-    const signIn = await login(fx.db, { username: 'ramesh', password: PASSWORD })
-    expect(signIn).toMatchObject({ ok: false, code: 'ACCOUNT_LOCKED' })
-  })
-
-  it('forgets the failed tries once the right password is given', async () => {
-    await reauthenticate(fx.db, { userId, password: 'wrong', scope: 'settings' })
-    await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' })
-
-    expect(await reauthenticate(fx.db, { userId, password: 'wrong', scope: 'settings' }))
-      .toEqual({ ok: false, code: 'WRONG_PASSWORD', attemptsLeft: 4 })
-  })
-
-  it('refuses while the account is locked, even with the right password', async () => {
-    for (let i = 0; i < 5; i++) {
-      await reauthenticate(fx.db, { userId, password: 'wrong', scope: 'settings' })
+describe('a wrong password at this door', () => {
+  it('never locks the account, however many times it is wrong', async () => {
+    for (let i = 0; i < 12; i++) {
+      await reauthenticate(fx.db, { userId, password: 'guess', scope: 'settings' })
     }
 
     expect(await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' }))
-      .toMatchObject({ ok: false, code: 'ACCOUNT_LOCKED' })
+      .toEqual({ ok: true })
   })
 
+  it('leaves the front door exactly as it was', async () => {
+    // Signing in has its own counter, and this screen does not touch it in
+    // either direction.
+    for (let i = 0; i < 12; i++) {
+      await reauthenticate(fx.db, { userId, password: 'guess', scope: 'settings' })
+    }
+
+    expect(await failedLogins()).toBe(0)
+    expect((await login(fx.db, { username: 'ramesh', password: PASSWORD })).ok).toBe(true)
+  })
+
+  it('does not wipe what the sign-in screen recorded', async () => {
+    // Otherwise unlocking Settings would clear the evidence of somebody
+    // guessing at the front door.
+    await login(fx.db, { username: 'ramesh', password: 'wrong' })
+    await login(fx.db, { username: 'ramesh', password: 'wrong' })
+    const before = await failedLogins()
+    expect(before).toBe(2)
+
+    await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' })
+
+    expect(await failedLogins()).toBe(before)
+  })
+})
+
+describe('what the history says afterwards', () => {
   it('records a failed unlock against the person who tried, and which screen', async () => {
-    await reauthenticate(fx.db, { userId, password: 'wrong', scope: 'roles' })
+    await reauthenticate(fx.db, { userId, password: 'guess', scope: 'roles' })
 
-    const row = await fx.db.get<{ actor_id: string; action: string; diff: string }>(
-      `SELECT actor_id, action, diff FROM audit_log WHERE entity_id = ? ORDER BY at DESC`,
-      [userId],
-    )
-
-    expect(row?.actor_id).toBe(userId)
-    expect(row?.action).toBe('login_failed')
-    expect(JSON.parse(row!.diff)['screen']).toEqual({ from: null, to: 'roles' })
+    const rows = await auditRows()
+    const failed = rows.filter((r) => r.action === 'login_failed')
+    expect(failed).toHaveLength(1)
+    expect(failed[0]!.actor_id).toBe(userId)
+    expect(failed[0]!.diff).toContain('roles')
   })
 
   it('records a successful unlock, so opening settings is answerable', async () => {
     await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' })
 
-    const row = await fx.db.get<{ action: string; diff: string }>(
-      `SELECT action, diff FROM audit_log WHERE entity_id = ? ORDER BY at DESC`,
-      [userId],
-    )
-
-    expect(row?.action).toBe('login')
-    expect(JSON.parse(row!.diff)['reauth']).toEqual({ from: null, to: 1 })
+    const opened = (await auditRows()).filter((r) => r.action === 'login')
+    expect(opened).toHaveLength(1)
+    expect(opened[0]!.diff).toContain('settings')
   })
 
+  it('records every attempt, not only the one that worked', async () => {
+    await reauthenticate(fx.db, { userId, password: 'guess', scope: 'settings' })
+    await reauthenticate(fx.db, { userId, password: 'guess', scope: 'settings' })
+    await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' })
+
+    const rows = await auditRows()
+    expect(rows.filter((r) => r.action === 'login_failed')).toHaveLength(2)
+    expect(rows.filter((r) => r.action === 'login')).toHaveLength(1)
+  })
+
+  it('marks the row as a re-check rather than a sign-in', async () => {
+    // The action has to be one `audit_log`'s CHECK already allows, so the
+    // distinction lives in the diff instead.
+    await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' })
+
+    const opened = (await auditRows()).filter((r) => r.action === 'login')
+    expect(opened[0]!.diff).toContain('reauth')
+  })
+})
+
+describe('a user who is no longer there', () => {
   it('does not pretend a deleted user’s password was simply wrong for ever', async () => {
-    await fx.db.execute(`UPDATE users SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), userId])
+    await fx.db.execute(
+      `UPDATE users SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), userId],
+    )
 
     expect(await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' }))
-      .toEqual({ ok: false, code: 'WRONG_PASSWORD', attemptsLeft: 0 })
+      .toEqual({ ok: false, code: 'WRONG_PASSWORD' })
   })
 })

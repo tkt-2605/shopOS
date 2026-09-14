@@ -101,8 +101,7 @@ export async function login(
 
 export type ReauthResult =
   | { ok: true }
-  | { ok: false; code: 'WRONG_PASSWORD'; attemptsLeft: number }
-  | { ok: false; code: 'ACCOUNT_LOCKED'; until: string }
+  | { ok: false; code: 'WRONG_PASSWORD' }
 
 /**
  * Proving again that the person at the keyboard is still the person who signed in.
@@ -111,73 +110,51 @@ export type ReauthResult =
  * do what. A till that is signed in and left alone is the normal state of a
  * counter, so "is signed in" is not a strong enough answer for those two.
  *
- * It deliberately reuses sign-in's own rules rather than keeping a softer copy
- * of them: the same bcrypt compare, the same `failed_logins` counter, the same
- * lockout after five tries. Somebody guessing at the Settings screen is doing
- * exactly what somebody guessing at the sign-in screen is doing, and it would be
- * a strange door that counted the attempts differently.
+ * A wrong answer here counts for nothing and locks nothing. That is a different
+ * rule from the sign-in screen on purpose: this door is only ever reached by
+ * somebody already signed in at the counter, so counting their attempts guards
+ * against nothing a locked front door does not already cover — and locking the
+ * owner out of their own Settings screen mid-job, on a machine they are already
+ * signed in to, is the kind of thing that gets a gate switched off.
  *
- * Recorded in the audit trail as a credential check against the user — which is
- * what it is — with `reauth` and the screen in the diff, because `audit_log`
- * carries a CHECK on its actions and rewriting an append-only table to add two
- * names to it would be a worse trade than one field.
+ * Every attempt is still recorded, which is the part that answers "who changed
+ * the receipt on Tuesday". Written as a credential check against the user —
+ * which is what it is — with `reauth` and the screen in the diff, because
+ * `audit_log` carries a CHECK on its actions and rewriting an append-only table
+ * to add two names to it would be a worse trade than one field.
  */
 export async function reauthenticate(
   db: SqlDriver,
   input: { userId: string; password: string; scope: string; now?: Date },
 ): Promise<ReauthResult> {
-  const now = input.now ?? new Date()
-  const nowIso = now.toISOString()
+  const nowIso = (input.now ?? new Date()).toISOString()
 
-  const user = await db.get<{
-    id: string; password_hash: string; failed_logins: number; locked_until: string | null
-  }>(
-    `SELECT id, password_hash, failed_logins, locked_until
-       FROM users WHERE id = ? AND deleted_at IS NULL`,
+  const user = await db.get<{ id: string; password_hash: string }>(
+    `SELECT id, password_hash FROM users WHERE id = ? AND deleted_at IS NULL`,
     [input.userId],
   )
 
   // No timing dance here, unlike `login`: the caller already knows this user
   // exists — they are signed in as them — so there is nothing to conceal.
-  if (!user) return { ok: false, code: 'WRONG_PASSWORD', attemptsLeft: 0 }
+  if (!user) return { ok: false, code: 'WRONG_PASSWORD' }
 
-  if (user.locked_until && user.locked_until > nowIso) {
-    return { ok: false, code: 'ACCOUNT_LOCKED', until: user.locked_until }
-  }
+  const right = await bcrypt.compare(input.password, user.password_hash)
 
-  if (!(await bcrypt.compare(input.password, user.password_hash))) {
-    const failed = user.failed_logins + 1
-    const lockedUntil =
-      failed >= MAX_FAILED ? new Date(now.getTime() + LOCKOUT_MINUTES * 60_000).toISOString() : null
-
-    await db.transaction(async (tx) => {
-      await tx.execute(
-        `UPDATE users SET failed_logins = ?, locked_until = ?, updated_at = ? WHERE id = ?`,
-        [failed, lockedUntil, nowIso, user.id],
-      )
-      await writeAudit(tx, { actorId: user.id }, {
-        entity: 'users', entityId: user.id, action: 'login_failed',
-        after: { reauth: 1, screen: input.scope, failed_logins: failed },
-      })
-    })
-
-    return lockedUntil
-      ? { ok: false, code: 'ACCOUNT_LOCKED', until: lockedUntil }
-      : { ok: false, code: 'WRONG_PASSWORD', attemptsLeft: MAX_FAILED - failed }
-  }
-
+  /* The counter is deliberately left alone in both directions: a wrong answer
+     does not raise `failed_logins`, and a right one does not clear it. Whatever
+     the sign-in screen has recorded stays exactly as the sign-in screen left
+     it, so unlocking Settings cannot wipe the evidence of somebody guessing at
+     the front door. */
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE users SET failed_logins = 0, locked_until = NULL, updated_at = ? WHERE id = ?`,
-      [nowIso, user.id],
-    )
     await writeAudit(tx, { actorId: user.id }, {
-      entity: 'users', entityId: user.id, action: 'login',
-      after: { reauth: 1, screen: input.scope },
+      entity: 'users',
+      entityId: user.id,
+      action: right ? 'login' : 'login_failed',
+      after: { reauth: 1, screen: input.scope, at: nowIso },
     })
   })
 
-  return { ok: true }
+  return right ? { ok: true } : { ok: false, code: 'WRONG_PASSWORD' }
 }
 
 export type CreateUserResult =
