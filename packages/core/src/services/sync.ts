@@ -166,6 +166,43 @@ export async function syncWith(
 }
 
 /**
+ * Rounds until there is nothing left to say.
+ *
+ * `syncWith` does one round of at most 200 records and reports `more` when there
+ * is a queue behind it. A till switched off for a fortnight has thousands
+ * waiting, and one round leaves it almost as far behind as it started — so
+ * something has to keep going, and it is here rather than in a screen, where it
+ * would be written twice and stopped by a person changing pages.
+ *
+ * Bounded, because a loop that runs until it is finished is a loop that never
+ * finishes if the two tills keep handing each other the same row. `rounds` is
+ * reached only when something is wrong, and reaching it is reported rather than
+ * retried for ever.
+ */
+export async function syncUntilDone(
+  db: SqlDriver,
+  transport: SyncTransport,
+  rounds = 50,
+): Promise<SyncResult> {
+  let last = await syncWith(db, transport)
+  let done = 1
+
+  while (last.ok && last.more && done < rounds) {
+    const next = await syncWith(db, transport)
+    if (!next.ok) return next
+
+    /* No progress and still saying there is more means the two are passing
+       something back and forth. Stopping and saying so beats spinning. */
+    if (next.received === 0 && next.sent === 0) return { ...next, more: false }
+
+    last = { ...next, contested: [...last.contested, ...next.contested] }
+    done += 1
+  }
+
+  return last
+}
+
+/**
  * What has changed here since `cursor`, as records ready to cross.
  *
  * The row is read now rather than stored when it changed, so what travels is the

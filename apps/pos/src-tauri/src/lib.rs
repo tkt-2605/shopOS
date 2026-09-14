@@ -9,6 +9,7 @@ mod paths;
 mod pdf;
 mod printing;
 mod restore;
+mod sync_server;
 
 use tauri::Manager;
 
@@ -35,6 +36,10 @@ pub fn run() {
             app.manage(database);
             app.manage(restore::LastRestore(report));
 
+            // Nothing listens until a shop asks for it. A single-till shop --
+            // which is most of them -- never opens a port at all.
+            app.manage(sync_server::SyncHost::default());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -49,6 +54,10 @@ pub fn run() {
             device::device_identity,
             device::device_set_register,
             device::device_set_setting,
+            sync_server::sync_serve_start,
+            sync_server::sync_serve_stop,
+            sync_server::sync_serve_status,
+            sync_server::sync_reply,
             printing::list_printers,
             printing::default_printer,
             printing::print_receipt,

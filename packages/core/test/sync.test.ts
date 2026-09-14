@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  syncWith, collectChanges, applyBatch, changedHere, listPeers, pruneAcknowledged,
+  syncWith, syncUntilDone, collectChanges, applyBatch, changedHere, listPeers, pruneAcknowledged,
   type SyncTransport, type PeerHello,
 } from '../src/services/sync.js'
 import { setDeviceId, deviceId } from '../src/device.js'
@@ -353,6 +353,71 @@ describe('what must never happen', () => {
     // Higher on the receiving side would make it look newer than the machine
     // that wrote it, and the next round would send it back as an edit nobody made.
     expect(theirs?.rev).toBe(mine?.rev)
+  })
+})
+
+describe('a till that has been switched off for a fortnight', () => {
+  /* One round carries at most a batch. A till a long way behind needs several,
+     and nothing above loops — so `more` was a flag nobody acted on. */
+
+  it('keeps going until there is nothing left to say', async () => {
+    await as(a, async () => {
+      for (let i = 0; i < 12; i += 1) await makeProduct(a.db, { name: `Item ${i}` })
+    })
+
+    const round = await as(a, () => syncUntilDone(a.db, wireTo(b, a), 20))
+
+    expect(round.ok).toBe(true)
+    if (round.ok) expect(round.more).toBe(false)
+    // Everything, not the first batch of it.
+    const there = await b.db.query<{ id: string }>(`SELECT id FROM products`)
+    const here = await a.db.query<{ id: string }>(`SELECT id FROM products`)
+    expect(there).toHaveLength(here.length)
+  })
+
+  it('stops rather than spinning when a round achieves nothing', async () => {
+    /* Two tills handing one row back and forth would otherwise loop for ever,
+       each doing real work and neither getting anywhere. */
+    let rounds = 0
+    const stuck: SyncTransport = {
+      ...wireTo(b, a),
+      async fetch() {
+        rounds += 1
+        return {
+          fromDevice: TILL_B, schemaVersion: EXPECTED_SCHEMA_VERSION,
+          records: [], upTo: 0, complete: false,
+        }
+      },
+    }
+
+    const round = await as(a, () => syncUntilDone(a.db, stuck, 20))
+
+    expect(round.ok).toBe(true)
+    expect(rounds).toBeLessThan(5)
+  })
+
+  it('gives up after a fixed number of rounds rather than for ever', async () => {
+    let rounds = 0
+    const endless: SyncTransport = {
+      ...wireTo(b, a),
+      async fetch(since) {
+        rounds += 1
+        const id = `endless-${rounds}`
+        return {
+          fromDevice: TILL_B,
+          schemaVersion: EXPECTED_SCHEMA_VERSION,
+          records: [{
+            table: 'categories', rowId: id, op: 'upsert',
+            row: { id, name: id, created_at: '2026-01-01', updated_at: '2026-01-01', rev: 1 },
+          }],
+          upTo: since + 1,
+          complete: false,
+        }
+      },
+    }
+
+    await as(a, () => syncUntilDone(a.db, endless, 4))
+    expect(rounds).toBe(4)
   })
 })
 

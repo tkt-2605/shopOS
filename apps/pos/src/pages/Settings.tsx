@@ -14,6 +14,7 @@ import {
 } from '../core/backup'
 import { lastRestore, type RestoreReport } from '../core/restore'
 import { Card, Field, Alert } from '../ui/components'
+import { SyncCard } from '../ui/SyncCard'
 import { RestorePanel } from '../ui/RestorePanel'
 
 type Theme = 'daylight' | 'khata' | 'night'
@@ -182,6 +183,8 @@ export default function Settings() {
       <ShopCard />
 
       <SetupCard />
+
+      <SyncCard />
 
       <Card title="Appearance">
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>

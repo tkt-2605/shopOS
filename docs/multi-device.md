@@ -389,11 +389,41 @@ Checked over the shop's own Wi-Fi, not only loopback: two tills on a real
 interface, paired with a typed code, eleven records across, the product on the
 second till.
 
-**Still owed:** the listener itself (a small HTTP server in Rust forwarding to
-`handleSyncRequest`), finding the other till on the LAN without typing an
-address, and the loop that keeps going while `more` is true.
+**Phase 2c — the listener, and a screen. Built.**
 
-**Phase 2c — discovery and the listener.** The host advertises itself on the LAN; a till pairs
+`src-tauri/src/sync_server.rs` holds the port open and knows nothing about
+replication: it accepts a request, hands the bytes to the webview, waits for an
+answer, and writes it back. A second implementation of the protocol in Rust
+would drift from the TypeScript one, and the drift would show as two tills that
+agree about everything except the row that matters.
+
+**Nothing listens until a shop turns it on.** A single-till shop never opens a
+port, which is most shops — a port nothing uses is a way in and no use to
+anybody. The parser accepts POST, a `content-length`, and one of four paths;
+anything else is refused without ever reaching the webview, so a scanner
+sweeping the shop's network learns only that something is there.
+
+A webview that never answers (closed, asleep, or inside a long transaction)
+returns 503 after a minute rather than holding the connection: the other till is
+told to come back.
+
+`syncUntilDone` is the loop that was owed. One round carries at most 200 records,
+and a till switched off for a fortnight has thousands waiting, so `more` was a
+flag nobody acted on. It is bounded, and a round that achieves nothing stops it
+rather than spinning — two tills passing one row back and forth would otherwise
+loop for ever, each doing real work.
+
+The screen is `ui/SyncCard.tsx`, in Settings, and it is two halves on purpose:
+the till that has the shop **shows a code**, the new till **types one in**.
+Confusing those is how somebody pairs a till with itself. It says plainly that
+bills cross the network unencrypted, and when a sync drops somebody's edit it
+lists what was dropped rather than saying "done".
+
+**Still owed:** finding the other till without typing its address, and a
+scheduled catch-up rather than a button. Both are conveniences; neither changes
+what is true about the data.
+
+**Phase 2d — discovery.** The host advertises itself on the LAN; a till pairs
 with it once. A small HTTP server on the Rust side, no cloud, no account, no
 subscription, consistent with everything else about this product. Pull, then
 push, then apply in a transaction. **Refuse outright across schema versions** —
