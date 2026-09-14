@@ -134,7 +134,9 @@ export default function Staff() {
             </thead>
             <tbody>
               {rows.map((m) => {
-                const locked = m.lockedUntil !== null && m.lockedUntil > now
+                /* Nothing locks an account any more. What is worth showing is
+                   the run of wrong passwords since the last one that worked. */
+                const guessed = m.failedLogins > 0
                 return (
                   <tr key={m.id}>
                     <td className="num">
@@ -147,12 +149,16 @@ export default function Staff() {
                     <td>
                       {!m.isActive
                         ? <span className="badge mute">off</span>
-                        : locked
-                          ? <span className="badge warn">locked</span>
+                        : guessed
+                          ? (
+                            <span className="badge warn" title="Wrong passwords since the last sign-in that worked">
+                              {m.failedLogins} failed
+                            </span>
+                          )
                           : <span className="badge ok">active</span>}
                     </td>
                     <td className="r" style={{ whiteSpace: 'nowrap' }}>
-                      {locked && <button className="btn ghost sm" onClick={() => void unlock(m)}>Unlock</button>}
+                      {guessed && <button className="btn ghost sm" onClick={() => void unlock(m)}>Clear</button>}
                       <button className="btn ghost sm" onClick={() => setEditing({ ...m })}>Edit</button>
                       <button className="btn ghost sm" onClick={() => setResetting({ member: m, password: '' })}>
                         Reset password

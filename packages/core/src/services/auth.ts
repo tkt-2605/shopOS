@@ -5,8 +5,6 @@ import { writeAudit } from '../integrity/audit.js'
 import { loadPermissions, type PermissionSet } from '../integrity/permissions.js'
 
 const COST = 10
-const MAX_FAILED = 5
-const LOCKOUT_MINUTES = 15
 
 export interface SessionUser {
   id: string
@@ -21,7 +19,6 @@ export type LoginResult =
   | { ok: true; user: SessionUser }
   | { ok: false; code: 'INVALID_CREDENTIALS' }
   | { ok: false; code: 'ACCOUNT_DISABLED' }
-  | { ok: false; code: 'ACCOUNT_LOCKED'; until: string }
 
 /**
  * A wrong password and an unknown username fail identically, and both cost a hash
@@ -48,32 +45,29 @@ export async function login(
     return { ok: false, code: 'INVALID_CREDENTIALS' }
   }
 
-  if (user.locked_until && user.locked_until > nowIso) {
-    return { ok: false, code: 'ACCOUNT_LOCKED', until: user.locked_until }
-  }
   if (user.is_active === 0) return { ok: false, code: 'ACCOUNT_DISABLED' }
 
   const matches = await bcrypt.compare(input.password, user.password_hash)
 
   if (!matches) {
-    const failed = user.failed_logins + 1
-    const lockedUntil =
-      failed >= MAX_FAILED ? new Date(now.getTime() + LOCKOUT_MINUTES * 60_000).toISOString() : null
-
+    /* Counted, never acted on. A shop with one till and one owner has no
+       help desk to ring at seven in the morning, so an account that locks
+       itself is a shop that cannot open — which is a worse outcome than a
+       slow guess against a password only reachable by someone standing at
+       the counter. The count stays because "this account was guessed at
+       forty times on Tuesday" is worth being able to see. */
     await db.transaction(async (tx) => {
       await tx.execute(
-        `UPDATE users SET failed_logins = ?, locked_until = ?, updated_at = ? WHERE id = ?`,
-        [failed, lockedUntil, nowIso, user.id],
+        `UPDATE users SET failed_logins = failed_logins + 1, updated_at = ? WHERE id = ?`,
+        [nowIso, user.id],
       )
       await writeAudit(tx, { actorId: user.id }, {
         entity: 'users', entityId: user.id, action: 'login_failed',
-        after: { failed_logins: failed },
+        after: { failed_logins: user.failed_logins + 1 },
       })
     })
 
-    return lockedUntil
-      ? { ok: false, code: 'ACCOUNT_LOCKED', until: lockedUntil }
-      : { ok: false, code: 'INVALID_CREDENTIALS' }
+    return { ok: false, code: 'INVALID_CREDENTIALS' }
   }
 
   await db.transaction(async (tx) => {
@@ -256,16 +250,22 @@ export interface StaffMember {
   roleName: string
   isActive: boolean
   lastLoginAt: string | null
-  lockedUntil: string | null
+  /**
+   * Sign-ins that got the password wrong since the last one that worked.
+   *
+   * Shown rather than acted on: nothing locks an account, so this is the number
+   * an owner watches to notice somebody working through guesses at their till.
+   */
+  failedLogins: number
 }
 
 export async function listStaff(db: SqlDriver): Promise<StaffMember[]> {
   const rows = await db.query<{
     id: string; username: string; full_name: string | null; role_id: string
-    role_name: string; is_active: number; last_login_at: string | null; locked_until: string | null
+    role_name: string; is_active: number; last_login_at: string | null; failed_logins: number
   }>(
     `SELECT u.id, u.username, u.full_name, u.role_id, r.name AS role_name,
-            u.is_active, u.last_login_at, u.locked_until
+            u.is_active, u.last_login_at, u.failed_logins
        FROM users u JOIN roles r ON r.id = u.role_id
       WHERE u.deleted_at IS NULL
       ORDER BY u.is_active DESC, u.username`,
@@ -278,7 +278,7 @@ export async function listStaff(db: SqlDriver): Promise<StaffMember[]> {
     roleName: u.role_name,
     isActive: u.is_active === 1,
     lastLoginAt: u.last_login_at,
-    lockedUntil: u.locked_until,
+    failedLogins: u.failed_logins,
   }))
 }
 
@@ -333,6 +333,15 @@ export async function resetPassword(
   return { ok: true }
 }
 
+/**
+ * Clears the run of failed sign-ins on an account.
+ *
+ * Nothing locks an account any more, so this no longer lets anybody back in —
+ * it resets the count, which is how an owner says "I know about those, they
+ * were mine" and gets a clean number to watch from. Old databases can still
+ * carry a `locked_until` from before the lockout was removed, and this clears
+ * that too.
+ */
 export async function unlockUser(
   db: SqlDriver,
   input: { userId: string; actorId: string; now?: Date },

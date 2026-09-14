@@ -175,11 +175,9 @@ function Login() {
       return
     }
     setError(
-      result.code === 'ACCOUNT_LOCKED'
-        ? `Too many attempts. Try again after ${new Date(result.until).toLocaleTimeString()}.`
-        : result.code === 'ACCOUNT_DISABLED'
-          ? 'This account has been turned off.'
-          : 'That username and password do not match.',
+      result.code === 'ACCOUNT_DISABLED'
+        ? 'This account has been turned off.'
+        : 'That username and password do not match.',
     )
   }
 
