@@ -6,7 +6,9 @@ import type { SqlDriver } from '../db/driver.js'
  * globally sequential counter cannot survive a second till.
  */
 
-export type DocType = 'bill' | 'return' | 'payment' | 'stock_entry' | 'stock_count'
+export type DocType =
+  | 'bill' | 'return' | 'payment' | 'stock_entry' | 'stock_count'
+  | 'quotation' | 'sales_order' | 'purchase_order'
 
 const ABBREV: Record<DocType, string> = {
   bill: 'INV',
@@ -14,6 +16,9 @@ const ABBREV: Record<DocType, string> = {
   payment: 'RCP',
   stock_entry: 'STE',
   stock_count: 'SC',
+  quotation: 'QT',
+  sales_order: 'SO',
+  purchase_order: 'PO',
 }
 
 /** Indian fiscal year runs April to March: 2026-06-01 is "26-27". */

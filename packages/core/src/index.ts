@@ -208,6 +208,18 @@ export {
 } from './services/suppliers.js'
 export type { Supplier, SupplierSummary, SupplierResult, PurchaseLine } from './services/suppliers.js'
 
+export {
+  createDocument, submitDocument, cancelDocument, listDocuments, loadDocument,
+} from './services/documents.js'
+export type {
+  DocumentKind, DocumentLineInput, CreateDocumentInput, CreateDocumentResult,
+  SubmitDocumentResult, CancelDocumentResult,
+  DocumentListItem, DocumentFilter, DocumentDetail, DocumentItemRow,
+} from './services/documents.js'
+
+export { quotationToSalesOrder, receivePurchaseOrder } from './services/convert.js'
+export type { ConvertResult, ReceiveResult } from './services/convert.js'
+
 export { applyUpgrades } from './services/upgrade.js'
 
 export * as Totals from './domain/billTotals.js'
