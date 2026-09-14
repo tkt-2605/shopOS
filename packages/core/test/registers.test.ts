@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   listRegisters, createRegister, renameRegister, setRegisterActive,
-  resolveDeviceRegister, takeLegacyDeviceRegister,
+  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
 } from '../src/services/registers.js'
 import { getOrOpenSession } from '../src/services/cash.js'
 import { createBill, submitBill } from '../src/services/billing.js'
@@ -112,25 +112,37 @@ describe('moving the choice off the shared table', () => {
   /* Every shop already running has a `device_register_id` row in `settings`.
      On a single till it holds the right answer, so it is moved rather than
      discarded — and then it is gone, because a second till reading it later
-     would pick up the first one's counter and mint its invoice numbers. */
+     would pick up the first one's counter and mint its invoice numbers.
 
-  it('hands back what the shop had, and only once', async () => {
+     Reading and forgetting are separate on purpose: the value has to reach the
+     machine before the shared row goes, and that write can fail. */
+
+  async function shopHadChosen(registerId: string) {
     await fx.db.execute(
       `INSERT INTO settings (key, value, updated_at) VALUES ('device_register_id', ?, ?)`,
-      [fx.seed.registerId, new Date().toISOString()],
+      [registerId, new Date().toISOString()],
     )
+  }
 
-    expect(await takeLegacyDeviceRegister(fx.db)).toBe(fx.seed.registerId)
-    expect(await takeLegacyDeviceRegister(fx.db)).toBeNull()
+  it('hands back what the shop had', async () => {
+    await shopHadChosen(fx.seed.registerId)
+    expect(await legacyDeviceRegister(fx.db)).toBe(fx.seed.registerId)
   })
 
-  it('leaves the shared table with no trace of it', async () => {
-    await fx.db.execute(
-      `INSERT INTO settings (key, value, updated_at) VALUES ('device_register_id', ?, ?)`,
-      [fx.seed.registerId, new Date().toISOString()],
-    )
-    await takeLegacyDeviceRegister(fx.db)
+  it('keeps holding it until the machine says it has taken it', async () => {
+    await shopHadChosen(fx.seed.registerId)
 
+    // Read without forgetting — which is what a failed device write leaves —
+    // and the answer is still there for the next start to try again.
+    await legacyDeviceRegister(fx.db)
+    expect(await legacyDeviceRegister(fx.db)).toBe(fx.seed.registerId)
+  })
+
+  it('leaves the shared table with no trace of it once told to forget', async () => {
+    await shopHadChosen(fx.seed.registerId)
+    await forgetLegacyDeviceRegister(fx.db)
+
+    expect(await legacyDeviceRegister(fx.db)).toBeNull()
     const row = await fx.db.get<{ value: string }>(
       `SELECT value FROM settings WHERE key = 'device_register_id'`,
     )
@@ -138,7 +150,7 @@ describe('moving the choice off the shared table', () => {
   })
 
   it('says nothing was there on a shop that never had one', async () => {
-    expect(await takeLegacyDeviceRegister(fx.db)).toBeNull()
+    expect(await legacyDeviceRegister(fx.db)).toBeNull()
   })
 })
 

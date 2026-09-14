@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { setSetting, getSetting, takeLocalSetting } from '../src/services/bootstrap.js'
+import { setSetting, getSetting, forgetSetting } from '../src/services/bootstrap.js'
 import { setStockPolicy } from '../src/services/features.js'
 import { freshDb, type Fixture } from './helpers.js'
 
@@ -72,29 +72,24 @@ describe('a setting that was never the shop’s', () => {
      away, the folder it writes to, how its screen is set up. Sharing them means
      the second till prints on the first till's printer. */
 
-  it('is handed back and taken off the shared table in one go', async () => {
+  it('is gone from the shared table once forgotten', async () => {
     await setSetting(fx.db, 'thermal_printer', 'EPSON TM-T82')
+    await forgetSetting(fx.db, 'thermal_printer')
 
-    expect(await takeLocalSetting(fx.db, 'thermal_printer')).toBe('EPSON TM-T82')
     expect(await getSetting(fx.db, 'thermal_printer')).toBeNull()
   })
 
-  it('is handed back only once, so a second till cannot adopt the first one’s', async () => {
-    await setSetting(fx.db, 'backup_hook', 'copy-to-usb.bat')
-
-    expect(await takeLocalSetting(fx.db, 'backup_hook')).toBe('copy-to-usb.bat')
-    expect(await takeLocalSetting(fx.db, 'backup_hook')).toBeNull()
-  })
-
-  it('says nothing was there on a shop that never set one', async () => {
-    expect(await takeLocalSetting(fx.db, 'backup_folder')).toBeNull()
+  it('is no trouble to forget twice', async () => {
+    await forgetSetting(fx.db, 'backup_hook')
+    await forgetSetting(fx.db, 'backup_hook')
+    expect(await getSetting(fx.db, 'backup_hook')).toBeNull()
   })
 
   it('leaves the shop’s own settings untouched', async () => {
     await setSetting(fx.db, 'shop_name', 'TRT Stationery')
     await setSetting(fx.db, 'thermal_printer', 'EPSON TM-T82')
 
-    await takeLocalSetting(fx.db, 'thermal_printer')
+    await forgetSetting(fx.db, 'thermal_printer')
 
     expect(await getSetting(fx.db, 'shop_name')).toBe('TRT Stationery')
   })

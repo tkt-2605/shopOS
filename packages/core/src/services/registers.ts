@@ -2,7 +2,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { newId } from '../ids.js'
 import { writeAudit } from '../integrity/audit.js'
 import { assertDeletable } from '../integrity/links.js'
-import { getSetting, takeLocalSetting } from './bootstrap.js'
+import { getSetting, forgetSetting } from './bootstrap.js'
 
 /**
  * A shop can run several counters. Each gets its own prefix, because that prefix
@@ -156,17 +156,21 @@ export async function resolveDeviceRegister(
 const LEGACY_DEVICE_REGISTER = 'device_register_id'
 
 /**
- * Takes the old shared setting off the database and hands it back, once.
+ * The counter a shop already running had chosen, from the shared row it used to
+ * be kept in.
  *
- * Every shop already running has a `device_register_id` row, and on a single
- * till it holds the right answer — so it is moved rather than discarded, and the
- * machine keeps billing on the counter it was billing on yesterday. Reading and
- * deleting happen in one transaction so a crash between them cannot leave the
- * value in both places, which is the state where a second till would later pick
- * up the first one's counter.
+ * Reading and forgetting are two functions rather than one on purpose. The value
+ * has to reach `device.json` before this row is removed, and that write can
+ * fail — see `deviceSettings.ts`. A single take-and-delete looked tidier and
+ * lost the answer whenever the file could not be written.
  */
-export async function takeLegacyDeviceRegister(db: SqlDriver): Promise<string | null> {
-  return takeLocalSetting(db, LEGACY_DEVICE_REGISTER)
+export async function legacyDeviceRegister(db: SqlDriver): Promise<string | null> {
+  return getSetting(db, LEGACY_DEVICE_REGISTER)
+}
+
+/** Called only once the machine has recorded the counter as its own. */
+export async function forgetLegacyDeviceRegister(db: SqlDriver): Promise<void> {
+  await forgetSetting(db, LEGACY_DEVICE_REGISTER)
 }
 
 async function exists(db: SqlDriver, column: 'name' | 'prefix', value: string, exceptId?: string): Promise<boolean> {

@@ -25,7 +25,8 @@ export { checkLinks, assertDeletable, LinkedRecordError, LINK_RULES } from './in
 export { writeAudit, writeActivity, diffFields } from './integrity/audit.js'
 export type { AuditAction, AuditContext, AuditRecord, FieldDiff } from './integrity/audit.js'
 
-export { bootstrap, setSetting, getSetting, takeLocalSetting } from './services/bootstrap.js'
+export { bootstrap, setSetting, getSetting, forgetSetting } from './services/bootstrap.js'
+export { moveSettingsToDevice, type DeviceStore, type MoveResult } from './services/deviceSettings.js'
 export type { BootstrapOptions, BootstrapResult } from './services/bootstrap.js'
 
 export {
@@ -116,7 +117,7 @@ export type { Page, Resource, Capability, PermissionSet, RoleTemplate } from './
 
 export {
   listRegisters, createRegister, renameRegister, setRegisterActive, deleteRegister,
-  resolveDeviceRegister, takeLegacyDeviceRegister,
+  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
 } from './services/registers.js'
 export type { Register, RegisterResult } from './services/registers.js'
 

@@ -9,7 +9,8 @@ import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup } from './backup'
 import {
   isFirstRun, firstRun, seedDemoData, applyUpgrades, login,
-  resolveDeviceRegister, takeLegacyDeviceRegister, takeLocalSetting,
+  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
+  moveSettingsToDevice,
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
@@ -139,16 +140,18 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
  * shop, once.
  *
  * Runs after `migrate` because it writes to `settings`, and before any screen
- * reads one, so nothing sees the value in two places. A key already recorded on
- * this machine is left alone: the machine's own answer outranks whatever the
- * shared row happens to say, which matters on the second till to be upgraded.
+ * reads one, so nothing ever sees a value in two places. The order — machine
+ * first, shared row second — is the part that matters, and it lives in
+ * `moveSettingsToDevice` where it is tested.
  */
 async function adoptDeviceSettings(db: SqlDriver): Promise<void> {
-  for (const key of DEVICE_LOCAL_KEYS) {
-    const shared = await takeLocalSetting(db, key)
-    if (shared !== null && deviceSetting(key) === null) {
-      await setDeviceSetting(key, shared)
-    }
+  const { stranded } = await moveSettingsToDevice(db, DEVICE_LOCAL_KEYS, {
+    has: deviceSetting,
+    put: setDeviceSetting,
+  })
+  if (stranded.length > 0) {
+    // Left in the shared table on purpose; the next start tries again.
+    console.error('This machine could not take over its own settings:', stranded.join(', '))
   }
 }
 
@@ -257,8 +260,13 @@ export function CoreProvider({ children }: { children: ReactNode }) {
        already running still has the old row, and on a single till it holds the
        right answer, so it is moved across once and then removed. */
     if (chosenRegister() === null) {
-      const legacy = await takeLegacyDeviceRegister(db)
-      if (legacy !== null) await chooseRegister(legacy)
+      const legacy = await legacyDeviceRegister(db)
+      // Recorded on the machine before the shared row goes, never after: the
+      // file write can fail, and a counter lost here is a till that silently
+      // starts minting another till's invoice numbers.
+      if (legacy !== null && await chooseRegister(legacy)) {
+        await forgetLegacyDeviceRegister(db)
+      }
     }
 
     const id = await resolveDeviceRegister(db, chosenRegister())

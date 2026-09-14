@@ -128,21 +128,15 @@ export async function setSetting(db: SqlDriver, key: string, value: string, now?
 }
 
 /**
- * Takes a setting off the shared table and hands it back, once.
+ * Removes a setting from the shared table.
  *
- * For the keys in here that were never the shop's business — which counter this
- * machine is, what command to run after its backup. They belong beside the
- * database rather than inside it, and on a shop already running the value here
- * is the right one to carry across. Reading and deleting happen in one
- * transaction: leaving it in both places is the state where a second till later
- * picks up the first one's answer.
+ * Used for the keys that were never the shop's business — which counter this
+ * machine is, what printer is plugged into it, what command carries its backup
+ * away. See `deviceSettings.ts` for the order those have to be moved in, which
+ * is the part that is easy to get wrong.
  */
-export async function takeLocalSetting(db: SqlDriver, key: string): Promise<string | null> {
-  return db.transaction(async (tx) => {
-    const value = await getSetting(tx, key)
-    if (value !== null) await tx.execute(`DELETE FROM settings WHERE key = ?`, [key])
-    return value
-  })
+export async function forgetSetting(db: SqlDriver, key: string): Promise<void> {
+  await db.execute(`DELETE FROM settings WHERE key = ?`, [key])
 }
 
 export async function getSetting(db: SqlDriver, key: string): Promise<string | null> {
