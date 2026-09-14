@@ -616,7 +616,6 @@ const SETUP_ITEMS: { page: Page; title: string; what: string }[] = [
   { page: 'registers', title: 'Counters', what: 'The tills this shop bills from, and the number series each one uses.' },
   { page: 'users', title: 'Staff', what: 'Who can sign in, and which role each of them has.' },
   { page: 'roles', title: 'Roles & Permissions', what: 'What each role is allowed to see and to change.' },
-  { page: 'formats', title: 'Bill Formats', what: 'What a printed bill or invoice carries, on the roll and on A4.' },
 ]
 
 function ShopCard() {

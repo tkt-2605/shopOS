@@ -38,13 +38,18 @@ const NAV_GROUPS: { label: string; pages: Page[] }[] = [
   { label: 'Stock', pages: ['inventory', 'stock_in', 'stock_count', 'reorder', 'purchase_orders', 'suppliers'] },
   { label: 'Money', pages: ['credit', 'cash_counter'] },
   { label: 'Review', pages: ['dashboard', 'reports', 'audit'] },
-  { label: 'Setup', pages: ['pricing', 'settings'] },
+  { label: 'Setup', pages: ['pricing', 'formats', 'settings'] },
 ]
 
-/* Counters, Staff, Roles and Bill Formats are deliberately absent from the
-   sidebar: six entries under Setup all read as "settings", and four of them are
-   opened twice a year. They are still routable pages with their own
-   permissions, reached from the "Set up" card on Settings. */
+/* Counters, Staff and Roles are deliberately absent from the sidebar: six
+   entries under Setup all read as "settings", and those three are opened twice
+   a year. They are still routable pages with their own permissions, reached
+   from the "Set up" card on Settings.
+
+   Bill Formats is not one of them, though it was at first and that was wrong.
+   It is not a twice-a-year screen — it is a design tool, opened over and over
+   while a shop gets its bill looking right, and a design tool behind a password
+   prompt inside another screen is a design tool nobody finds. */
 
 const PAGE_TITLES: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -58,7 +63,10 @@ const PAGE_TITLES: Record<string, string> = {
   customers: 'Customers',
   credit: 'Credit',
   cash_counter: 'Cash Counter',
-  pricing: 'Prices',
+  /* Not "Prices". The ordinary price of an item is on the Inventory screen,
+     and a shopkeeper looking for it went here and found something else. This
+     page is for the prices that are not the ordinary one. */
+  pricing: 'Special Prices',
   orders: 'Quotations & Orders',
   purchase_orders: 'Purchase Orders',
   registers: 'Counters',
