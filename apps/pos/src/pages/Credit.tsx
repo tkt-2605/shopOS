@@ -8,6 +8,7 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees, Stat } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
+import { useConfirm } from '../ui/useConfirm'
 import { printStatement } from '../core/print'
 import { statementPdf } from '../core/pdf'
 
@@ -235,6 +236,7 @@ function AccountPanel({
   onChanged: (message: string) => Promise<void>
 }) {
   const { db } = useCore()
+  const [confirmUi, ask] = useConfirm()
   /* A customer who has paid up is here for the statement, not to be charged
      again, so that is the tab that opens. */
   const [tab, setTab] = useState<Tab>(account.customer.outstanding > 0 ? 'due' : 'statement')
@@ -313,7 +315,7 @@ function AccountPanel({
     const back = payment.allocatedTo.length > 0
       ? ` ${payment.allocatedTo.map((a) => a.docNo).join(', ')} will go back on the khata.`
       : ''
-    if (!window.confirm(`Cancel ${payment.docNo} for ${Money.formatWithSymbol(payment.amount)}?${back}`)) return
+    if (!(await ask(`Cancel ${payment.docNo} for ${Money.formatWithSymbol(payment.amount)}?${back}`))) return
     await cancelPayment(db, { paymentId: payment.paymentId, reason: 'Cancelled from the credit screen', actorId })
     await onChanged(`${payment.docNo} cancelled.`)
   }
@@ -335,218 +337,221 @@ function AccountPanel({
   }
 
   return (
-    <Modal
-      wide
-      title={`${account.customer.name}${account.customer.code ? ` · ${account.customer.code}` : ''}`}
-      onClose={onClose}
-      footer={<>
-        <button className="btn" onClick={() => void print()}>Print statement</button>
-        <button className="btn" onClick={() => void savePdf()}>Statement as PDF</button>
-        <span style={{ flex: 1 }} />
-        <button className="btn" onClick={onClose}>Close</button>
-        <button className="btn primary" disabled={busy || !canTake} onClick={() => void apply()}>
-          {busy ? 'Working…' : settle === 'writeoff' ? 'Write it off' : 'Record payment'}
-        </button>
-      </>}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-        <span style={{ fontSize: 24, fontWeight: 700 }}>
-          <Rupees value={due as never} />
-        </span>
-        <span style={{ color: 'var(--ink-3)', fontSize: 12.5 }}>
-          outstanding across {account.bills.length} bill{account.bills.length === 1 ? '' : 's'}
-        </span>
-      </div>
+    <>
+      {confirmUi}
+      <Modal
+        wide
+        title={`${account.customer.name}${account.customer.code ? ` · ${account.customer.code}` : ''}`}
+        onClose={onClose}
+        footer={<>
+          <button className="btn" onClick={() => void print()}>Print statement</button>
+          <button className="btn" onClick={() => void savePdf()}>Statement as PDF</button>
+          <span style={{ flex: 1 }} />
+          <button className="btn" onClick={onClose}>Close</button>
+          <button className="btn primary" disabled={busy || !canTake} onClick={() => void apply()}>
+            {busy ? 'Working…' : settle === 'writeoff' ? 'Write it off' : 'Record payment'}
+          </button>
+        </>}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+          <span style={{ fontSize: 24, fontWeight: 700 }}>
+            <Rupees value={due as never} />
+          </span>
+          <span style={{ color: 'var(--ink-3)', fontSize: 12.5 }}>
+            outstanding across {account.bills.length} bill{account.bills.length === 1 ? '' : 's'}
+          </span>
+        </div>
 
-      <div className="segment">
-        <button className={tab === 'due' ? 'on' : ''} onClick={() => setTab('due')}>What is owed</button>
-        <button className={tab === 'paid' ? 'on' : ''} onClick={() => setTab('paid')}>
-          Received ({account.payments.length})
-        </button>
-        <button className={tab === 'statement' ? 'on' : ''} onClick={() => setTab('statement')}>
-          Statement
-        </button>
-      </div>
+        <div className="segment">
+          <button className={tab === 'due' ? 'on' : ''} onClick={() => setTab('due')}>What is owed</button>
+          <button className={tab === 'paid' ? 'on' : ''} onClick={() => setTab('paid')}>
+            Received ({account.payments.length})
+          </button>
+          <button className={tab === 'statement' ? 'on' : ''} onClick={() => setTab('statement')}>
+            Statement
+          </button>
+        </div>
 
-      {tab === 'due' && (
-        <table>
-          <thead>
-            <tr>
-              <th>Bill</th><th>Date</th>
-              <th className="r">On credit</th><th className="r">Paid</th><th className="r">Still due</th><th />
-            </tr>
-          </thead>
-          <tbody>
-            {account.bills.map((r) => (
-              <tr key={r.billId} style={targetBill === r.billId ? { background: 'var(--accent-soft)' } : undefined}>
-                <td className="num">{r.docNo}</td>
-                <td className="num">{r.postingDate}</td>
-                <td className="r"><Rupees value={r.creditTotal} /></td>
-                <td className="r"><Rupees value={r.allocated} /></td>
-                <td className="r"><Rupees value={r.outstanding} /></td>
-                <td className="r">
-                  <button
-                    className={targetBill === r.billId ? 'btn sm primary' : 'btn ghost sm'}
-                    onClick={() => aim(targetBill === r.billId ? null : r)}
-                  >
-                    {targetBill === r.billId ? 'Aimed here' : 'Clear this one'}
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {account.bills.length === 0 && (
-              <tr><td colSpan={6}><Empty>Nothing outstanding</Empty></td></tr>
-            )}
-          </tbody>
-        </table>
-      )}
-
-      {tab === 'paid' && (
-        <table>
-          <thead>
-            <tr>
-              <th>Receipt</th><th>Date</th><th>How</th>
-              <th className="r">Amount</th><th>Against</th><th />
-            </tr>
-          </thead>
-          <tbody>
-            {account.payments.map((p) => (
-              <tr key={p.paymentId} style={p.docstatus === 2 ? { color: 'var(--ink-3)' } : undefined}>
-                <td className="num">
-                  {p.docNo}
-                  {p.docstatus === 2 && <span className="badge" style={{ marginLeft: 6 }}>cancelled</span>}
-                </td>
-                <td className="num">{p.postingDate}</td>
-                <td>
-                  {p.method === 'adjustment' ? (p.reference ?? 'Adjustment') : p.method}
-                  {p.notes && <div className="src">{p.notes}</div>}
-                </td>
-                <td className="r"><Rupees value={p.amount} /></td>
-                <td className="num" style={{ fontSize: 11.5 }}>
-                  {p.allocatedTo.map((a) => a.docNo).join(', ') || <span style={{ color: 'var(--ink-3)' }}>unallocated</span>}
-                </td>
-                <td className="r">
-                  {p.docstatus === 1 && canUndo && (
-                    <button className="btn ghost sm" onClick={() => void undo(p)}>Undo</button>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {account.payments.length === 0 && (
-              <tr><td colSpan={6}><Empty>Nothing received yet</Empty></td></tr>
-            )}
-          </tbody>
-        </table>
-      )}
-
-      {tab === 'statement' && statement && (
-        <>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-            <Field label="From" hint="Blank means the whole account.">
-              <input className="input num" type="date" value={from}
-                onChange={(e) => setFrom(e.target.value)} />
-            </Field>
-            <Field label="To">
-              <input className="input num" type="date" value={to}
-                onChange={(e) => setTo(e.target.value)} />
-            </Field>
-            <button className="btn" onClick={() => { setFrom(''); setTo('') }}>Everything</button>
-            <button className="btn" onClick={() => {
-              const today = businessDate()
-              setFrom(addDays(today, -30))
-              setTo(today)
-            }}>Last 30 days</button>
-          </div>
-
+        {tab === 'due' && (
           <table>
             <thead>
               <tr>
-                <th>Date</th><th>Document</th><th>What</th>
-                <th className="r">Charged</th><th className="r">Paid</th><th className="r">Balance</th>
+                <th>Bill</th><th>Date</th>
+                <th className="r">On credit</th><th className="r">Paid</th><th className="r">Still due</th><th />
               </tr>
             </thead>
             <tbody>
-              {from && (
-                /* Where the window starts from, so the first balance below is not
-                   a figure that appears out of nowhere. */
-                <tr style={{ color: 'var(--ink-3)' }}>
-                  <td className="num">{from}</td>
-                  <td colSpan={4}>Balance brought forward</td>
-                  <td className="r"><Rupees value={statement.openingBalance} /></td>
-                </tr>
-              )}
-              {statement.entries.map((e) => (
-                <tr key={`${e.kind}-${e.id}`}>
-                  <td className="num">{e.postingDate}</td>
-                  <td className="num">{e.docNo}</td>
-                  <td>{e.description}</td>
+              {account.bills.map((r) => (
+                <tr key={r.billId} style={targetBill === r.billId ? { background: 'var(--accent-soft)' } : undefined}>
+                  <td className="num">{r.docNo}</td>
+                  <td className="num">{r.postingDate}</td>
+                  <td className="r"><Rupees value={r.creditTotal} /></td>
+                  <td className="r"><Rupees value={r.allocated} /></td>
+                  <td className="r"><Rupees value={r.outstanding} /></td>
                   <td className="r">
-                    {e.debit > 0 ? <Rupees value={e.debit} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}
+                    <button
+                      className={targetBill === r.billId ? 'btn sm primary' : 'btn ghost sm'}
+                      onClick={() => aim(targetBill === r.billId ? null : r)}
+                    >
+                      {targetBill === r.billId ? 'Aimed here' : 'Clear this one'}
+                    </button>
                   </td>
-                  <td className="r">
-                    {e.credit > 0 ? <Rupees value={e.credit} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}
-                  </td>
-                  <td className="r num">{Money.format(e.balance)}</td>
                 </tr>
               ))}
-              {statement.entries.length === 0 && (
-                <tr><td colSpan={6}><Empty>Nothing on this account for that period</Empty></td></tr>
+              {account.bills.length === 0 && (
+                <tr><td colSpan={6}><Empty>Nothing outstanding</Empty></td></tr>
               )}
             </tbody>
           </table>
+        )}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <div style={{ width: 280 }}>
-              <div className="total-line">
-                <span>Bought</span><Rupees value={statement.totals.bought} />
-              </div>
-              <div className="total-line">
-                <span>Paid</span><Rupees value={statement.totals.paid} />
-              </div>
-              {statement.totals.returned > 0 && (
-                <div className="total-line">
-                  <span>Returned</span><Rupees value={statement.totals.returned} />
-                </div>
+        {tab === 'paid' && (
+          <table>
+            <thead>
+              <tr>
+                <th>Receipt</th><th>Date</th><th>How</th>
+                <th className="r">Amount</th><th>Against</th><th />
+              </tr>
+            </thead>
+            <tbody>
+              {account.payments.map((p) => (
+                <tr key={p.paymentId} style={p.docstatus === 2 ? { color: 'var(--ink-3)' } : undefined}>
+                  <td className="num">
+                    {p.docNo}
+                    {p.docstatus === 2 && <span className="badge" style={{ marginLeft: 6 }}>cancelled</span>}
+                  </td>
+                  <td className="num">{p.postingDate}</td>
+                  <td>
+                    {p.method === 'adjustment' ? (p.reference ?? 'Adjustment') : p.method}
+                    {p.notes && <div className="src">{p.notes}</div>}
+                  </td>
+                  <td className="r"><Rupees value={p.amount} /></td>
+                  <td className="num" style={{ fontSize: 11.5 }}>
+                    {p.allocatedTo.map((a) => a.docNo).join(', ') || <span style={{ color: 'var(--ink-3)' }}>unallocated</span>}
+                  </td>
+                  <td className="r">
+                    {p.docstatus === 1 && canUndo && (
+                      <button className="btn ghost sm" onClick={() => void undo(p)}>Undo</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {account.payments.length === 0 && (
+                <tr><td colSpan={6}><Empty>Nothing received yet</Empty></td></tr>
               )}
-              <div className="total-line grand">
-                <span>Balance due</span>
-                <Rupees value={statement.closingBalance} className="amount" />
+            </tbody>
+          </table>
+        )}
+
+        {tab === 'statement' && statement && (
+          <>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+              <Field label="From" hint="Blank means the whole account.">
+                <input className="input num" type="date" value={from}
+                  onChange={(e) => setFrom(e.target.value)} />
+              </Field>
+              <Field label="To">
+                <input className="input num" type="date" value={to}
+                  onChange={(e) => setTo(e.target.value)} />
+              </Field>
+              <button className="btn" onClick={() => { setFrom(''); setTo('') }}>Everything</button>
+              <button className="btn" onClick={() => {
+                const today = businessDate()
+                setFrom(addDays(today, -30))
+                setTo(today)
+              }}>Last 30 days</button>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th><th>Document</th><th>What</th>
+                  <th className="r">Charged</th><th className="r">Paid</th><th className="r">Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {from && (
+                  /* Where the window starts from, so the first balance below is not
+                     a figure that appears out of nowhere. */
+                  <tr style={{ color: 'var(--ink-3)' }}>
+                    <td className="num">{from}</td>
+                    <td colSpan={4}>Balance brought forward</td>
+                    <td className="r"><Rupees value={statement.openingBalance} /></td>
+                  </tr>
+                )}
+                {statement.entries.map((e) => (
+                  <tr key={`${e.kind}-${e.id}`}>
+                    <td className="num">{e.postingDate}</td>
+                    <td className="num">{e.docNo}</td>
+                    <td>{e.description}</td>
+                    <td className="r">
+                      {e.debit > 0 ? <Rupees value={e.debit} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}
+                    </td>
+                    <td className="r">
+                      {e.credit > 0 ? <Rupees value={e.credit} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}
+                    </td>
+                    <td className="r num">{Money.format(e.balance)}</td>
+                  </tr>
+                ))}
+                {statement.entries.length === 0 && (
+                  <tr><td colSpan={6}><Empty>Nothing on this account for that period</Empty></td></tr>
+                )}
+              </tbody>
+            </table>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <div style={{ width: 280 }}>
+                <div className="total-line">
+                  <span>Bought</span><Rupees value={statement.totals.bought} />
+                </div>
+                <div className="total-line">
+                  <span>Paid</span><Rupees value={statement.totals.paid} />
+                </div>
+                {statement.totals.returned > 0 && (
+                  <div className="total-line">
+                    <span>Returned</span><Rupees value={statement.totals.returned} />
+                  </div>
+                )}
+                <div className="total-line grand">
+                  <span>Balance due</span>
+                  <Rupees value={statement.closingBalance} className="amount" />
+                </div>
               </div>
             </div>
-          </div>
-        </>
-      )}
+          </>
+        )}
 
-      {error && <Alert>{error}</Alert>}
+        {error && <Alert>{error}</Alert>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-        <Field label="Amount">
-          <input className="input num" id="pay-amount" value={amount}
-            onChange={(e) => setAmount(e.target.value)} />
-        </Field>
-        <Field label="How">
-          <select className="select" id="pay-method" value={settle}
-            onChange={(e) => setSettle(e.target.value as Settle)}>
-            <option value="cash">Cash</option>
-            <option value="upi">UPI</option>
-            <option value="card">Card</option>
-            <option value="writeoff">Write off — no money</option>
-          </select>
-        </Field>
-        <Field label={settle === 'writeoff' ? 'Why' : 'Reference'}>
-          <input className="input" id="pay-ref" value={reference}
-            placeholder={settle === 'writeoff' ? 'Shop closed, moved away…' : ''}
-            onChange={(e) => setReference(e.target.value)} />
-        </Field>
-      </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+          <Field label="Amount">
+            <input className="input num" id="pay-amount" value={amount}
+              onChange={(e) => setAmount(e.target.value)} />
+          </Field>
+          <Field label="How">
+            <select className="select" id="pay-method" value={settle}
+              onChange={(e) => setSettle(e.target.value as Settle)}>
+              <option value="cash">Cash</option>
+              <option value="upi">UPI</option>
+              <option value="card">Card</option>
+              <option value="writeoff">Write off — no money</option>
+            </select>
+          </Field>
+          <Field label={settle === 'writeoff' ? 'Why' : 'Reference'}>
+            <input className="input" id="pay-ref" value={reference}
+              placeholder={settle === 'writeoff' ? 'Shop closed, moved away…' : ''}
+              onChange={(e) => setReference(e.target.value)} />
+          </Field>
+        </div>
 
-      <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-        {targetBill
-          ? 'This goes against the bill highlighted above. Press its button again to go back to oldest-first.'
-          : 'This settles the oldest bills first. Pick a bill above to aim it at one instead.'}
-        {settle === 'writeoff' && ' Nothing enters the drawer — the day’s takings are untouched, and this can be undone from “Received”.'}
-      </div>
-    </Modal>
+        <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
+          {targetBill
+            ? 'This goes against the bill highlighted above. Press its button again to go back to oldest-first.'
+            : 'This settles the oldest bills first. Pick a bill above to aim it at one instead.'}
+          {settle === 'writeoff' && ' Nothing enters the drawer — the day’s takings are untouched, and this can be undone from “Received”.'}
+        </div>
+      </Modal>
+    </>
   )
 }
 

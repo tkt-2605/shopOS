@@ -13,6 +13,7 @@ import { printBillSheet } from '../core/printHtml'
 import { Attachments } from '../ui/Attachments'
 import { ReturnSheet } from '../ui/ReturnSheet'
 import { usePickList } from '../ui/PickList'
+import { useConfirm } from '../ui/useConfirm'
 import { requestRepeat } from '../core/repeat'
 import { countAttachments } from '@shopos/core'
 
@@ -29,6 +30,7 @@ const STATUSES: { id: BillStatusFilter; label: string }[] = [
 
 export default function Bills() {
   const { db } = useCore()
+  const [confirmUi, ask] = useConfirm()
   const user = useUser()
   const [bills, setBills] = useState<BillListItem[]>([])
   const [total, setTotal] = useState(0)
@@ -107,7 +109,7 @@ export default function Bills() {
   }
 
   async function undoReturn(returnId: string, docNo: string) {
-    if (!window.confirm(`Cancel ${docNo}? The goods go back out of stock and the refund is taken back.`)) return
+    if (!(await ask(`Cancel ${docNo}? The goods go back out of stock and the refund is taken back.`))) return
     await cancelReturn(db, { returnId, actorId: user.id })
     if (open) {
       setOpen(await loadBillDetail(db, open.id))
@@ -170,6 +172,7 @@ export default function Bills() {
 
   return (
     <>
+      {confirmUi}
       {error && <div style={{ marginBottom: 14 }}><Alert>{error}</Alert></div>}
       {note && (
         <div style={{ marginBottom: 14 }}>

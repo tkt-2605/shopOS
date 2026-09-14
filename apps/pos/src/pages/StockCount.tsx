@@ -6,6 +6,7 @@ import {
 } from '@shopos/core'
 import { useCore, useDb, useUser } from '../core/CoreProvider'
 import { Card, Modal, Empty, Alert, Rupees } from '../ui/components'
+import { useConfirm } from '../ui/useConfirm'
 
 /**
  * Counting the shelves.
@@ -25,6 +26,7 @@ type Phase = { kind: 'none' } | { kind: 'sheet'; sheet: CountSheet } | { kind: '
 
 export default function StockCount() {
   const db = useDb()
+  const [confirmUi, ask] = useConfirm()
   const user = useUser()
   const { registerName } = useCore()
   const [phase, setPhase] = useState<Phase>({ kind: 'none' })
@@ -112,14 +114,14 @@ export default function StockCount() {
 
   async function abandon() {
     if (phase.kind !== 'sheet') return
-    if (!window.confirm('Throw away this count sheet? Nothing will be posted.')) return
+    if (!(await ask('Throw away this count sheet? Nothing will be posted.'))) return
     await cancelCount(db, { countId: phase.sheet.id, actorId: user.id })
     setPhase({ kind: 'none' })
     await refresh()
   }
 
   async function undo(countId: string) {
-    if (!window.confirm('Reverse this count? The stock it corrected goes back to what it was.')) return
+    if (!(await ask('Reverse this count? The stock it corrected goes back to what it was.'))) return
     await cancelCount(db, { countId, reason: 'reversed from the count screen', actorId: user.id })
     await refresh()
   }
@@ -169,6 +171,7 @@ export default function StockCount() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 1000 }}>
+      {confirmUi}
       {error && <Alert>{error}</Alert>}
 
       {!sheet && <NeedFixing />}

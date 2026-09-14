@@ -11,9 +11,11 @@ import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBill
 import { useShortcuts } from '../core/useShortcuts'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
+import { useConfirm } from '../ui/useConfirm'
 
 export default function Billing() {
   const { db, registerId, stockPolicy, rounding } = useCore()
+  const [confirmUi, ask] = useConfirm()
   const user = useUser()
   const tabs = useBillTabs(db, registerId, user.id)
   const active = tabs.active
@@ -293,7 +295,7 @@ export default function Billing() {
   async function closeTab(cart: Cart) {
     if (cart.lines.length > 0) {
       const label = cart.customer?.name ?? `${cart.lines.length} item${cart.lines.length === 1 ? '' : 's'}`
-      if (!window.confirm(`Cancel this bill? ${label} will be discarded.`)) return
+      if (!(await ask(`Cancel this bill? ${label} will be discarded.`))) return
     }
     await tabs.close(cart.tabId)
     focusScan()
@@ -301,6 +303,7 @@ export default function Billing() {
 
   return (
     <div className="billing">
+      {confirmUi}
       <div className="bill-left">
         <div className="tab-strip">
           {tabs.tabs.map((cart, i) => (
