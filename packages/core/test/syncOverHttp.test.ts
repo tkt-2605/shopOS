@@ -76,6 +76,7 @@ async function serve(id: string, db: SqlDriver): Promise<{ server: Server; url: 
 beforeEach(async () => {
   forgetNonces()
   withdrawPairing()
+  joinerRegister = null
 
   const fx = await freshDb()
   const a = await serve(TILL_A, fx.db)
@@ -110,6 +111,29 @@ async function pairThem(): Promise<string> {
   const code = offerPairing()
   await as(joiner, () => pairWith(joiner.db, host.url, code, 'Back counter'))
   return code
+}
+
+/**
+ * The counter the joining till sits at, chosen after it has taken the shop.
+ *
+ * Not optional. A till that has never been asked falls back to the first active
+ * counter — the other till's — and two tills on one counter mint bill numbers
+ * from one series, so `syncWith` refuses them. This is the step a real shop
+ * does by pressing "Use here", and the tests have to do it too.
+ */
+let joinerRegister: string | null = null
+
+async function joinerPicksItsOwnCounter(): Promise<void> {
+  const id = 'back-counter'
+  const now = new Date().toISOString()
+  for (const db of [host.db, joiner.db]) {
+    await db.execute(
+      `INSERT INTO registers (id, name, prefix, is_active, created_at, updated_at)
+       VALUES (?, 'Back counter', 'BC', 1, ?, ?) ON CONFLICT (id) DO NOTHING`,
+      [id, now, now],
+    )
+  }
+  joinerRegister = id
 }
 
 async function peerOf(till: Till, them: string) {
@@ -180,7 +204,8 @@ describe('syncing across the wire', () => {
     const id = await as(host, () => makeProduct(host.db, { name: 'Notebook' }))
 
     const peers = await pairedPeers(joiner.db)
-    const round = await as(joiner, () => syncWith(joiner.db, httpTransport(peers[0]!)))
+    const round = await as(joiner, () =>
+      syncWith(joiner.db, httpTransport(peers[0]!), joinerRegister))
 
     expect(round.ok).toBe(true)
     const landed = await joiner.db.get<{ name: string }>(
@@ -194,12 +219,15 @@ describe('syncing across the wire', () => {
     const id = await as(host, () => makeProduct(host.db, { name: 'Notebook' }))
 
     const peers = await pairedPeers(joiner.db)
-    await as(joiner, () => syncWith(joiner.db, httpTransport(peers[0]!)))
+    await as(joiner, () => syncWith(joiner.db, httpTransport(peers[0]!), joinerRegister))
+    await joinerPicksItsOwnCounter()
 
     await as(joiner, () => joiner.db.execute(
       `UPDATE products SET name = ? WHERE id = ?`, ['Renamed on the back counter', id],
     ))
-    await as(joiner, () => syncWith(joiner.db, httpTransport(peers[0]!)))
+    const pushed = await as(joiner, () =>
+      syncWith(joiner.db, httpTransport(peers[0]!), joinerRegister))
+    expect(pushed.ok).toBe(true)
 
     const back = await host.db.get<{ name: string }>(
       `SELECT name FROM products WHERE id = ?`, [id],
@@ -215,7 +243,7 @@ describe('syncing across the wire', () => {
     const id = await as(host, () => makeProduct(host.db, { name: 'Notebook' }))
     const peers = await pairedPeers(joiner.db)
 
-    await as(joiner, () => syncWith(joiner.db, httpTransport(peers[0]!)))
+    await as(joiner, () => syncWith(joiner.db, httpTransport(peers[0]!), joinerRegister))
     const first = await joiner.db.get<{ rev: number }>(
       `SELECT rev FROM products WHERE id = ?`, [id],
     )
@@ -223,7 +251,7 @@ describe('syncing across the wire', () => {
     // Rewind this side's cursor and take it all again, which is what a lost
     // acknowledgement looks like from here.
     await joiner.db.execute(`UPDATE sync_peers SET their_cursor = 0 WHERE device_id = ?`, [TILL_A])
-    await as(joiner, () => syncWith(joiner.db, httpTransport(peers[0]!)))
+    await as(joiner, () => syncWith(joiner.db, httpTransport(peers[0]!), joinerRegister))
 
     const again = await joiner.db.get<{ rev: number }>(
       `SELECT rev FROM products WHERE id = ?`, [id],

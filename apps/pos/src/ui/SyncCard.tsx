@@ -361,6 +361,12 @@ function explainRefusal(code: string): string {
         + 'apart from the other till. See the banner at the top of the screen.'
     case 'SAME_DEVICE':
       return 'That address is this same till.'
+    case 'SAME_REGISTER':
+      return 'Both tills are billing on the same counter, so they would give two '
+        + 'different customers the same bill number. Nothing has been exchanged. '
+        + 'Open Counters and press "Use here" on the counter this machine actually '
+        + 'sits at — a till that has never been asked falls back to the first one '
+        + 'in the list, which is the other till’s.'
     default:
       return `The other till refused: ${code}.`
   }

@@ -1,7 +1,8 @@
 import {
   syncUntilDone, httpTransport, pairedPeers, pruneAcknowledged, recordAttempt,
-  type SqlDriver,
+  serveAs, type SqlDriver,
 } from '@shopos/core'
+import { chosenRegister } from './device'
 
 /**
  * Catching up without anybody pressing anything.
@@ -90,6 +91,10 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
   const reports: LoopReport[] = []
 
   try {
+    // The answering side cannot read device.json; it is told, every round, so a
+    // counter chosen five minutes ago is not still being announced as the old one.
+    serveAs(chosenRegister())
+
     const peers = await pairedPeers(db)
     const now = Date.now()
 
@@ -98,7 +103,10 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
       if (!force && mine.quietUntil > now) continue
 
       try {
-        const round = await syncUntilDone(db, httpTransport(peer))
+        /* Which counter this machine sits at, so the other till can be refused
+           if it is on the same one — two tills on one counter mint invoice
+           numbers from the same series and collide on the first bill. */
+        const round = await syncUntilDone(db, httpTransport(peer), 50, chosenRegister())
 
         if (round.ok) {
           state.set(peer.deviceId, { quietUntil: 0, backoff: 0 })

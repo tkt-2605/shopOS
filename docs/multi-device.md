@@ -525,9 +525,43 @@ The screen shows *talking* or *not answering*, how long ago they last agreed, an
 how much is still queued — in words (“four minutes ago”) rather than a clock
 time, because a person at a counter mid-queue will not do the subtraction.
 
-**Still owed:** the oversell list — two tills each selling the last one. The
-policy answer already exists (`stock_policy`), and what is missing is the screen
-that names which items it happened to.
+**The oversell list — two tills each selling the last one. Built.**
+
+The one thing merging genuinely cannot fix: the goods are gone, two people
+walked out with the same last unit, and no rule about revisions changes that.
+What the product can do is notice, and say which item. The screen for it already
+existed — "Counts that need fixing" on Stock Count — and it was never reached,
+for two separate reasons:
+
+- **`product_stock` was never recomputed after a merge.** It is a cache of the
+  ledger and does not replicate; `NOT_REPLICATED` has said "a merge recomputes
+  it" since the day it was written, and nothing did. So a till that took in
+  another till's sales kept its old figures until somebody happened to open
+  Inventory — the two tills quietly disagreed about the shelf, and *nothing ever
+  went below zero*, so the list stayed empty. `applyBatch` now recomputes when
+  ledger rows actually arrived, after the merge rather than inside it, so a busy
+  counter is not held behind a replay of the whole ledger.
+- **`balance_qty` is stamped by whichever till wrote the row**, and two tills
+  that merged never shared a running total. Each sale was legitimately the last
+  one at the moment it was made, so no row records going under — and the columns
+  that explain a shortfall came back blank *exactly* when a second till caused
+  it. When the stamped balances say nothing and the shelf is nevertheless below
+  zero, the shortfall itself is what was sold short and the last sale is the day
+  it happened. Inferred rather than read, and said so.
+
+**And one more landmine, found by the test that proved it.** Two tills on the
+same counter mint invoice numbers from one series, so the first bill to cross
+fails on `bills.doc_no` and the sync dies on a UNIQUE constraint with nothing
+saying why. That is also what a second till gets *by default* — a machine never
+told which counter it is falls back to the first active one, which is the other
+till's. `syncWith` now refuses with `SAME_REGISTER` before anything moves, and
+the screen says which button to press.
+
+---
+
+Phases 0 to 3 are built. Phase 4 — branches and the phone, over the internet —
+stays where this document put it: only once the LAN case has run in a real shop
+for a season.
 
 **Phase 2d — discovery.** The host advertises itself on the LAN; a till pairs
 with it once. A small HTTP server on the Rust side, no cloud, no account, no

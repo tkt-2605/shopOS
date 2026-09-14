@@ -4,6 +4,7 @@ import { deviceId } from '../device.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import { applyBatch, changedHere, collectChanges } from './sync.js'
 import { seedFeedWithEverything } from './changefeed.js'
+import { resolveDeviceRegister } from './registers.js'
 import { getSetting } from './bootstrap.js'
 import {
   constantTimeEquals, mintPairingCode, mintSecret, verify,
@@ -49,6 +50,20 @@ interface LiveCode {
 }
 
 let offered: LiveCode | null = null
+
+/**
+ * Which counter this till sits at, told to us by the app at startup.
+ *
+ * The answering side has no way to ask `device.json` — that is the webview's —
+ * so it is handed in. Null means never chosen, and `resolveDeviceRegister` then
+ * falls back to the first active counter, which is exactly the case the asking
+ * side refuses.
+ */
+let servingRegister: string | null = null
+
+export function serveAs(registerId: string | null): void {
+  servingRegister = registerId
+}
 
 export const PAIRING_WINDOW_MS = 10 * 60 * 1000
 
@@ -158,6 +173,10 @@ async function handleHello(db: SqlDriver, them: string): Promise<SyncResponse> {
     label: await getSetting(db, 'shop_name'),
     shopId: await getSetting(db, 'shop_id'),
     schemaVersion: EXPECTED_SCHEMA_VERSION,
+    /* Which counter this till bills on. Two tills on one counter mint invoice
+       numbers from the same series, so the asking side refuses before a bill
+       crosses and collides. */
+    registerId: await resolveDeviceRegister(db, servingRegister),
     // How far we have read of theirs is, from where they stand, how far they
     // have been read. The two cursors are one number seen from two sides.
     yourCursorWithThem: row?.their_cursor ?? 0,

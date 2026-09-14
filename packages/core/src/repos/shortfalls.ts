@@ -44,6 +44,7 @@ export async function listShortfalls(db: SqlDriver): Promise<ShortfallSummary> {
     on_hand: number
     short_since: string | null
     sold_short: number | null
+    last_sold: string | null
     last_counted: string | null
     last_received: string | null
   }>(
@@ -55,6 +56,8 @@ export async function listShortfalls(db: SqlDriver): Promise<ShortfallSummary> {
               WHERE sl.product_id = p.id AND sl.balance_qty < 0)         AS short_since,
             (SELECT COALESCE(SUM(-sl.qty_change), 0) FROM stock_ledger sl
               WHERE sl.product_id = p.id AND sl.qty_change < 0 AND sl.balance_qty < 0) AS sold_short,
+            (SELECT MAX(sl.posting_date) FROM stock_ledger sl
+              WHERE sl.product_id = p.id AND sl.qty_change < 0)          AS last_sold,
             (SELECT MAX(c.posting_date) FROM stock_count_items ci
                JOIN stock_counts c ON c.id = ci.count_id
               WHERE ci.product_id = p.id AND ci.counted_qty IS NOT NULL
@@ -74,8 +77,21 @@ export async function listShortfalls(db: SqlDriver): Promise<ShortfallSummary> {
       code: r.code,
       baseUnit: r.base_unit,
       onHand: qty(r.on_hand),
-      shortSince: r.short_since,
-      soldShort: qty(r.sold_short ?? 0),
+      /* `balance_qty` is each till's own running total at the moment it wrote
+         the row, and two tills that have merged never shared one. Two counters
+         each holding the last unit and each selling it are both at zero and
+         neither is wrong on its own — the shop is one short only once the
+         ledgers are put together, and no single row ever recorded going under.
+
+         So when the stamped balances say nothing and the shelf is nevertheless
+         below zero, the shortfall itself is what was sold short, and the day it
+         happened is the day of the last sale. Both are inferred rather than
+         read, and saying nothing at all would be worse: this is precisely the
+         case a second till creates, and it is the one a shop most needs named. */
+      shortSince: r.short_since ?? r.last_sold,
+      soldShort: qty(r.sold_short === null || r.sold_short === 0
+        ? -r.on_hand
+        : r.sold_short),
       lastCountedOn: r.last_counted,
       lastReceivedOn: r.last_received,
     })),

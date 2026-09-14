@@ -8,6 +8,8 @@ import {
 } from '../domain/replicaShape.js'
 import { applyingRemote, changesSince, pendingCount, pruneFeed } from './changefeed.js'
 import { getSetting } from './bootstrap.js'
+import { recomputeStock } from './stock.js'
+import { resolveDeviceRegister } from './registers.js'
 
 /**
  * Two tills agreeing.
@@ -32,6 +34,11 @@ export interface PeerHello {
    * up, which is what a new till joining an existing shop looks like.
    */
   shopId: string | null
+  /**
+   * Which counter the peer bills on. Two tills on one counter mint the same
+   * invoice numbers, which is the one thing the whole seam exists to prevent.
+   */
+  registerId?: string | null
   /** How far the peer has read of *our* feed. */
   yourCursorWithThem: number
 }
@@ -60,6 +67,7 @@ export type SyncResult =
   | { ok: false; code: 'NO_IDENTITY' }
   | { ok: false; code: 'SAME_DEVICE' }
   | { ok: false; code: 'DIFFERENT_SHOP'; mine: string; theirs: string }
+  | { ok: false; code: 'SAME_REGISTER'; registerId: string }
 
 export interface ContestedChange {
   table: string
@@ -82,6 +90,7 @@ const BATCH = 200
 export async function syncWith(
   db: SqlDriver,
   transport: SyncTransport,
+  chosenRegister?: string | null,
 ): Promise<SyncResult> {
   const me = deviceId()
   if (me === null) return { ok: false, code: 'NO_IDENTITY' }
@@ -121,6 +130,25 @@ export async function syncWith(
      tiebreak every dead heat against its own id. Harmless and completely
      pointless, and it means something is misconfigured, so it is said out loud. */
   if (hello.deviceId === me) return { ok: false, code: 'SAME_DEVICE' }
+
+  /* Both tills billing on one counter. They mint the same invoice numbers from
+     the same series, so the first bill to cross fails on `bills.doc_no` and the
+     sync dies on a UNIQUE constraint with nothing saying why.
+     
+     Refused rather than risked, and refused *before* anything moves. This is the
+     one outcome the whole seam exists to prevent, it is recoverable in ten
+     seconds by pressing "Use here" on the right counter, and it is exactly what
+     a second till gets by default -- `resolveDeviceRegister` falls back to the
+     first active counter when a machine has never been asked. */
+  const mineRegister = await resolveDeviceRegister(db, chosenRegister ?? null)
+  if (
+    mineRegister !== null
+    && hello.registerId !== null
+    && hello.registerId !== undefined
+    && hello.registerId === mineRegister
+  ) {
+    return { ok: false, code: 'SAME_REGISTER', registerId: mineRegister }
+  }
 
   const peer = await rememberPeer(db, hello)
 
@@ -184,12 +212,13 @@ export async function syncUntilDone(
   db: SqlDriver,
   transport: SyncTransport,
   rounds = 50,
+  chosenRegister?: string | null,
 ): Promise<SyncResult> {
-  let last = await syncWith(db, transport)
+  let last = await syncWith(db, transport, chosenRegister)
   let done = 1
 
   while (last.ok && last.more && done < rounds) {
-    const next = await syncWith(db, transport)
+    const next = await syncWith(db, transport, chosenRegister)
     if (!next.ok) return next
 
     /* No progress and still saying there is more means the two are passing
@@ -277,6 +306,37 @@ export async function applyBatch(
 ): Promise<{ applied: number; contested: ContestedChange[] }> {
   if (batch.records.length === 0) return { applied: 0, contested: [] }
 
+  const outcome = await mergeBatch(db, batch, changedHereToo)
+
+  /* `product_stock` is a cache of the ledger and does not replicate — and
+     `NOT_REPLICATED` has said "a merge recomputes it" since the day it was
+     written, while nothing did. So a till that took in another till's sales had
+     stale stock figures until somebody happened to open Inventory, and the two
+     tills quietly disagreed about what was on the shelf.
+
+     This is also the whole of the oversell case. Two tills each sell the last
+     one: each is at zero and neither is wrong on its own, and only after the
+     ledgers are put together is the shop one short. Nothing recomputed, so
+     nothing went below zero, so "Counts that need fixing" stayed empty and
+     nobody was ever told.
+
+     Only when ledger rows actually arrived, because this replays the whole
+     ledger — and after the merge rather than inside it, so a busy counter is not
+     held behind a long transaction. A recompute that is missed is picked up by
+     the next sync or by the Dashboard's drift check; a counter that stalls
+     mid-sale is not recoverable in the same way. */
+  if (outcome.applied > 0 && batch.records.some((r) => r.table === 'stock_ledger')) {
+    await recomputeStock(db, { repair: true })
+  }
+
+  return outcome
+}
+
+async function mergeBatch(
+  db: SqlDriver,
+  batch: ChangeBatch,
+  changedHereToo: ReadonlySet<string>,
+): Promise<{ applied: number; contested: ContestedChange[] }> {
   return applyingRemote(db, async (tx) => {
     let applied = 0
     const contested: ContestedChange[] = []
@@ -300,7 +360,7 @@ export async function applyBatch(
       const mine = await tx.get<Row>(
         `SELECT * FROM "${shape.table}" WHERE "${shape.key}" = ?`, [record.rowId],
       )
-      const both = changedHereToo.has(`${record.table} ${record.rowId}`)
+      const both = changedHereToo.has(`${record.table}\u0000${record.rowId}`)
 
       if (record.op === 'delete') {
         if (mine === undefined) continue
@@ -459,7 +519,7 @@ export async function changedHere(
   cursor: number,
 ): Promise<ReadonlySet<string>> {
   const entries = await changesSince(db, cursor, 100_000)
-  return new Set(entries.map((e) => `${e.table} ${e.rowId}`))
+  return new Set(entries.map((e) => `${e.table}\u0000${e.rowId}`))
 }
 
 async function upsert(tx: SqlDriver, table: string, key: string, row: Row): Promise<void> {
