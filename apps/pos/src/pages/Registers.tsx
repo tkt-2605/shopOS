@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  listRegisters, createRegister, renameRegister, setRegisterActive, setDeviceRegister,
-  getDeviceRegister, type Register,
+  listRegisters, createRegister, renameRegister, setRegisterActive,
+  resolveDeviceRegister, type Register,
 } from '@shopos/core'
+import { chooseRegister, chosenRegister } from '../core/device'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert } from '../ui/components'
 
@@ -17,7 +18,7 @@ export default function Registers() {
 
   const refresh = useCallback(async () => {
     setRows(await listRegisters(db, true))
-    setDeviceId(await getDeviceRegister(db))
+    setDeviceId(await resolveDeviceRegister(db, chosenRegister()))
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -39,7 +40,15 @@ export default function Registers() {
   }
 
   async function useHere(id: string) {
-    await setDeviceRegister(db, id)
+    setError(null)
+    /* Written to this machine, not to the shop's database — two tills sharing
+       one database must be able to sit on different counters. */
+    if (!(await chooseRegister(id))) {
+      setError(
+        'This machine could not record which counter it is, so it will go back to the '
+        + 'one it was on when ShopOS next starts. Billing is unaffected in the meantime.',
+      )
+    }
     await reloadRegister()
     await refresh()
     setNotice('This machine now bills on that counter.')

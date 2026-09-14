@@ -2,7 +2,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { newId } from '../ids.js'
 import { writeAudit } from '../integrity/audit.js'
 import { assertDeletable } from '../integrity/links.js'
-import { getSetting, setSetting } from './bootstrap.js'
+import { getSetting } from './bootstrap.js'
 
 /**
  * A shop can run several counters. Each gets its own prefix, because that prefix
@@ -121,14 +121,26 @@ export async function deleteRegister(db: SqlDriver, registerId: string): Promise
   await db.execute(`DELETE FROM registers WHERE id = ?`, [registerId])
 }
 
-const DEVICE_REGISTER = 'device_register_id'
-
 /**
- * Which counter this machine is. Device-scoped on purpose — it must never travel
- * with the data when sync arrives, or every terminal would claim the same till.
+ * Which counter this machine bills on, given the choice the machine itself
+ * remembers.
+ *
+ * The choice is **not** stored here, and that is the point. It used to live in
+ * `settings` under `device_register_id` — a table the whole shop shares — so two
+ * tills on one database would both claim the same counter, overwrite each
+ * other's answer, and then mint the same invoice numbers. The comment above this
+ * function said it "must never travel with the data when sync arrives" for as
+ * long as it did exactly that. It lives in `device.json` beside the database now
+ * (`src-tauri/src/device.rs`), which no backup carries and no restore replaces.
+ *
+ * What stays here is the part that is a question about the database rather than
+ * about the machine: whether that counter still exists and is still open for
+ * business, and which to fall back to when it is not.
  */
-export async function getDeviceRegister(db: SqlDriver): Promise<string | null> {
-  const chosen = await getSetting(db, DEVICE_REGISTER)
+export async function resolveDeviceRegister(
+  db: SqlDriver,
+  chosen: string | null,
+): Promise<string | null> {
   if (chosen) {
     const live = await db.get<{ id: string }>(
       `SELECT id FROM registers WHERE id = ? AND is_active = 1`, [chosen],
@@ -141,8 +153,26 @@ export async function getDeviceRegister(db: SqlDriver): Promise<string | null> {
   return fallback?.id ?? null
 }
 
-export async function setDeviceRegister(db: SqlDriver, registerId: string): Promise<void> {
-  await setSetting(db, DEVICE_REGISTER, registerId)
+const LEGACY_DEVICE_REGISTER = 'device_register_id'
+
+/**
+ * Takes the old shared setting off the database and hands it back, once.
+ *
+ * Every shop already running has a `device_register_id` row, and on a single
+ * till it holds the right answer — so it is moved rather than discarded, and the
+ * machine keeps billing on the counter it was billing on yesterday. Reading and
+ * deleting happen in one transaction so a crash between them cannot leave the
+ * value in both places, which is the state where a second till would later pick
+ * up the first one's counter.
+ */
+export async function takeLegacyDeviceRegister(db: SqlDriver): Promise<string | null> {
+  return db.transaction(async (tx) => {
+    const chosen = await getSetting(tx, LEGACY_DEVICE_REGISTER)
+    if (chosen !== null) {
+      await tx.execute(`DELETE FROM settings WHERE key = ?`, [LEGACY_DEVICE_REGISTER])
+    }
+    return chosen
+  })
 }
 
 async function exists(db: SqlDriver, column: 'name' | 'prefix', value: string, exceptId?: string): Promise<boolean> {

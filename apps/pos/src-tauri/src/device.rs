@@ -27,12 +27,27 @@ const FILE: &str = "device.json";
 struct Stored {
     device_id: String,
     label: String,
+    /// Which counter this machine bills on.
+    ///
+    /// It lived in the `settings` table until now, which the whole shop shares —
+    /// so the moment two tills opened one database they would both claim the
+    /// same till and overwrite each other's choice, and their invoice numbers
+    /// would collide. `registers.ts` has carried a comment saying this "must
+    /// never travel with the data when sync arrives" since it was written; this
+    /// is the file where that is actually true.
+    ///
+    /// `default` so a device.json written before this field existed still parses
+    /// rather than being refused as damaged.
+    #[serde(default)]
+    register_id: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct Identity {
     pub id: String,
     pub label: String,
+    #[serde(rename = "registerId")]
+    pub register_id: Option<String>,
     /// True only on the run that minted it, so a caller can record a first
     /// sighting once instead of on every start.
     pub minted: bool,
@@ -43,6 +58,34 @@ pub fn device_identity(app: tauri::AppHandle) -> Result<Identity, String> {
     load_or_mint(&paths::data_dir(&app)?)
 }
 
+/// Records which counter this machine bills on. Null forgets the choice, which
+/// is what deactivating the chosen register has to leave behind.
+#[tauri::command]
+pub fn device_set_register(
+    app: tauri::AppHandle,
+    register_id: Option<String>,
+) -> Result<Identity, String> {
+    set_register(&paths::data_dir(&app)?, register_id)
+}
+
+fn set_register(dir: &Path, register_id: Option<String>) -> Result<Identity, String> {
+    // Minting first rather than refusing: a machine choosing its counter before
+    // it has ever been identified is just a machine on its first run.
+    let existing = load_or_mint(dir)?;
+    let stored = Stored {
+        device_id: existing.id,
+        label: existing.label,
+        register_id,
+    };
+    save(&dir.join(FILE), &stored)?;
+    Ok(Identity {
+        id: stored.device_id,
+        label: stored.label,
+        register_id: stored.register_id,
+        minted: false,
+    })
+}
+
 fn load_or_mint(dir: &Path) -> Result<Identity, String> {
     let path = dir.join(FILE);
 
@@ -51,6 +94,7 @@ fn load_or_mint(dir: &Path) -> Result<Identity, String> {
             Ok(stored) if is_device_id(&stored.device_id) => Ok(Identity {
                 id: stored.device_id,
                 label: stored.label,
+                register_id: stored.register_id,
                 minted: false,
             }),
             // A file that exists but cannot be read as an identity is never
@@ -68,11 +112,13 @@ fn load_or_mint(dir: &Path) -> Result<Identity, String> {
             let stored = Stored {
                 device_id: mint(),
                 label: hostname(),
+                register_id: None,
             };
             write_new(&path, &stored)?;
             Ok(Identity {
                 id: stored.device_id,
                 label: stored.label,
+                register_id: stored.register_id,
                 minted: true,
             })
         }
@@ -99,6 +145,21 @@ fn write_new(path: &Path, stored: &Stored) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(format!("Could not create {}: {e}", path.display())),
     }
+}
+
+/// Replaces the file through a temporary and a rename, so a machine that loses
+/// power mid-write keeps the identity it had rather than half of one. A
+/// truncating write in place is the one way this file could become the
+/// unreadable thing `load_or_mint` refuses.
+fn save(path: &Path, stored: &Stored) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(stored).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.writing");
+    std::fs::write(&tmp, json.as_bytes())
+        .map_err(|e| format!("Could not write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Could not replace {}: {e}", path.display())
+    })
 }
 
 /// UUIDv4. Not the v7 that database ids use: a device id is not a document and
@@ -197,6 +258,60 @@ mod tests {
             // And the file it refused is still there to be rescued.
             assert!(path.exists());
         }
+    }
+
+    /// The register choice is device-local state, which is the whole reason this
+    /// file exists rather than a `settings` row.
+    #[test]
+    fn remembers_which_counter_this_machine_is() {
+        let dir = temp("register");
+
+        assert_eq!(load_or_mint(&dir).unwrap().register_id, None);
+
+        let set = set_register(&dir, Some("reg-front".into())).unwrap();
+        assert_eq!(set.register_id.as_deref(), Some("reg-front"));
+        assert_eq!(load_or_mint(&dir).unwrap().register_id.as_deref(), Some("reg-front"));
+    }
+
+    #[test]
+    fn choosing_a_counter_never_changes_the_identity() {
+        let dir = temp("register-keeps-id");
+        let before = load_or_mint(&dir).unwrap();
+
+        set_register(&dir, Some("reg-a".into())).unwrap();
+        set_register(&dir, Some("reg-b".into())).unwrap();
+
+        let after = load_or_mint(&dir).unwrap();
+        assert_eq!(before.id, after.id);
+        assert_eq!(after.register_id.as_deref(), Some("reg-b"));
+    }
+
+    /// Deactivating the chosen counter has to leave the machine with no counter,
+    /// not with a dangling one.
+    #[test]
+    fn forgets_the_counter_when_asked() {
+        let dir = temp("register-forget");
+        set_register(&dir, Some("reg-a".into())).unwrap();
+        assert_eq!(set_register(&dir, None).unwrap().register_id, None);
+        assert_eq!(load_or_mint(&dir).unwrap().register_id, None);
+    }
+
+    /// A device.json written before the field existed is an ordinary file, not a
+    /// damaged one.
+    #[test]
+    fn reads_a_file_written_before_counters_were_kept_here() {
+        let dir = temp("older-file");
+        std::fs::write(
+            dir.join(FILE),
+            r#"{"device_id":"550e8400-e29b-41d4-a716-446655440000","label":"COUNTER1"}"#,
+        )
+        .unwrap();
+
+        let got = load_or_mint(&dir).unwrap();
+        assert_eq!(got.id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(got.label, "COUNTER1");
+        assert_eq!(got.register_id, None);
+        assert!(!got.minted);
     }
 
     #[test]

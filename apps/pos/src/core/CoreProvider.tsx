@@ -1,11 +1,12 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { createTauriDriver, migrate, type SqlDriver } from '@shopos/core'
-import { establishDevice } from './device'
+import { chooseRegister, chosenRegister, establishDevice } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup } from './backup'
 import {
-  isFirstRun, firstRun, seedDemoData, applyUpgrades, login, getSetting, getDeviceRegister,
+  isFirstRun, firstRun, seedDemoData, applyUpgrades, login, getSetting,
+  resolveDeviceRegister, takeLegacyDeviceRegister,
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
@@ -226,7 +227,17 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   }
 
   async function loadRegister() {
-    const id = await getDeviceRegister(db)
+    /* Which counter this machine is used to be a row in `settings`, which the
+       whole shop shares — so two tills would have claimed the same counter and
+       minted the same invoice numbers. It lives on the machine now. A shop
+       already running still has the old row, and on a single till it holds the
+       right answer, so it is moved across once and then removed. */
+    if (chosenRegister() === null) {
+      const legacy = await takeLegacyDeviceRegister(db)
+      if (legacy !== null) await chooseRegister(legacy)
+    }
+
+    const id = await resolveDeviceRegister(db, chosenRegister())
     setRegisterId(id ?? '')
     const row = id ? await db.get<{ name: string }>(`SELECT name FROM registers WHERE id = ?`, [id]) : undefined
     setRegisterName(row?.name ?? '')

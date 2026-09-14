@@ -13,10 +13,13 @@ import { setDeviceId } from '@shopos/core'
 export interface DeviceIdentity {
   id: string
   label: string
+  /** Which counter this machine bills on, or null if it has never been asked. */
+  registerId: string | null
   minted: boolean
 }
 
 let problem: string | null = null
+let identity: DeviceIdentity | null = null
 
 /**
  * Why the machine could not be identified, or null when it could.
@@ -33,14 +36,47 @@ export function deviceProblem(): string | null {
 
 export async function establishDevice(): Promise<DeviceIdentity | null> {
   try {
-    const identity = await invoke<DeviceIdentity>('device_identity')
+    identity = await invoke<DeviceIdentity>('device_identity')
     setDeviceId(identity.id)
     problem = null
     return identity
   } catch (err) {
     problem = err instanceof Error ? err.message : String(err)
+    identity = null
     setDeviceId(null)
     console.error('Could not establish this machine\'s identity:', problem)
     return null
+  }
+}
+
+export function thisDevice(): DeviceIdentity | null {
+  return identity
+}
+
+/**
+ * The counter this machine chose, as it chose it — not as the database would
+ * have it. `resolveDeviceRegister` is what turns this into a counter that still
+ * exists; this is only what was picked.
+ */
+export function chosenRegister(): string | null {
+  return identity?.registerId ?? null
+}
+
+/**
+ * Records the counter on the machine rather than in the shop's database.
+ *
+ * A till that cannot write the file keeps billing on whatever it resolved to
+ * this session and says so, because the alternative — refusing the choice — is
+ * a counter that cannot be set up at all.
+ */
+export async function chooseRegister(registerId: string | null): Promise<boolean> {
+  try {
+    identity = await invoke<DeviceIdentity>('device_set_register', { registerId })
+    problem = null
+    return true
+  } catch (err) {
+    problem = err instanceof Error ? err.message : String(err)
+    console.error('Could not record which counter this machine is:', problem)
+    return false
   }
 }

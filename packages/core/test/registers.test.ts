@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   listRegisters, createRegister, renameRegister, setRegisterActive,
-  getDeviceRegister, setDeviceRegister,
+  resolveDeviceRegister, takeLegacyDeviceRegister,
 } from '../src/services/registers.js'
 import { getOrOpenSession } from '../src/services/cash.js'
 import { createBill, submitBill } from '../src/services/billing.js'
@@ -82,23 +82,63 @@ describe('registers', () => {
 })
 
 describe('which counter this machine is', () => {
-  it('falls back to the first active register', async () => {
-    expect(await getDeviceRegister(fx.db)).toBe(fx.seed.registerId)
+  /* The choice itself lives in device.json now, not in this database — it is a
+     fact about the machine, and `settings` is shared by the whole shop. What is
+     still a question for the database is whether the chosen counter is real. */
+
+  it('falls back to the first active register when the machine has chosen none', async () => {
+    expect(await resolveDeviceRegister(fx.db, null)).toBe(fx.seed.registerId)
   })
 
-  it('remembers the chosen one', async () => {
+  it('uses the one the machine chose', async () => {
     const made = await createRegister(fx.db, { name: 'Front', prefix: 'FC', actorId: fx.adminId })
     if (!made.ok) return
-    await setDeviceRegister(fx.db, made.registerId)
-    expect(await getDeviceRegister(fx.db)).toBe(made.registerId)
+    expect(await resolveDeviceRegister(fx.db, made.registerId)).toBe(made.registerId)
   })
 
   it('falls back when the chosen one is switched off', async () => {
     const made = await createRegister(fx.db, { name: 'Front', prefix: 'FC', actorId: fx.adminId })
     if (!made.ok) return
-    await setDeviceRegister(fx.db, made.registerId)
     await setRegisterActive(fx.db, { registerId: made.registerId, isActive: false, actorId: fx.adminId })
-    expect(await getDeviceRegister(fx.db)).toBe(fx.seed.registerId)
+    expect(await resolveDeviceRegister(fx.db, made.registerId)).toBe(fx.seed.registerId)
+  })
+
+  it('falls back when the chosen one was deleted on another till', async () => {
+    expect(await resolveDeviceRegister(fx.db, 'a-counter-that-is-not-there')).toBe(fx.seed.registerId)
+  })
+})
+
+describe('moving the choice off the shared table', () => {
+  /* Every shop already running has a `device_register_id` row in `settings`.
+     On a single till it holds the right answer, so it is moved rather than
+     discarded — and then it is gone, because a second till reading it later
+     would pick up the first one's counter and mint its invoice numbers. */
+
+  it('hands back what the shop had, and only once', async () => {
+    await fx.db.execute(
+      `INSERT INTO settings (key, value, updated_at) VALUES ('device_register_id', ?, ?)`,
+      [fx.seed.registerId, new Date().toISOString()],
+    )
+
+    expect(await takeLegacyDeviceRegister(fx.db)).toBe(fx.seed.registerId)
+    expect(await takeLegacyDeviceRegister(fx.db)).toBeNull()
+  })
+
+  it('leaves the shared table with no trace of it', async () => {
+    await fx.db.execute(
+      `INSERT INTO settings (key, value, updated_at) VALUES ('device_register_id', ?, ?)`,
+      [fx.seed.registerId, new Date().toISOString()],
+    )
+    await takeLegacyDeviceRegister(fx.db)
+
+    const row = await fx.db.get<{ value: string }>(
+      `SELECT value FROM settings WHERE key = 'device_register_id'`,
+    )
+    expect(row).toBeUndefined()
+  })
+
+  it('says nothing was there on a shop that never had one', async () => {
+    expect(await takeLegacyDeviceRegister(fx.db)).toBeNull()
   })
 })
 

@@ -88,10 +88,9 @@ schema keeps the promise:
 
 ## What is wrong today
 
-- **`setDeviceRegister` writes to `settings`** (`services/registers.ts:144`),
-  which is a shared table. Two tills sharing a database would both claim the
-  same counter and then overwrite each other. It is one row and it is the first
-  thing to move.
+- ~~**`setDeviceRegister` writes to `settings`**, which is a shared table. Two
+  tills sharing a database would both claim the same counter and then overwrite
+  each other.~~ *Moved to `device.json` — see Phase 0.*
 - **There is no device identity.** `origin_id` is a column with nothing to put
   in it. Until a device knows its own name, no change can be attributed and no
   replication can decide anything. *(Answered by migration 019 — see Phase 0.)*
@@ -182,8 +181,24 @@ a last-writer-wins merge needs, and it is only needed once a merge exists — an
 because the audit trail now carries the device on every write, it can be derived
 when that day comes. Writing it now would mean touching every INSERT in the
 service layer for a column nothing reads, which is the exact mistake being
-corrected above. `DEVICE_REGISTER` is still in `settings` (`registers.ts:124`)
-and still has to move before two tills share a database.
+corrected above.
+
+**Which counter this machine is** has moved off `settings` and into
+`device.json` beside the identity. `resolveDeviceRegister(db, chosen)` keeps the
+half that is a question about the database — whether that counter still exists
+and is still open — and the choice itself is no longer in a table the whole shop
+shares. A shop already running has the old `device_register_id` row and on a
+single till it holds the right answer, so it is moved across once, in one
+transaction with its own deletion: leaving it in both places is the state where
+a second till would later pick up the first one's counter and mint its invoice
+numbers.
+
+**Still owed before two tills can share a database:** `settings` carries no
+`rev` and no `origin_id` at all, yet it holds the shop name, the GSTIN, the
+rounding rule and the stock policy — all things that have to replicate. It is
+the one table that is replicated in practice and not in the schema, and it needs
+a decision rather than a trigger, because two tills changing two different
+settings must not overwrite each other's row.
 
 **Phase 1 — the changefeed.** One table recording `(table, row id, rev, origin,
 at)`, written by the same service-layer seam that writes the audit row. Sync

@@ -116,7 +116,7 @@ export type { Page, Resource, Capability, PermissionSet, RoleTemplate } from './
 
 export {
   listRegisters, createRegister, renameRegister, setRegisterActive, deleteRegister,
-  getDeviceRegister, setDeviceRegister,
+  resolveDeviceRegister, takeLegacyDeviceRegister,
 } from './services/registers.js'
 export type { Register, RegisterResult } from './services/registers.js'
 
