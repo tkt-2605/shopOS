@@ -262,13 +262,52 @@ themselves; `stock_ledger` and `loyalty_entries` feed as themselves too, being
 append-only and merging by union; the twelve line tables mark their parent, so a
 bill whose lines changed travels whole. `product_stock` and `doc_sequences` are
 out on purpose — derived, and taking either side of a number series would hand
-two tills the same invoice number. `doc_formats` is in, and is the one that does
-not fit: it is the shop's own bill layouts, authored on a screen, so it has to
-travel, and it carries no `rev` to settle a tie with. **That is owed.**
+two tills the same invoice number. `doc_formats` is in, and migration 022 gave it
+the `rev` it was missing, so it is settled by the same rule as everything else
+rather than by the two machines' clocks.
 
 `changefeed.test.ts` derives the covered set from the schema, so a table added
 later fails the run rather than being quietly left out. It caught `doc_formats`
 the first time it ran.
+
+**Migration 022 — a document's revision moves when any part of it moves, and the
+merge rule.**
+
+021 made a line table mark its parent, so a bill whose lines changed is *sent*
+whole. 022 is the other half: a bill whose lines changed has *changed*, and its
+`rev` now says so. The gap was clearest on the permission grid — `saveRoleMatrix`
+updates the role after writing the grid, so it was fine, while `applyUpgrades`
+writes the same two tables and has no reason to touch the role. A newly granted
+screen therefore reached the second till as a role whose revision said nothing
+had happened. That is 019's argument a third time: an invariant call sites have
+to remember is not an invariant.
+
+**The rule itself is `packages/core/src/domain/merge.ts`** — pure, so it can be
+argued with and tested on its own rather than discovered inside a sync that has
+already overwritten something:
+
+1. **Higher `rev` wins.** It only rises, and it rises on every local change.
+2. **Level revisions: the later `updated_at`.** Second and not first, because two
+   tills' clocks are not one clock — a till an hour slow would otherwise lose
+   every disagreement it was ever in.
+3. **Still level: the higher device id.** Arbitrary on purpose. What matters is
+   that *both tills decide the same way*; a rule that resolves differently on the
+   two machines leaves them disagreeing for ever, each certain it is right.
+
+A delete beats an edit that did not know about it, because of which mistake is
+recoverable: a row wrongly kept is deleted again in a second, and a row wrongly
+deleted is gone with everything attached to it. A row the far side changed *after*
+the delete travelled comes back, because that is somebody deliberately reinstating
+it rather than a disagreement.
+
+**What it deliberately will not guess** is whether an edit was lost. A higher
+`rev` does not prove the winner had seen the loser's change, and knowing properly
+needs a version vector per row — a real cost on every table for a shop that
+mostly has one till. So `contested` is answered by the one fact the transport
+actually has: the row is in *both* tills' changefeeds since they last agreed,
+which is a concurrent edit for certain. Guessing instead would put a warning on
+the screen every time one till was merely behind, and a warning that cries wolf
+is one nobody reads.
 
 **Phase 2 — transport.** The host advertises itself on the LAN; a till pairs
 with it once. A small HTTP server on the Rust side, no cloud, no account, no

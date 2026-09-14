@@ -135,6 +135,44 @@ describe('a document travels whole', () => {
     expect(mine?.op).toBe('upsert')
   })
 
+  it('moves the document’s revision, not only its place in the queue', async () => {
+    /* Marking the parent dirty sends the bill; moving its rev is what makes the
+       far side accept it. Without both, a merge comparing rev keeps its own copy
+       and the change is dropped while everything appears to work. */
+    const productId = await makeProduct(fx.db, { name: 'Notebook' })
+    const billId = await onlyBill(productId)
+    const before = await revOf('bills', billId)
+
+    await fx.db.execute(`UPDATE bill_items SET returned_qty = returned_qty WHERE bill_id = ?`, [billId])
+
+    expect(await revOf('bills', billId)).toBeGreaterThan(before)
+  })
+
+  it('moves a role’s revision when a page is granted to it', async () => {
+    /* The case that made this a trigger. `saveRoleMatrix` updates the role
+       itself, so it was fine; `applyUpgrades` writes the same two tables and has
+       no reason to touch the role — so a newly granted screen reached the second
+       till as a role whose revision said nothing had changed. */
+    const roleId = fx.seed.roleIds['Admin']!
+    const before = await revOf('roles', roleId)
+
+    await fx.db.execute(
+      `INSERT INTO role_pages (role_id, page_key, visible) VALUES (?, 'formats', 1)
+       ON CONFLICT (role_id, page_key) DO UPDATE SET visible = excluded.visible`,
+      [roleId],
+    )
+
+    expect(await revOf('roles', roleId)).toBeGreaterThan(before)
+    expect((await entriesFor('roles')).map((c) => c.rowId)).toContain(roleId)
+  })
+
+  async function revOf(table: string, id: string): Promise<number> {
+    const row = await fx.db.get<{ rev: number }>(
+      `SELECT rev FROM ${table} WHERE id = ?`, [id],
+    )
+    return row?.rev ?? 0
+  }
+
   /** A real bill through the real service, so the columns stay the service's
       business rather than this file's. */
   async function onlyBill(productId: string): Promise<string> {
@@ -271,7 +309,9 @@ describe('the set of tables it covers', () => {
       const cols = await fx.db.query<{ name: string }>(`PRAGMA table_info("${name}")`)
       if (cols.some((c) => c.name === 'rev')) revTables.push(name)
     }
-    expect(revTables.length).toBe(21)
+    // 022 gave doc_formats one, so it has a tiebreaker of its own rather than
+    // being merged on the two machines' clocks.
+    expect(revTables.length).toBe(22)
 
     const triggers = new Set(
       (await fx.db.query<{ name: string }>(
