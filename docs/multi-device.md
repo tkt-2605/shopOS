@@ -349,7 +349,51 @@ the triggers actually in the database, both ways, so a table in one and not the
 other fails the run. It caught a `schema_migrations` table that has never
 existed; migrations are tracked in `PRAGMA user_version`.
 
-**Phase 2b — transport.** The host advertises itself on the LAN; a till pairs
+**Phase 2b — the wire. Built (migration 025), except the listener.**
+
+`syncServer.ts` is the side that answers and is deliberately **not a server**: it
+takes a request that has already arrived and returns what to send back. So the
+thing that listens on a port is a pipe with no opinions, the protocol has exactly
+one implementation, and all of it is testable over real sockets without building
+the app. `syncClient.ts` is the side that asks, and it is plain `fetch` — making
+a request out is something a webview can do; listening is the only part that
+needs Rust.
+
+**Pairing is a code read off one screen and typed into the other.** Not
+trust-on-first-use, and the reason is that a shop's wifi is not a trusted
+network: the customer wifi is usually the same subnet and the password is on a
+card by the till. Anything that could reach the port would otherwise pull down
+every customer, every price and every sale. The code is eight characters, lives
+ten minutes, and **any attempt spends it, right or wrong** — which is what makes
+eight characters enough, because guessing becomes a matter of persuading a person
+to read out a fresh code each time.
+
+After pairing the two tills share a secret that **never travels again**. Every
+request carries an HMAC over its own path, timestamp, nonce and body, so a
+request cannot be altered on the way, cannot be replayed, and cannot be reused
+against a different endpoint.
+
+**What this does not do is hide anything.** The bills cross the LAN in clear.
+That is written down rather than implied away, because the gap between "signed"
+and "private" is exactly the kind a reader assumes closed. TLS between two tills
+means certificates nobody can check, pinned by hand, expiring in a shop with no
+IT — the right next step, and not this one.
+
+`/offer` is idempotent, which it has to be: a batch that was applied and
+acknowledged, whose acknowledgement was lost on the way back, arrives again.
+Applying it twice is the same as applying it once, because every record is
+decided against what is already there and an identical copy loses the tiebreak
+and writes nothing.
+
+Checked over the shop's own Wi-Fi, not only loopback: two tills on a real
+interface, paired with a typed code, eleven records across, the product on the
+second till.
+
+**Still owed:** the listener itself (a small HTTP server in Rust forwarding to
+`handleSyncRequest`), finding the other till on the LAN without typing an
+address, and the loop that keeps going while `more` is true.
+
+**Phase 2c — discovery and the listener.** The host advertises itself on the LAN; a till pairs
 with it once. A small HTTP server on the Rust side, no cloud, no account, no
 subscription, consistent with everything else about this product. Pull, then
 push, then apply in a transaction. **Refuse outright across schema versions** —

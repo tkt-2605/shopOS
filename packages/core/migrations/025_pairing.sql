@@ -1,0 +1,34 @@
+-- What two tills share once they have been introduced.
+--
+-- `secret` is agreed when they pair and never travels again: every request
+-- afterwards carries a signature made with it, not the secret itself. So
+-- somebody listening on the shop's wifi cannot lift it and cannot alter a
+-- request without the signature failing.
+--
+-- What they *can* do is read. This is plain HTTP on a LAN, and the bills go
+-- across in clear. That is a real limitation and it is written down rather than
+-- implied away: TLS between two tills means certificates nobody can check,
+-- pinned by hand, expiring in a shop with no IT. It is the right next step and
+-- it is not this step.
+--
+-- ── Why a code rather than trusting the network ────────────────────────────
+--
+-- Pairing is a short code shown on the till that already has the shop, typed
+-- into the one joining. The alternative — trusting whatever is on the same
+-- network — is much easier and wrong here: a shop's wifi is not a trusted
+-- network. The customer wifi is usually the same subnet, the password is on a
+-- card by the till, and anything that can reach the port could otherwise pull
+-- down every customer, every price and every sale the shop has. The cost of the
+-- code is that somebody types eight characters once, during a setup they are
+-- already doing.
+--
+-- `address` is where this peer was last reached, remembered so the shop does not
+-- retype it. It is a hint and never an authority: the signature is what decides
+-- whether a request is really from that till, and an address that has changed is
+-- simply one that fails to connect.
+--
+-- Not replicated, like the rest of sync_peers. Who this till has been introduced
+-- to is a fact about this till.
+
+ALTER TABLE sync_peers ADD COLUMN secret TEXT;
+ALTER TABLE sync_peers ADD COLUMN address TEXT;
