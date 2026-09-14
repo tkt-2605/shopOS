@@ -47,6 +47,15 @@ export interface ReceiptShop {
   address?: string | null
   phone?: string | null
   gstin?: string | null
+  /**
+   * The shop's mark, as a `data:` URI.
+   *
+   * The image itself rather than a path, because this module is pure and the
+   * sheet it renders has to be printable from a browser tab and from the app
+   * window alike — neither of which can be handed a filename and asked to go
+   * and read it.
+   */
+  logo?: string | null
 }
 
 export interface ReceiptItem {
@@ -261,8 +270,9 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     case 'amount_in_words':
       return wrap(inWords(doc.grandTotal), width)
 
-    /* No renderer yet, and `checkFormat` refuses to save a format with it
-       switched on — so reaching here means a format written by hand. */
+    /* The roll has no pictures: a thermal printer burns dots and an image has
+       to be rasterised into them first. `checkFormat` refuses to save a roll
+       format with this on, so reaching here means one written by hand. */
     case 'logo':
       return ''
   }

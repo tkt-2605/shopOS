@@ -24,6 +24,8 @@ export interface BlockOpts {
   body?: string
   /** `space`: how many blank lines. */
   lines?: number
+  /** `logo`: how tall to print it, in millimetres. Width follows the image. */
+  height?: number
 }
 
 export interface Block {
@@ -96,8 +98,24 @@ export function rollColumns(paper: PaperSize): number {
  * nothing is worse than one that is visibly not ready — the first teaches a
  * shopkeeper that the switches are not to be trusted.
  */
-export const NOT_YET: Partial<Record<BlockKind, string>> = {
-  logo: 'Needs the logo upload, which lands with the A4 designer.',
+export const NOT_YET: Partial<Record<BlockKind, string>> = {}
+
+/**
+ * Blocks the roll cannot carry, though the sheet can.
+ *
+ * A thermal printer has no pictures — it burns dots, and an image has to be
+ * reduced to one bit per dot and sent as a raster command before it can go
+ * anywhere near one. That is a capability of its own, not wiring, and a
+ * photograph reduced to black and white at 203dpi looks like a smudge even
+ * once it is built.
+ */
+export const NOT_YET_ON_ROLL: Partial<Record<BlockKind, string>> = {
+  logo: 'A thermal printer burns dots, not pictures. It prints on the A4 sheet.',
+}
+
+/** What stops this block, on this paper — or nothing, when it is ready. */
+export function notYet(kind: BlockKind, paper: PaperSize): string | undefined {
+  return NOT_YET[kind] ?? (isRoll(paper) ? NOT_YET_ON_ROLL[kind] : undefined)
 }
 
 export const BLOCK_LABEL: Record<BlockKind, string> = {
@@ -120,6 +138,8 @@ export const BLOCK_LABEL: Record<BlockKind, string> = {
 
 /** One line each, shown under the switch, saying what turning it off costs. */
 export const BLOCK_NOTE: Partial<Record<BlockKind, string>> = {
+  logo: 'The shop’s own mark, above the address. Uploaded on the Settings screen, '
+    + 'and what makes a bill look like the shop’s rather than like software.',
   amount_in_words: 'The total spelled out — “Rupees One Thousand Only”. What a customer and a shop '
     + 'fall back on when the digits are argued about.',
   meta: 'The bill number. A receipt without one cannot be looked up again.',
@@ -307,7 +327,7 @@ export type FormatProblem =
  * slip of paper with a total on it, which is not a bill, and no shop means to
  * print one. Caught here rather than at the counter.
  */
-export function checkFormat(format: Pick<DocFormat, 'name' | 'blocks'>): FormatProblem[] {
+export function checkFormat(format: Pick<DocFormat, 'name' | 'blocks' | 'paper'>): FormatProblem[] {
   const problems: FormatProblem[] = []
 
   if (format.name.trim() === '') problems.push({ code: 'NAME_REQUIRED' })
@@ -316,8 +336,10 @@ export function checkFormat(format: Pick<DocFormat, 'name' | 'blocks'>): FormatP
   if (on.length === 0) problems.push({ code: 'NOTHING_ON' })
   if (!on.some((b) => b.kind === 'items')) problems.push({ code: 'NO_ITEMS_BLOCK' })
 
+  /* Per paper, not per block: the sheet can carry a logo and the roll cannot,
+     and refusing it on both would be the sheet paying for the roll's limits. */
   for (const block of on) {
-    if (NOT_YET[block.kind]) problems.push({ code: 'NOT_IMPLEMENTED', kind: block.kind })
+    if (notYet(block.kind, format.paper)) problems.push({ code: 'NOT_IMPLEMENTED', kind: block.kind })
   }
 
   return problems

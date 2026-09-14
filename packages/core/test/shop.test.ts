@@ -22,7 +22,7 @@ const ctx = () => ({ actorId: fx.adminId })
 const BLANK: ShopProfile = {
   name: 'Sri Stores',
   address: null, phone: null, email: null, gstin: null, stateCode: null,
-  receiptFooter: null, terms: null, logoPath: null,
+  receiptFooter: null, terms: null, logo: null,
 }
 
 describe('the shop profile', () => {
@@ -138,5 +138,39 @@ describe('the tax that turned on the missing state code', () => {
 
     expect(supplyTypeFor(shop, '29')).toBe('inter_state')
     expect(supplyTypeFor(shop, '33')).toBe('intra_state')
+  })
+})
+
+describe('the shop own mark', () => {
+  const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+  it('keeps the image itself, so a preview in a browser tab can print it too', async () => {
+    const saved = await saveShopProfile(fx.db, ctx(), { ...BLANK, logo: PIXEL })
+    expect(saved.ok).toBe(true)
+    expect((await loadShopProfile(fx.db)).logo).toBe(PIXEL)
+  })
+
+  it('refuses a file that is not an image it can put in a page', async () => {
+    const saved = await saveShopProfile(fx.db, ctx(), { ...BLANK, logo: 'data:text/html;base64,PHNjcmlwdD4=' })
+    expect(saved.ok).toBe(false)
+    if (saved.ok) return
+    expect(saved.code).toBe('BAD_LOGO')
+  })
+
+  it('refuses one too big to ride on every bill', async () => {
+    const huge = `data:image/png;base64,${'A'.repeat(400 * 1024)}`
+    const saved = await saveShopProfile(fx.db, ctx(), { ...BLANK, logo: huge })
+    expect(saved.ok).toBe(false)
+    if (saved.ok) return
+    expect(saved.code).toBe('LOGO_TOO_BIG')
+  })
+
+  it('records that the mark changed without writing the mark into the history', async () => {
+    await saveShopProfile(fx.db, ctx(), { ...BLANK, logo: PIXEL })
+    const row = await fx.db.get<{ diff: string }>(
+      `SELECT diff FROM audit_log WHERE entity_id = 'shop_profile' ORDER BY at DESC LIMIT 1`,
+    )
+    expect(row?.diff).toContain('an image')
+    expect(row?.diff).not.toContain('iVBOR')
   })
 })

@@ -37,8 +37,15 @@ export interface ShopProfile {
   receiptFooter: string | null
   /** Terms and conditions, for the documents with room for them. */
   terms: string | null
-  /** Where the logo image lives, relative to the attachments root. */
-  logoPath: string | null
+  /**
+   * The shop's mark, as a `data:` URI — the image itself, not a path to it.
+   *
+   * Kept inline because a bill has to print from the app window, from a browser
+   * tab in development, and from a preview that is only ever HTML. None of the
+   * three can be handed a filename and asked to go and read it, and a logo that
+   * printed in one of them and not the others would be worse than none.
+   */
+  logo: string | null
 }
 
 /** The key each field is stored under. Adding a field is one line here. */
@@ -51,7 +58,7 @@ const SETTING: Record<keyof ShopProfile, string> = {
   stateCode: 'shop_state_code',
   receiptFooter: 'receipt_footer',
   terms: 'shop_terms',
-  logoPath: 'shop_logo',
+  logo: 'shop_logo',
 }
 
 const FIELDS = Object.keys(SETTING) as (keyof ShopProfile)[]
@@ -126,6 +133,8 @@ export type SaveShopResult =
   | { ok: false; code: 'BAD_GSTIN' }
   | { ok: false; code: 'UNKNOWN_STATE' }
   | { ok: false; code: 'GSTIN_STATE_MISMATCH'; gstinState: string; chosenState: string }
+  | { ok: false; code: 'BAD_LOGO' }
+  | { ok: false; code: 'LOGO_TOO_BIG'; kb: number; limitKb: number }
 
 export async function loadShopProfile(db: SqlDriver): Promise<ShopProfile> {
   const values = await Promise.all(FIELDS.map((field) => getSetting(db, SETTING[field])))
@@ -158,10 +167,19 @@ export async function saveShopProfile(
     stateCode: tidy(next.stateCode),
     receiptFooter: tidy(next.receiptFooter),
     terms: tidy(next.terms),
-    logoPath: tidy(next.logoPath),
+    logo: tidy(next.logo),
   }
 
   if (clean.name === '') return { ok: false, code: 'NAME_REQUIRED' }
+
+  if (clean.logo !== null) {
+    if (!LOGO_SHAPE.test(clean.logo)) return { ok: false, code: 'BAD_LOGO' }
+    /* It rides on every bill this shop ever prints and on every preview, so it
+       is capped where a mark still looks right and a photograph does not fit.
+       Base64 carries three bytes in four characters. */
+    const kb = Math.round((clean.logo.length * 3) / 4 / 1024)
+    if (kb > LOGO_LIMIT_KB) return { ok: false, code: 'LOGO_TOO_BIG', kb, limitKb: LOGO_LIMIT_KB }
+  }
   if (clean.gstin !== null && !GSTIN_SHAPE.test(clean.gstin)) return { ok: false, code: 'BAD_GSTIN' }
   if (clean.stateCode !== null && !STATE_CODES.has(clean.stateCode)) {
     return { ok: false, code: 'UNKNOWN_STATE' }
@@ -202,14 +220,26 @@ export async function saveShopProfile(
   return { ok: true }
 }
 
-/** The fields that differ, as audit values. The logo path is a filename, not news. */
+/**
+ * The fields that differ, as audit values.
+ *
+ * The logo is named but never carried: it is tens of kilobytes of base64, and
+ * a history row that held two copies of it would be unreadable and would grow
+ * the database every time somebody tried a new one. That it changed is the
+ * news; the image is on the screen.
+ */
 function auditable(from: ShopProfile, against: ShopProfile): Record<string, SqlValue> {
   const out: Record<string, SqlValue> = {}
   for (const field of FIELDS) {
-    if (from[field] !== against[field]) out[field] = from[field]
+    if (from[field] === against[field]) continue
+    out[field] = field === 'logo' ? (from[field] === null ? 'none' : 'an image') : from[field]
   }
   return out
 }
+
+/** Only what the sheet will actually put in an `src`. */
+const LOGO_SHAPE = /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/]+=*$/
+const LOGO_LIMIT_KB = 256
 
 /** A form sends '' for a field a person emptied; the database should hold null. */
 function tidy(value: string | null | undefined): string | null {

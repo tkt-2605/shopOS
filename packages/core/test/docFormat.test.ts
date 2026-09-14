@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  STANDARD_RECEIPT, rollColumns, NOT_YET,
+  STANDARD_RECEIPT, STANDARD_INVOICE, rollColumns, notYet,
   checkFormat, fillTokens, moveBlock, withEveryBlock,
   type Block, type DocFormat,
 } from '../src/domain/docFormat.js'
@@ -35,9 +35,14 @@ describe('what a format is allowed to be', () => {
     expect(checkFormat(format({ blocks }))).toContainEqual({ code: 'NO_ITEMS_BLOCK' })
   })
 
-  it('refuses a block that has no renderer behind it yet', () => {
+  it('refuses a logo on the roll, which burns dots and cannot draw a picture', () => {
     const blocks: Block[] = [ITEMS, { kind: 'logo', on: true }]
     expect(checkFormat(format({ blocks }))).toContainEqual({ code: 'NOT_IMPLEMENTED', kind: 'logo' })
+  })
+
+  it('allows the same logo on the sheet, which is where it prints', () => {
+    const blocks: Block[] = [ITEMS, { kind: 'logo', on: true }]
+    expect(checkFormat({ ...STANDARD_INVOICE, blocks })).toEqual([])
   })
 
   it('says nothing about an unfinished block that is switched off', () => {
@@ -45,10 +50,9 @@ describe('what a format is allowed to be', () => {
     expect(checkFormat(format({ blocks }))).toEqual([])
   })
 
-  it('names every unfinished block at once rather than one per save', () => {
-    const blocks: Block[] = [ITEMS, { kind: 'logo', on: true }, { kind: 'amount_in_words', on: true }]
-    const problems = checkFormat(format({ blocks }))
-    expect(problems).toHaveLength(Object.keys(NOT_YET).length)
+  it('gives a reason for the paper it cannot print on, and none for the paper it can', () => {
+    expect(notYet('logo', 'thermal_58')).toMatch(/burns dots/)
+    expect(notYet('logo', 'a4')).toBeUndefined()
   })
 })
 
@@ -67,7 +71,9 @@ describe('the shipped format', () => {
 
   it('leaves off every block that has no renderer, so no switch is a lie', () => {
     for (const block of STANDARD_RECEIPT.blocks) {
-      if (NOT_YET[block.kind]) expect(block.on, `${block.kind} is on but unfinished`).toBe(false)
+      if (notYet(block.kind, STANDARD_RECEIPT.paper)) {
+        expect(block.on, `${block.kind} is on but unfinished`).toBe(false)
+      }
     }
   })
 })

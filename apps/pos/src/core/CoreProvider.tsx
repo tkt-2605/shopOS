@@ -15,7 +15,7 @@ import type { SessionUser, Features, FeatureKey, StockPolicy, ShopProfile } from
 const NO_SHOP: ShopProfile = {
   name: 'My Shop',
   address: null, phone: null, email: null, gstin: null, stateCode: null,
-  receiptFooter: null, terms: null, logoPath: null,
+  receiptFooter: null, terms: null, logo: null,
 }
 
 type Status =

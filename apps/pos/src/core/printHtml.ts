@@ -67,7 +67,7 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
   const format = await formatFor(db, { kind: doc.kind, channel: 'sheet' })
 
   const sheet: ReceiptDoc = {
-    shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin },
+    shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo },
     docNo: doc.docNo,
     postingDate: doc.postingDate,
     cashier: doc.createdBy,
@@ -120,7 +120,7 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     bill.items.reduce((total, i) => total + pick(i), 0) as never
 
   return {
-    shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin },
+    shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo },
     docNo: bill.docNo,
     postingDate: bill.postingDate,
     cashier: bill.createdBy,

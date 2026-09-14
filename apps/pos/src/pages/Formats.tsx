@@ -51,14 +51,14 @@ function sampleDoc(shop: ReceiptDoc['shop']): ReceiptDoc {
   }
 }
 
-function problemText(problem: FormatProblem): string {
+function problemText(problem: FormatProblem, paper: Fmt.PaperSize): string {
   switch (problem.code) {
     case 'NAME_REQUIRED': return 'Give the format a name, so it can be told apart in the list.'
     case 'NOTHING_ON': return 'Every block is switched off, which would print a blank slip.'
     case 'NO_ITEMS_BLOCK':
       return 'Switch the items block on. A receipt with no items on it is a total on a piece of paper.'
     case 'NOT_IMPLEMENTED':
-      return `${Fmt.BLOCK_LABEL[problem.kind]} is not ready yet. ${Fmt.NOT_YET[problem.kind] ?? ''}`
+      return `${Fmt.BLOCK_LABEL[problem.kind]} is not ready on this paper. ${Fmt.notYet(problem.kind, paper) ?? ''}`
   }
 }
 
@@ -304,7 +304,7 @@ export function Formats() {
         >
           {error && <Alert>{error}</Alert>}
           {note && <Alert kind="ok">{note}</Alert>}
-          {problems.map((p, i) => <Alert key={i}>{problemText(p)}</Alert>)}
+          {problems.map((p, i) => <Alert key={i}>{problemText(p, draft.paper)}</Alert>)}
 
           {inUse && (
             <p className="format-note">
@@ -365,7 +365,9 @@ export function Formats() {
 
           <div className="block-list">
             {draft.blocks.map((block, i) => {
-              const unfinished = Fmt.NOT_YET[block.kind]
+              /* Per paper: the sheet carries a logo and the roll cannot, and
+                 the switch should say which of the two this format is. */
+              const unfinished = Fmt.notYet(block.kind, draft.paper)
               return (
                 <div key={`${block.kind}-${i}`} className={`block-row ${block.on ? 'on' : ''}`}>
                   <label className="block-switch">

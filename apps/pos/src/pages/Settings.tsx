@@ -650,7 +650,11 @@ function ShopCard() {
             ? 'That is not the shape of a GSTIN. It is 15 characters: two digits, then five letters, four digits, a letter, one more character, a Z, and a last character.'
             : result.code === 'UNKNOWN_STATE'
               ? 'That is not a state this software knows.'
-              : `This GSTIN belongs to ${stateName(result.gstinState) ?? `state ${result.gstinState}`}, but the state chosen is ${stateName(result.chosenState) ?? result.chosenState}. One of the two is wrong.`,
+              : result.code === 'BAD_LOGO'
+                ? 'That file is not an image this can print. Use a PNG, JPEG or SVG.'
+                : result.code === 'LOGO_TOO_BIG'
+                  ? `That image is ${result.kb} KB and the limit is ${result.limitKb} KB. It rides on every bill and every preview, so a smaller copy is worth making.`
+                  : `This GSTIN belongs to ${stateName(result.gstinState) ?? `state ${result.gstinState}`}, but the state chosen is ${stateName(result.chosenState) ?? result.chosenState}. One of the two is wrong.`,
       )
       return
     }
@@ -724,10 +728,76 @@ function ShopCard() {
           onChange={(e) => patch({ receiptFooter: e.target.value })} />
       </Field>
 
+      <LogoField logo={draft.logo} onChange={(logo) => patch({ logo })} onError={setError} />
+
       <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>
         Signed in as <strong>{user.username}</strong> ({user.roleName}).
       </div>
     </Card>
+  )
+}
+
+/**
+ * The shop's own mark.
+ *
+ * Read straight into the form as a `data:` URI rather than filed away and
+ * pointed at: the bill prints from the app window, from a browser tab in
+ * development, and into a preview that is only ever HTML, and none of the three
+ * can be handed a filename. Saving is what commits it, like every other field
+ * on this card — choosing a file changes nothing until Save.
+ */
+function LogoField({ logo, onChange, onError }: {
+  logo: string | null
+  onChange: (logo: string | null) => void
+  onError: (message: string | null) => void
+}) {
+  const inputId = 'shop-logo'
+
+  function choose(file: File | undefined) {
+    if (!file) return
+    onError(null)
+    const reader = new FileReader()
+    reader.onerror = () => onError('That file could not be read.')
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : ''
+      /* Refused here as well as in the service, because the service's message
+         arrives only on Save and the file picker is where the mistake was
+         made. The service still checks: this screen is not the only caller. */
+      if (!/^data:image\//.test(result)) {
+        onError('That file is not an image this can print. Use a PNG, JPEG or SVG.')
+        return
+      }
+      onChange(result)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  return (
+    <Field
+      label="Logo"
+      hint={
+        'Printed at the top of the A4 sheet, above the address. The thermal '
+        + 'printer cannot carry a picture, so the roll prints the shop name as it '
+        + 'always has. Switch the logo block on under Bill Formats to use it.'
+      }
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {logo && (
+          <img
+            src={logo} alt=""
+            style={{ height: 44, maxWidth: 160, objectFit: 'contain', border: '1px solid var(--rule-soft)' }}
+          />
+        )}
+        <input
+          type="file" id={inputId} accept="image/png,image/jpeg,image/svg+xml,image/webp"
+          style={{ fontSize: 12.5 }}
+          onChange={(e) => { choose(e.target.files?.[0]); e.target.value = '' }}
+        />
+        {logo && (
+          <button className="btn ghost sm" onClick={() => onChange(null)}>Remove</button>
+        )}
+      </div>
+    </Field>
   )
 }
 

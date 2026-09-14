@@ -183,12 +183,27 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
     case 'amount_in_words':
       return `<p class="words"><span class="k">Amount in words</span>${esc(inWords(doc.grandTotal))}</p>`
 
-    /* No renderer on either paper yet, and `checkFormat` refuses to save a
-       format with it switched on. */
-    case 'logo':
-      return ''
+    case 'logo': {
+      const logo = doc.shop.logo
+      /* Nothing rather than a broken-image box: a shop that has not uploaded a
+         mark yet still prints bills, and the gap where one would go is not
+         something a customer should be shown. */
+      if (!logo || !SAFE_DATA_URI.test(logo)) return ''
+      const height = Math.min(Math.max(block.opts?.height ?? 18, 6), 40)
+      return `<div class="logo"><img src="${logo}" style="height:${height}mm" alt=""></div>`
+    }
   }
 }
+
+/**
+ * What may go in an `src` attribute unescaped.
+ *
+ * A data URI of base64 has no quote, no angle bracket and no space in it, so
+ * one that matches this cannot close the attribute and start an element of its
+ * own. Anything else is refused rather than escaped: an image reference is not
+ * a place to be clever about untrusted text.
+ */
+const SAFE_DATA_URI = /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/]+=*$/
 
 function itemRow(item: ReceiptItem, index: number, has: { hsn: boolean; taxed: boolean }): string {
   const tax = (item.cgst ?? 0) + (item.sgst ?? 0) + (item.igst ?? 0)
@@ -339,6 +354,8 @@ function styles(pageSize: string, preview: boolean): string {
     .tax { margin: 12px 0; font-size: 9.5pt; }
     .tax th, .tax td { padding: 4px 6px; border: 1px solid #bbb; text-align: left; }
     .tax thead th { background: #f2f2f2; }
+    .logo { margin: 0 0 6px; }
+    .logo img { display: block; max-width: 60mm; object-fit: contain; }
     .note { margin: 8px 0 0; font-size: 9.5pt; color: #555; }
     /* Boxed, because it is the line that settles an argument about the figures
        above it, and it has to be findable at a glance to do that. */

@@ -233,3 +233,31 @@ describe('the amount in words', () => {
     expect(html()).not.toContain('Amount in words')
   })
 })
+
+describe('the shop own mark', () => {
+  /* A one-pixel PNG: the smallest thing that is genuinely an image. */
+  const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+  const withLogo = (logo: string | null) =>
+    buildInvoiceHtml({ ...doc, shop: { ...doc.shop, logo } }, withBlocks({ logo: true }))
+
+  it('prints the mark when the shop has uploaded one', () => {
+    expect(withLogo(PIXEL)).toContain(`<img src="${PIXEL}"`)
+  })
+
+  it('prints nothing at all when the shop has not', () => {
+    // Never the broken-image box: a shop with no mark still prints bills, and
+    // the gap where one would go is not something a customer should be shown.
+    expect(withLogo(null)).not.toContain('<img')
+  })
+
+  it('refuses anything that is not a plain image, rather than escaping it', () => {
+    const nasty = 'data:image/png;base64,abc" onerror="alert(1)'
+    expect(withLogo(nasty)).not.toContain('onerror')
+  })
+
+  it('keeps the mark off the sheet when the block is switched off', () => {
+    expect(buildInvoiceHtml({ ...doc, shop: { ...doc.shop, logo: PIXEL } }, STANDARD_INVOICE))
+      .not.toContain('<img')
+  })
+})
