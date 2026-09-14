@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  Permissions,
   supplierSummaries, createSupplier, updateSupplier, deleteSupplier, supplierPurchases,
   type SupplierSummary, type PurchaseLine,
 } from '@shopos/core'
@@ -20,6 +21,9 @@ const EMPTY: Draft = { supplierId: null, name: '', phone: '', gstin: '', address
 export default function Suppliers() {
   const { db } = useCore()
   const user = useUser()
+  const canCreate = Permissions.can(user.permissions, 'supplier', 'create')
+  const canWrite = Permissions.can(user.permissions, 'supplier', 'write')
+  const canDelete = Permissions.can(user.permissions, 'supplier', 'delete')
   const [rows, setRows] = useState<SupplierSummary[]>([])
   const [editing, setEditing] = useState<Draft | null>(null)
   const [viewing, setViewing] = useState<{ supplier: SupplierSummary; lines: PurchaseLine[] } | null>(null)
@@ -71,7 +75,9 @@ export default function Suppliers() {
 
       <Card
         title="Suppliers"
-        actions={<button className="btn primary sm" onClick={() => setEditing({ ...EMPTY })}>Add supplier</button>}
+        actions={canCreate
+          ? <button className="btn primary sm" onClick={() => setEditing({ ...EMPTY })}>Add supplier</button>
+          : undefined}
       >
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
           Stock In records goods against one of these, so purchase history and cost
@@ -102,16 +108,18 @@ export default function Suppliers() {
                   <td style={{ color: 'var(--ink-3)' }}>{s.lastPurchase ?? 'Never'}</td>
                   <td className="r">{s.purchased > 0 ? <Rupees value={s.purchased} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}</td>
                   <td className="r" style={{ whiteSpace: 'nowrap' }}>
-                    <button
-                      className="btn ghost sm"
-                      onClick={() => setEditing({
-                        supplierId: s.id, name: s.name, phone: s.phone ?? '',
-                        gstin: s.gstin ?? '', address: s.address ?? '', isActive: s.isActive,
-                      })}
-                    >
-                      Edit
-                    </button>
-                    {s.entryCount === 0 && (
+                    {canWrite && (
+                      <button
+                        className="btn ghost sm"
+                        onClick={() => setEditing({
+                          supplierId: s.id, name: s.name, phone: s.phone ?? '',
+                          gstin: s.gstin ?? '', address: s.address ?? '', isActive: s.isActive,
+                        })}
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {s.entryCount === 0 && canDelete && (
                       <button className="btn ghost sm" onClick={() => void remove(s)}>Delete</button>
                     )}
                   </td>

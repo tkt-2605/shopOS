@@ -72,6 +72,11 @@ const PAGE_LABELS: Record<Page, string> = {
 export default function Roles() {
   const { db } = useCore()
   const user = useUser()
+  /* The one screen where an unenforced permission is self-defeating: without
+     this, anybody who could open Roles could grant themselves everything. */
+  const canCreate = Permissions.can(user.permissions, 'role', 'create')
+  const canWrite = Permissions.can(user.permissions, 'role', 'write')
+  const canDelete = Permissions.can(user.permissions, 'role', 'delete')
   const [roles, setRoles] = useState<RoleSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState<RoleMatrix | null>(null)
@@ -196,7 +201,9 @@ export default function Roles() {
         <div style={{ flex: '0 0 208px' }}>
           <Card
             title="Roles"
-            actions={<button className="btn sm" onClick={() => setAdding({ name: '', copyFromId: '' })}>New</button>}
+            actions={canCreate
+              ? <button className="btn sm" onClick={() => setAdding({ name: '', copyFromId: '' })}>New</button>
+              : undefined}
           >
             <div className="side-list">
               {roles.map((r) => (
@@ -221,11 +228,13 @@ export default function Roles() {
                     <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
                       {selected.userCount} {selected.userCount === 1 ? 'person' : 'people'}
                     </span>
-                    <button className="btn ghost sm" onClick={() => void rename(selected)}>Rename</button>
-                    {!selected.isSystem && (
-                      <button className="btn ghost sm" onClick={() => void remove(selected)}>Delete</button>
+                    {canWrite && (
+                      <button className="btn ghost sm" onClick={() => void rename(selected)}>Rename</button>
                     )}
-                    <button className="btn primary sm" disabled={!dirty} onClick={() => void save()}>
+                    {!selected.isSystem && (
+                      canDelete && <button className="btn ghost sm" onClick={() => void remove(selected)}>Delete</button>
+                    )}
+                    <button className="btn primary sm" disabled={!dirty || !canWrite} onClick={() => void save()}>
                       {dirty ? 'Save changes' : 'Saved'}
                     </button>
                   </>
@@ -263,6 +272,10 @@ export default function Roles() {
                   Submit turns a draft into a real document. Cancel reverses one that was already
                   submitted, and Amend reopens it as a corrected copy — a cashier usually has the
                   first without the other two.
+                  {' '}A blank cell is a check the software does not make yet: it is shown as a
+                  blank rather than as a tickbox, because a tickbox that changes nothing is worse
+                  than one that is visibly not there. Reports and Settings are governed by whether
+                  the role can reach the page at all.
                 </div>
                 <div className="card card-scroll">
                   <table className="grid-table">
@@ -278,7 +291,10 @@ export default function Roles() {
                     <tbody>
                       {Permissions.RESOURCES.map((resource) => {
                         const perms = draft.resources[resource]
-                        const all = Permissions.CAPABILITIES.every((c) => perms[c])
+                        /* "All" means all of the ones that do something, or the
+                           button would report itself undone the moment it is used. */
+                        const live = Permissions.ENFORCED[resource]
+                        const all = live.length > 0 && live.every((c) => perms[c])
                         return (
                           <tr key={resource}>
                             <td className="grid-res">
@@ -287,18 +303,28 @@ export default function Roles() {
                             </td>
                             {Permissions.CAPABILITIES.map((c) => (
                               <td key={c} className="cap">
-                                <input
-                                  type="checkbox"
-                                  checked={perms[c]}
-                                  onChange={() => toggleCapability(resource, c)}
-                                  aria-label={`${CAPABILITY_LABELS[c]} ${RESOURCE_LABELS[resource].name}`}
-                                />
+                                {Permissions.isEnforced(resource, c) ? (
+                                  <input
+                                    type="checkbox"
+                                    checked={perms[c]}
+                                    onChange={() => toggleCapability(resource, c)}
+                                    aria-label={`${CAPABILITY_LABELS[c]} ${RESOURCE_LABELS[resource].name}`}
+                                  />
+                                ) : (
+                                  <span
+                                    style={{ color: 'var(--ink-3)' }}
+                                    title="Nothing checks this yet."
+                                    aria-label={`${CAPABILITY_LABELS[c]} ${RESOURCE_LABELS[resource].name} — not checked yet`}
+                                  >·</span>
+                                )}
                               </td>
                             ))}
                             <td className="r">
-                              <button className="btn ghost sm" onClick={() => setRow(resource, !all)}>
-                                {all ? 'None' : 'All'}
-                              </button>
+                              {live.length > 0 && (
+                                <button className="btn ghost sm" onClick={() => setRow(resource, !all)}>
+                                  {all ? 'None' : 'All'}
+                                </button>
+                              )}
                             </td>
                           </tr>
                         )

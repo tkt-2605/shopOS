@@ -727,6 +727,19 @@ function ShopCard() {
           onChange={(e) => patch({ receiptFooter: e.target.value })} />
       </Field>
 
+      {/* The A4 print path has read this since the sheet renderer was written
+          and nothing has ever written it, so every invoice fell back to the
+          one-line thermal footer above — which is not what terms are. */}
+      <Field
+        label="Terms on the A4 invoice"
+        hint="Only on the sheet, which has room for them. A quotation or an order carries its own
+              terms when one is typed on it; this is what the rest fall back to."
+      >
+        <textarea className="input" id="shop-terms" rows={2} value={draft.terms ?? ''}
+          placeholder="Payment within 30 days. Interest at 18% per annum thereafter."
+          onChange={(e) => patch({ terms: e.target.value })} />
+      </Field>
+
       <LogoField logo={draft.logo} onChange={(logo) => patch({ logo })} onError={setError} />
 
       <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Money, getOrOpenSession, openSessionFor, sessionSummary, closeSession,
+  Money, Permissions, getOrOpenSession, openSessionFor, sessionSummary, closeSession,
   postCashMovement, countDrawer, type SessionSummary,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -21,6 +21,11 @@ interface Movement {
 export default function CashCounter() {
   const { db, registerId, registerName } = useCore()
   const user = useUser()
+  /* Opening the drawer, taking money out of it and closing it against a count
+     are three different trusts, and the role grid has always said so. */
+  const canOpen = Permissions.can(user.permissions, 'cash_session', 'create')
+  const canMove = Permissions.can(user.permissions, 'cash_session', 'write')
+  const canClose = Permissions.can(user.permissions, 'cash_session', 'submit')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
   const [movements, setMovements] = useState<Movement[]>([])
@@ -97,7 +102,8 @@ export default function CashCounter() {
             <input className="input num" id="opening-cash" autoFocus value={opening}
               onChange={(e) => setOpening(e.target.value)} placeholder="0.00" />
           </Field>
-          <button className="btn primary lg" style={{ marginTop: 14, width: '100%' }} onClick={() => void openDrawer()}>
+          <button className="btn primary lg" style={{ marginTop: 14, width: '100%' }}
+            disabled={!canOpen} onClick={() => void openDrawer()}>
             Open drawer
           </button>
         </Card>
@@ -132,9 +138,13 @@ export default function CashCounter() {
       </div>
 
       <div style={{ display: 'flex', gap: 10 }}>
-        <button className="btn" onClick={() => setPayout({ amount: '', reason: '' })}>Pay out</button>
+        {canMove && (
+          <button className="btn" onClick={() => setPayout({ amount: '', reason: '' })}>Pay out</button>
+        )}
         <span style={{ flex: 1 }} />
-        <button className="btn primary" onClick={() => setCounting(true)}>Count and close</button>
+        {canClose && (
+          <button className="btn primary" onClick={() => setCounting(true)}>Count and close</button>
+        )}
       </div>
 
       <div className="card card-scroll">

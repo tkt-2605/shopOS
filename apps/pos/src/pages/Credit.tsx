@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Money, searchCustomers, customerStatement, customerAccount, recordPayment,
+  Permissions,
   listCustomerPayments, cancelPayment, writeOff, recordOpeningBalance, businessDate, addDays,
   type CustomerListItem, type CustomerStatementRow, type CustomerPayment, type CustomerAccount,
 } from '@shopos/core'
@@ -39,6 +40,11 @@ type Settle = 'cash' | 'upi' | 'card' | 'writeoff'
 export default function Credit() {
   const { db, registerId } = useCore()
   const user = useUser()
+  /* Taking money against the khata and unwinding a payment already taken are
+     the two things on this screen that move money. Both had a permission and
+     neither was ever read. */
+  const canTake = Permissions.can(user.permissions, 'payment', 'create')
+  const canUndo = Permissions.can(user.permissions, 'payment', 'cancel')
   const [customers, setCustomers] = useState<CustomerListItem[]>([])
   const [term, setTerm] = useState('')
   const [open, setOpen] = useState<Account | null>(null)
@@ -139,9 +145,11 @@ export default function Credit() {
           placeholder="Search by name, phone or customer code"
           value={term} onChange={(e) => setTerm(e.target.value)} id="credit-search" />
         <span style={{ flex: 1 }} />
-        <button className="btn" onClick={() => setOpening(everyone[0] ?? null)} disabled={everyone.length === 0}>
-          Opening balance
-        </button>
+        {canTake && (
+          <button className="btn" onClick={() => setOpening(everyone[0] ?? null)} disabled={everyone.length === 0}>
+            Opening balance
+          </button>
+        )}
       </div>
 
       <div className="card card-scroll">
@@ -193,6 +201,8 @@ export default function Credit() {
           account={open}
           registerId={registerId}
           actorId={user.id}
+          canTake={canTake}
+          canUndo={canUndo}
           onClose={() => setOpen(null)}
           onChanged={async (message) => { say(message); await reload() }}
         />
@@ -214,11 +224,13 @@ export default function Credit() {
 /* ------------------------------------------------------- one account --- */
 
 function AccountPanel({
-  account, registerId, actorId, onClose, onChanged,
+  account, registerId, actorId, canTake, canUndo, onClose, onChanged,
 }: {
   account: Account
   registerId: string
   actorId: string
+  canTake: boolean
+  canUndo: boolean
   onClose: () => void
   onChanged: (message: string) => Promise<void>
 }) {
@@ -332,7 +344,7 @@ function AccountPanel({
         <button className="btn" onClick={() => void savePdf()}>Statement as PDF</button>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={onClose}>Close</button>
-        <button className="btn primary" disabled={busy} onClick={() => void apply()}>
+        <button className="btn primary" disabled={busy || !canTake} onClick={() => void apply()}>
           {busy ? 'Working…' : settle === 'writeoff' ? 'Write it off' : 'Record payment'}
         </button>
       </>}
@@ -414,7 +426,7 @@ function AccountPanel({
                   {p.allocatedTo.map((a) => a.docNo).join(', ') || <span style={{ color: 'var(--ink-3)' }}>unallocated</span>}
                 </td>
                 <td className="r">
-                  {p.docstatus === 1 && (
+                  {p.docstatus === 1 && canUndo && (
                     <button className="btn ghost sm" onClick={() => void undo(p)}>Undo</button>
                   )}
                 </td>

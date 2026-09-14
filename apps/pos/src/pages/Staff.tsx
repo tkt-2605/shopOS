@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  Permissions,
   listStaff, createUser, updateUser, resetPassword, unlockUser, setUserActive,
   listRoles, wouldLeaveNoAdministrator, type StaffMember, type RoleSummary,
 } from '@shopos/core'
@@ -18,6 +19,11 @@ const LOCKED_OUT = 'That would leave nobody able to administer the shop. Give so
 export default function Staff() {
   const { db } = useCore()
   const me = useUser()
+  /* Being able to open this screen is not the same as being able to make an
+     account on it — the role grid has always offered the distinction and
+     nothing read it, so anyone who could see Staff could create a colleague. */
+  const canCreate = Permissions.can(me.permissions, 'user', 'create')
+  const canWrite = Permissions.can(me.permissions, 'user', 'write')
   const [rows, setRows] = useState<StaffMember[]>([])
   const [roles, setRoles] = useState<RoleSummary[]>([])
   const [adding, setAdding] = useState<NewStaff | null>(null)
@@ -110,15 +116,17 @@ export default function Staff() {
 
       <Card
         title="Staff"
-        actions={
-          <button
-            className="btn primary sm"
-            disabled={roles.length === 0}
-            onClick={() => setAdding({ username: '', fullName: '', roleId: roles[0]?.id ?? '', password: '' })}
-          >
-            Add someone
-          </button>
-        }
+        actions={canCreate
+          ? (
+            <button
+              className="btn primary sm"
+              disabled={roles.length === 0}
+              onClick={() => setAdding({ username: '', fullName: '', roleId: roles[0]?.id ?? '', password: '' })}
+            >
+              Add someone
+            </button>
+          )
+          : undefined}
       >
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
           What each person can see and do comes from their role, not from this screen.
@@ -158,14 +166,21 @@ export default function Staff() {
                           : <span className="badge ok">active</span>}
                     </td>
                     <td className="r" style={{ whiteSpace: 'nowrap' }}>
-                      {guessed && <button className="btn ghost sm" onClick={() => void unlock(m)}>Clear</button>}
-                      <button className="btn ghost sm" onClick={() => setEditing({ ...m })}>Edit</button>
-                      <button className="btn ghost sm" onClick={() => setResetting({ member: m, password: '' })}>
-                        Reset password
-                      </button>
-                      <button className="btn ghost sm" onClick={() => void toggleActive(m)}>
-                        {m.isActive ? 'Switch off' : 'Switch on'}
-                      </button>
+                      {guessed && canWrite && (
+                        <button className="btn ghost sm" onClick={() => void unlock(m)}>Clear</button>
+                      )}
+                      {canWrite && (
+                        <>
+                          <button className="btn ghost sm" onClick={() => setEditing({ ...m })}>Edit</button>
+                          <button className="btn ghost sm" onClick={() => setResetting({ member: m, password: '' })}>
+                            Reset password
+                          </button>
+                          <button className="btn ghost sm" onClick={() => void toggleActive(m)}>
+                            {m.isActive ? 'Switch off' : 'Switch on'}
+                          </button>
+                        </>
+                      )}
+                      {!canWrite && <span style={{ color: 'var(--ink-3)' }}>—</span>}
                     </td>
                   </tr>
                 )

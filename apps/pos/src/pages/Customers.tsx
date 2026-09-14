@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Money, searchCustomers, createCustomer, updateCustomer, customerByPhone,
+  Money, Permissions, searchCustomers, createCustomer, updateCustomer, customerByPhone,
   type CustomerListItem, type CustomerConflict, type SaveCustomerResult,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -36,6 +36,11 @@ const BLANK: Draft = {
 export default function Customers() {
   const { db, features } = useCore()
   const user = useUser()
+  /* The permission grid on the Roles screen offered these and nothing read
+     them, so an owner could take a cashier's right to add customers and watch
+     them add one anyway. */
+  const canCreate = Permissions.can(user.permissions, 'customer', 'create')
+  const canWrite = Permissions.can(user.permissions, 'customer', 'write')
   const [term, setTerm] = useState('')
   const [rows, setRows] = useState<CustomerListItem[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -111,9 +116,11 @@ export default function Customers() {
           value={term} onChange={(e) => setTerm(e.target.value)} id="customer-search" />
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{rows.length} customers</span>
         <span style={{ flex: 1 }} />
-        <button className="btn primary" onClick={() => { setProblem(null); setClash(null); setDraft({ ...BLANK }) }}>
-          New customer
-        </button>
+        {canCreate && (
+          <button className="btn primary" onClick={() => { setProblem(null); setClash(null); setDraft({ ...BLANK }) }}>
+            New customer
+          </button>
+        )}
       </div>
 
       <div className="card card-scroll">
@@ -140,7 +147,7 @@ export default function Customers() {
                 </td>
                 <td className="r num">{c.loyaltyPoints || '—'}</td>
                 <td className="r">
-                  <button className="btn ghost sm" onClick={() => edit(c)}>Edit</button>
+                  {canWrite && <button className="btn ghost sm" onClick={() => edit(c)}>Edit</button>}
                 </td>
               </tr>
             ))}

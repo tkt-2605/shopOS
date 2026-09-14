@@ -31,6 +31,44 @@ export type Capability = (typeof CAPABILITIES)[number]
 
 export type ResourcePermissions = Record<Capability, boolean>
 
+/**
+ * Which capabilities the software actually checks, per resource.
+ *
+ * The grid on the Roles screen offered every capability against every resource
+ * — ninety-eight checkboxes — and eleven of them were read by anything. An
+ * owner could take away a cashier's right to add a customer and watch them add
+ * one. A switch that changes nothing is the worst thing this product can ship,
+ * so the ones with no check behind them are now shown as blanks with a line
+ * saying why, the same way an unfinished format block is.
+ *
+ * The stored permissions are untouched: a role still carries every bit, and a
+ * capability appears here the moment something reads it. Keep this list honest
+ * — it is a claim about the code, not a wish.
+ */
+export const ENFORCED: Record<Resource, readonly Capability[]> = {
+  bill: ['create', 'write', 'cancel'],
+  sales_return: ['create', 'submit', 'cancel'],
+  payment: ['create', 'cancel'],
+  stock_entry: ['submit'],
+  product: ['write'],
+  customer: ['create', 'write'],
+  supplier: ['create', 'write', 'delete'],
+  price_list: ['write'],
+  cash_session: ['create', 'write', 'submit'],
+  user: ['create', 'write'],
+  role: ['create', 'write', 'delete'],
+  /* Reaching the screen at all is the control on these two: a page a role was
+     not granted is not in the sidebar and cannot be routed to. */
+  report: [],
+  settings: [],
+  document: ['create', 'cancel'],
+}
+
+/** Whether ticking this box would change anything. */
+export function isEnforced(resource: Resource, capability: Capability): boolean {
+  return ENFORCED[resource].includes(capability)
+}
+
 export interface PermissionSet {
   roleId: string
   roleName: string
