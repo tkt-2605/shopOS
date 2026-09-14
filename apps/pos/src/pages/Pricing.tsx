@@ -42,6 +42,18 @@ export default function Pricing() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 1000 }}>
+      {/* A screen whose name is a noun and whose job is not obvious from it.
+          Without this line the honest question — "what is this page for?" —
+          has no answer anywhere in the product. */}
+      <div style={{ fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+        Selling the same thing at more than one price. A special rate for a
+        school or a regular, a cheaper rate for a dozen than for one, a
+        wholesale list for the trade. The counter works down this list for
+        every line it bills — the customer’s own rate first, then their price
+        list, then the shop’s, and the item’s ordinary price if none of them
+        say otherwise. Set nothing here and every sale is at the ordinary price.
+      </div>
+
       <div className="segment">
         {TABS.map((t) => (
           <button key={t.id} className={t.id === tab ? 'on' : ''} onClick={() => setTab(t.id)}>

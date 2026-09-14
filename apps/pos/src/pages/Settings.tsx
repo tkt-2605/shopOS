@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Backup, getSetting, setSetting, loadLoyaltyProgram, CARRY_WINDOW_DAYS,
-  saveShopProfile, stateName, STATES, type Loyalty, type ShopProfile,
+  saveShopProfile, stateName, STATES, Permissions,
+  type Loyalty, type ShopProfile, type Page,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { goTo } from '../core/nav'
 import { listPrinters, defaultPrinter } from '../core/print'
 import {
   describeBackups, takeBackupNow, deleteBackup, copyBackup, chooseFolder,
@@ -177,6 +179,8 @@ export default function Settings() {
       {saved && <Alert kind="ok">Saved.</Alert>}
 
       <ShopCard />
+
+      <SetupCard />
 
       <Card title="Appearance">
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
@@ -574,6 +578,47 @@ export default function Settings() {
  * and the GSTIN since v1 and got null every time, because the only screen that
  * could have set them showed the signed-in user's name and stopped there.
  */
+/**
+ * The four screens that used to sit under Setup in the sidebar.
+ *
+ * Each is set up once and then left alone for months, which is the wrong shape
+ * for a sidebar: they pushed the pages a shop opens every day down the list and
+ * all four read as "more settings" anyway. They are unchanged pages with their
+ * own permissions — this is a way in, not a new home, and a role that was never
+ * granted one is not shown it.
+ */
+function SetupCard() {
+  const user = useUser()
+  const allowed = Permissions.visiblePages(user.permissions)
+  const shown = SETUP_ITEMS.filter((item) => allowed.includes(item.page))
+  if (shown.length === 0) return null
+
+  return (
+    <Card title="Set up">
+      <div style={{ display: 'grid', gap: 8 }}>
+        {shown.map((item) => (
+          <button
+            key={item.page}
+            className="btn ghost"
+            onClick={() => goTo(item.page)}
+            style={{ display: 'block', textAlign: 'left', padding: '9px 11px' }}
+          >
+            <div style={{ fontWeight: 600 }}>{item.title}</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-3)', fontWeight: 400 }}>{item.what}</div>
+          </button>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+const SETUP_ITEMS: { page: Page; title: string; what: string }[] = [
+  { page: 'registers', title: 'Counters', what: 'The tills this shop bills from, and the number series each one uses.' },
+  { page: 'users', title: 'Staff', what: 'Who can sign in, and which role each of them has.' },
+  { page: 'roles', title: 'Roles & Permissions', what: 'What each role is allowed to see and to change.' },
+  { page: 'formats', title: 'Bill Formats', what: 'What a printed bill or invoice carries, on the roll and on A4.' },
+]
+
 function ShopCard() {
   const { db, shop, refreshShop } = useCore()
   const user = useUser()

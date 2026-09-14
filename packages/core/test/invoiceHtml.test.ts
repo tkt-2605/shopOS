@@ -190,3 +190,36 @@ describe('the page itself', () => {
     expect(html()).not.toContain('<link')
   })
 })
+
+describe('what the browser must not print around it', () => {
+  /**
+   * A browser draws the page address, the date and "1 / 1" into the @page
+   * margin box. A customer's invoice with "localhost:1420" along the foot of
+   * it is not an invoice a shop can hand over, and the only switch for it is a
+   * tickbox inside a print dialog. Giving the margin up removes the box.
+   */
+
+  it('leaves no page margin for the address and the date to be drawn in', () => {
+    expect(html()).toContain('margin: 0;')
+    expect(html()).not.toContain('margin: 14mm')
+  })
+
+  it('still keeps the invoice off the edge of the paper', () => {
+    expect(html()).toContain('.sheet { padding: 14mm; }')
+  })
+
+  it('holds the same strip open on a second page', () => {
+    // Padding indents the first page only. A row inside a thead is repeated at
+    // the top of every printed page, and a tfoot at the foot of every one.
+    const page = html()
+    expect(page).toContain('<thead><tr><td><div class="edge"></div></td></tr></thead>')
+    expect(page).toContain('<tfoot><tr><td><div class="edge"></div></td></tr></tfoot>')
+    expect(page).toContain('.edge { height: 14mm; }')
+  })
+
+  it('takes up none of that strip on screen, where there are no pages', () => {
+    // The preview is one continuous frame, so a repeated strip would only read
+    // as a gap in the middle of the document.
+    expect(html()).toContain('.edge { height: 0; }')
+  })
+})

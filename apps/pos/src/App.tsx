@@ -5,6 +5,7 @@ import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
 import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
+import { onGoTo } from './core/nav'
 import { ICONS, BrandMark } from './ui/icons'
 import { AdminGate } from './ui/AdminGate'
 import { Formats } from './pages/Formats'
@@ -35,8 +36,13 @@ const NAV_GROUPS: { label: string; pages: Page[] }[] = [
   { label: 'Stock', pages: ['inventory', 'stock_in', 'stock_count', 'reorder', 'suppliers'] },
   { label: 'Money', pages: ['credit', 'cash_counter'] },
   { label: 'Review', pages: ['dashboard', 'reports', 'audit'] },
-  { label: 'Setup', pages: ['pricing', 'registers', 'users', 'roles', 'formats', 'settings'] },
+  { label: 'Setup', pages: ['pricing', 'settings'] },
 ]
+
+/* Counters, Staff, Roles and Bill Formats are deliberately absent from the
+   sidebar: six entries under Setup all read as "settings", and four of them are
+   opened twice a year. They are still routable pages with their own
+   permissions, reached from the "Set up" card on Settings. */
 
 const PAGE_TITLES: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -216,6 +222,11 @@ function Shell() {
      the request themselves once they are there. */
   const canBill = pages.includes('billing')
   useEffect(() => onRepeat(() => { if (canBill) setCurrent('billing') }), [canBill])
+
+  /* Settings lists the setup screens that are no longer in the sidebar. The
+     check is here rather than there because the shell is what knows which
+     pages this person's role was granted. */
+  useEffect(() => onGoTo((page) => { if (pages.includes(page)) setCurrent(page) }), [pages])
 
   return (
     <div className="shell">

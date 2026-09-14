@@ -20,6 +20,9 @@ import { fillTokens, PAPER, type Block, type DocFormat, type Facts } from './doc
  * Pure, like `receipt.ts`: a string in, a string out, no printer and no DOM.
  */
 
+/** The white edge of the paper, as padding rather than as a page margin. */
+const MARGIN = '14mm'
+
 export interface InvoiceHtmlOptions {
   /** Adds the print dialog call, for the window that is about to print itself. */
   autoPrint?: boolean
@@ -47,7 +50,13 @@ export function buildInvoiceHtml(
     `<title>${esc(doc.docNo)}</title>`,
     `<style>${styles(pageSize, options.preview ?? false)}</style>`,
     '</head><body>',
-    `<main class="sheet">${body}</main>`,
+    // The spacer rows are what put a margin on the second and later pages; see
+    // `styles`. A `thead` repeats at the top of every printed page and a `tfoot`
+    // at the bottom of every one, which is the only way to reserve the same
+    // strip on each page once `@page` has given its margin up.
+    '<table class="page"><thead><tr><td><div class="edge"></div></td></tr></thead>',
+    `<tbody><tr><td><main class="sheet">${body}</main></td></tr></tbody>`,
+    '<tfoot><tr><td><div class="edge"></div></td></tr></tfoot></table>',
     options.autoPrint ? '<script>window.onload=function(){window.print()}</script>' : '',
     '</body></html>',
   ].join('')
@@ -244,7 +253,18 @@ function formatDate(iso: string): string {
  */
 function styles(pageSize: string, preview: boolean): string {
   return `
-    @page { size: ${pageSize}; margin: 14mm; }
+    /*
+     * Zero, deliberately. A browser prints the page address, the date and
+     * "1/1" into the @page margin box, and there is no stylesheet and no Tauri
+     * API that switches those off — only an unticked box in a dialog the
+     * shopkeeper should not have to find. With no margin there is nowhere for
+     * them to be drawn, so the paper carries the invoice and nothing else.
+     *
+     * The margin then has to come back as padding, and padding on one element
+     * only indents the first page. Hence the running spacer rows, which a
+     * printing engine repeats on every page.
+     */
+    @page { size: ${pageSize}; margin: 0; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -252,7 +272,16 @@ function styles(pageSize: string, preview: boolean): string {
       color: #111;
       background: ${preview ? '#fff' : 'transparent'};
     }
-    .sheet { ${preview ? 'padding: 14mm;' : ''} }
+    .page { width: 100%; border-collapse: collapse; }
+    .page > thead, .page > tfoot { break-inside: avoid; }
+    .page > thead td, .page > tfoot td, .page > tbody td { padding: 0; }
+    .edge { height: 0; }
+    .sheet { padding: ${MARGIN}; }
+    @media print {
+      /* The strip the running rows hold open at the top and foot of each page. */
+      .edge { height: ${MARGIN}; }
+      .sheet { padding: 0 ${MARGIN}; }
+    }
     .shop { margin-bottom: 10px; }
     .shop-name { font-size: 17pt; font-weight: 700; letter-spacing: -0.01em; }
     .shop div { font-size: 9.5pt; color: #444; }
