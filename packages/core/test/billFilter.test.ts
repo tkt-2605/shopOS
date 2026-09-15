@@ -194,7 +194,7 @@ describe('what never belongs on the bills screen', () => {
 
     for (const status of ['all', 'live', 'cancelled', 'returned', 'credit'] as const) {
       const found = await listBills(fx.db, { status })
-      expect(found.every((b) => b.docNo.startsWith('INV/'))).toBe(true)
+      expect(found.every((b) => b.docNo.startsWith('BMR/'))).toBe(true)
     }
     expect(await countBills(fx.db, { status: 'all' })).toBe(1)
   })

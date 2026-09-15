@@ -60,7 +60,7 @@ describe('full return', () => {
 
     const submitted = await submitReturn(fx.db, { returnId: ret.returnId, actorId: fx.adminId })
     expect(submitted.ok).toBe(true)
-    if (submitted.ok) expect(submitted.docNo).toMatch(/^CRN\/MR\//)
+    if (submitted.ok) expect(submitted.docNo).toMatch(/^CMR\//)
 
     expect(toUnits(await currentStock(fx.db, p))).toBe(10)
   })

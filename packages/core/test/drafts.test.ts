@@ -201,7 +201,7 @@ describe('held bills', () => {
     expect(done.ok).toBe(true)
     if (!done.ok) return
 
-    expect(done.docNo).toMatch(/^INV\/MR\//)
+    expect(done.docNo).toMatch(/^BMR\//)
     expect(toUnits(await currentStock(fx.db, p))).toBe(15)
     expect(await listOpenDrafts(fx.db, fx.seed.registerId)).toHaveLength(0)
   })

@@ -180,11 +180,11 @@ describe('two counters billing at once', () => {
     }
 
     expect(new Set(numbers).size).toBe(4)
-    expect(numbers.filter((n) => n.includes('/MR/'))).toHaveLength(2)
-    expect(numbers.filter((n) => n.includes('/FC/'))).toHaveLength(2)
-    expect(numbers[0]).toMatch(/\/MR\/.*\/00001$/)
-    expect(numbers[1]).toMatch(/\/FC\/.*\/00001$/)
-    expect(numbers[2]).toMatch(/\/MR\/.*\/00002$/)
+    expect(numbers.filter((n) => n.startsWith('BMR/'))).toHaveLength(2)
+    expect(numbers.filter((n) => n.startsWith('BFC/'))).toHaveLength(2)
+    expect(numbers[0]).toMatch(/^BMR\/\d{4}\/00001$/)
+    expect(numbers[1]).toMatch(/^BFC\/\d{4}\/00001$/)
+    expect(numbers[2]).toMatch(/^BMR\/\d{4}\/00002$/)
   })
 
   it('gives each counter its own drawer', async () => {

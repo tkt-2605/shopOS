@@ -51,7 +51,7 @@ describe('the history of a document', () => {
 
     expect(cancelled?.actorName).toBe('Administrator')
     // The bill's own number, joined rather than copied into the log.
-    expect(cancelled?.subject).toMatch(/^INV\//)
+    expect(cancelled?.subject).toMatch(/^BMR\//)
   })
 
   it('shows the document moving between states', async () => {

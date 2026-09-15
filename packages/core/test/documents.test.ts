@@ -68,15 +68,15 @@ async function purchaseOrder(units = 20, unitCost = rupees(60)) {
 describe('raising a document', () => {
   it('numbers a quotation in its own series, not the bill series', async () => {
     const made = await quote()
-    expect(made.docNo).toContain('QT/')
-    expect(made.docNo).not.toContain('INV/')
+    expect(made.docNo).toContain('QMR/')
+    expect(made.docNo).not.toContain('BMR/')
   })
 
   it('gives each kind a series of its own', async () => {
     const q = await quote()
     const po = await purchaseOrder()
-    expect(q.docNo).toContain('QT/')
-    expect(po.docNo).toContain('PO/')
+    expect(q.docNo).toContain('QMR/')
+    expect(po.docNo).toContain('PMR/')
   })
 
   it('prices from the same rules the counter uses', async () => {

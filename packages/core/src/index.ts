@@ -53,7 +53,7 @@ export {
 } from './services/stock.js'
 export type { StockPosting, StockRequirement, StockShortfall, StockDrift } from './services/stock.js'
 
-export { nextDocNo, peekDocNo, fiscalYear } from './services/numbering.js'
+export { nextDocNo, peekDocNo, fiscalYear, fiscalYearTag, docNoFits, MAX_DOC_NO } from './services/numbering.js'
 export type { DocType } from './services/numbering.js'
 
 export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from './repos/pricing.js'

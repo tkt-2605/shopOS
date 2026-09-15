@@ -41,7 +41,17 @@ export type RegisterResult =
   | { ok: false; code: 'PREFIX_TAKEN'; prefix: string }
   | { ok: false; code: 'BAD_PREFIX' }
 
-const PREFIX = /^[A-Z0-9]{2,6}$/
+/**
+ * Four characters, not six, and the limit is legal rather than aesthetic.
+ *
+ * A document number is `B` + prefix + `/2627/00001`, and Rule 46(b) caps the
+ * whole thing at sixteen. Six characters put it at eighteen. See `numbering.ts`.
+ *
+ * A register that already has a longer prefix keeps it — it is stamped on every
+ * bill printed against it and cannot be rewritten — so this stops new ones
+ * rather than repairing old ones.
+ */
+const PREFIX = /^[A-Z0-9]{2,4}$/
 
 export async function createRegister(
   db: SqlDriver,

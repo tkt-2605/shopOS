@@ -4,7 +4,7 @@ import { rupees, paise, add, type Money } from '../src/money.js'
 import { fromUnits, qty, toUnits } from '../src/quantity.js'
 import { createBill, submitBill, cancelBill, amendBill } from '../src/services/billing.js'
 import { currentStock, postMovement, recomputeStock } from '../src/services/stock.js'
-import { fiscalYear, nextDocNo } from '../src/services/numbering.js'
+import { fiscalYear, fiscalYearTag, nextDocNo, docNoFits, MAX_DOC_NO } from '../src/services/numbering.js'
 import { setSetting } from '../src/services/bootstrap.js'
 import { SUBMITTED, CANCELLED, DRAFT } from '../src/integrity/docstatus.js'
 import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
@@ -152,7 +152,7 @@ describe('submitting', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
 
-    expect(r.docNo).toMatch(/^INV\/MR\/\d{2}-\d{2}\/00001$/)
+    expect(r.docNo).toMatch(/^BMR\/\d{4}\/00001$/)
     expect(toUnits(await currentStock(fx.db, p))).toBe(7)
 
     const bill = await fx.db.get<{ docstatus: number; paid_total: number }>(
@@ -511,27 +511,66 @@ describe('stock integrity', () => {
 
 describe('numbering', () => {
   it('runs April to March', () => {
-    expect(fiscalYear(new Date('2026-06-01T00:00:00Z'))).toBe('26-27')
-    expect(fiscalYear(new Date('2026-03-31T00:00:00Z'))).toBe('25-26')
-    expect(fiscalYear(new Date('2026-04-01T00:00:00Z'))).toBe('26-27')
+    expect(fiscalYear(new Date(2026, 5, 1))).toBe('26-27')
+    expect(fiscalYear(new Date(2026, 2, 31))).toBe('25-26')
+    expect(fiscalYear(new Date(2026, 3, 1))).toBe('26-27')
+  })
+
+  it('turns the year over by the shop’s clock, not by UTC', () => {
+    /* This read getUTCMonth(), and India is UTC+5:30 — so a bill rung at one in
+       the morning on the first of April was still the thirty-first of March in
+       UTC. It did not merely print the old year: the fiscal year is part of the
+       `doc_sequences` scope key, so the sale was counted into the outgoing
+       year's series and the new year opened on a number already used. */
+    const justAfterMidnight = new Date(2026, 3, 1, 1, 0, 0)
+    expect(fiscalYear(justAfterMidnight)).toBe('26-27')
+
+    const justBefore = new Date(2026, 2, 31, 23, 59, 59)
+    expect(fiscalYear(justBefore)).toBe('25-26')
+  })
+
+  it('never mints a number longer than the law allows', async () => {
+    /* Rule 46(b) caps an invoice serial at sixteen characters and Rule 53 says
+       the same for a credit note. The old format was eighteen, and twenty-two
+       on the six-character prefix that used to be allowed. */
+    const on = new Date(2026, 5, 1)
+    const longest = await fx.db.transaction((tx) => nextDocNo(tx, 'bill', 'ABCD', on))
+    expect(longest).toBe('BABCD/2627/00001')
+    expect(longest.length).toBe(MAX_DOC_NO)
+    expect(docNoFits(longest)).toBe(true)
+
+    // And the old shape is what it refuses.
+    expect(docNoFits('INV/MR/26-27/00001')).toBe(false)
+  })
+
+  it('gives a bill and a credit note different numbers', async () => {
+    /* They are separate series, so both legitimately reach 00001. Without the
+       letter they would print the identical string and a customer would hold two
+       documents bearing one number. */
+    const on = new Date(2026, 5, 1)
+    const bill = await fx.db.transaction((tx) => nextDocNo(tx, 'bill', 'MR', on))
+    const note = await fx.db.transaction((tx) => nextDocNo(tx, 'return', 'MR', on))
+    expect(bill).toBe('BMR/2627/00001')
+    expect(note).toBe('CMR/2627/00001')
+    expect(bill).not.toBe(note)
   })
 
   it('keeps separate series per register', async () => {
     await fx.db.execute(
       `INSERT INTO registers (id, name, prefix, created_at, updated_at) VALUES ('r2', 'Second', 'SR', '2026-01-01', '2026-01-01')`,
     )
-    const on = new Date('2026-06-01T00:00:00Z')
+    const on = new Date(2026, 5, 1)
     const a = await fx.db.transaction((tx) => nextDocNo(tx, 'bill', 'MR', on))
     const b = await fx.db.transaction((tx) => nextDocNo(tx, 'bill', 'SR', on))
-    expect(a).toBe('INV/MR/26-27/00001')
-    expect(b).toBe('INV/SR/26-27/00001')
+    expect(a).toBe('BMR/2627/00001')
+    expect(b).toBe('BSR/2627/00001')
   })
 
   it('restarts the series in a new fiscal year', async () => {
-    const first = await fx.db.transaction((tx) => nextDocNo(tx, 'bill', 'MR', new Date('2026-06-01T00:00:00Z')))
-    const next = await fx.db.transaction((tx) => nextDocNo(tx, 'bill', 'MR', new Date('2027-06-01T00:00:00Z')))
-    expect(first).toBe('INV/MR/26-27/00001')
-    expect(next).toBe('INV/MR/27-28/00001')
+    const first = await fx.db.transaction((tx) => nextDocNo(tx, 'bill', 'MR', new Date(2026, 5, 1)))
+    const next = await fx.db.transaction((tx) => nextDocNo(tx, 'bill', 'MR', new Date(2027, 5, 1)))
+    expect(first).toBe('BMR/2627/00001')
+    expect(next).toBe('BMR/2728/00001')
   })
 
   it('gives submitted bills a gapless series even when drafts are abandoned', async () => {
@@ -550,9 +589,9 @@ describe('numbering', () => {
     }
 
     expect(numbers).toEqual([
-      'INV/MR/' + fiscalYear(new Date()) + '/00001',
-      'INV/MR/' + fiscalYear(new Date()) + '/00002',
-      'INV/MR/' + fiscalYear(new Date()) + '/00003',
+      'BMR/' + fiscalYearTag(new Date()) + '/00001',
+      'BMR/' + fiscalYearTag(new Date()) + '/00002',
+      'BMR/' + fiscalYearTag(new Date()) + '/00003',
     ])
   })
 })

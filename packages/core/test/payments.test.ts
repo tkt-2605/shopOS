@@ -77,7 +77,7 @@ describe('recording a receipt', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
 
-    expect(r.docNo).toMatch(/^RCP\/MR\//)
+    expect(r.docNo).toMatch(/^RMR\//)
     expect(r.allocations).toHaveLength(2)
     expect(r.allocated).toBe(rupees(350))
     expect(await customerOutstanding(fx.db, customer)).toBe(rupees(150))

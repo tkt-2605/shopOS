@@ -37,7 +37,7 @@ export default function Registers() {
       setError(
         result.code === 'PREFIX_TAKEN' ? `${result.prefix} is already used by another counter. Every counter needs its own, or two tills will print the same bill number.`
         : result.code === 'NAME_TAKEN' ? 'A counter with that name already exists.'
-        : 'A prefix is 2 to 6 letters or digits, like FC or TILL2.',
+        : 'A prefix is 2 to 4 letters or digits, like FC or TIL2. Bill numbers are capped at 16 characters by GST rules, and the prefix is part of every one.',
       )
       return
     }
