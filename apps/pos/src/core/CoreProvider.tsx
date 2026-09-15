@@ -6,7 +6,7 @@ import {
   establishDevice, recordStranded, setDeviceSetting,
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
-import { runDailyBackup } from './backup'
+import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
 import { resumeServing } from './syncHost'
 import { startSyncLoop, stopSyncLoop } from './syncLoop'
 import {
@@ -72,6 +72,15 @@ interface CoreValue {
   rounding: Rounding
   setRoundingTo: (rule: Rounding) => Promise<void>
   setStockPolicyTo: (policy: StockPolicy) => Promise<void>
+  /**
+   * How the last automatic backup went, or null before the first one has run.
+   *
+   * Held here rather than fetched by the Settings screen because the screen is
+   * not open when it happens — the backup runs at startup and again at 02:00,
+   * and its failure used to be returned to a `void` call and dropped. A shop
+   * whose backup folder had gone read-only found out when it needed the backup.
+   */
+  backup: DailyResult | null
   reloadRegister: () => Promise<void>
   setUser: (user: SessionUser | null) => void
   completeSetup: (input: { shopName: string; password: string; withDemo: boolean }) => Promise<void>
@@ -176,9 +185,11 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   const [features, setFeatures] = useState<Features>(FEATURES_OFF)
   const [stockPolicy, setPolicy] = useState<StockPolicy>(STOCK_POLICY_DEFAULT)
   const [rounding, setRound] = useState<Rounding>(ROUNDING_DEFAULT)
+  const [backup, setBackup] = useState<DailyResult | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    let stopBackupTimer: (() => void) | null = null
 
     void (async () => {
       try {
@@ -210,8 +221,17 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 
         // After the counter is usable, never in front of it. A shop opening for
         // the day waits for nothing, and a backup that fails is reported on the
-        // Settings screen rather than blocking the till.
-        void runDailyBackup(db)
+        // Settings screen and by a dot in the top bar rather than blocking the
+        // till.
+        void runDailyBackup(db).then((result) => {
+          if (!cancelled) setBackup(result)
+        })
+
+        // And again at 02:00, for the machines that are never switched off.
+        // `backup.ts` carries why once-per-opening was not enough on its own.
+        stopBackupTimer = startDailyBackupTimer(db, (result) => {
+          if (!cancelled) setBackup(result)
+        })
       } catch (err) {
         if (!cancelled) setStatus({ phase: 'failed', error: describe(err) })
       }
@@ -220,6 +240,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
       stopSyncLoop()
+      stopBackupTimer?.()
     }
   }, [])
 
@@ -313,7 +334,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={{
       db, status, user, registerId, registerName,
       shop, refreshShop, shopName: shop.name,
-      features, stockPolicy, rounding,
+      features, stockPolicy, rounding, backup,
       setFeatureFlag, setStockPolicyTo, setRoundingTo,
       reloadRegister: loadRegister, setUser, completeSetup,
     }}>

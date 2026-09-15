@@ -4,9 +4,12 @@ import { useCore } from './core/CoreProvider'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
+import { PageErrorBoundary } from './ui/ErrorBoundary'
+import { BackupDot } from './ui/BackupDot'
 import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
+import { appVersion, versionLine, type AppVersion } from './core/version'
 import { ICONS, BrandMark } from './ui/icons'
 import { AdminGate } from './ui/AdminGate'
 import { Formats } from './pages/Formats'
@@ -98,6 +101,10 @@ export default function App() {
  */
 function CouldNotStart({ error }: { error: string }) {
   const [restoring, setRestoring] = useState(false)
+  // The one screen where the version matters most and was hardest to get: a
+  // shop that cannot start cannot open Settings to read it.
+  const [version, setVersion] = useState<AppVersion | null>(null)
+  useEffect(() => { void appVersion().then(setVersion) }, [])
 
   return (
     <div className="centre">
@@ -121,6 +128,9 @@ function CouldNotStart({ error }: { error: string }) {
               </button>
             </div>
           )}
+          <div style={{ marginTop: 16, fontSize: 12, color: 'var(--ink-3)' }}>
+            ShopOS {versionLine(version)}
+          </div>
         </div>
       </div>
     </div>
@@ -289,13 +299,22 @@ function Shell() {
             <span className="meta">Scan or type, then <span className="kbd">Enter</span> to add</span>
           )}
           <div className="spacer" />
+          {/* On every screen, because the backup that failed did so at 02:00
+              with nobody watching, and Settings is not a screen anyone opens
+              unprompted. It stays until a backup succeeds. */}
+          <BackupDot />
         </div>
         {/* On every screen, not on Settings alone: the till that cannot record
             who it is also stops running its backup and prints somewhere else,
             and nobody goes to Settings to find that out. */}
         <DeviceTroubleBanner />
         <div className={current === 'billing' ? 'content flush' : 'content'}>
-          <PageBody page={current} />
+          {/* Inside `main`, not around the shell: a page that throws must not
+              take the sidebar with it, or there is no way back to the counter
+              except closing the app mid-sale. */}
+          <PageErrorBoundary resetKey={current}>
+            <PageBody page={current} />
+          </PageErrorBoundary>
         </div>
       </main>
     </div>

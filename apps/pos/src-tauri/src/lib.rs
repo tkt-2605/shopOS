@@ -11,6 +11,7 @@ mod pdf;
 mod printing;
 mod restore;
 mod sync_server;
+mod version;
 
 use tauri::Manager;
 
@@ -80,6 +81,7 @@ pub fn run() {
             restore::restore_begin,
             restore::restore_report,
             restore::restore_abandon,
+            version::app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shopos");

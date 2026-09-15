@@ -10,9 +10,11 @@ import { goTo } from '../core/nav'
 import { listPrinters, defaultPrinter } from '../core/print'
 import {
   describeBackups, takeBackupNow, deleteBackup, copyBackup, chooseFolder,
-  todaysBackupName, runHook, HOOK_SETTING, type BackupEntry,
+  todaysBackupName, recordHookRun, lastHookRun, onHookResult,
+  backupFolderProblem, HOOK_SETTING, type BackupEntry, type HookRun,
 } from '../core/backup'
 import { lastRestore, type RestoreReport } from '../core/restore'
+import { appVersion, versionLine, type AppVersion } from '../core/version'
 import { Card, Field, Alert } from '../ui/components'
 import { SyncCard } from '../ui/SyncCard'
 import { RestorePanel } from '../ui/RestorePanel'
@@ -33,7 +35,10 @@ const DENSITIES: { id: Density; name: string }[] = [
 ]
 
 export default function Settings() {
-  const { db, features, setFeatureFlag, stockPolicy, setStockPolicyTo, rounding, setRoundingTo } = useCore()
+  const {
+    db, features, setFeatureFlag, stockPolicy, setStockPolicyTo,
+    rounding, setRoundingTo, backup: dailyBackup,
+  } = useCore()
   const [theme, setTheme] = useState<Theme>('daylight')
   const [density, setDensity] = useState<Density>('compact')
   const [program, setProgram] = useState<Loyalty.LoyaltyProgram | null>(null)
@@ -47,9 +52,18 @@ export default function Settings() {
   const [busy, setBusy] = useState(false)
   const [backupNote, setBackupNote] = useState<string | null>(null)
   const [backupError, setBackupError] = useState<string | null>(null)
+  /** Why the list below is empty, when it is empty for a reason. */
+  const [folderProblem, setFolderProblem] = useState<string | null>(null)
   const [hookCommand, setHookCommand] = useState('')
   const [hookOutput, setHookOutput] = useState<{ ok: boolean; text: string } | null>(null)
   const [hookBusy, setHookBusy] = useState(false)
+  const [hookRun, setHookRun] = useState<HookRun | null>(lastHookRun)
+  const [version, setVersion] = useState<AppVersion | null>(null)
+
+  // The automatic run finishes long after this screen was opened — or long
+  // before it. Both: read what is stored on mount, and listen for the next one.
+  useEffect(() => onHookResult(setHookRun), [])
+  useEffect(() => { void appVersion().then(setVersion) }, [])
 
   useEffect(() => {
     void (async () => {
@@ -65,7 +79,13 @@ export default function Settings() {
   }, [db])
 
   const refreshBackups = useCallback(async () => {
-    setBackups(await describeBackups())
+    try {
+      setBackups(await describeBackups())
+      setFolderProblem(null)
+    } catch (err) {
+      setBackups([])
+      setFolderProblem(backupFolderProblem(err))
+    }
   }, [])
 
   useEffect(() => { void refreshBackups() }, [refreshBackups])
@@ -160,7 +180,10 @@ export default function Settings() {
     setHookBusy(true)
     setHookOutput(null)
     try {
-      const result = await runHook(hookCommand, name)
+      // Through `recordHookRun`, so pressing Test leaves the same record an
+      // automatic run does. Otherwise a shop that tested the command once and
+      // saw it work would go on seeing a month-old failure beside it.
+      const result = await recordHookRun(hookCommand, name)
       setHookOutput({
         ok: result.ok,
         text: result.output || (result.ok ? 'Finished with nothing to say.' : `Exit code ${result.code ?? '—'}.`),
@@ -512,13 +535,23 @@ export default function Settings() {
         }
       >
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
-          One backup is taken automatically each day the shop opens, and the last{' '}
+          One backup is taken automatically each day — when the shop opens, and again
+          at 2 a.m. for a machine that is never switched off — and the last{' '}
           {Backup.KEEP_DAILY} are kept. They live on this machine — copy one somewhere else
           for it to survive the machine. Every backup holds the whole shop: bills, stock,
           payments and customers, complete. Photographs attached to documents are carried
           for the last {CARRY_WINDOW_DAYS} days; older ones stay on this machine.
         </div>
 
+        {/* The automatic run, which happens with this screen closed. Until this
+            was shown, a shop whose daily backup had been failing since the day
+            the folder went read-only saw a list that had simply stopped growing. */}
+        {dailyBackup?.error && (
+          <div style={{ marginBottom: 11 }}>
+            <Alert>Today's automatic backup did not run: {dailyBackup.error}</Alert>
+          </div>
+        )}
+        {folderProblem && <div style={{ marginBottom: 11 }}><Alert>{folderProblem}</Alert></div>}
         {backupError && <div style={{ marginBottom: 11 }}><Alert>{backupError}</Alert></div>}
         {backupNote && <div style={{ marginBottom: 11 }}><Alert kind="ok">{backupNote}</Alert></div>}
         {restore.restored && (
@@ -556,7 +589,9 @@ export default function Settings() {
                 </tr>
               ))}
               {backups.length === 0 && (
-                <tr><td colSpan={3} style={{ color: 'var(--ink-3)' }}>No backups yet.</td></tr>
+                <tr><td colSpan={3} style={{ color: 'var(--ink-3)' }}>
+                  {folderProblem ? 'The folder could not be read — see above.' : 'No backups yet.'}
+                </td></tr>
               )}
             </tbody>
           </table>
@@ -603,14 +638,59 @@ export default function Settings() {
             </Alert>
           </div>
         )}
+
+        {/* Not the Test button's output — the last time the command actually
+            ran, which is after a backup nobody watched. The upload is the only
+            copy that survives the machine being stolen, so a month of exit 1
+            may not look like a month of silence. */}
+        {hookRun && !hookOutput && (
+          <div style={{ marginTop: -4 }}>
+            <Alert kind={hookRun.ok ? 'ok' : 'bad'}>
+              <div style={{ fontSize: 12.5 }}>
+                {hookRun.ok
+                  ? `Last carried off ${whenWas(hookRun.at)}.`
+                  : `Did not carry off ${whenWas(hookRun.at)}`
+                    + (hookRun.code !== null ? ` — exit code ${hookRun.code}.` : '.')}
+              </div>
+              {hookRun.output.trim() !== '' && (
+                <div style={{
+                  fontFamily: 'Consolas, monospace', fontSize: 12,
+                  whiteSpace: 'pre-wrap', marginTop: 5,
+                }}>
+                  {hookRun.output.trim()}
+                </div>
+              )}
+            </Alert>
+          </div>
+        )}
       </Card>
 
       <Card title="Restore a backup">
         <RestorePanel />
       </Card>
 
+      {/* Last line on the page, deliberately plain. It exists to be read aloud
+          down a phone: "which version are you on" has had no answer until now
+          except asking the shopkeeper to find an installer they downloaded. */}
+      <div style={{ fontSize: 12, color: 'var(--ink-3)', padding: '2px 2px 8px' }}>
+        ShopOS {versionLine(version)}
+      </div>
+
     </div>
   )
+}
+
+/** "at 02:00 today", "yesterday", or the date — enough to place it, no more. */
+function whenWas(iso: string): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return 'at an unknown time'
+  const day = new Date(at); day.setHours(0, 0, 0, 0)
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const days = Math.round((today.getTime() - day.getTime()) / 86_400_000)
+  const time = at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  if (days === 0) return `at ${time} today`
+  if (days === 1) return `at ${time} yesterday`
+  return `on ${at.toLocaleDateString()} at ${time}`
 }
 
 /**
