@@ -4,12 +4,14 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "tools/*"
   ],
   "scripts": {
     "test": "vitest run",
+    "pull-shop-db": "node tools/pull-shop-db.mjs",
     "test:watch": "vitest",
-    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/pos --noEmit"
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/pos --noEmit && tsc -p tools/virtual-till --noEmit"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
@@ -18,6 +20,7 @@
     "@types/node": "^22.10.2",
     "better-sqlite3": "^11.7.0",
     "jsdom": "^29.1.1",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.2",
     "vitest": "^5.0.0"
   }

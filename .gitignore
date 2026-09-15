@@ -4,6 +4,11 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+
+# Real shops' data, pulled by tools/pull-shop-db for verification. Ignored as a
+# folder and not only by extension: a CSV or a JSON dump of the same shop is the
+# same disclosure, and *.db would not have caught it.
+tools/fixtures/
 .env
 .env.*
 !.env.example
@@ -14,3 +19,8 @@ apps/pos/src-tauri/gen/schemas/
 
 # Python bytecode from the design canvas build script.
 __pycache__/
+
+# Layer 3 runs against a real shop's data; its evidence folders hold screenshots
+# and printed bills that name real customers. The procedure says which files are
+# safe to commit; the default is that they are not.
+docs/specs/evidence/layer3-*/
