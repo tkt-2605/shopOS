@@ -20,6 +20,16 @@ export default defineConfig({
         },
       },
       {
+        test: {
+          name: 'bench',
+          include: ['tools/*/test/**/*.test.ts'],
+          environment: 'node',
+          // Two tills, two SQLite files and two HTTP servers per scenario. The
+          // default 5 s is not enough for `third-till`, which bills 200 times.
+          testTimeout: 30_000,
+        },
+      },
+      {
         plugins: [react()],
         resolve: {
           alias: { '@shopos/core': new URL('./packages/core/src/index.ts', import.meta.url).pathname },
