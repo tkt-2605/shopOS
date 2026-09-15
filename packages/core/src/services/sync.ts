@@ -10,6 +10,7 @@ import { applyingRemote, changesSince, pendingCount, pruneFeed } from './changef
 import { getSetting } from './bootstrap.js'
 import { recomputeStock } from './stock.js'
 import { resolveDeviceRegister } from './registers.js'
+import { clock } from '../clock.js'
 
 /**
  * Two tills agreeing.
@@ -181,7 +182,7 @@ export async function syncWith(
 
   await db.execute(
     `UPDATE sync_peers SET last_agreed_at = ? WHERE device_id = ?`,
-    [new Date().toISOString(), hello.deviceId],
+    [clock.iso(), hello.deviceId],
   )
 
   return {
@@ -429,7 +430,7 @@ async function mergeBatch(
            (id, at, peer_device, table_name, row_id, winner, explain)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          newId(), new Date().toISOString(), batch.fromDevice,
+          newId(), clock.iso(), batch.fromDevice,
           complaint.table, complaint.rowId, complaint.winner, complaint.explain,
         ],
       )
@@ -509,7 +510,7 @@ export async function recordAttempt(
 ): Promise<void> {
   await db.execute(
     `UPDATE sync_peers SET last_error = ?, last_tried_at = ? WHERE device_id = ?`,
-    [error, new Date().toISOString(), peerDeviceId],
+    [error, clock.iso(), peerDeviceId],
   )
 }
 
@@ -557,7 +558,7 @@ async function rememberPeer(
   await db.execute(
     `INSERT INTO sync_peers (device_id, label, created_at) VALUES (?, ?, ?)
      ON CONFLICT (device_id) DO UPDATE SET label = excluded.label`,
-    [hello.deviceId, hello.label, new Date().toISOString()],
+    [hello.deviceId, hello.label, clock.iso()],
   )
   const row = await db.get<{ their_cursor: number; my_cursor: number }>(
     `SELECT their_cursor, my_cursor FROM sync_peers WHERE device_id = ?`,

@@ -27,6 +27,10 @@ interface Forwarded {
   path: string
   body: string
   auth: string | null
+  /** The caller's IP, from the socket rather than any header it sent. */
+  remoteAddress: string | null
+  /** The port the caller says it listens on, from `x-shopos-port`. */
+  listenPort: number | null
 }
 
 let listening: UnlistenFn | null = null
@@ -130,6 +134,12 @@ async function answer(db: SqlDriver, request: Forwarded): Promise<void> {
       path: request.path,
       body: request.body,
       auth: request.auth,
+      /* Where the caller is, as Rust's socket saw it, and the port it says it
+         answers on. Without these the peer row for a till that joined us has a
+         secret and no address — and `pairedPeers` filters those out, so this
+         till could receive a sync for ever and never start one. */
+      remoteAddress: request.remoteAddress ?? null,
+      listenPort: request.listenPort ?? null,
     })
     await invoke('sync_reply', { id: request.id, status: reply.status, body: reply.body })
   } catch (err) {

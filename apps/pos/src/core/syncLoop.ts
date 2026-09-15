@@ -3,6 +3,8 @@ import {
   serveAs, type SqlDriver,
 } from '@shopos/core'
 import { chosenRegister } from './device'
+import { servingOn } from './syncHost'
+import { nextBackoff } from '@shopos/core'
 
 /**
  * Catching up without anybody pressing anything.
@@ -34,9 +36,6 @@ import { chosenRegister } from './device'
  *  anybody walks to the other counter to look for it. */
 const EVERY_MS = 45_000
 
-/** A till that is off should be tried occasionally, not constantly. */
-const BACKOFF_START_MS = 60_000
-const BACKOFF_MAX_MS = 10 * 60_000
 
 interface PeerState {
   /** Not before this time. Zero when the peer is answering normally. */
@@ -95,6 +94,11 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
     // counter chosen five minutes ago is not still being announced as the old one.
     serveAs(chosenRegister())
 
+    /* Told to the other till on every request, so it can record where to reach
+       us. A single-till shop is not listening and sends nothing, which is
+       correct: there is nobody to come back to it. */
+    const listenPort = (await servingOn())?.port ?? null
+
     const peers = await pairedPeers(db)
     const now = Date.now()
 
@@ -106,7 +110,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
         /* Which counter this machine sits at, so the other till can be refused
            if it is on the same one — two tills on one counter mint invoice
            numbers from the same series and collide on the first bill. */
-        const round = await syncUntilDone(db, httpTransport(peer), 50, chosenRegister())
+        const round = await syncUntilDone(db, httpTransport(peer, fetch, { listenPort }), 50, chosenRegister())
 
         if (round.ok) {
           state.set(peer.deviceId, { quietUntil: 0, backoff: 0 })
@@ -130,9 +134,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
         }
       } catch (err) {
         // Could not be reached at all: switched off, asleep, moved, unplugged.
-        const wait = mine.backoff === 0
-          ? BACKOFF_START_MS
-          : Math.min(mine.backoff * 2, BACKOFF_MAX_MS)
+        const wait = nextBackoff(mine.backoff)
         state.set(peer.deviceId, { quietUntil: now + wait, backoff: wait })
         await recordAttempt(db, peer.deviceId, describe(err))
         reports.push({

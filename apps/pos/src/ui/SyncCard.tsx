@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  httpTransport, pairWith, listPeers,
+  pairWith, listPeers,
   offerPairing, withdrawPairing,
   recentConflicts, acknowledgeConflicts,
   SyncHttpError, getSetting,
@@ -122,7 +122,15 @@ export function SyncCard() {
     try {
       const address = joining.address.trim().replace(/\/+$/, '')
       const url = address.startsWith('http') ? address : `http://${address}`
-      const outcome = await pairWith(db, url, joining.code, null)
+      /* Telling the other till where to reach us, at the one moment both are
+         certainly talking. Without it the shop it is joining records a peer
+         with a secret and no address, and could never start a sync back. A
+         till that is not yet listening sends nothing and is recorded when it
+         first makes a signed request instead. */
+      const mine = await servingOn()
+      const outcome = await pairWith(
+        db, url, joining.code, null, fetch, { listenPort: mine?.port ?? null },
+      )
       setJoining({ address: '', code: '' })
       setNotice(`Paired with ${outcome.label ?? outcome.deviceId}. Syncing now.`)
       await syncNow()

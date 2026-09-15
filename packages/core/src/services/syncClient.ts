@@ -3,6 +3,8 @@ import { deviceId } from '../device.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import type { PeerHello, SyncTransport } from './sync.js'
 import { encodeAuth, sign } from './syncAuth.js'
+import { LISTEN_PORT_HEADER } from './syncServer.js'
+import { clock } from '../clock.js'
 
 /**
  * The side of a sync that asks.
@@ -34,9 +36,21 @@ export class SyncHttpError extends Error {
  * that arrives at the far side can have been altered on the way and nothing
  * captured can be sent again. The secret itself is never in a request.
  */
+/**
+ * The port this till is listening on, told to whoever it contacts.
+ *
+ * Passed rather than read from a global because the webview does not own the
+ * socket — Rust does, and it reports the port back. Null when this till is not
+ * listening at all, which is every single-device shop and is not an error.
+ */
+export interface SelfAddress {
+  listenPort?: number | null
+}
+
 export function httpTransport(
   peer: PeerAddress,
   fetchImpl: typeof fetch = fetch,
+  self: SelfAddress = {},
 ): SyncTransport {
   async function ask<T>(path: string, payload: unknown): Promise<T> {
     const me = deviceId()
@@ -50,6 +64,9 @@ export function httpTransport(
       headers: {
         'content-type': 'application/json',
         'x-shopos-auth': encodeAuth(signed),
+        ...(typeof self.listenPort === 'number'
+          ? { [LISTEN_PORT_HEADER]: String(self.listenPort) }
+          : {}),
       },
       body,
     })
@@ -98,13 +115,22 @@ export async function pairWith(
   code: string,
   label: string | null = null,
   fetchImpl: typeof fetch = fetch,
+  self: SelfAddress = {},
 ): Promise<PairOutcome> {
   const me = deviceId()
   if (me === null) throw new Error('This machine does not know which machine it is')
 
   const response = await fetchImpl(`${baseUrl}/pair`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      // So the till being joined can record where to reach this one. Without
+      // it the far side keeps a peer row with a secret and no address, and a
+      // sync it starts has nowhere to go.
+      ...(typeof self.listenPort === 'number'
+        ? { [LISTEN_PORT_HEADER]: String(self.listenPort) }
+        : {}),
+    },
     body: JSON.stringify({ code: code.trim().toUpperCase(), deviceId: me, label }),
   })
 
@@ -130,7 +156,7 @@ export async function pairWith(
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT (device_id) DO UPDATE SET
        label = excluded.label, secret = excluded.secret, address = excluded.address`,
-    [agreed.deviceId, agreed.label, agreed.secret, baseUrl, new Date().toISOString()],
+    [agreed.deviceId, agreed.label, agreed.secret, baseUrl, clock.iso()],
   )
 
   return {
