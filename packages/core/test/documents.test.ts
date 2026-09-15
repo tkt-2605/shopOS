@@ -3,10 +3,10 @@ import {
   createDocument, submitDocument, cancelDocument, listDocuments, loadDocument,
 } from '../src/services/documents.js'
 import { quotationToSalesOrder, receivePurchaseOrder } from '../src/services/convert.js'
-import { currentStock, postMovement } from '../src/services/stock.js'
+import { currentStock } from '../src/services/stock.js'
 import { setItemPrice } from '../src/services/pricing.js'
 import { defaultPriceListId } from '../src/repos/pricing.js'
-import { rupees, type Money } from '../src/money.js'
+import { rupees } from '../src/money.js'
 import { fromUnits, toUnits } from '../src/quantity.js'
 import { newId } from '../src/ids.js'
 import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'

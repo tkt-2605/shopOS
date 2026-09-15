@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Reports as R, Money, Quantity, businessDate, listRegisters, type DateRange, type Register,
+  Reports as R, Money, Quantity, listRegisters, type DateRange, type Register,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'

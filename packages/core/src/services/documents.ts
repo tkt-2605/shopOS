@@ -9,7 +9,7 @@ import { supplyTypeFor, type SupplyType } from '../domain/tax.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
 import { getSetting } from './bootstrap.js'
 import { nextDocNo } from './numbering.js'
-import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import { writeAudit } from '../integrity/audit.js'
 
 /**
  * Quotations, sales orders and purchase orders.

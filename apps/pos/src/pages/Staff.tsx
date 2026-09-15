@@ -107,8 +107,6 @@ export default function Staff() {
     say(`${member.username} can try signing in again.`)
   }
 
-  const now = new Date().toISOString()
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 980 }}>
       {error && <Alert>{error}</Alert>}

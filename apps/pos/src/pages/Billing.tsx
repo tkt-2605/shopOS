@@ -671,14 +671,6 @@ export default function Billing() {
   )
 }
 
-/** What is short, in the order a person would say it. */
-function describeShort(short: Map<string, { name: string; unit: string; want: number; have: number }>): string {
-  const parts = [...short.values()].map(
-    (w) => `${w.name} — ${w.have} ${w.unit} in stock, selling ${w.want}`,
-  )
-  return parts.length === 1 ? `${parts[0]}.` : `${parts.join('; ')}.`
-}
-
 /** The one mapping from cart lines to what the totals engine wants. */
 function totalsLinesOf(lines: CartLine[]): Totals.TotalsLine[] {
   return lines.map((l) => ({

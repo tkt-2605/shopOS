@@ -5,7 +5,7 @@ import { createBill, submitBill } from '../src/services/billing.js'
 import { postMovement } from '../src/services/stock.js'
 import {
   recordPayment, cancelPayment, customerOutstanding, customerStatement,
-  listCustomerPayments, writeOff, recordOpeningBalance, customerAccount,
+  listCustomerPayments, writeOff, recordOpeningBalance,
 } from '../src/services/payments.js'
 import { salesSummary, grossMargin } from '../src/repos/reports.js'
 import { listBills } from '../src/repos/catalog.js'

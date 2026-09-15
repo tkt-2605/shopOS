@@ -41,7 +41,6 @@ const INDENT = SNO + 1
 function itemColumn(width: number): number {
   return Math.floor((width - INDENT) / 3)
 }
-const COL = itemColumn(WIDTH)
 
 export interface ReceiptShop {
   name: string

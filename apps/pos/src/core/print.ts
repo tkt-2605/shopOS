@@ -68,7 +68,7 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
      product has always printed, which is what `formatFor` falls back to. */
   const format = await formatFor(db, { kind: 'bill', channel: 'roll' })
 
-  return send(Receipt.buildReceipt(doc, format), await printerName(db))
+  return send(Receipt.buildReceipt(doc, format), printerName())
 }
 
 /**
@@ -117,12 +117,18 @@ export async function printStatement(
     footer: shop.receiptFooter,
   }
 
-  return send(Receipt.buildStatement(doc), await printerName(db))
+  return send(Receipt.buildStatement(doc), printerName())
 }
 
-/** Blank means "whatever Windows calls the default", which is what `send` expects. */
-async function printerName(db: SqlDriver): Promise<string | null> {
-  // The printer is plugged into this machine, so the answer is this machine's.
+/**
+ * Blank means "whatever Windows calls the default", which is what `send` expects.
+ *
+ * Takes no driver and is not async: the printer stopped being a row in the
+ * shop's `settings` table when device-local settings landed, because the
+ * printer is plugged into this machine and the second till's is not. The
+ * parameter outlived the query it was for.
+ */
+function printerName(): string | null {
   return deviceSetting('thermal_printer')
 }
 
