@@ -43,6 +43,20 @@ impl Db {
         }))))
     }
 
+    /// Which migration the file on disk has been brought up to.
+    ///
+    /// Read from the database rather than from the bundle, because the two are
+    /// exactly what the version line exists to tell apart: a build that carries
+    /// migrations up to 28 sitting on a shop database still at 27 is a real
+    /// state, and it is the one worth seeing on a screen.
+    pub fn user_version(&self) -> Result<i64, String> {
+        let inner = lock(self)?;
+        inner
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+
     /// Writes a consistent copy of the database to `target`.
     ///
     /// VACUUM INTO rather than a file copy: under WAL the main file is stale by
@@ -86,10 +100,23 @@ impl Db {
     }
 }
 
+/// What the till is set to before it is allowed to write a row.
+///
+/// `synchronous = FULL` and not NORMAL. Under WAL, NORMAL lets SQLite return
+/// from a commit before the write-ahead log has reached the platter, so a power
+/// cut in that window loses whatever had committed since the last checkpoint —
+/// which at a counter is the last few bills, already printed, already paid for,
+/// and gone from the ledger with nothing to say they existed. FULL costs one
+/// fsync per commit, which a bill every few seconds does not notice, and it is
+/// the only setting under which "the bill printed" and "the bill is recorded"
+/// mean the same thing.
+///
+/// This is the shop's database only. `node-driver.ts` stays NORMAL: tests are
+/// not durability tests and pay the fsync thousands of times per run.
 fn configure(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
+         PRAGMA synchronous = FULL;
          PRAGMA foreign_keys = ON;
          PRAGMA busy_timeout = 5000;",
     )
@@ -272,4 +299,35 @@ fn uuid_v4() -> String {
         &hex[16..20],
         &hex[20..]
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Read back through `Db::open`, not through a bare `Connection`: what is
+    /// being asserted is that the till's own opening path sets it, and the way
+    /// this regresses is somebody editing `configure` for a test fixture.
+    #[test]
+    fn opens_fully_synchronous() {
+        let dir = std::env::temp_dir().join(format!("shopos-db-{}", uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir.join("shop.db")).unwrap();
+
+        let inner = db.0.lock().unwrap();
+        let synchronous: i64 = inner
+            .conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap();
+        let journal: String = inner
+            .conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        drop(inner);
+
+        assert_eq!(synchronous, 2, "PRAGMA synchronous must read back as 2 (FULL)");
+        assert_eq!(journal, "wal");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
