@@ -1,0 +1,13 @@
+# A workspace, so that the app and the headless networking crate build together
+# and share one target directory. `crates/shopos-net` is what Layer 2 of the
+# test bench runs in a container; `apps/pos/src-tauri` is the app that depends
+# on it. See `docs/specs/test-bench-spec.md`.
+[workspace]
+resolver = "2"
+members = ["apps/pos/src-tauri", "crates/shopos-net"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
