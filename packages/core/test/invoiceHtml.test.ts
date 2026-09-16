@@ -180,9 +180,18 @@ describe('the page itself', () => {
     expect(html()).toContain('break-inside: avoid')
   })
 
-  it('prints itself only when asked to', () => {
+  it('never prints itself, whoever is showing it', () => {
+    /* It used to, under an `autoPrint` option — and every caller that passed it
+       then handed the page to `printHtml`, which lays it out in a frame and
+       prints *that*. So the document printed itself and was printed, and a
+       shopkeeper got two dialogs from one press and had to dismiss both.
+
+       A page is a document and not a program. The frame prints it for a print;
+       the preview window prints it when somebody presses the button on the
+       window. The page cannot tell which of the two it is in, so it does not
+       try. */
     expect(html()).not.toContain('window.print()')
-    expect(buildInvoiceHtml(doc, STANDARD_INVOICE, { autoPrint: true })).toContain('window.print()')
+    expect(html()).not.toContain('<script')
   })
 
   it('carries its styling inline, having nowhere to fetch a stylesheet from', () => {

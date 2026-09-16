@@ -45,25 +45,19 @@ export type SheetHtml =
  * invoice as the place of supply while every test of the renderer passed,
  * because each test built its document by hand.
  *
- * `autoPrint` is the only difference between the two callers: the printed copy
- * carries the script that opens the dialog, and the previewed copy does not,
- * because a preview that printed itself would not be one.
+ * There is now no difference at all between the two callers' documents. The
+ * page used to carry a script that printed itself when it was destined for the
+ * printer, which — on top of the frame that was already printing it — is why a
+ * bill opened two print dialogs. Printing is the job of whoever is showing the
+ * page, and the page cannot tell which of them it is in.
  */
-export async function billSheetHtml(
-  db: SqlDriver,
-  billId: string,
-  opts: { autoPrint?: boolean } = {},
-): Promise<SheetHtml> {
+export async function billSheetHtml(db: SqlDriver, billId: string): Promise<SheetHtml> {
   const doc = await sheetDocFor(db, billId)
   if (!doc) return { ok: false, message: 'That bill could not be found.' }
 
   // The sheet the shop chose, which carries its own paper size with it.
   const format = await formatFor(db, { kind: 'bill', channel: 'sheet' })
-  return {
-    ok: true,
-    docNo: doc.docNo,
-    html: buildInvoiceHtml(doc, format, { autoPrint: opts.autoPrint !== false }),
-  }
+  return { ok: true, docNo: doc.docNo, html: buildInvoiceHtml(doc, format) }
 }
 
 export type PreviewResult =
@@ -81,7 +75,7 @@ export type PreviewResult =
  * and the till never went anywhere.
  */
 export async function previewBillSheet(db: SqlDriver, billId: string): Promise<PreviewResult> {
-  const sheet = await billSheetHtml(db, billId, { autoPrint: false })
+  const sheet = await billSheetHtml(db, billId)
   if (!sheet.ok) return sheet
 
   const outcome = openSheetPreview(sheet.html, sheet.docNo)
@@ -110,7 +104,7 @@ export async function printCreditNoteSheet(db: SqlDriver, returnId: string): Pro
      standard sheet — which is the right answer and leaves the door open for a
      shop that wants its own. */
   const format = await formatFor(db, { kind: 'credit_note', channel: 'sheet' })
-  return printHtml(buildInvoiceHtml(doc, format, { autoPrint: true }))
+  return printHtml(buildInvoiceHtml(doc, format))
 }
 
 const CREDIT_NOTE_WORDING: DocWording = {
@@ -274,7 +268,7 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
     wording: WORDING[doc.kind],
   }
 
-  return printHtml(buildInvoiceHtml(sheet, format, { autoPrint: true }))
+  return printHtml(buildInvoiceHtml(sheet, format))
 }
 
 /**
@@ -368,6 +362,16 @@ function placeOf(code: string | null): PlaceOfSupply | null {
 /** Lays the page out in a hidden frame and opens the print dialog on it. */
 export function printHtml(html: string): Promise<PrintResult> {
   return new Promise((resolve) => {
+    /* One dialog per press, however many times the frame says it has loaded.
+
+       A frame given `srcdoc` can fire `load` more than once in a webview —
+       once for the blank document it starts on and again for the real one —
+       and every one of those used to open a print dialog. Two dialogs from one
+       press is not a cosmetic fault: the second appears after the shopkeeper
+       has dealt with the first, so it reads as the machine asking to print the
+       bill a second time, and the safe-looking answer to that is Cancel. */
+    let asked = false
+
     const frame = document.createElement('iframe')
     frame.setAttribute('aria-hidden', 'true')
     frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'
@@ -382,6 +386,8 @@ export function printHtml(html: string): Promise<PrintResult> {
     }
 
     frame.onload = () => {
+      if (asked) return
+      asked = true
       window.setTimeout(() => {
         try {
           const view = frame.contentWindow

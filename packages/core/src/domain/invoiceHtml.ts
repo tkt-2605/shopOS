@@ -28,9 +28,9 @@ import { renderTemplate, templateData } from './htmlTemplate.js'
 const MARGIN = '14mm'
 
 export interface InvoiceHtmlOptions {
-  /** Adds the print dialog call, for the window that is about to print itself. */
-  autoPrint?: boolean
-  /** Marks the page as a preview: no page box, so it sits inside a frame. */
+  /**
+   * Marks the page as a preview: no page box, so it sits inside a frame.
+   */
   preview?: boolean
 }
 
@@ -70,7 +70,19 @@ export function buildInvoiceHtml(
     '<table class="page"><thead><tr><td><div class="edge"></div></td></tr></thead>',
     `<tbody><tr><td><main class="sheet">${body}</main></td></tr></tbody>`,
     '<tfoot><tr><td><div class="edge"></div></td></tr></tfoot></table>',
-    options.autoPrint ? '<script>window.onload=function(){window.print()}</script>' : '',
+    /* Nothing here opens the print dialog, and that is the fix for a bill that
+       asked to be printed twice.
+
+       This used to inject `window.onload = () => window.print()` under an
+       `autoPrint` option. Every caller that passed it then handed the result to
+       `printHtml`, which lays the page out in a frame and calls `print()` on it
+       — so the document printed itself *and* was printed, and a shopkeeper got
+       two dialogs and had to dismiss two.
+
+       The page is a document and not a program. Whoever is showing it decides
+       when it prints: the frame does it for a print, and the preview window
+       does it when somebody presses the button on it. Neither needs the page's
+       help, and the page cannot tell which of them it is in. */
     '</body></html>',
   ].join('')
 }
