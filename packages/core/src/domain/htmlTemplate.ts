@@ -334,7 +334,12 @@ export function templateData(doc: ReceiptDoc): TemplateData {
       'doc.no': doc.docNo,
       'doc.date': formatDate(doc.postingDate),
       'doc.valid_until': doc.validUntil ? formatDate(doc.validUntil) : '',
-      'doc.place_of_supply': doc.placeOfSupply ?? '',
+      /* Both halves, because a template author writing {{doc.place_of_supply}}
+         wants what an invoice prints there -- "27 — Maharashtra" -- and not a
+         number they would then have to look up. */
+      'doc.place_of_supply': doc.placeOfSupply
+        ? `${doc.placeOfSupply.code} — ${doc.placeOfSupply.name}`
+        : '',
       'doc.cashier': doc.cashier ?? '',
       'doc.notes': doc.notes ?? '',
       'doc.terms': doc.terms ?? '',

@@ -26,7 +26,7 @@ const doc: ReceiptDoc = {
   cashier: 'admin',
   customerName: 'Sri Vidya School',
   customerGstin: '33AAACS1234F1Z5',
-  placeOfSupply: 'Tamil Nadu',
+  placeOfSupply: { code: '33', name: 'Tamil Nadu' },
   items: [
     {
       name: 'A4 Copier Paper 500 sheets',

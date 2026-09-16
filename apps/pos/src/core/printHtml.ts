@@ -1,7 +1,8 @@
 import {
-  buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadShopProfile, stateName,
+  buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadShopProfile,
+  rateSummaryOf, stateName,
   type SqlDriver, type ReceiptDoc, type ReceiptItem, type BillDetailItem,
-  type DocWording, type DocumentKind,
+  type DocWording, type DocumentKind, type PlaceOfSupply,
 } from '@shopos/core'
 import type { PrintResult } from './print'
 
@@ -66,6 +67,20 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
   const shop = await loadShopProfile(db)
   const format = await formatFor(db, { kind: doc.kind, channel: 'sheet' })
 
+  const items = doc.items.map((i): ReceiptItem => ({
+    name: i.productName,
+    qty: i.qty,
+    saleUnit: i.saleUnit,
+    rate: i.rate,
+    lineTotal: i.lineTotal,
+    hsnCode: i.hsnCode,
+    taxableValue: i.taxableValue,
+    taxRateBp: i.taxRateBp,
+    cgst: i.cgst,
+    sgst: i.sgst,
+    igst: i.igst,
+  }))
+
   const sheet: ReceiptDoc = {
     shop: {
       name: shop.name, address: shop.address, phone: shop.phone,
@@ -75,18 +90,7 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
     postingDate: doc.postingDate,
     cashier: doc.createdBy,
     customerName: doc.partyName,
-    items: doc.items.map((i): ReceiptItem => ({
-      name: i.productName,
-      qty: i.qty,
-      saleUnit: i.saleUnit,
-      rate: i.rate,
-      lineTotal: i.lineTotal,
-      hsnCode: i.hsnCode,
-      taxableValue: i.taxableValue,
-      cgst: i.cgst,
-      sgst: i.sgst,
-      igst: i.igst,
-    })),
+    items,
     subtotal: doc.subtotal,
     discount: doc.discount,
     taxableTotal: doc.taxableTotal,
@@ -100,7 +104,14 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
     validUntil: doc.validUntil,
     notes: doc.notes,
     terms: doc.terms ?? shop.terms,
-    placeOfSupply: shop.stateCode ? stateName(shop.stateCode) : null,
+    /* `documents.place_of_supply` holds the supply *type* and not a state — a
+       different column from the one on `bills` wearing the same name. It is
+       enough to pick the tax columns, which is what it is used for here.
+       No place-of-supply row: a quotation is not a tax invoice, it has no state
+       stored, and the shop's own state was what used to be printed there — on
+       every document, including one quoted to another state. */
+    ...(doc.supplyType ? { supplyType: doc.supplyType } : {}),
+    rateSummary: rateSummaryOf(items),
     wording: WORDING[doc.kind],
   }
 
@@ -126,6 +137,20 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
   const sum = (pick: (i: BillDetailItem) => number) =>
     bill.items.reduce((total, i) => total + pick(i), 0) as never
 
+  const items = bill.items.map((i): ReceiptItem => ({
+    name: i.productName,
+    qty: i.qty,
+    saleUnit: i.saleUnit,
+    rate: i.rate,
+    lineTotal: i.lineTotal,
+    hsnCode: i.hsnCode,
+    taxableValue: i.taxableValue,
+    taxRateBp: i.taxRateBp,
+    cgst: i.cgst,
+    sgst: i.sgst,
+    igst: i.igst,
+  }))
+
   return {
     shop: {
       name: shop.name, address: shop.address, phone: shop.phone,
@@ -135,18 +160,7 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     postingDate: bill.postingDate,
     cashier: bill.createdBy,
     customerName: bill.customerName,
-    items: bill.items.map((i): ReceiptItem => ({
-      name: i.productName,
-      qty: i.qty,
-      saleUnit: i.saleUnit,
-      rate: i.rate,
-      lineTotal: i.lineTotal,
-      hsnCode: i.hsnCode,
-      taxableValue: i.taxableValue,
-      cgst: i.cgst,
-      sgst: i.sgst,
-      igst: i.igst,
-    })),
+    items,
     subtotal: bill.subtotal,
     discount: bill.discount,
     taxableTotal: bill.taxableTotal,
@@ -156,10 +170,35 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     roundOff: bill.roundOff,
     grandTotal: bill.grandTotal,
     payments: bill.payments.map((p) => ({ method: p.method, amount: p.amount })),
-    placeOfSupply: shop.stateCode ? stateName(shop.stateCode) : null,
+
+    /* Rule 46(e), (f), (m) and (p), every one of them off the bill's own
+       snapshot — migration 028 — and none of them off a live join or a guess.
+       This line used to read `stateName(shop.stateCode)`: the *shop's* state,
+       printed as the place of supply on every invoice it produced, including
+       the ones billed to a customer in another state and charged IGST. It was
+       a constant wearing the name of a fact.
+
+       A walk-in leaves it null, and the row does not print. The place of supply
+       for an unidentified counter sale is the shop's own state, but saying so
+       on the paper would be the software asserting something nobody recorded --
+       and it is the same reasoning that left the column unbackfilled. */
+    placeOfSupply: placeOf(bill.placeOfSupply),
+    customerState: placeOf(bill.customerStateCode),
+    customerAddress: bill.customerAddress,
+    customerGstin: bill.customerGstin,
+    ...(bill.supplyType ? { supplyType: bill.supplyType } : {}),
+    reverseCharge: bill.reverseCharge,
+    rateSummary: rateSummaryOf(items),
+
     terms: shop.terms,
     footer: shop.receiptFooter,
   }
+}
+
+/** A state code as both halves of "27 — Maharashtra", or nothing at all. */
+function placeOf(code: string | null): PlaceOfSupply | null {
+  const name = code ? stateName(code) : null
+  return code && name ? { code, name } : null
 }
 
 /** Lays the page out in a hidden frame and opens the print dialog on it. */

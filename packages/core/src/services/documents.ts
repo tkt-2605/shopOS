@@ -375,6 +375,8 @@ export interface DocumentItemRow {
   productId: string
   productName: string
   hsnCode: string | null
+  /** Rule 46(k), for the sheet renderer: the rate, not only the amount. */
+  taxRateBp: number
   saleUnit: string
   qty: Qty
   rate: Money
@@ -392,6 +394,16 @@ export interface DocumentItemRow {
 export interface DocumentDetail extends DocumentListItem {
   customerId: string | null
   supplierId: string | null
+  /**
+   * Which pair of taxes the document charged.
+   *
+   * Off `documents.place_of_supply`, which -- unlike the column of the same
+   * name on `bills` -- holds `intra_state` or `inter_state` rather than a state
+   * code. Named for what it holds here rather than repeating the mistake: the
+   * renderer needs to know which tax columns to print, and there is no state in
+   * the row to print as a place of supply.
+   */
+  supplyType: 'intra_state' | 'inter_state' | null
   subtotal: Money
   discount: Money
   taxableTotal: Money
@@ -424,6 +436,7 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
     productId: i['product_id'] as string,
     productName: i['product_name'] as string,
     hsnCode: i['hsn_code'] as string | null,
+    taxRateBp: i['tax_rate_bp'] as number,
     saleUnit: i['sale_unit'] as string,
     qty: i['qty'] as Qty,
     rate: i['rate'] as Money,
@@ -448,6 +461,8 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
     postingDate: row['posting_date'] as string,
     validUntil: row['valid_until'] as string | null,
     partyName: row['party_name'] as string | null,
+    supplyType: row['place_of_supply'] === 'inter_state' ? 'inter_state'
+      : row['place_of_supply'] === 'intra_state' ? 'intra_state' : null,
     customerId: row['customer_id'] as string | null,
     supplierId: row['supplier_id'] as string | null,
     subtotal: row['subtotal'] as Money,

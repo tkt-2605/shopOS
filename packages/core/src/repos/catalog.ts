@@ -393,6 +393,27 @@ export interface BillDetail extends BillListItem {
   cancelReason: string | null
   items: BillDetailItem[]
   payments: { method: string; amount: Money; reference: string | null }[]
+
+  /**
+   * What the paper said, as the bill recorded it at submit — migration 028.
+   *
+   * Every one of these used to be read off a live join to `customers`, or
+   * invented by the renderer: `printHtml.ts` printed the *shop's* own state as
+   * the place of supply on every invoice it produced, including the ones billed
+   * to another state. A reprint has to match the copy in the customer's hand,
+   * and the only way it can is for the bill to hold its own answer.
+   *
+   * Null on a draft, which has not said anything to anybody yet, and on bills
+   * raised before 028 for the one column the migration would have had to
+   * fabricate to fill.
+   */
+  supplyType: 'intra_state' | 'inter_state' | null
+  customerGstin: string | null
+  customerAddress: string | null
+  customerStateCode: string | null
+  /** Where the supply was made, which is not always where the customer is. */
+  placeOfSupply: string | null
+  reverseCharge: boolean
 }
 
 export interface BillDetailItem {
@@ -409,6 +430,8 @@ export interface BillDetailItem {
   sgst: Money
   igst: Money
   hsnCode: string | null
+  /** Rule 46(k): the rate, per line, not only the amount it came to. */
+  taxRateBp: number
   priceSource: string
   returnedQty: Qty
 }
@@ -420,11 +443,15 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     subtotal: number; discount: number; taxable_total: number; tax_total: number
     round_off: number
     grand_total: number; credit_total: number; cancel_reason: string | null; username: string | null
+    supply_type: string | null; customer_gstin: string | null; customer_address: string | null
+    customer_state_code: string | null; place_of_supply: string | null; reverse_charge: number
   }>(
     `SELECT b.id, b.doc_no, b.docstatus, b.posting_date, b.customer_id, b.customer_name,
             b.subtotal, b.discount,
             b.taxable_total, b.tax_total, b.round_off, b.grand_total, b.credit_total,
-            b.cancel_reason, u.username
+            b.cancel_reason, u.username,
+            b.supply_type, b.customer_gstin, b.customer_address, b.customer_state_code,
+            b.place_of_supply, b.reverse_charge
        FROM bills b LEFT JOIN users u ON u.id = b.created_by
       WHERE b.id = ?`,
     [billId],
@@ -435,10 +462,10 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     id: string; product_id: string; product_name: string; sale_unit: string
     qty: number; rate: number; line_total: number
     taxable_value: number; cgst_amount: number; sgst_amount: number; igst_amount: number
-    hsn_code: string | null; price_source: string; returned_qty: number
+    hsn_code: string | null; tax_rate_bp: number; price_source: string; returned_qty: number
   }>(
     `SELECT id, product_id, product_name, sale_unit, qty, rate, line_total, taxable_value,
-            cgst_amount, sgst_amount, igst_amount, hsn_code, price_source, returned_qty
+            cgst_amount, sgst_amount, igst_amount, hsn_code, tax_rate_bp, price_source, returned_qty
        FROM bill_items WHERE bill_id = ? ORDER BY idx`,
     [billId],
   )
@@ -480,10 +507,19 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
       sgst: i.sgst_amount as Money,
       igst: i.igst_amount as Money,
       hsnCode: i.hsn_code,
+      taxRateBp: i.tax_rate_bp,
       priceSource: i.price_source,
       returnedQty: qty(i.returned_qty),
     })),
     payments: payments.map((p) => ({ method: p.method, amount: p.amount as Money, reference: p.reference })),
+    supplyType: head.supply_type === 'inter_state' || head.supply_type === 'intra_state'
+      ? head.supply_type
+      : null,
+    customerGstin: head.customer_gstin,
+    customerAddress: head.customer_address,
+    customerStateCode: head.customer_state_code,
+    placeOfSupply: head.place_of_supply,
+    reverseCharge: head.reverse_charge === 1,
   }
 }
 
