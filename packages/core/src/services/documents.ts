@@ -229,7 +229,17 @@ export async function submitDocument(
 
 export type CancelDocumentResult =
   | { ok: true }
-  | { ok: false; code: 'NOT_FOUND' | 'ALREADY_CANCELLED' | 'PARTLY_FULFILLED'; fulfilled?: number }
+  | { ok: false; code: 'NOT_FOUND' | 'ALREADY_CANCELLED' }
+  /**
+   * Some of it has been acted on, but not all.
+   *
+   * Separate from `FULLY_FULFILLED` because the two need different sentences
+   * and a different way out. Part-done has a remainder somebody may still want,
+   * so the answer is a fresh document for what is left; all-done has no
+   * remainder and nothing to raise.
+   */
+  | { ok: false; code: 'PARTLY_FULFILLED'; fulfilled: number; lines: number }
+  | { ok: false; code: 'FULLY_FULFILLED'; lines: number }
 
 export async function cancelDocument(
   db: SqlDriver,
@@ -241,14 +251,27 @@ export async function cancelDocument(
   if (!doc) return { ok: false, code: 'NOT_FOUND' }
   if (doc.docstatus === 2) return { ok: false, code: 'ALREADY_CANCELLED' }
 
-  /* An order that has already been part-billed cannot be cancelled: the bill
-     exists and the goods are gone. Cancelling the order it came from would
-     leave the bill pointing at a document that says it never happened. */
-  const done = await db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM document_items WHERE document_id = ? AND fulfilled_qty > 0`,
+  /* An order that has already been billed cannot be cancelled: the bill exists
+     and the goods are gone. Cancelling the order it came from would leave the
+     bill pointing at a document that says it never happened.
+
+     Counted two ways so the refusal can say which it is. A quotation every line
+     of which has been billed is not "partly" anything -- it is finished, and
+     telling a shopkeeper that part of it has been delivered when all of it has
+     sends them looking for the missing part. */
+  const done = await db.get<{ started: number; finished: number; lines: number }>(
+    `SELECT COUNT(*) AS lines,
+            SUM(CASE WHEN fulfilled_qty > 0 THEN 1 ELSE 0 END) AS started,
+            SUM(CASE WHEN fulfilled_qty >= qty THEN 1 ELSE 0 END) AS finished
+       FROM document_items WHERE document_id = ?`,
     [input.documentId],
   )
-  if ((done?.n ?? 0) > 0) return { ok: false, code: 'PARTLY_FULFILLED', fulfilled: done!.n }
+  const lines = done?.lines ?? 0
+  const started = done?.started ?? 0
+  if (lines > 0 && (done?.finished ?? 0) === lines) {
+    return { ok: false, code: 'FULLY_FULFILLED', lines }
+  }
+  if (started > 0) return { ok: false, code: 'PARTLY_FULFILLED', fulfilled: started, lines }
 
   const nowIso = (input.now ?? new Date()).toISOString()
 
@@ -295,7 +318,19 @@ export interface DocumentListItem {
  * checked a price, so it has to be findable in between. `issued` is the default
  * because that is what a list of quotations usually means.
  */
-export type DocumentStatus = 'draft' | 'issued' | 'cancelled' | 'all'
+/**
+ * `completed` is a view of an issued document, not a fourth `docstatus`.
+ *
+ * ERPNext's docstatus has three values and inventing a fourth would put a state
+ * into the database that no other rule knows about. "Everything on it has been
+ * billed" is already derivable from the lines -- it is the same arithmetic
+ * `progress` reports -- so it belongs in the filter and not in the column.
+ *
+ * It matters because `issued` without it is a list a shopkeeper cannot work
+ * from: a quotation that was won and billed a month ago sits in it for ever,
+ * beside the ones still waiting for an answer.
+ */
+export type DocumentStatus = 'draft' | 'issued' | 'open' | 'completed' | 'cancelled' | 'all'
 
 export interface DocumentFilter {
   kind?: DocumentKind
@@ -308,7 +343,7 @@ export interface DocumentFilter {
 }
 
 const DOCSTATUS_OF: Record<Exclude<DocumentStatus, 'all'>, number> = {
-  draft: 0, issued: 1, cancelled: 2,
+  draft: 0, issued: 1, open: 1, completed: 1, cancelled: 2,
 }
 
 export async function listDocuments(
@@ -324,6 +359,15 @@ export async function listDocuments(
   // midway through a job, and not cancelled ones.
   const status = filter.status ?? 'issued'
   if (status !== 'all') { where.push('d.docstatus = ?'); params.push(DOCSTATUS_OF[status]) }
+
+  /* `open` and `completed` are the same docstatus told apart by their lines, so
+     they filter after the grouping rather than before it. A document with no
+     lines at all is neither: it cannot be finished, because there is nothing on
+     it to finish. */
+  const having =
+    status === 'completed' ? 'HAVING lines > 0 AND finished = lines'
+    : status === 'open' ? 'HAVING lines = 0 OR finished < lines'
+    : ''
 
   if (filter.kind) { where.push('d.kind = ?'); params.push(filter.kind) }
   if (filter.from) { where.push('d.posting_date >= ?'); params.push(filter.from) }
@@ -352,6 +396,7 @@ export async function listDocuments(
        LEFT JOIN document_items i ON i.document_id = d.id
       WHERE ${where.join(' AND ')}
       GROUP BY d.id
+      ${having}
       ORDER BY d.posting_date DESC, d.created_at DESC
       LIMIT ? OFFSET ?`,
     params,

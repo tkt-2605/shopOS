@@ -103,7 +103,7 @@ export function DocumentDesk({ config }: { config: DeskConfig }) {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
           <DateRangePicker value={range} onChange={setRange} />
           <div className="segment">
-            {(['issued', 'draft', 'cancelled', 'all'] as DocumentStatus[]).map((s) => (
+            {(['open', 'completed', 'draft', 'cancelled', 'all'] as DocumentStatus[]).map((s) => (
               <button key={s} aria-selected={s === status} onClick={() => setStatus(s)}>
                 {STATUS_LABELS[s]}
               </button>
@@ -183,7 +183,12 @@ export function DocumentDesk({ config }: { config: DeskConfig }) {
 }
 
 const STATUS_LABELS: Record<DocumentStatus, string> = {
-  issued: 'Issued', draft: 'Drafts', cancelled: 'Cancelled', all: 'All',
+  /* "Open" rather than "Issued", because issued is what they all are and it
+     therefore told a shopkeeper nothing. The list they actually want is the one
+     with something still to do on it — a quotation won and billed last month
+     sat in "Issued" for ever, beside the ones still waiting for an answer. */
+  open: 'Open', completed: 'Completed', draft: 'Drafts',
+  cancelled: 'Cancelled', all: 'All', issued: 'Issued',
 }
 
 /** Against a submitted document, how much of it has been acted on. */
@@ -409,6 +414,15 @@ function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onChanged,
   const isDraft = doc.docstatus === 0
   const isIssued = doc.docstatus === 1
   const anythingLeft = doc.items.some((i) => i.remainingQty > 0)
+  /**
+   * Whether anything has been billed or received against this yet.
+   *
+   * `cancelDocument` refuses outright once any line has been acted on, so
+   * offering the button in that state was offering a button that could not
+   * work: pressing it opened a box, asked for a reason, took the reason, and
+   * then refused. The refusal was correct and arrived three steps too late.
+   */
+  const untouched = doc.progress === 'open'
 
   async function print() {
     onError(null)
@@ -501,9 +515,15 @@ function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onChanged,
     setCancelling(null)
     if (!result.ok) {
       onError(
-        result.code === 'PARTLY_FULFILLED'
+        /* Two different situations and two different ways out. Part-done has a
+           remainder somebody may still want; all-done has none, and telling a
+           shopkeeper that "part of this has been delivered" when all of it has
+           sends them looking for a missing part that does not exist. */
+        result.code === 'FULLY_FULFILLED'
+          ? `Everything on this ${label.name.toLowerCase()} has already been billed, so there is nothing left to cancel.`
+        : result.code === 'PARTLY_FULFILLED'
           ? 'Part of this has already been delivered or received, so it cannot be cancelled. Raise a fresh one for the remainder instead.'
-          : 'That document could not be cancelled.',
+        : 'That document could not be cancelled.',
       )
       return
     }
@@ -521,7 +541,7 @@ function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onChanged,
         {isDraft && canWrite && (
           <button className="btn primary" disabled={busy} onClick={() => void issue()}>Issue</button>
         )}
-        {isIssued && canCancel && (
+        {isIssued && canCancel && untouched && (
           <button className="btn" disabled={busy} onClick={() => setCancelling('')}>Cancel it</button>
         )}
         {isIssued && anythingLeft && canWrite && doc.kind === 'quotation' && (
@@ -546,6 +566,17 @@ function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onChanged,
       </div>
 
       {doc.cancelReason && <Alert kind="warn">Cancelled: {doc.cancelReason}</Alert>}
+
+      {/* Why the Cancel button is not there, said once, where somebody looking
+          for it would look. A control that silently disappears is a control the
+          shopkeeper assumes they have lost a permission for. */}
+      {isIssued && !untouched && (
+        <Alert kind="ok">
+          {anythingLeft
+            ? `Part of this has been ${config.party === 'supplier' ? 'received' : 'billed'} already, so it can no longer be cancelled. Raise a fresh ${label.name.toLowerCase()} for what is left.`
+            : `Everything on this has been ${config.party === 'supplier' ? 'received' : 'billed'}. It is finished, and there is nothing left to cancel.`}
+        </Alert>
+      )}
       {doc.notes && <div style={{ fontSize: 12.5, color: 'var(--ink-2)', marginBottom: 8 }}>{doc.notes}</div>}
 
       <table>

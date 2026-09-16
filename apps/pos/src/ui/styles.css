@@ -236,7 +236,21 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .card-head h2 { margin: 0; font-size: 13.5px; font-weight: 600; }
 .card-head .spacer { flex: 1; }
 .card-body { padding: 15px 16px; }
-.card-scroll { overflow-x: auto; }
+/* Both axes, and the second one is not a nicety.
+ *
+ * `.card` above sets `overflow: hidden`, which is two properties. This used to
+ * set only `overflow-x`, so the y axis kept the `hidden` it inherited from the
+ * rule above — and a card given a height then clipped its own contents with no
+ * way to reach the rest. The stock count list was cut off mid-row at whatever
+ * fell past 58vh, and the only sign that anything was missing was a row sliced
+ * in half.
+ *
+ * It looked safe because `overflow-x: auto` alone *would* have been enough:
+ * when one axis is not `visible` the other computes to `auto`. That only
+ * applies to an axis left `visible`, and `.card` had already spent it. Two
+ * screens had worked around this with an inline `overflow: 'auto'`, which is
+ * the evidence that the class was wrong rather than the callers. */
+.card-scroll { overflow: auto; }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: var(--row-py) var(--cell-px); border-bottom: 1px solid var(--rule-soft); }
@@ -372,11 +386,30 @@ tbody tr:hover { background: var(--accent-soft); }
 /* ── modal ─────────────────────────────────────────────────────── */
 
 .backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; background: rgb(20 32 31 / 42%); }
-.modal { width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); }
+/* The body scrolls; the title and the buttons do not.
+ *
+ * The whole dialog used to scroll as one. On a short dialog that is the same
+ * thing, and on a long one -- a customer's statement running to a year of
+ * bills -- it means the heading and every button leave the screen together. A
+ * shopkeeper halfway down a statement could see neither whose statement it was
+ * nor the way to close it, and the only clue that there was a way out was a
+ * scrollbar they had to guess the end of.
+ *
+ * `min-height: 0` on the body because a flex child will not shrink below its
+ * content without it, which would put the overflow back on the dialog and undo
+ * the whole arrangement. */
+.modal {
+  display: flex; flex-direction: column;
+  width: 100%; max-width: 460px; max-height: 90vh;
+  background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+}
 .modal.wide { max-width: 820px; }
-.modal-head { padding: 14px 18px; border-bottom: 1px solid var(--rule-soft); font-weight: 600; }
-.modal-body { display: flex; flex-direction: column; gap: 14px; padding: 18px; }
-.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--rule-soft); }
+.modal-head { flex: 0 0 auto; padding: 14px 18px; border-bottom: 1px solid var(--rule-soft); font-weight: 600; }
+.modal-body {
+  flex: 1 1 auto; min-height: 0; overflow: auto;
+  display: flex; flex-direction: column; gap: 14px; padding: 18px;
+}
+.modal-foot { flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--rule-soft); }
 
 /* Somebody already has this phone number. Shown while it is being typed, with
    the way out beside it, rather than as a refusal after the save. */

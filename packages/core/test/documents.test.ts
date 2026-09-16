@@ -156,7 +156,7 @@ describe('cancelling', () => {
     expect((await loadDocument(fx.db, made.documentId))!.docstatus).toBe(2)
   })
 
-  it('refuses once part of it has been acted on', async () => {
+  it('refuses once the whole of it has been acted on, and says so in those words', async () => {
     // The order it became exists; saying this one never happened would leave
     // that document pointing at a promise the shop denies making.
     const made = await quote()
@@ -166,7 +166,30 @@ describe('cancelling', () => {
       documentId: made.documentId, reason: 'Too late', actorId: fx.adminId,
     })
     expect(gone.ok).toBe(false)
-    if (!gone.ok) expect(gone.code).toBe('PARTLY_FULFILLED')
+    /* Not `PARTLY_FULFILLED`, which is what this used to answer and what the
+       screen used to repeat: "part of this has already been delivered". Every
+       line of it has. A shopkeeper told that part of something has gone goes
+       looking for the part that has not. */
+    if (!gone.ok) expect(gone).toEqual({ ok: false, code: 'FULLY_FULFILLED', lines: 1 })
+  })
+
+  it('refuses when only some of it has been acted on, and says that instead', async () => {
+    /* Reached by billing an order for fewer than it promised, which a counter
+       does when half the delivery is short. Written straight into the line here
+       rather than run through a bill: what is being tested is how
+       `cancelDocument` classifies the state, not the path that arrives at it —
+       and a bill would bring its own stock, tax and payment along for the
+       ride. */
+    const made = await quote(10)
+    await fx.db.execute(
+      `UPDATE document_items SET fulfilled_qty = ? WHERE document_id = ?`,
+      [fromUnits(4), made.documentId],
+    )
+
+    const gone = await cancelDocument(fx.db, {
+      documentId: made.documentId, reason: 'Too late', actorId: fx.adminId,
+    })
+    expect(gone).toEqual({ ok: false, code: 'PARTLY_FULFILLED', fulfilled: 1, lines: 1 })
   })
 
   it('refuses to cancel the same document twice', async () => {
@@ -325,6 +348,46 @@ describe('finding documents again', () => {
     await quote()
     expect(await listDocuments(fx.db, { search: 'Vidya' })).toHaveLength(1)
     expect(await listDocuments(fx.db, { search: 'nobody' })).toHaveLength(0)
+  })
+
+  it('separates what is still open from what is finished', async () => {
+    /* The reason this filter exists. "Issued" is what every live document is,
+       so a list of them is a list a shopkeeper cannot work from: a quotation
+       won and billed last month sits in it for ever, next to the ones still
+       waiting for an answer. */
+    const open = await quote(5)
+    const won = await quote(7)
+    await quotationToSalesOrder(fx.db, { quotationId: won.documentId, actorId: fx.adminId })
+
+    const still = await listDocuments(fx.db, { kind: 'quotation', status: 'open' })
+    expect(still.map((d) => d.id)).toEqual([open.documentId])
+
+    const done = await listDocuments(fx.db, { kind: 'quotation', status: 'completed' })
+    expect(done.map((d) => d.id)).toEqual([won.documentId])
+
+    // And both are still issued, because completed is a view and not a fourth
+    // docstatus.
+    expect(await listDocuments(fx.db, { kind: 'quotation', status: 'issued' })).toHaveLength(2)
+  })
+
+  it('counts a part-billed order as open, because something is still owed on it', async () => {
+    const made = await quote(10)
+    await fx.db.execute(
+      `UPDATE document_items SET fulfilled_qty = ? WHERE document_id = ?`,
+      [fromUnits(4), made.documentId],
+    )
+
+    expect(await listDocuments(fx.db, { status: 'open' })).toHaveLength(1)
+    expect(await listDocuments(fx.db, { status: 'completed' })).toHaveLength(0)
+  })
+
+  it('keeps a cancelled document out of both, however far along it got', async () => {
+    const made = await quote()
+    await cancelDocument(fx.db, { documentId: made.documentId, reason: 'No', actorId: fx.adminId })
+
+    expect(await listDocuments(fx.db, { status: 'open' })).toHaveLength(0)
+    expect(await listDocuments(fx.db, { status: 'completed' })).toHaveLength(0)
+    expect(await listDocuments(fx.db, { status: 'cancelled' })).toHaveLength(1)
   })
 
   it('finds a draft when the draft is what is being looked for', async () => {
