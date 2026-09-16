@@ -1,4 +1,7 @@
+import { eq, ne, and, or, isNull, count, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/sqlite-core'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 
@@ -29,19 +32,30 @@ export interface Category {
 }
 
 export async function listCategories(db: SqlDriver): Promise<Category[]> {
-  const rows = await db.query<{
-    id: string; name: string; parent_id: string | null; parent_name: string | null; n: number
-  }>(
-    `SELECT c.id, c.name, c.parent_id, p.name AS parent_name,
-            (SELECT COUNT(*) FROM products pr
-              WHERE pr.category_id = c.id AND pr.deleted_at IS NULL) AS n
-       FROM categories c
-       LEFT JOIN categories p ON p.id = c.parent_id
-      WHERE c.deleted_at IS NULL
-      ORDER BY COALESCE(p.name, c.name), c.name`,
-  )
+  const parent = alias(schema.categories, 'p')
+  const item = alias(schema.products, 'pr')
+
+  /* The count was a correlated subquery and is now a join, which SQLite plans
+     the same way and the compiler can read. The join carries the "not deleted"
+     test in its own condition rather than in `where`: moved up, it would turn
+     the left join back into an inner one and lose every empty category. */
+  const rows = await q(db)
+    .select({
+      id: schema.categories.id,
+      name: schema.categories.name,
+      parentId: schema.categories.parentId,
+      parentName: parent.name,
+      n: count(item.id),
+    })
+    .from(schema.categories)
+    .leftJoin(parent, eq(parent.id, schema.categories.parentId))
+    .leftJoin(item, and(eq(item.categoryId, schema.categories.id), isNull(item.deletedAt)))
+    .where(isNull(schema.categories.deletedAt))
+    .groupBy(schema.categories.id, parent.name)
+    .orderBy(sql`COALESCE(${parent.name}, ${schema.categories.name})`, schema.categories.name)
+
   return rows.map((r) => ({
-    id: r.id, name: r.name, parentId: r.parent_id, parentName: r.parent_name, productCount: r.n,
+    id: r.id, name: r.name, parentId: r.parentId, parentName: r.parentName, productCount: r.n,
   }))
 }
 
@@ -59,19 +73,24 @@ export async function createCategory(
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
 
-  const taken = await db.get<{ id: string }>(
-    `SELECT id FROM categories WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL`, [name],
-  )
+  const [taken] = await q(db)
+    .select({ id: schema.categories.id })
+    .from(schema.categories)
+    // raw: `COLLATE NOCASE`. Two categories called Stationery and stationery
+    // are one category to everybody except the comparison.
+    .where(and(
+      sql`${schema.categories.name} = ${name} COLLATE NOCASE`,
+      isNull(schema.categories.deletedAt),
+    ))
   if (taken) return { ok: false, code: 'NAME_TAKEN' }
 
   const id = newId()
   const now = (ctx.now ?? (() => new Date().toISOString()))()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO categories (id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-      [id, name, input.parentId ?? null, now, now],
-    )
+    await q(tx).insert(schema.categories).values({
+      id, name, parentId: input.parentId ?? null, createdAt: now, updatedAt: now,
+    })
     await writeAudit(tx, ctx, {
       entity: 'categories', entityId: id, action: 'create',
       after: { name, parent_id: input.parentId ?? null },
@@ -89,37 +108,43 @@ export async function renameCategory(
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
 
-  const before = await db.get<{ name: string; parent_id: string | null }>(
-    `SELECT name, parent_id FROM categories WHERE id = ? AND deleted_at IS NULL`, [input.categoryId],
-  )
+  const [before] = await q(db)
+    .select({ name: schema.categories.name, parentId: schema.categories.parentId })
+    .from(schema.categories)
+    .where(and(eq(schema.categories.id, input.categoryId), isNull(schema.categories.deletedAt)))
   if (!before) throw new Error('no such category')
 
-  const taken = await db.get<{ id: string }>(
-    `SELECT id FROM categories WHERE name = ? COLLATE NOCASE AND id <> ? AND deleted_at IS NULL`,
-    [name, input.categoryId],
-  )
+  const [taken] = await q(db)
+    .select({ id: schema.categories.id })
+    .from(schema.categories)
+    // raw: `COLLATE NOCASE`, as in `createCategory`.
+    .where(and(
+      sql`${schema.categories.name} = ${name} COLLATE NOCASE`,
+      ne(schema.categories.id, input.categoryId),
+      isNull(schema.categories.deletedAt),
+    ))
   if (taken) return { ok: false, code: 'NAME_TAKEN' }
 
-  const parentId = input.parentId === undefined ? before.parent_id : input.parentId
+  const parentId = input.parentId === undefined ? before.parentId : input.parentId
   // One level of nesting is all a shop needs, and a category that is its own
   // ancestor makes every list that walks upwards run for ever.
   if (parentId === input.categoryId) return { ok: false, code: 'WOULD_LOOP' }
   if (parentId) {
-    const parent = await db.get<{ parent_id: string | null }>(
-      `SELECT parent_id FROM categories WHERE id = ?`, [parentId],
-    )
-    if (parent?.parent_id === input.categoryId) return { ok: false, code: 'WOULD_LOOP' }
+    const [parent] = await q(db)
+      .select({ parentId: schema.categories.parentId })
+      .from(schema.categories)
+      .where(eq(schema.categories.id, parentId))
+    if (parent?.parentId === input.categoryId) return { ok: false, code: 'WOULD_LOOP' }
   }
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE categories SET name = ?, parent_id = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-      [name, parentId, now, input.categoryId],
-    )
+    await q(tx).update(schema.categories)
+      .set({ name, parentId, updatedAt: now, rev: sql`${schema.categories.rev} + 1` })
+      .where(eq(schema.categories.id, input.categoryId))
     await writeAudit(tx, ctx, {
       entity: 'categories', entityId: input.categoryId, action: 'update',
-      before: { name: before.name, parent_id: before.parent_id },
+      before: { name: before.name, parent_id: before.parentId },
       after: { name, parent_id: parentId },
     })
   })
@@ -139,12 +164,15 @@ export async function removeCategory(
 ): Promise<void> {
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
-    await tx.execute(`UPDATE products SET category_id = NULL WHERE category_id = ?`, [categoryId])
-    await tx.execute(`UPDATE categories SET parent_id = NULL WHERE parent_id = ?`, [categoryId])
-    await tx.execute(
-      `UPDATE categories SET deleted_at = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-      [now, now, categoryId],
-    )
+    await q(tx).update(schema.products)
+      .set({ categoryId: null })
+      .where(eq(schema.products.categoryId, categoryId))
+    await q(tx).update(schema.categories)
+      .set({ parentId: null })
+      .where(eq(schema.categories.parentId, categoryId))
+    await q(tx).update(schema.categories)
+      .set({ deletedAt: now, updatedAt: now, rev: sql`${schema.categories.rev} + 1` })
+      .where(eq(schema.categories.id, categoryId))
     await writeAudit(tx, ctx, { entity: 'categories', entityId: categoryId, action: 'delete' })
   })
 }
@@ -155,20 +183,20 @@ export async function setProductCategory(
   productId: string,
   categoryId: string | null,
 ): Promise<void> {
-  const before = await db.get<{ category_id: string | null }>(
-    `SELECT category_id FROM products WHERE id = ?`, [productId],
-  )
-  if (before?.category_id === categoryId) return
+  const [before] = await q(db)
+    .select({ categoryId: schema.products.categoryId })
+    .from(schema.products)
+    .where(eq(schema.products.id, productId))
+  if (before?.categoryId === categoryId) return
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE products SET category_id = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-      [categoryId, now, productId],
-    )
+    await q(tx).update(schema.products)
+      .set({ categoryId, updatedAt: now, rev: sql`${schema.products.rev} + 1` })
+      .where(eq(schema.products.id, productId))
     await writeAudit(tx, ctx, {
       entity: 'products', entityId: productId, action: 'update',
-      before: { category_id: before?.category_id ?? null }, after: { category_id: categoryId },
+      before: { category_id: before?.categoryId ?? null }, after: { category_id: categoryId },
     })
   })
 }
@@ -203,39 +231,53 @@ export async function setVariantOf(
   if (input.parentProductId === input.productId) return { ok: false, code: 'SELF' }
 
   if (input.parentProductId) {
-    const parent = await db.get<{ parent_product_id: string | null }>(
-      `SELECT parent_product_id FROM products WHERE id = ? AND deleted_at IS NULL`,
-      [input.parentProductId],
-    )
+    const [parent] = await q(db)
+      .select({ parentProductId: schema.products.parentProductId })
+      .from(schema.products)
+      .where(and(
+        eq(schema.products.id, input.parentProductId),
+        isNull(schema.products.deletedAt),
+      ))
     if (!parent) throw new Error('no such product')
-    if (parent.parent_product_id) {
-      return { ok: false, code: 'PARENT_IS_A_VARIANT', parentId: parent.parent_product_id }
+    if (parent.parentProductId) {
+      return { ok: false, code: 'PARENT_IS_A_VARIANT', parentId: parent.parentProductId }
     }
 
     // Something that already has versions of its own cannot become a version of
     // something else without making that second level.
-    const children = await db.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM products WHERE parent_product_id = ? AND deleted_at IS NULL`,
-      [input.productId],
-    )
+    const [children] = await q(db)
+      .select({ n: count() })
+      .from(schema.products)
+      .where(and(
+        eq(schema.products.parentProductId, input.productId),
+        isNull(schema.products.deletedAt),
+      ))
     if ((children?.n ?? 0) > 0) return { ok: false, code: 'HAS_VARIANTS', count: children?.n ?? 0 }
   }
 
-  const before = await db.get<{ parent_product_id: string | null; variant_label: string | null }>(
-    `SELECT parent_product_id, variant_label FROM products WHERE id = ?`, [input.productId],
-  )
+  const [before] = await q(db)
+    .select({
+      parentProductId: schema.products.parentProductId,
+      variantLabel: schema.products.variantLabel,
+    })
+    .from(schema.products)
+    .where(eq(schema.products.id, input.productId))
+
   const label = input.variantLabel?.trim() || null
   const now = (ctx.now ?? (() => new Date().toISOString()))()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE products SET parent_product_id = ?, variant_label = ?, updated_at = ?, rev = rev + 1
-        WHERE id = ?`,
-      [input.parentProductId, input.parentProductId ? label : null, now, input.productId],
-    )
+    await q(tx).update(schema.products)
+      .set({
+        parentProductId: input.parentProductId,
+        variantLabel: input.parentProductId ? label : null,
+        updatedAt: now,
+        rev: sql`${schema.products.rev} + 1`,
+      })
+      .where(eq(schema.products.id, input.productId))
     await writeAudit(tx, ctx, {
       entity: 'products', entityId: input.productId, action: 'update',
-      before: { parent_product_id: before?.parent_product_id ?? null, variant_label: before?.variant_label ?? null },
+      before: { parent_product_id: before?.parentProductId ?? null, variant_label: before?.variantLabel ?? null },
       after: { parent_product_id: input.parentProductId, variant_label: input.parentProductId ? label : null },
     })
   })
@@ -248,19 +290,34 @@ export async function setVariantOf(
  * asked about is the parent or one of the versions.
  */
 export async function variantFamily(db: SqlDriver, productId: string): Promise<VariantMember[]> {
-  const self = await db.get<{ id: string; parent_product_id: string | null }>(
-    `SELECT id, parent_product_id FROM products WHERE id = ? AND deleted_at IS NULL`, [productId],
-  )
+  const [self] = await q(db)
+    .select({ id: schema.products.id, parentProductId: schema.products.parentProductId })
+    .from(schema.products)
+    .where(and(eq(schema.products.id, productId), isNull(schema.products.deletedAt)))
   if (!self) return []
 
-  const rootId = self.parent_product_id ?? self.id
-  const rows = await db.query<{ id: string; name: string; variant_label: string | null; parent: string | null }>(
-    `SELECT id, name, variant_label, parent_product_id AS parent FROM products
-      WHERE (id = ? OR parent_product_id = ?) AND deleted_at IS NULL
-      ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, variant_label, name`,
-    [rootId, rootId, rootId],
-  )
+  const rootId = self.parentProductId ?? self.id
+  const rows = await q(db)
+    .select({
+      id: schema.products.id,
+      name: schema.products.name,
+      variantLabel: schema.products.variantLabel,
+      parent: schema.products.parentProductId,
+    })
+    .from(schema.products)
+    .where(and(
+      or(eq(schema.products.id, rootId), eq(schema.products.parentProductId, rootId)),
+      isNull(schema.products.deletedAt),
+    ))
+    // The parent first, then its versions by label. `CASE` rather than sorting
+    // on `parent_product_id IS NULL`, so the intent survives being read.
+    .orderBy(
+      sql`CASE WHEN ${schema.products.id} = ${rootId} THEN 0 ELSE 1 END`,
+      schema.products.variantLabel,
+      schema.products.name,
+    )
+
   return rows.map((r) => ({
-    id: r.id, name: r.name, variantLabel: r.variant_label, isParent: r.parent === null,
+    id: r.id, name: r.name, variantLabel: r.variantLabel, isParent: r.parent === null,
   }))
 }
