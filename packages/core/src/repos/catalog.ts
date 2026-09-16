@@ -1,6 +1,62 @@
-import type { SqlDriver, SqlValue } from '../db/driver.js'
-import type { Money } from '../money.js'
-import { qty, type Qty } from '../quantity.js'
+import { eq, gt, and, or, like, inArray, isNull, isNotNull, desc, count, sql, type SQL } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/sqlite-core'
+import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
+import { ZERO, type Money } from '../money.js'
+import { qty, QTY_SCALE, type Qty } from '../quantity.js'
+import { SUBMITTED, CANCELLED } from '../integrity/docstatus.js'
+
+/**
+ * The parent a variant hangs off, and the item's own barcodes.
+ *
+ * Both are the products table and the barcodes table joined to themselves or to
+ * products a second time, so they need names of their own -- without them the
+ * join condition would compare a column to itself.
+ */
+const parent = alias(schema.products, 'parent')
+const scanned = alias(schema.productBarcodes, 'pb')
+
+/* raw: whether goods came back against the bill of the row being looked at --
+   an EXISTS correlated to the outer query, which a builder has no words for.
+   `bills.id` is written out rather than interpolated because inside the
+   subquery a bare `id` would bind to `sales_returns` and quietly answer about
+   the wrong table. Shared by the filter and the column so the list cannot say
+   one thing in its rows and another in what it filtered to. */
+const anyReturnAgainstTheBill = sql`EXISTS (
+  SELECT 1 FROM sales_returns r WHERE r.bill_id = bills.id AND r.docstatus = 1)`
+
+/**
+ * The columns every product list returns.
+ *
+ * Three queries used to carry the same twenty-three lines of SELECT written out
+ * three times, which is three places for a column to go missing from one. The
+ * joins still have to be repeated -- they differ -- but what comes back does not.
+ */
+const productShape = {
+  id: schema.products.id,
+  code: schema.products.code,
+  name: schema.products.name,
+  brand: schema.products.brand,
+  barcode: schema.products.barcode,
+  baseUnit: schema.products.baseUnit,
+  baseRate: schema.products.baseRate,
+  mrp: schema.products.mrp,
+  taxRateBp: schema.products.taxRateBp,
+  hsnCode: schema.products.hsnCode,
+  isStockTracked: schema.products.isStockTracked,
+  isActive: schema.products.isActive,
+  discountBlocked: schema.products.discountBlocked,
+  loyaltyBlocked: schema.products.loyaltyBlocked,
+  returnBlocked: schema.products.returnBlocked,
+  reorderLevel: schema.products.reorderLevel,
+  reorderQty: schema.products.reorderQty,
+  categoryId: schema.products.categoryId,
+  categoryName: schema.categories.name,
+  parentProductId: schema.products.parentProductId,
+  parentName: parent.name,
+  variantLabel: schema.products.variantLabel,
+  qtyOnHand: sql<Qty>`COALESCE(${schema.productStock.qtyOnHand}, 0)`,
+}
 
 export interface ProductListItem {
   id: string
@@ -62,33 +118,46 @@ export interface SearchOptions {
  */
 export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): Promise<ProductListItem[]> {
   const term = opts.term?.trim() ?? ''
-  const like = `%${term}%`
-  const limit = opts.limit ?? 50
-  const activeClause = opts.includeInactive ? '' : 'AND p.is_active = 1'
-  const categoryClause = opts.categoryId ? 'AND p.category_id = ?' : ''
+  const anywhere = `%${term}%`
 
-  const rows = await db.query<ProductRow>(
-    `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
-            p.discount_blocked, p.loyalty_blocked, p.return_blocked,
-            p.reorder_level, p.reorder_qty,
-            p.category_id, cat.name AS category_name,
-            p.parent_product_id, parent.name AS parent_name, p.variant_label,
-            COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
-       FROM products p
-       LEFT JOIN product_stock ps ON ps.product_id = p.id
-       LEFT JOIN categories cat ON cat.id = p.category_id
-       LEFT JOIN products parent ON parent.id = p.parent_product_id
-       LEFT JOIN product_barcodes pb ON pb.product_id = p.id AND pb.barcode = ?
-      WHERE p.deleted_at IS NULL ${activeClause} ${categoryClause}
-        AND (? = '' OR pb.id IS NOT NULL OR p.name LIKE ? OR p.brand LIKE ? OR p.code LIKE ?
-             OR parent.name LIKE ?)
-      ORDER BY CASE WHEN pb.id IS NOT NULL THEN 0 ELSE 1 END,
-               COALESCE(parent.name, p.name), p.variant_label, p.name
-      LIMIT ? OFFSET ?`,
-    [term, ...(opts.categoryId ? [opts.categoryId] : []), term, like, like, like, like,
-     limit, opts.offset ?? 0],
-  )
+  /* An empty term used to be handled by `(? = '' OR …)` -- the term bound a
+     second time so SQLite could decide the rest of the condition did not
+     apply. Here the condition is simply not in the list. */
+  const matching = term === '' ? [] : [or(
+    isNotNull(scanned.id),
+    like(schema.products.name, anywhere),
+    like(schema.products.brand, anywhere),
+    like(schema.products.code, anywhere),
+    like(parent.name, anywhere),
+  )!]
+
+  const rows = await q(db)
+    .select(productShape)
+    .from(schema.products)
+    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
+    .leftJoin(schema.categories, eq(schema.categories.id, schema.products.categoryId))
+    .leftJoin(parent, eq(parent.id, schema.products.parentProductId))
+    /* The scanned barcode belongs in the join and not in the WHERE: as a left
+       join it decides the sort order below without removing the items that
+       were found by name. */
+    .leftJoin(scanned, and(
+      eq(scanned.productId, schema.products.id),
+      eq(scanned.barcode, term),
+    ))
+    .where(and(
+      isNull(schema.products.deletedAt),
+      ...(opts.includeInactive ? [] : [eq(schema.products.isActive, 1)]),
+      ...(opts.categoryId ? [eq(schema.products.categoryId, opts.categoryId)] : []),
+      ...matching,
+    ))
+    .orderBy(
+      sql`CASE WHEN ${scanned.id} IS NOT NULL THEN 0 ELSE 1 END`,
+      sql`COALESCE(${parent.name}, ${schema.products.name})`,
+      schema.products.variantLabel,
+      schema.products.name,
+    )
+    .limit(opts.limit ?? 50)
+    .offset(opts.offset ?? 0)
 
   return rows.map(toProduct)
 }
@@ -96,43 +165,32 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
 /** Products by id, for rebuilding a held bill's cart from what was saved. */
 export async function productsByIds(db: SqlDriver, ids: string[]): Promise<ProductListItem[]> {
   if (ids.length === 0) return []
-  const holes = ids.map(() => '?').join(', ')
 
-  const rows = await db.query<ProductRow>(
-    `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
-            p.discount_blocked, p.loyalty_blocked, p.return_blocked,
-            p.reorder_level, p.reorder_qty,
-            p.category_id, cat.name AS category_name,
-            p.parent_product_id, parent.name AS parent_name, p.variant_label,
-            COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
-       FROM products p
-       LEFT JOIN product_stock ps ON ps.product_id = p.id
-       LEFT JOIN categories cat ON cat.id = p.category_id
-       LEFT JOIN products parent ON parent.id = p.parent_product_id
-      WHERE p.id IN (${holes}) AND p.deleted_at IS NULL`,
-    ids,
-  )
+  const rows = await q(db)
+    .select(productShape)
+    .from(schema.products)
+    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
+    .leftJoin(schema.categories, eq(schema.categories.id, schema.products.categoryId))
+    .leftJoin(parent, eq(parent.id, schema.products.parentProductId))
+    .where(and(inArray(schema.products.id, ids), isNull(schema.products.deletedAt)))
+
   return rows.map(toProduct)
 }
 
 export async function findByBarcode(db: SqlDriver, barcode: string): Promise<ProductListItem | null> {
-  const row = await db.get<ProductRow>(
-    `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
-            p.discount_blocked, p.loyalty_blocked, p.return_blocked,
-            p.reorder_level, p.reorder_qty,
-            p.category_id, cat.name AS category_name,
-            p.parent_product_id, parent.name AS parent_name, p.variant_label,
-            COALESCE(ps.qty_on_hand, 0) AS qty_on_hand
-       FROM products p
-       LEFT JOIN product_stock ps ON ps.product_id = p.id
-       LEFT JOIN categories cat ON cat.id = p.category_id
-       LEFT JOIN products parent ON parent.id = p.parent_product_id
-       JOIN product_barcodes pb ON pb.product_id = p.id AND pb.barcode = ?
-      WHERE p.deleted_at IS NULL AND p.is_active = 1`,
-    [barcode.trim()],
-  )
+  const [row] = await q(db)
+    .select(productShape)
+    .from(schema.products)
+    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
+    .leftJoin(schema.categories, eq(schema.categories.id, schema.products.categoryId))
+    .leftJoin(parent, eq(parent.id, schema.products.parentProductId))
+    // An inner join here, unlike the search: no barcode, no answer.
+    .innerJoin(scanned, and(
+      eq(scanned.productId, schema.products.id),
+      eq(scanned.barcode, barcode.trim()),
+    ))
+    .where(and(isNull(schema.products.deletedAt), eq(schema.products.isActive, 1)))
+
   return row ? toProduct(row) : null
 }
 
@@ -143,19 +201,26 @@ export interface SaleUnitOption {
 }
 
 export async function saleUnitsFor(db: SqlDriver, productId: string): Promise<SaleUnitOption[]> {
-  const product = await db.get<{ base_unit: string }>(`SELECT base_unit FROM products WHERE id = ?`, [productId])
+  const [product] = await q(db)
+    .select({ baseUnit: schema.products.baseUnit })
+    .from(schema.products)
+    .where(eq(schema.products.id, productId))
   if (!product) return []
 
-  const rows = await db.query<{ sale_unit: string; base_units: number; is_default: number }>(
-    `SELECT sale_unit, base_units, is_default FROM product_units WHERE product_id = ? ORDER BY base_units`,
-    [productId],
-  )
+  const rows = await q(db)
+    .select({
+      saleUnit: schema.productUnits.saleUnit,
+      baseUnits: schema.productUnits.baseUnits,
+      isDefault: schema.productUnits.isDefault,
+    })
+    .from(schema.productUnits)
+    .where(eq(schema.productUnits.productId, productId))
+    .orderBy(schema.productUnits.baseUnits)
 
-  const options: SaleUnitOption[] = [
-    { saleUnit: product.base_unit, baseUnits: qty(10_000), isDefault: rows.every((r) => r.is_default === 0) },
-    ...rows.map((r) => ({ saleUnit: r.sale_unit, baseUnits: qty(r.base_units), isDefault: r.is_default === 1 })),
+  return [
+    { saleUnit: product.baseUnit, baseUnits: qty(QTY_SCALE), isDefault: rows.every((r) => r.isDefault === 0) },
+    ...rows.map((r) => ({ saleUnit: r.saleUnit, baseUnits: r.baseUnits, isDefault: r.isDefault === 1 })),
   ]
-  return options
 }
 
 export interface CustomerListItem {
@@ -202,36 +267,34 @@ export interface CustomerDetail extends CustomerListItem {
 }
 
 export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerDetail | null> {
-  const row = await db.get<{
-    id: string; code: string | null; name: string; phone: string | null
-    gstin: string | null; address: string | null; state_code: string | null
-    credit_limit: number; credit_enforcement: 'none' | 'soft' | 'hard'; is_active: number
-    deleted_at: string | null
-  }>(
-    /* Archived customers are loadable, deliberately: the screen that can bring
-       one back has to be able to open them first, and an old bill's customer
-       has to stay readable. The searches are where they disappear. */
-    `SELECT id, code, name, phone, gstin, address, state_code,
-            credit_limit, credit_enforcement, is_active, deleted_at
-       FROM customers WHERE id = ?`,
-    [id],
-  )
+  /* Archived customers are loadable, deliberately: the screen that can bring
+     one back has to be able to open them first, and an old bill's customer has
+     to stay readable. The searches are where they disappear. */
+  const [row] = await q(db)
+    .select({
+      id: schema.customers.id,
+      code: schema.customers.code,
+      name: schema.customers.name,
+      phone: schema.customers.phone,
+      gstin: schema.customers.gstin,
+      address: schema.customers.address,
+      stateCode: schema.customers.stateCode,
+      creditLimit: schema.customers.creditLimit,
+      creditEnforcement: schema.customers.creditEnforcement,
+      isActive: schema.customers.isActive,
+      deletedAt: schema.customers.deletedAt,
+    })
+    .from(schema.customers)
+    .where(eq(schema.customers.id, id))
   if (!row) return null
 
   // The three figures the list computes are not what a form needs, and fetching
   // them here would make an edit wait on a join over every bill they ever had.
   return {
-    id: row.id,
-    code: row.code,
-    name: row.name,
-    phone: row.phone,
-    gstin: row.gstin,
-    address: row.address,
-    stateCode: row.state_code,
-    creditLimit: row.credit_limit as Money,
-    archived: row.deleted_at !== null,
-    creditEnforcement: row.credit_enforcement,
-    isActive: row.is_active === 1,
+    ...row,
+    creditEnforcement: row.creditEnforcement as 'none' | 'soft' | 'hard',
+    archived: row.deletedAt !== null,
+    isActive: row.isActive === 1,
     outstanding: 0 as Money,
     advance: 0 as Money,
     loyaltyPoints: 0,
@@ -251,60 +314,52 @@ export async function searchCustomers(
   limit = 50,
   opts: { includeArchived?: boolean } = {},
 ): Promise<CustomerListItem[]> {
-  const like = `%${term.trim()}%`
-  const archivedClause = opts.includeArchived ? '' : 'AND c.deleted_at IS NULL'
-  const rows = await db.query<{
-    id: string; code: string | null; name: string; phone: string | null; gstin: string | null
-    credit_limit: number; outstanding: number; advance: number
-    points: number; deleted_at: string | null
-  }>(
-    `SELECT c.id, c.code, c.name, c.phone, c.gstin, c.credit_limit,
-            COALESCE((SELECT SUM(b.credit_total) FROM bills b WHERE b.customer_id = c.id AND b.docstatus = 1), 0)
-          - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                        JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
-                        JOIN bills b2 ON b2.id = pa.bill_id
-                       WHERE b2.customer_id = c.id), 0) AS outstanding,
-            /* What the shop is holding for them: receipts taken in, less what
-               any allocation points at, less what has been handed back. It was
-               in the database all along and on no screen anywhere, so a
-               customer 490 in credit read as a customer owing nothing --- true,
-               and not the whole truth, because the shop owes *them*. */
-            MAX(0,
-              COALESCE((SELECT SUM(pe.amount) FROM payment_entries pe
-                         WHERE pe.customer_id = c.id AND pe.party_type = 'customer'
-                           AND pe.docstatus = 1 AND pe.direction = 'in'), 0)
-            - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                          JOIN payment_entries pe2 ON pe2.id = pa.payment_id
-                         WHERE pe2.customer_id = c.id AND pe2.docstatus = 1
-                           AND pe2.direction = 'in'), 0)
-            - COALESCE((SELECT SUM(pe3.amount) FROM payment_entries pe3
-                         WHERE pe3.customer_id = c.id AND pe3.party_type = 'customer'
-                           AND pe3.docstatus = 1 AND pe3.direction = 'out'), 0)
-            ) AS advance,
-            COALESCE((SELECT SUM(le.points - le.consumed) FROM loyalty_entries le
-                       WHERE le.customer_id = c.id AND le.cancelled_at IS NULL
-                         AND (le.expires_at IS NULL OR le.expires_at > ?)), 0) AS points,
-            c.deleted_at
-       FROM customers c
-      WHERE c.is_active = 1 ${archivedClause}
-        AND (? = '' OR c.name LIKE ? OR c.phone LIKE ? OR c.code LIKE ?)
-      ORDER BY c.name
-      LIMIT ?`,
-    [new Date().toISOString(), term.trim(), like, like, like, limit],
-  )
+  const now = new Date().toISOString()
 
-  return rows.map((r) => ({
-    id: r.id,
-    code: r.code,
-    name: r.name,
-    phone: r.phone,
-    gstin: r.gstin,
-    outstanding: r.outstanding as Money,
-    advance: r.advance as Money,
-    creditLimit: r.credit_limit as Money,
-    loyaltyPoints: r.points,
-    archived: r.deleted_at !== null,
-  }))
+  const rows = await q(db)
+    .select({
+      id: schema.customers.id,
+      code: schema.customers.code,
+      name: schema.customers.name,
+      phone: schema.customers.phone,
+      gstin: schema.customers.gstin,
+      creditLimit: schema.customers.creditLimit,
+      outstanding: sql<Money>`
+        COALESCE((SELECT SUM(b.credit_total) FROM bills b
+                   WHERE b.customer_id = customers.id AND b.docstatus = 1), 0)
+      - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
+                    JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
+                    JOIN bills b2 ON b2.id = pa.bill_id
+                   WHERE b2.customer_id = customers.id), 0)`,
+      advance: sql<Money>`
+        MAX(0,
+          COALESCE((SELECT SUM(pe.amount) FROM payment_entries pe
+                     WHERE pe.customer_id = customers.id AND pe.party_type = 'customer'
+                       AND pe.docstatus = 1 AND pe.direction = 'in'), 0)
+        - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
+                      JOIN payment_entries pe2 ON pe2.id = pa.payment_id
+                     WHERE pe2.customer_id = customers.id AND pe2.docstatus = 1
+                       AND pe2.direction = 'in'), 0)
+        - COALESCE((SELECT SUM(pe3.amount) FROM payment_entries pe3
+                     WHERE pe3.customer_id = customers.id AND pe3.party_type = 'customer'
+                       AND pe3.docstatus = 1 AND pe3.direction = 'out'), 0)
+        )`,
+      loyaltyPoints: sql<number>`
+        COALESCE((SELECT SUM(le.points - le.consumed) FROM loyalty_entries le
+                   WHERE le.customer_id = customers.id AND le.cancelled_at IS NULL
+                     AND (le.expires_at IS NULL OR le.expires_at > ${now})), 0)`,
+      deletedAt: schema.customers.deletedAt,
+    })
+    .from(schema.customers)
+    .where(and(
+      eq(schema.customers.isActive, 1),
+      ...(opts.includeArchived ? [] : [isNull(schema.customers.deletedAt)]),
+      ...matchingCustomer(term),
+    ))
+    .orderBy(schema.customers.name)
+    .limit(limit)
+
+  return rows.map((r) => ({ ...r, archived: r.deletedAt !== null }))
 }
 
 /**
@@ -325,16 +380,27 @@ export async function countCustomers(
   term = '',
   opts: { includeArchived?: boolean } = {},
 ): Promise<number> {
-  const like = `%${term.trim()}%`
-  const archivedClause = opts.includeArchived ? '' : 'AND c.deleted_at IS NULL'
-  const row = await db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n
-       FROM customers c
-      WHERE c.is_active = 1 ${archivedClause}
-        AND (? = '' OR c.name LIKE ? OR c.phone LIKE ? OR c.code LIKE ?)`,
-    [term.trim(), like, like, like],
-  )
+  const [row] = await q(db)
+    .select({ n: count() })
+    .from(schema.customers)
+    .where(and(
+      eq(schema.customers.isActive, 1),
+      ...(opts.includeArchived ? [] : [isNull(schema.customers.deletedAt)]),
+      ...matchingCustomer(term),
+    ))
   return row?.n ?? 0
+}
+
+/** The name, phone and code test both of the two share. An empty term matches all. */
+function matchingCustomer(term: string): SQL[] {
+  const trimmed = term.trim()
+  if (trimmed === '') return []
+  const anywhere = `%${trimmed}%`
+  return [or(
+    like(schema.customers.name, anywhere),
+    like(schema.customers.phone, anywhere),
+    like(schema.customers.code, anywhere),
+  )!]
 }
 
 export interface BillListItem {
@@ -382,82 +448,79 @@ export interface BillFilter {
  * 013); it is not something the shop sold, and it must never appear on a screen
  * that says "Bills" whatever filter is chosen.
  */
-function billWhere(filter: BillFilter): { clause: string; params: SqlValue[] } {
-  const parts: string[] = [`b.kind = 'sale'`]
-  const params: SqlValue[] = []
+function billWhere(filter: BillFilter): SQL[] {
+  const parts: SQL[] = [eq(schema.bills.kind, 'sale')]
+
 
   switch (filter.status ?? 'all') {
     case 'live':
-      parts.push(`b.docstatus = 1`)
+      parts.push(eq(schema.bills.docstatus, SUBMITTED))
       break
     case 'cancelled':
-      parts.push(`b.docstatus = 2`)
+      parts.push(eq(schema.bills.docstatus, CANCELLED))
       break
     case 'returned':
-      parts.push(`b.docstatus > 0`)
-      parts.push(`EXISTS (SELECT 1 FROM sales_returns r WHERE r.bill_id = b.id AND r.docstatus = 1)`)
+      parts.push(gt(schema.bills.docstatus, 0), anyReturnAgainstTheBill)
       break
     case 'credit':
       // What is still on the khata, not what was ever put there: a bill since
       // paid off has credit_total unchanged, and listing it under "on credit"
       // would send a shopkeeper to ask for money already handed over.
-      parts.push(`b.docstatus = 1`)
-      parts.push(`b.credit_total > 0`)
-      parts.push(`b.credit_total > COALESCE((
-        SELECT SUM(a.amount) FROM payment_allocations a
-          JOIN payment_entries p ON p.id = a.payment_id
-         WHERE a.bill_id = b.id AND p.docstatus = 1
-      ), 0)`)
+      parts.push(
+        eq(schema.bills.docstatus, SUBMITTED),
+        gt(schema.bills.creditTotal, ZERO),
+        /* raw: a scalar subquery compared against a column of the outer row.
+           `bills.id` is written out rather than interpolated because inside
+           the subquery a bare `id` would bind to `payment_allocations`. */
+        sql`${schema.bills.creditTotal} > COALESCE((
+          SELECT SUM(a.amount) FROM payment_allocations a
+            JOIN payment_entries p ON p.id = a.payment_id
+           WHERE a.bill_id = bills.id AND p.docstatus = 1
+        ), 0)`,
+      )
       break
     case 'all':
       // Drafts are a cart someone has parked, not a document. They belong to
       // the counter that is holding them.
-      parts.push(`b.docstatus > 0`)
+      parts.push(gt(schema.bills.docstatus, 0))
       break
   }
 
-  if (filter.from) { parts.push(`b.posting_date >= ?`); params.push(filter.from) }
-  if (filter.to) { parts.push(`b.posting_date <= ?`); params.push(filter.to) }
+  if (filter.from) parts.push(sql`${schema.bills.postingDate} >= ${filter.from}`)
+  if (filter.to) parts.push(sql`${schema.bills.postingDate} <= ${filter.to}`)
 
   const search = filter.search?.trim()
   if (search) {
-    parts.push(`(b.doc_no LIKE ? OR b.customer_name LIKE ?)`)
-    params.push(`%${search}%`, `%${search}%`)
+    parts.push(or(
+      like(schema.bills.docNo, `%${search}%`),
+      like(schema.bills.customerName, `%${search}%`),
+    )!)
   }
 
-  return { clause: parts.join(' AND '), params }
+  return parts
 }
 
 export async function listBills(db: SqlDriver, filter: BillFilter = {}): Promise<BillListItem[]> {
-  const { clause, params } = billWhere(filter)
+  const rows = await q(db)
+    .select({
+      id: schema.bills.id,
+      docNo: schema.bills.docNo,
+      docstatus: schema.bills.docstatus,
+      postingDate: schema.bills.postingDate,
+      customerName: schema.bills.customerName,
+      grandTotal: schema.bills.grandTotal,
+      creditTotal: schema.bills.creditTotal,
+      createdBy: schema.users.username,
+      returned: sql<number>`${anyReturnAgainstTheBill}`,
+    })
+    .from(schema.bills)
+    .leftJoin(schema.users, eq(schema.users.id, schema.bills.createdBy))
+    .where(and(...billWhere(filter)))
+    .orderBy(desc(schema.bills.postingDate), desc(schema.bills.createdAt))
+    .limit(filter.limit ?? 50)
+    .offset(filter.offset ?? 0)
 
-  const rows = await db.query<{
-    id: string; doc_no: string; docstatus: number; posting_date: string
-    customer_name: string | null; grand_total: number; credit_total: number; username: string | null
-    returned: number
-  }>(
-    `SELECT b.id, b.doc_no, b.docstatus, b.posting_date, b.customer_name,
-            b.grand_total, b.credit_total, u.username,
-            EXISTS (SELECT 1 FROM sales_returns r WHERE r.bill_id = b.id AND r.docstatus = 1) AS returned
-       FROM bills b
-       LEFT JOIN users u ON u.id = b.created_by
-      WHERE ${clause}
-      ORDER BY b.posting_date DESC, b.created_at DESC
-      LIMIT ? OFFSET ?`,
-    [...params, filter.limit ?? 50, filter.offset ?? 0],
-  )
-
-  return rows.map((r) => ({
-    id: r.id,
-    docNo: r.doc_no,
-    docstatus: r.docstatus,
-    postingDate: r.posting_date,
-    customerName: r.customer_name,
-    grandTotal: r.grand_total as Money,
-    creditTotal: r.credit_total as Money,
-    createdBy: r.username,
-    returned: r.returned === 1,
-  }))
+  return rows.map((r) => ({ ...r, returned: r.returned === 1 }))
 }
 
 /**
@@ -465,8 +528,10 @@ export async function listBills(db: SqlDriver, filter: BillFilter = {}): Promise
  * count is a page that quietly says "this is all of them" when it is not.
  */
 export async function countBills(db: SqlDriver, filter: BillFilter = {}): Promise<number> {
-  const { clause, params } = billWhere(filter)
-  const row = await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bills b WHERE ${clause}`, params)
+  const [row] = await q(db)
+    .select({ n: count() })
+    .from(schema.bills)
+    .where(and(...billWhere(filter)))
   return row?.n ?? 0
 }
 
@@ -526,142 +591,107 @@ export interface BillDetailItem {
 }
 
 export async function loadBillDetail(db: SqlDriver, billId: string): Promise<BillDetail | null> {
-  const head = await db.get<{
-    id: string; doc_no: string; docstatus: number; posting_date: string
-    customer_id: string | null; customer_name: string | null
-    subtotal: number; discount: number; taxable_total: number; tax_total: number
-    round_off: number
-    grand_total: number; credit_total: number; cancel_reason: string | null; username: string | null
-    supply_type: string | null; customer_gstin: string | null; customer_address: string | null
-    customer_state_code: string | null; place_of_supply: string | null; reverse_charge: number
-  }>(
-    `SELECT b.id, b.doc_no, b.docstatus, b.posting_date, b.customer_id, b.customer_name,
-            b.subtotal, b.discount,
-            b.taxable_total, b.tax_total, b.round_off, b.grand_total, b.credit_total,
-            b.cancel_reason, u.username,
-            b.supply_type, b.customer_gstin, b.customer_address, b.customer_state_code,
-            b.place_of_supply, b.reverse_charge
-       FROM bills b LEFT JOIN users u ON u.id = b.created_by
-      WHERE b.id = ?`,
-    [billId],
-  )
+  const [head] = await q(db)
+    .select({
+      id: schema.bills.id,
+      docNo: schema.bills.docNo,
+      docstatus: schema.bills.docstatus,
+      postingDate: schema.bills.postingDate,
+      customerId: schema.bills.customerId,
+      customerName: schema.bills.customerName,
+      subtotal: schema.bills.subtotal,
+      discount: schema.bills.discount,
+      taxableTotal: schema.bills.taxableTotal,
+      taxTotal: schema.bills.taxTotal,
+      roundOff: schema.bills.roundOff,
+      grandTotal: schema.bills.grandTotal,
+      creditTotal: schema.bills.creditTotal,
+      cancelReason: schema.bills.cancelReason,
+      createdBy: schema.users.username,
+      supplyType: schema.bills.supplyType,
+      customerGstin: schema.bills.customerGstin,
+      customerAddress: schema.bills.customerAddress,
+      customerStateCode: schema.bills.customerStateCode,
+      placeOfSupply: schema.bills.placeOfSupply,
+      reverseCharge: schema.bills.reverseCharge,
+    })
+    .from(schema.bills)
+    .leftJoin(schema.users, eq(schema.users.id, schema.bills.createdBy))
+    .where(eq(schema.bills.id, billId))
   if (!head) return null
 
-  const items = await db.query<{
-    id: string; product_id: string; product_name: string; sale_unit: string
-    qty: number; rate: number; line_total: number
-    taxable_value: number; cgst_amount: number; sgst_amount: number; igst_amount: number
-    hsn_code: string | null; tax_rate_bp: number; price_source: string; returned_qty: number
-  }>(
-    `SELECT id, product_id, product_name, sale_unit, qty, rate, line_total, taxable_value,
-            cgst_amount, sgst_amount, igst_amount, hsn_code, tax_rate_bp, price_source, returned_qty
-       FROM bill_items WHERE bill_id = ? ORDER BY idx`,
-    [billId],
-  )
+  const items = await q(db)
+    .select({
+      id: schema.billItems.id,
+      productId: schema.billItems.productId,
+      productName: schema.billItems.productName,
+      saleUnit: schema.billItems.saleUnit,
+      qty: schema.billItems.qty,
+      rate: schema.billItems.rate,
+      lineTotal: schema.billItems.lineTotal,
+      taxableValue: schema.billItems.taxableValue,
+      cgst: schema.billItems.cgstAmount,
+      sgst: schema.billItems.sgstAmount,
+      igst: schema.billItems.igstAmount,
+      hsnCode: schema.billItems.hsnCode,
+      taxRateBp: schema.billItems.taxRateBp,
+      priceSource: schema.billItems.priceSource,
+      returnedQty: schema.billItems.returnedQty,
+    })
+    .from(schema.billItems)
+    .where(eq(schema.billItems.billId, billId))
+    .orderBy(schema.billItems.idx)
 
-  const payments = await db.query<{ method: string; amount: number; reference: string | null }>(
-    `SELECT method, amount, reference FROM bill_payments WHERE bill_id = ?`,
-    [billId],
-  )
+  const payments = await q(db)
+    .select({
+      method: schema.billPayments.method,
+      amount: schema.billPayments.amount,
+      reference: schema.billPayments.reference,
+    })
+    .from(schema.billPayments)
+    .where(eq(schema.billPayments.billId, billId))
 
   return {
-    id: head.id,
-    docNo: head.doc_no,
-    docstatus: head.docstatus,
-    postingDate: head.posting_date,
-    customerId: head.customer_id,
-    customerName: head.customer_name,
+    ...head,
     // From the lines rather than a second query: they are already loaded, and
     // `returned_qty` is the same fact the EXISTS on the list answers.
-    returned: items.some((i) => i.returned_qty > 0),
-    subtotal: head.subtotal as Money,
-    roundOff: head.round_off as Money,
-    discount: head.discount as Money,
-    taxableTotal: head.taxable_total as Money,
-    taxTotal: head.tax_total as Money,
-    grandTotal: head.grand_total as Money,
-    creditTotal: head.credit_total as Money,
-    cancelReason: head.cancel_reason,
-    createdBy: head.username,
-    items: items.map((i) => ({
-      id: i.id,
-      productId: i.product_id,
-      productName: i.product_name,
-      saleUnit: i.sale_unit,
-      qty: qty(i.qty),
-      rate: i.rate as Money,
-      lineTotal: i.line_total as Money,
-      taxableValue: i.taxable_value as Money,
-      cgst: i.cgst_amount as Money,
-      sgst: i.sgst_amount as Money,
-      igst: i.igst_amount as Money,
-      hsnCode: i.hsn_code,
-      taxRateBp: i.tax_rate_bp,
-      priceSource: i.price_source,
-      returnedQty: qty(i.returned_qty),
-    })),
-    payments: payments.map((p) => ({ method: p.method, amount: p.amount as Money, reference: p.reference })),
-    supplyType: head.supply_type === 'inter_state' || head.supply_type === 'intra_state'
-      ? head.supply_type
+    returned: items.some((i) => i.returnedQty > 0),
+    items,
+    payments,
+    /* The column is text and a database written by an older build can hold
+       something else in it, so the two the type names are checked for rather
+       than cast to. */
+    supplyType: head.supplyType === 'inter_state' || head.supplyType === 'intra_state'
+      ? head.supplyType
       : null,
-    customerGstin: head.customer_gstin,
-    customerAddress: head.customer_address,
-    customerStateCode: head.customer_state_code,
-    placeOfSupply: head.place_of_supply,
-    reverseCharge: head.reverse_charge === 1,
+    reverseCharge: head.reverseCharge === 1,
   }
 }
 
-interface ProductRow {
-  id: string
-  code: string | null
-  name: string
-  brand: string | null
-  barcode: string | null
-  base_unit: string
-  base_rate: number
-  mrp: number | null
-  tax_rate_bp: number
-  hsn_code: string | null
-  is_stock_tracked: number
-  is_active: number
-  qty_on_hand: number
-  discount_blocked: number
-  loyalty_blocked: number
-  return_blocked: number
-  reorder_level: number | null
-  reorder_qty: number | null
-  category_id: string | null
-  category_name: string | null
-  parent_product_id: string | null
-  parent_name: string | null
-  variant_label: string | null
-}
+/**
+ * A row exactly as the three product queries return it.
+ *
+ * Derived from what a screen is given rather than written out a second time:
+ * the columns are the same, and the five SQLite keeps as 0 and 1 because it has
+ * no boolean are the only ones that differ.
+ */
+type Ticked = 'isStockTracked' | 'isActive' | 'discountBlocked' | 'loyaltyBlocked' | 'returnBlocked'
+type ProductRow = Omit<ProductListItem, Ticked> & Record<Ticked, number>
 
+/**
+ * The five columns SQLite keeps as 0 and 1 because it has no boolean.
+ *
+ * Everything else arrives in the shape the screen wants, brands included, so
+ * this is all that is left of what used to be a twenty-three line hand
+ * translation from snake_case rows.
+ */
 function toProduct(r: ProductRow): ProductListItem {
   return {
-    id: r.id,
-    code: r.code,
-    name: r.name,
-    brand: r.brand,
-    barcode: r.barcode,
-    baseUnit: r.base_unit,
-    baseRate: r.base_rate as Money,
-    mrp: (r.mrp ?? null) as Money | null,
-    taxRateBp: r.tax_rate_bp,
-    hsnCode: r.hsn_code,
-    isStockTracked: r.is_stock_tracked === 1,
-    isActive: r.is_active === 1,
-    qtyOnHand: qty(r.qty_on_hand),
-    discountBlocked: r.discount_blocked === 1,
-    loyaltyBlocked: r.loyalty_blocked === 1,
-    returnBlocked: r.return_blocked === 1,
-    reorderLevel: r.reorder_level === null ? null : qty(r.reorder_level),
-    reorderQty: r.reorder_qty === null ? null : qty(r.reorder_qty),
-    categoryId: r.category_id,
-    categoryName: r.category_name,
-    parentProductId: r.parent_product_id,
-    parentName: r.parent_name,
-    variantLabel: r.variant_label,
+    ...r,
+    isStockTracked: r.isStockTracked === 1,
+    isActive: r.isActive === 1,
+    discountBlocked: r.discountBlocked === 1,
+    loyaltyBlocked: r.loyaltyBlocked === 1,
+    returnBlocked: r.returnBlocked === 1,
   }
 }
