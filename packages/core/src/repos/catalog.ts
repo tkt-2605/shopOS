@@ -168,6 +168,8 @@ export interface CustomerListItem {
   outstanding: Money
   creditLimit: Money
   loyaltyPoints: number
+  /** Out of every search but this one. See `archiveCustomer`. */
+  archived: boolean
 }
 
 /**
@@ -196,10 +198,14 @@ export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerD
     id: string; code: string | null; name: string; phone: string | null
     gstin: string | null; address: string | null; state_code: string | null
     credit_limit: number; credit_enforcement: 'none' | 'soft' | 'hard'; is_active: number
+    deleted_at: string | null
   }>(
+    /* Archived customers are loadable, deliberately: the screen that can bring
+       one back has to be able to open them first, and an old bill's customer
+       has to stay readable. The searches are where they disappear. */
     `SELECT id, code, name, phone, gstin, address, state_code,
-            credit_limit, credit_enforcement, is_active
-       FROM customers WHERE id = ? AND deleted_at IS NULL`,
+            credit_limit, credit_enforcement, is_active, deleted_at
+       FROM customers WHERE id = ?`,
     [id],
   )
   if (!row) return null
@@ -215,6 +221,7 @@ export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerD
     address: row.address,
     stateCode: row.state_code,
     creditLimit: row.credit_limit as Money,
+    archived: row.deleted_at !== null,
     creditEnforcement: row.credit_enforcement,
     isActive: row.is_active === 1,
     outstanding: 0 as Money,
@@ -222,11 +229,24 @@ export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerD
   }
 }
 
-export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Promise<CustomerListItem[]> {
+/**
+ * The customers a screen should offer.
+ *
+ * `includeArchived` is for the one screen that can bring them back. Everywhere
+ * else -- the counter's picker above all -- an archived customer is gone, which
+ * is what archiving them was for.
+ */
+export async function searchCustomers(
+  db: SqlDriver,
+  term = '',
+  limit = 50,
+  opts: { includeArchived?: boolean } = {},
+): Promise<CustomerListItem[]> {
   const like = `%${term.trim()}%`
+  const archivedClause = opts.includeArchived ? '' : 'AND c.deleted_at IS NULL'
   const rows = await db.query<{
     id: string; code: string | null; name: string; phone: string | null; gstin: string | null
-    credit_limit: number; outstanding: number; points: number
+    credit_limit: number; outstanding: number; points: number; deleted_at: string | null
   }>(
     `SELECT c.id, c.code, c.name, c.phone, c.gstin, c.credit_limit,
             COALESCE((SELECT SUM(b.credit_total) FROM bills b WHERE b.customer_id = c.id AND b.docstatus = 1), 0)
@@ -236,9 +256,10 @@ export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Pro
                        WHERE b2.customer_id = c.id), 0) AS outstanding,
             COALESCE((SELECT SUM(le.points - le.consumed) FROM loyalty_entries le
                        WHERE le.customer_id = c.id AND le.cancelled_at IS NULL
-                         AND (le.expires_at IS NULL OR le.expires_at > ?)), 0) AS points
+                         AND (le.expires_at IS NULL OR le.expires_at > ?)), 0) AS points,
+            c.deleted_at
        FROM customers c
-      WHERE c.deleted_at IS NULL AND c.is_active = 1
+      WHERE c.is_active = 1 ${archivedClause}
         AND (? = '' OR c.name LIKE ? OR c.phone LIKE ? OR c.code LIKE ?)
       ORDER BY c.name
       LIMIT ?`,
@@ -254,6 +275,7 @@ export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Pro
     outstanding: r.outstanding as Money,
     creditLimit: r.credit_limit as Money,
     loyaltyPoints: r.points,
+    archived: r.deleted_at !== null,
   }))
 }
 

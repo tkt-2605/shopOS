@@ -178,7 +178,9 @@ export type { ReorderRow, ReorderOptions, SupplierGroup } from './repos/reorder.
 export { listShortfalls, countShortfalls } from './repos/shortfalls.js'
 export {
   createCustomer, updateCustomer, customerByPhone, nextCustomerCode, backfillCustomerCodes,
+  archiveCustomer, restoreCustomer,
 } from './services/customers.js'
+export type { ArchiveCustomerResult } from './services/customers.js'
 export type { CustomerInput, CustomerConflict, SaveCustomerResult } from './services/customers.js'
 export {
   listCustomerPayments, writeOff, recordOpeningBalance, customerAccount,

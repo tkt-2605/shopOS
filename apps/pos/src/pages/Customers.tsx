@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Permissions, searchCustomers, createCustomer, updateCustomer, customerByPhone,
+  archiveCustomer, restoreCustomer,
   loadCustomer, STATES, stateName, stateFromGstin,
   type CustomerListItem, type CustomerConflict, type SaveCustomerResult,
 } from '@shopos/core'
@@ -50,10 +51,55 @@ export default function Customers() {
   const [problem, setProblem] = useState<string | null>(null)
   /** Who already answers to the number being typed, said before the save. */
   const [clash, setClash] = useState<CustomerConflict | null>(null)
+  /** Off by default: an archived customer is one the shop has finished with. */
+  const [showArchived, setShowArchived] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRows(await searchCustomers(db, term, 200))
-  }, [db, term])
+    setRows(await searchCustomers(db, term, 200, { includeArchived: showArchived }))
+  }, [db, term, showArchived])
+
+  /**
+   * A customer who has stopped coming.
+   *
+   * `customers.deleted_at` has been filtered by every search since they were
+   * written and nothing ever set it, so a list that had filled up with one-off
+   * walk-ins, duplicates and people who moved away could not be tidied at all.
+   *
+   * Archived, never deleted: every bill they were issued names them, their
+   * points are theirs and the khata is a record of money that changed hands.
+   * All it does is take them out of the searches.
+   */
+  async function archive(c: CustomerListItem) {
+    setProblem(null)
+
+    if (c.archived) {
+      await restoreCustomer(db, { actorId: user.id }, c.id)
+      await refresh()
+      return
+    }
+
+    if (!window.confirm(
+      `Archive ${c.name}?
+
+`
+      + 'They stop appearing when searching here and at the counter. Nothing is '
+      + 'deleted — their bills, their khata and their points are all kept, and '
+      + 'they can be brought back from this screen.',
+    )) return
+
+    const result = await archiveCustomer(db, { actorId: user.id }, c.id)
+    if (!result.ok) {
+      /* Hiding somebody who still owes money hides the debt, and a balance
+         nobody can find is one the shop has written off without deciding to. */
+      setProblem(
+        `${c.name} still owes ${Money.formatWithSymbol(result.outstanding)}. `
+        + 'Settle the khata first, or write it off on purpose — archiving them '
+        + 'now would hide the money owed along with them.',
+      )
+      return
+    }
+    await refresh()
+  }
 
   useEffect(() => {
     const id = setTimeout(() => void refresh(), term === '' ? 0 : 140)
@@ -141,6 +187,13 @@ export default function Customers() {
           placeholder="Search by name, phone or customer code"
           value={term} onChange={(e) => setTerm(e.target.value)} id="customer-search" />
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{rows.length} customers</span>
+        <label style={{ fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 5, alignItems: 'center' }}>
+          <input
+            type="checkbox" checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Show archived
+        </label>
         <span style={{ flex: 1 }} />
         {canCreate && (
           <button className="btn primary" onClick={() => { setProblem(null); setClash(null); setDraft({ ...BLANK }) }}>
@@ -162,7 +215,10 @@ export default function Customers() {
             {rows.map((c) => (
               <tr key={c.id}>
                 <td className="num" style={{ color: 'var(--ink-2)' }}>{c.code ?? '—'}</td>
-                <td>{c.name}</td>
+                <td>
+                  {c.name}
+                  {c.archived && <span className="badge" style={{ marginLeft: 6 }}>archived</span>}
+                </td>
                 <td className="num">{c.phone ?? '—'}</td>
                 <td className="num">{c.gstin ?? '—'}</td>
                 <td className="r">{c.creditLimit > 0 ? <Rupees value={c.creditLimit} /> : <span style={{ color: 'var(--ink-3)' }}>none</span>}</td>
@@ -172,8 +228,13 @@ export default function Customers() {
                     : <span style={{ color: 'var(--ink-3)' }}>—</span>}
                 </td>
                 <td className="r num">{c.loyaltyPoints || '—'}</td>
-                <td className="r">
+                <td className="r" style={{ whiteSpace: 'nowrap' }}>
                   {canWrite && <button className="btn ghost sm" onClick={() => void edit(c)}>Edit</button>}
+                  {canWrite && (
+                    <button className="btn ghost sm" onClick={() => void archive(c)}>
+                      {c.archived ? 'Bring back' : 'Archive'}
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

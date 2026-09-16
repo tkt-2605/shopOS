@@ -1,6 +1,6 @@
 import type { SqlDriver, SqlValue } from '../db/driver.js'
 import { newId } from '../ids.js'
-import { type Money, ZERO } from '../money.js'
+import { type Money, ZERO, paise } from '../money.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { isOn } from './features.js'
 import { getSetting } from './bootstrap.js'
@@ -88,6 +88,75 @@ export async function updateCustomer(
   input: CustomerInput,
 ): Promise<SaveCustomerResult> {
   return save(db, ctx, customerId, input)
+}
+
+export type ArchiveCustomerResult =
+  | { ok: true }
+  /**
+   * They still owe money, so hiding them would hide the khata.
+   *
+   * The whole point of archiving is that they stop appearing in searches — and
+   * a balance nobody can find is a debt the shop has written off without
+   * deciding to. Settle it, or write it off on purpose, and then archive them.
+   */
+  | { ok: false; code: 'OWES_MONEY'; outstanding: Money }
+
+/**
+ * A customer who has stopped coming.
+ *
+ * `customers.deleted_at` has been filtered by `searchCustomers`, by the pricing
+ * lookup and by the credit report since they were written, and nothing has ever
+ * set it. A shop whose list had filled up with one-off walk-ins, duplicates and
+ * people who moved away could do nothing about any of them.
+ *
+ * Archived, never deleted. Every bill they were ever issued names them, their
+ * loyalty points are theirs, and the khata is a record of money that changed
+ * hands. What archiving does is take them out of the searches — the counter's
+ * customer picker and the customer list — and nothing else.
+ */
+export async function archiveCustomer(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  customerId: string,
+): Promise<ArchiveCustomerResult> {
+  const owed = await db.get<{ due: number }>(
+    `SELECT COALESCE(SUM(b.credit_total), 0)
+          - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
+                        JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
+                        JOIN bills b2 ON b2.id = pa.bill_id
+                       WHERE b2.customer_id = ?), 0) AS due
+       FROM bills b WHERE b.customer_id = ? AND b.docstatus = 1`,
+    [customerId, customerId],
+  )
+  const outstanding = paise(Math.max(0, owed?.due ?? 0))
+  if (outstanding > 0) return { ok: false, code: 'OWES_MONEY', outstanding }
+
+  const now = ctx.now?.() ?? new Date().toISOString()
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      `UPDATE customers SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+      [now, now, customerId],
+    )
+    await writeAudit(tx, ctx, { entity: 'customers', entityId: customerId, action: 'delete' })
+  })
+  return { ok: true }
+}
+
+/** Back into the searches, exactly as they were. */
+export async function restoreCustomer(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  customerId: string,
+): Promise<void> {
+  const now = ctx.now?.() ?? new Date().toISOString()
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      `UPDATE customers SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL`,
+      [now, customerId],
+    )
+    await writeAudit(tx, ctx, { entity: 'customers', entityId: customerId, action: 'update',
+      after: { Archived: 'no' } })
+  })
 }
 
 /**

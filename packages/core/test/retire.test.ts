@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { setProductActive } from '../src/services/products.js'
-import { searchProducts } from '../src/repos/catalog.js'
+import { searchProducts, searchCustomers, loadCustomer } from '../src/repos/catalog.js'
+import { createCustomer, archiveCustomer, restoreCustomer } from '../src/services/customers.js'
 import { createBill, submitBill } from '../src/services/billing.js'
 import { topProducts } from '../src/repos/reports.js'
 import { postMovement } from '../src/services/stock.js'
@@ -124,5 +125,87 @@ describe('a product taken out of use', () => {
     const rows = await fx.db.query(
       `SELECT id FROM audit_log WHERE entity = 'products' AND entity_id = ?`, [productId])
     expect(rows).toEqual([])
+  })
+})
+
+describe('a customer who has stopped coming', () => {
+  async function customer(name: string): Promise<string> {
+    const made = await createCustomer(fx.db, { actorId: fx.adminId }, { name })
+    if (!made.ok) throw new Error(`could not create: ${made.code}`)
+    return made.customerId
+  }
+
+  it('goes out of every search, including the counter_s', async () => {
+    const id = await customer('Walk-in Ravi')
+    expect((await searchCustomers(fx.db, 'Ravi')).map((c) => c.id)).toEqual([id])
+
+    expect(await archiveCustomer(fx.db, { actorId: fx.adminId }, id)).toEqual({ ok: true })
+    expect(await searchCustomers(fx.db, 'Ravi')).toEqual([])
+  })
+
+  it('is still there for the screen that can bring them back', async () => {
+    const id = await customer('Walk-in Ravi')
+    await archiveCustomer(fx.db, { actorId: fx.adminId }, id)
+
+    const rows = await searchCustomers(fx.db, 'Ravi', 50, { includeArchived: true })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.archived).toBe(true)
+
+    await restoreCustomer(fx.db, { actorId: fx.adminId }, id)
+    expect((await searchCustomers(fx.db, 'Ravi')).map((c) => c.id)).toEqual([id])
+  })
+
+  it('can still be opened, so an old bill still says who it was for', async () => {
+    const id = await customer('Walk-in Ravi')
+    await archiveCustomer(fx.db, { actorId: fx.adminId }, id)
+
+    const loaded = await loadCustomer(fx.db, id)
+    expect(loaded?.name).toBe('Walk-in Ravi')
+    expect(loaded?.archived).toBe(true)
+  })
+
+  it('refuses while they still owe money', async () => {
+    const id = await customer('Sri Vidya School')
+    const productId = await makeProduct(fx.db, { name: 'Chalk', baseRate: rupees(500) })
+
+    const draft = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      customerId: id,
+      lines: [{ productId, qty: fromUnits(1) }],
+      actorId: fx.adminId,
+    })
+    if (!draft.ok) throw new Error('draft failed')
+    await submitBill(fx.db, {
+      billId: draft.billId, actorId: fx.adminId,
+      payments: [{ method: 'credit', amount: draft.grandTotal }],
+    })
+
+    /* Archiving hides them from every search, so a balance nobody can find is a
+       debt the shop has written off without deciding to. */
+    const result = await archiveCustomer(fx.db, { actorId: fx.adminId }, id)
+    expect(result).toEqual({ ok: false, code: 'OWES_MONEY', outstanding: rupees(500) })
+
+    // And they are still there, which is the point of refusing.
+    expect(await searchCustomers(fx.db, 'Vidya')).toHaveLength(1)
+  })
+
+  it('allows it once the khata is settled', async () => {
+    const id = await customer('Sri Vidya School')
+    const productId = await makeProduct(fx.db, { name: 'Chalk', baseRate: rupees(500) })
+
+    const draft = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      customerId: id,
+      lines: [{ productId, qty: fromUnits(1) }],
+      actorId: fx.adminId,
+    })
+    if (!draft.ok) throw new Error('draft failed')
+    await submitBill(fx.db, {
+      billId: draft.billId, actorId: fx.adminId,
+      payments: [{ method: 'cash', amount: draft.grandTotal }],
+    })
+
+    // Paid at the counter, so nothing is owed and nothing is hidden.
+    expect(await archiveCustomer(fx.db, { actorId: fx.adminId }, id)).toEqual({ ok: true })
   })
 })
