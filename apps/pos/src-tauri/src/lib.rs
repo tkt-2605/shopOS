@@ -6,6 +6,7 @@ mod device;
 mod discovery;
 mod exports;
 mod hook;
+mod log;
 mod paths;
 mod pdf;
 mod printing;
@@ -17,6 +18,13 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    /* Before the builder, so that a panic inside `setup()` -- the place most
+       likely to meet a broken database -- is written down even though no
+       window ever appears. In release there is no console for it to fall out
+       of: `main.rs` sets `windows_subsystem = "windows"`, and the only symptom
+       of a panic here is an icon that does nothing when it is double-clicked. */
+    log::install_panic_hook();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -25,6 +33,10 @@ pub fn run() {
             std::fs::create_dir_all(dir.join("backups"))?;
             std::fs::create_dir_all(dir.join("attachments"))?;
 
+            // The first thing that can write anything down, and therefore the
+            // first thing done with a folder to write it in.
+            log::open(&dir);
+
             // Order matters here and nowhere else in the program. A staged
             // restore has to be applied while nothing holds a handle on the
             // database, which is true exactly once: now, before Db::open. The
@@ -32,8 +44,21 @@ pub fn run() {
             // backup that this session will take.
             paths::sweep_work_dir(&dir);
             let report = restore::apply_pending(&dir);
+            /* A restore applied at startup is the single most consequential
+               thing this program does to a shop's data, and until now it left
+               a message on one screen for one run and no trace at all. */
+            if let Some(m) = report.restored.as_ref() {
+                log::write("info", "restore", &format!("applied backup {}", m.source));
+            }
+            if let Some(e) = report.error.as_ref() {
+                log::write("error", "restore", e);
+            }
 
             let database = db::Db::open(&dir.join(paths::DB_FILE))?;
+            match database.user_version() {
+                Ok(v) => log::write("info", "startup", &format!("database open, schema {v}")),
+                Err(e) => log::write("warn", "startup", &format!("schema unreadable: {e}")),
+            }
             database.start_watchdog();
             app.manage(database);
             app.manage(restore::LastRestore(report));
@@ -45,6 +70,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            log::log_event,
             db::sql_query,
             db::sql_execute,
             db::sql_tx_begin,

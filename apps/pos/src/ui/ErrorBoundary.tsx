@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { logEvent, describe } from '../core/log'
 import { goTo } from '../core/nav'
 
 /**
@@ -42,7 +43,9 @@ export class PageErrorBoundary extends Component<Props, State> {
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
     this.setState({ stack: info.componentStack ?? null })
-    // TODO(phase-3): through the logger, so it survives the window closing.
+    /* The component stack is the half that says *where*, and it is the half a
+       browser console throws away first. It goes in the file with the error. */
+    logEvent('error', 'screen', `${describe(error)}\n${info.componentStack ?? '(no component stack)'}`)
     console.error('A screen could not be drawn:', error, info.componentStack)
   }
 
