@@ -1,5 +1,7 @@
 import bcrypt from 'bcryptjs'
+import { eq, and, desc, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { writeAudit } from '../integrity/audit.js'
 import { loadPermissions, type PermissionSet } from '../integrity/permissions.js'
@@ -31,23 +33,27 @@ export async function login(
   const now = input.now ?? new Date()
   const nowIso = now.toISOString()
 
-  const user = await db.get<{
-    id: string; username: string; full_name: string | null; role_id: string
-    password_hash: string; is_active: number; failed_logins: number; locked_until: string | null
-  }>(
-    `SELECT id, username, full_name, role_id, password_hash, is_active, failed_logins, locked_until
-       FROM users WHERE username = ?`,
-    [input.username.trim().toLowerCase()],
-  )
+  const [user] = await q(db)
+    .select({
+      id: schema.users.id,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+      roleId: schema.users.roleId,
+      passwordHash: schema.users.passwordHash,
+      isActive: schema.users.isActive,
+      failedLogins: schema.users.failedLogins,
+    })
+    .from(schema.users)
+    .where(eq(schema.users.username, input.username.trim().toLowerCase()))
 
   if (!user) {
     await bcrypt.compare(input.password, '$2b$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv')
     return { ok: false, code: 'INVALID_CREDENTIALS' }
   }
 
-  if (user.is_active === 0) return { ok: false, code: 'ACCOUNT_DISABLED' }
+  if (user.isActive === 0) return { ok: false, code: 'ACCOUNT_DISABLED' }
 
-  const matches = await bcrypt.compare(input.password, user.password_hash)
+  const matches = await bcrypt.compare(input.password, user.passwordHash)
 
   if (!matches) {
     /* Counted, never acted on. A shop with one till and one owner has no
@@ -57,13 +63,15 @@ export async function login(
        the counter. The count stays because "this account was guessed at
        forty times on Tuesday" is worth being able to see. */
     await db.transaction(async (tx) => {
-      await tx.execute(
-        `UPDATE users SET failed_logins = failed_logins + 1, updated_at = ? WHERE id = ?`,
-        [nowIso, user.id],
-      )
+      /* Incremented in the database rather than from the number just read: two
+         tills signing in as the same user would otherwise both write the same
+         value and lose a count. */
+      await q(tx).update(schema.users)
+        .set({ failedLogins: sql`${schema.users.failedLogins} + 1`, updatedAt: nowIso })
+        .where(eq(schema.users.id, user.id))
       await writeAudit(tx, { actorId: user.id }, {
         entity: 'users', entityId: user.id, action: 'login_failed',
-        after: { failed_logins: user.failed_logins + 1 },
+        after: { failed_logins: user.failedLogins + 1 },
       })
     })
 
@@ -71,22 +79,21 @@ export async function login(
   }
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = ?, updated_at = ? WHERE id = ?`,
-      [nowIso, nowIso, user.id],
-    )
+    await q(tx).update(schema.users)
+      .set({ failedLogins: 0, lockedUntil: null, lastLoginAt: nowIso, updatedAt: nowIso })
+      .where(eq(schema.users.id, user.id))
     await writeAudit(tx, { actorId: user.id }, { entity: 'users', entityId: user.id, action: 'login' })
   })
 
-  const permissions = await loadPermissions(db, user.role_id)
+  const permissions = await loadPermissions(db, user.roleId)
 
   return {
     ok: true,
     user: {
       id: user.id,
       username: user.username,
-      fullName: user.full_name,
-      roleId: user.role_id,
+      fullName: user.fullName,
+      roleId: user.roleId,
       roleName: permissions.roleName,
       permissions,
     },
@@ -130,16 +137,16 @@ export async function reauthenticate(
      asked was whether they had been deleted rather than whether they were
      still staff. Migration 032 drops the column and this asks the question it
      was pretending to ask. */
-  const user = await db.get<{ id: string; password_hash: string }>(
-    `SELECT id, password_hash FROM users WHERE id = ? AND is_active = 1`,
-    [input.userId],
-  )
+  const [user] = await q(db)
+    .select({ id: schema.users.id, passwordHash: schema.users.passwordHash })
+    .from(schema.users)
+    .where(and(eq(schema.users.id, input.userId), eq(schema.users.isActive, 1)))
 
   // No timing dance here, unlike `login`: the caller already knows this user
   // exists — they are signed in as them — so there is nothing to conceal.
   if (!user) return { ok: false, code: 'WRONG_PASSWORD' }
 
-  const right = await bcrypt.compare(input.password, user.password_hash)
+  const right = await bcrypt.compare(input.password, user.passwordHash)
 
   /* The counter is deliberately left alone in both directions: a wrong answer
      does not raise `failed_logins`, and a right one does not clear it. Whatever
@@ -171,7 +178,10 @@ export async function createUser(
   const weak = passwordProblem(input.password)
   if (weak) return { ok: false, code: 'WEAK_PASSWORD', reason: weak }
 
-  const existing = await db.get<{ id: string }>(`SELECT id FROM users WHERE username = ?`, [username])
+  const [existing] = await q(db)
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .where(eq(schema.users.username, username))
   if (existing) return { ok: false, code: 'USERNAME_TAKEN' }
 
   const userId = newId()
@@ -179,11 +189,15 @@ export async function createUser(
   const hash = await bcrypt.hash(input.password, COST)
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO users (id, username, full_name, role_id, password_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [userId, username, input.fullName ?? null, input.roleId, hash, nowIso, nowIso],
-    )
+    await q(tx).insert(schema.users).values({
+      id: userId,
+      username,
+      fullName: input.fullName ?? null,
+      roleId: input.roleId,
+      passwordHash: hash,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
     await writeAudit(tx, { actorId: input.actorId ?? null }, {
       entity: 'users', entityId: userId, action: 'create',
       after: { username, role_id: input.roleId },
@@ -205,9 +219,12 @@ export async function changePassword(
   const weak = passwordProblem(input.newPassword)
   if (weak) return { ok: false, code: 'WEAK_PASSWORD', reason: weak }
 
-  const user = await db.get<{ password_hash: string }>(`SELECT password_hash FROM users WHERE id = ?`, [input.userId])
+  const [user] = await q(db)
+    .select({ passwordHash: schema.users.passwordHash })
+    .from(schema.users)
+    .where(eq(schema.users.id, input.userId))
   if (!user) return { ok: false, code: 'WRONG_PASSWORD' }
-  if (!(await bcrypt.compare(input.currentPassword, user.password_hash))) {
+  if (!(await bcrypt.compare(input.currentPassword, user.passwordHash))) {
     return { ok: false, code: 'WRONG_PASSWORD' }
   }
 
@@ -215,10 +232,9 @@ export async function changePassword(
   const nowIso = (input.now ?? new Date()).toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE users SET password_hash = ?, failed_logins = 0, locked_until = NULL, updated_at = ? WHERE id = ?`,
-      [hash, nowIso, input.userId],
-    )
+    await q(tx).update(schema.users)
+      .set({ passwordHash: hash, failedLogins: 0, lockedUntil: null, updatedAt: nowIso })
+      .where(eq(schema.users.id, input.userId))
     // The hash itself never reaches the audit trail.
     await writeAudit(tx, { actorId: input.userId }, {
       entity: 'users', entityId: input.userId, action: 'update', after: { password_changed: 1 },
@@ -234,9 +250,9 @@ export async function setUserActive(
 ): Promise<void> {
   const nowIso = (input.now ?? new Date()).toISOString()
   await db.transaction(async (tx) => {
-    await tx.execute(`UPDATE users SET is_active = ?, updated_at = ? WHERE id = ?`, [
-      input.isActive ? 1 : 0, nowIso, input.userId,
-    ])
+    await q(tx).update(schema.users)
+      .set({ isActive: input.isActive ? 1 : 0, updatedAt: nowIso })
+      .where(eq(schema.users.id, input.userId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'users', entityId: input.userId, action: 'update', after: { is_active: input.isActive ? 1 : 0 },
     })
@@ -267,46 +283,45 @@ export interface StaffMember {
 }
 
 export async function listStaff(db: SqlDriver): Promise<StaffMember[]> {
-  const rows = await db.query<{
-    id: string; username: string; full_name: string | null; role_id: string
-    role_name: string; is_active: number; last_login_at: string | null; failed_logins: number
-  }>(
-    `SELECT u.id, u.username, u.full_name, u.role_id, r.name AS role_name,
-            u.is_active, u.last_login_at, u.failed_logins
-       FROM users u JOIN roles r ON r.id = u.role_id
-      ORDER BY u.is_active DESC, u.username`,
-  )
-  return rows.map((u) => ({
-    id: u.id,
-    username: u.username,
-    fullName: u.full_name,
-    roleId: u.role_id,
-    roleName: u.role_name,
-    isActive: u.is_active === 1,
-    lastLoginAt: u.last_login_at,
-    failedLogins: u.failed_logins,
-  }))
+  const rows = await q(db)
+    .select({
+      id: schema.users.id,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+      roleId: schema.users.roleId,
+      roleName: schema.roles.name,
+      isActive: schema.users.isActive,
+      lastLoginAt: schema.users.lastLoginAt,
+      failedLogins: schema.users.failedLogins,
+    })
+    .from(schema.users)
+    .innerJoin(schema.roles, eq(schema.roles.id, schema.users.roleId))
+    .orderBy(desc(schema.users.isActive), schema.users.username)
+
+  return rows.map((u) => ({ ...u, isActive: u.isActive === 1 }))
 }
 
 export async function updateUser(
   db: SqlDriver,
   input: { userId: string; fullName?: string | null; roleId?: string; actorId: string; now?: Date },
 ): Promise<void> {
-  const before = await db.get<{ full_name: string | null; role_id: string }>(
-    `SELECT full_name, role_id FROM users WHERE id = ?`, [input.userId],
-  )
+  const [before] = await q(db)
+    .select({ fullName: schema.users.fullName, roleId: schema.users.roleId })
+    .from(schema.users)
+    .where(eq(schema.users.id, input.userId))
   if (!before) return
 
-  const fullName = input.fullName === undefined ? before.full_name : (input.fullName?.trim() || null)
-  const roleId = input.roleId ?? before.role_id
+  const fullName = input.fullName === undefined ? before.fullName : (input.fullName?.trim() || null)
+  const roleId = input.roleId ?? before.roleId
   const nowIso = (input.now ?? new Date()).toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(`UPDATE users SET full_name = ?, role_id = ?, updated_at = ? WHERE id = ?`,
-      [fullName, roleId, nowIso, input.userId])
+    await q(tx).update(schema.users)
+      .set({ fullName, roleId, updatedAt: nowIso })
+      .where(eq(schema.users.id, input.userId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'users', entityId: input.userId, action: 'update',
-      before: { full_name: before.full_name, role_id: before.role_id },
+      before: { full_name: before.fullName, role_id: before.roleId },
       after: { full_name: fullName, role_id: roleId },
     })
   })
@@ -327,10 +342,9 @@ export async function resetPassword(
   const nowIso = (input.now ?? new Date()).toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE users SET password_hash = ?, failed_logins = 0, locked_until = NULL, updated_at = ? WHERE id = ?`,
-      [hash, nowIso, input.userId],
-    )
+    await q(tx).update(schema.users)
+      .set({ passwordHash: hash, failedLogins: 0, lockedUntil: null, updatedAt: nowIso })
+      .where(eq(schema.users.id, input.userId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'users', entityId: input.userId, action: 'update', after: { password_reset_by_admin: 1 },
     })
@@ -354,10 +368,9 @@ export async function unlockUser(
 ): Promise<void> {
   const nowIso = (input.now ?? new Date()).toISOString()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE users SET failed_logins = 0, locked_until = NULL, updated_at = ? WHERE id = ?`,
-      [nowIso, input.userId],
-    )
+    await q(tx).update(schema.users)
+      .set({ failedLogins: 0, lockedUntil: null, updatedAt: nowIso })
+      .where(eq(schema.users.id, input.userId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'users', entityId: input.userId, action: 'update', after: { unlocked: 1 },
     })
