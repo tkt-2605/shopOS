@@ -1,7 +1,10 @@
-import type { SqlDriver, SqlValue } from '../db/driver.js'
+import { eq, ne, and, isNull, isNotNull, sql } from 'drizzle-orm'
+import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { type Money, ZERO, paise } from '../money.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import { SUBMITTED } from '../integrity/docstatus.js'
 import { isOn } from './features.js'
 import { getSetting } from './bootstrap.js'
 import { isGstin, resolveCustomerState, stateFromGstin } from '../domain/gstin.js'
@@ -55,6 +58,14 @@ export interface CustomerConflict {
   code: string | null
   name: string
   phone: string | null
+}
+
+/** The four fields a screen needs to offer "open that customer instead". */
+const conflictShape = {
+  id: schema.customers.id,
+  code: schema.customers.code,
+  name: schema.customers.name,
+  phone: schema.customers.phone,
 }
 
 export type SaveCustomerResult =
@@ -119,24 +130,34 @@ export async function archiveCustomer(
   ctx: AuditContext & { actorId: string },
   customerId: string,
 ): Promise<ArchiveCustomerResult> {
-  const owed = await db.get<{ due: number }>(
-    `SELECT COALESCE(SUM(b.credit_total), 0)
-          - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                        JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
-                        JOIN bills b2 ON b2.id = pa.bill_id
-                       WHERE b2.customer_id = ?), 0) AS due
-       FROM bills b WHERE b.customer_id = ? AND b.docstatus = 1`,
-    [customerId, customerId],
-  )
-  const outstanding = paise(Math.max(0, owed?.due ?? 0))
+  /* Billed on credit, less what has been paid against those bills. It was one
+     statement with the second half as a correlated subquery; it is two now,
+     because a subtraction of two sums reads as a subtraction of two sums. Both
+     are outside a transaction either way, so nothing is being held open that
+     was not before. */
+  const [billed] = await q(db)
+    .select({ total: sql<Money>`COALESCE(SUM(${schema.bills.creditTotal}), 0)` })
+    .from(schema.bills)
+    .where(and(eq(schema.bills.customerId, customerId), eq(schema.bills.docstatus, SUBMITTED)))
+
+  const [paid] = await q(db)
+    .select({ total: sql<Money>`COALESCE(SUM(${schema.paymentAllocations.amount}), 0)` })
+    .from(schema.paymentAllocations)
+    .innerJoin(schema.paymentEntries, and(
+      eq(schema.paymentEntries.id, schema.paymentAllocations.paymentId),
+      eq(schema.paymentEntries.docstatus, SUBMITTED),
+    ))
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.paymentAllocations.billId))
+    .where(eq(schema.bills.customerId, customerId))
+
+  const outstanding = paise(Math.max(0, (billed?.total ?? 0) - (paid?.total ?? 0)))
   if (outstanding > 0) return { ok: false, code: 'OWES_MONEY', outstanding }
 
   const now = ctx.now?.() ?? new Date().toISOString()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE customers SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
-      [now, now, customerId],
-    )
+    await q(tx).update(schema.customers)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(and(eq(schema.customers.id, customerId), isNull(schema.customers.deletedAt)))
     await writeAudit(tx, ctx, { entity: 'customers', entityId: customerId, action: 'delete' })
   })
   return { ok: true }
@@ -150,10 +171,9 @@ export async function restoreCustomer(
 ): Promise<void> {
   const now = ctx.now?.() ?? new Date().toISOString()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE customers SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL`,
-      [now, customerId],
-    )
+    await q(tx).update(schema.customers)
+      .set({ deletedAt: null, updatedAt: now })
+      .where(and(eq(schema.customers.id, customerId), isNotNull(schema.customers.deletedAt)))
     await writeAudit(tx, ctx, { entity: 'customers', entityId: customerId, action: 'update',
       after: { Archived: 'no' } })
   })
@@ -173,12 +193,20 @@ export async function customerByPhone(
 ): Promise<CustomerConflict | null> {
   const trimmed = phone.trim()
   if (trimmed === '') return null
-  const row = await db.get<{ id: string; code: string | null; name: string; phone: string | null }>(
-    `SELECT id, code, name, phone FROM customers
-      WHERE phone = ? AND deleted_at IS NULL AND (? IS NULL OR id <> ?)
-      ORDER BY created_at LIMIT 1`,
-    [trimmed, exceptId, exceptId],
-  )
+
+  /* The "except this one" test was `(? IS NULL OR id <> ?)`, which bound the
+     same value twice and left SQLite to work out that the condition was not
+     there. Here it is either in the list or it is not. */
+  const [row] = await q(db)
+    .select(conflictShape)
+    .from(schema.customers)
+    .where(and(
+      eq(schema.customers.phone, trimmed),
+      isNull(schema.customers.deletedAt),
+      ...(exceptId === null ? [] : [ne(schema.customers.id, exceptId)]),
+    ))
+    .orderBy(schema.customers.createdAt)
+    .limit(1)
   return row ?? null
 }
 
@@ -200,11 +228,14 @@ async function save(
 
   const wanted = (input.code ?? '').trim() || null
   if (wanted !== null) {
-    const clash = await db.get<{ id: string; code: string | null; name: string; phone: string | null }>(
-      `SELECT id, code, name, phone FROM customers
-        WHERE code = ? AND deleted_at IS NULL AND (? IS NULL OR id <> ?)`,
-      [wanted, customerId, customerId],
-    )
+    const [clash] = await q(db)
+      .select(conflictShape)
+      .from(schema.customers)
+      .where(and(
+        eq(schema.customers.code, wanted),
+        isNull(schema.customers.deletedAt),
+        ...(customerId === null ? [] : [ne(schema.customers.id, customerId)]),
+      ))
     // The code is the shop's own reference and two customers sharing one makes
     // it useless, so this is refused whatever the phone switch says.
     if (clash) return { ok: false, code: 'CODE_TAKEN', existing: clash }
@@ -234,36 +265,51 @@ async function save(
   const enforcement = input.creditEnforcement ?? 'hard'
   const active = input.isActive === false ? 0 : 1
 
-  const before = customerId
-    ? await db.get<Record<string, SqlValue>>(
-      `SELECT code, name, phone, email, gstin, address, state_code,
-              credit_limit, credit_enforcement, is_active
-         FROM customers WHERE id = ?`, [customerId],
-    )
-    : null
+  const [before] = customerId
+    ? await q(db)
+      .select({
+        code: schema.customers.code,
+        name: schema.customers.name,
+        phone: schema.customers.phone,
+        email: schema.customers.email,
+        gstin: schema.customers.gstin,
+        address: schema.customers.address,
+        state_code: schema.customers.stateCode,
+        credit_limit: schema.customers.creditLimit,
+        credit_enforcement: schema.customers.creditEnforcement,
+        is_active: schema.customers.isActive,
+      })
+      .from(schema.customers)
+      .where(eq(schema.customers.id, customerId))
+    : [null]
 
   const id = customerId ?? newId()
-  const code = wanted ?? (before?.['code'] as string | null) ?? await nextCustomerCode(db)
+  const code = wanted ?? before?.code ?? await nextCustomerCode(db)
+
+  /* The two statements wrote the same ten fields in two different orders, each
+     with its own list of placeholders to keep in step. One object now, used by
+     both. */
+  const fields = {
+    code,
+    name,
+    phone,
+    email: input.email?.trim() || null,
+    gstin,
+    address: input.address?.trim() || null,
+    stateCode,
+    creditLimit: limit,
+    creditEnforcement: enforcement,
+    isActive: active,
+    updatedAt: now,
+  }
 
   await db.transaction(async (tx) => {
     if (customerId) {
-      await tx.execute(
-        `UPDATE customers SET code = ?, name = ?, phone = ?, email = ?, gstin = ?, address = ?,
-                state_code = ?, credit_limit = ?, credit_enforcement = ?, is_active = ?,
-                updated_at = ?, rev = rev + 1
-          WHERE id = ?`,
-        [code, name, phone, input.email?.trim() || null, gstin,
-         input.address?.trim() || null, stateCode, limit, enforcement, active, now, customerId],
-      )
+      await q(tx).update(schema.customers)
+        .set({ ...fields, rev: sql`${schema.customers.rev} + 1` })
+        .where(eq(schema.customers.id, customerId))
     } else {
-      await tx.execute(
-        `INSERT INTO customers
-           (id, code, name, phone, email, gstin, address, credit_limit, credit_enforcement,
-            is_active, state_code, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, code, name, phone, input.email?.trim() || null, gstin,
-         input.address?.trim() || null, limit, enforcement, active, stateCode, now, now],
-      )
+      await q(tx).insert(schema.customers).values({ ...fields, id, createdAt: now })
     }
 
     await writeAudit(tx, ctx, {
@@ -293,17 +339,24 @@ async function save(
  * already own the next one.
  */
 export async function nextCustomerCode(db: SqlDriver): Promise<string> {
-  const row = await db.get<{ highest: number | null }>(
-    `SELECT MAX(CAST(substr(code, 2) AS INTEGER)) AS highest
-       FROM customers
-      WHERE code GLOB 'C[0-9]*' AND substr(code, 2) GLOB '[0-9]*'`,
-  )
+  const code = schema.customers.code
+
+  /* raw: two `GLOB`s and a `CAST`, which a query builder has no words for. The
+     second one is not redundant: `C1A` matches the first pattern, and casting
+     it gives 1, which would hand C0002 to somebody who already has it. */
+  const [row] = await q(db)
+    .select({ highest: sql<number | null>`MAX(CAST(substr(${code}, 2) AS INTEGER))` })
+    .from(schema.customers)
+    .where(sql`${code} GLOB 'C[0-9]*' AND substr(${code}, 2) GLOB '[0-9]*'`)
 
   let next = (row?.highest ?? 0) + 1
   for (;;) {
-    const code = `C${String(next).padStart(4, '0')}`
-    const taken = await db.get<{ id: string }>(`SELECT id FROM customers WHERE code = ?`, [code])
-    if (!taken) return code
+    const candidate = `C${String(next).padStart(4, '0')}`
+    const [taken] = await q(db)
+      .select({ id: schema.customers.id })
+      .from(schema.customers)
+      .where(eq(code, candidate))
+    if (!taken) return candidate
     next += 1
   }
 }
@@ -317,13 +370,18 @@ export async function nextCustomerCode(db: SqlDriver): Promise<string> {
  * case is that one customer keeps waiting for a code.
  */
 export async function backfillCustomerCodes(db: SqlDriver): Promise<number> {
-  const rows = await db.query<{ id: string }>(
-    `SELECT id FROM customers WHERE code IS NULL AND deleted_at IS NULL ORDER BY created_at`,
-  )
+  const rows = await q(db)
+    .select({ id: schema.customers.id })
+    .from(schema.customers)
+    .where(and(isNull(schema.customers.code), isNull(schema.customers.deletedAt)))
+    .orderBy(schema.customers.createdAt)
+
   let given = 0
   for (const row of rows) {
     const code = await nextCustomerCode(db)
-    await db.execute(`UPDATE customers SET code = ? WHERE id = ? AND code IS NULL`, [code, row.id])
+    await q(db).update(schema.customers)
+      .set({ code })
+      .where(and(eq(schema.customers.id, row.id), isNull(schema.customers.code)))
     given += 1
   }
   return given

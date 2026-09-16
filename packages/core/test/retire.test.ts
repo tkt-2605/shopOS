@@ -3,6 +3,7 @@ import { setProductActive } from '../src/services/products.js'
 import { searchProducts, searchCustomers, loadCustomer } from '../src/repos/catalog.js'
 import { createCustomer, archiveCustomer, restoreCustomer } from '../src/services/customers.js'
 import { createBill, submitBill } from '../src/services/billing.js'
+import { recordPayment } from '../src/services/payments.js'
 import { topProducts } from '../src/repos/reports.js'
 import { postMovement } from '../src/services/stock.js'
 import { newId } from '../src/ids.js'
@@ -187,6 +188,37 @@ describe('a customer who has stopped coming', () => {
 
     // And they are still there, which is the point of refusing.
     expect(await searchCustomers(fx.db, 'Vidya')).toHaveLength(1)
+  })
+
+  it('allows it once the khata is settled by a receipt', async () => {
+    /* The other half of the sum. A bill taken on credit and later paid off with
+       a payment entry leaves `bills.credit_total` exactly where it was -- what
+       cancels it is the allocation -- so a balance that only added up the bills
+       would refuse this customer for ever. */
+    const id = await customer('Sri Vidya School')
+    const productId = await makeProduct(fx.db, { name: 'Chalk', baseRate: rupees(500) })
+
+    const draft = await createBill(fx.db, {
+      registerId: fx.seed.registerId,
+      customerId: id,
+      lines: [{ productId, qty: fromUnits(1) }],
+      actorId: fx.adminId,
+    })
+    if (!draft.ok) throw new Error('draft failed')
+    await submitBill(fx.db, {
+      billId: draft.billId, actorId: fx.adminId,
+      payments: [{ method: 'credit', amount: draft.grandTotal }],
+    })
+
+    expect(await archiveCustomer(fx.db, { actorId: fx.adminId }, id))
+      .toMatchObject({ ok: false, code: 'OWES_MONEY' })
+
+    const paid = await recordPayment(fx.db, {
+      customerId: id, amount: draft.grandTotal, method: 'cash', actorId: fx.adminId,
+    })
+    if (!paid.ok) throw new Error(paid.code)
+
+    expect(await archiveCustomer(fx.db, { actorId: fx.adminId }, id)).toEqual({ ok: true })
   })
 
   it('allows it once the khata is settled', async () => {
