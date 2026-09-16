@@ -197,6 +197,9 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
     cgst: doc.items.reduce((t, i) => t + i.cgst, 0) as never,
     sgst: doc.items.reduce((t, i) => t + i.sgst, 0) as never,
     igst: doc.items.reduce((t, i) => t + i.igst, 0) as never,
+    // Printed on its own line when it is not zero, so the lines and the total
+    // add up on the sheet a customer is holding.
+    roundOff: doc.roundOff,
     grandTotal: doc.grandTotal,
     /* Nothing has been paid. The block is left in the format and renders as
        nothing, rather than the format needing a separate copy without it. */

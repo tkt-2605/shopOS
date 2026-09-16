@@ -33,7 +33,7 @@ export type { Block, BlockKind, DocFormat as DocFormatDef, PaperSize, FormatProb
 export * as DocStatus from './integrity/docstatus.js'
 export * as Permissions from './integrity/permissions.js'
 export { checkLinks, assertDeletable, LinkedRecordError, LINK_RULES } from './integrity/links.js'
-export { writeAudit, writeActivity, diffFields } from './integrity/audit.js'
+export { writeAudit, diffFields } from './integrity/audit.js'
 export type { AuditAction, AuditContext, AuditRecord, FieldDiff } from './integrity/audit.js'
 
 export { bootstrap, setSetting, getSetting, forgetSetting } from './services/bootstrap.js'

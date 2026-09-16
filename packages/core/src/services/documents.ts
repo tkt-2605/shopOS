@@ -408,6 +408,15 @@ export interface DocumentDetail extends DocumentListItem {
   discount: Money
   taxableTotal: Money
   taxTotal: Money
+  /**
+   * The paise added or dropped to reach a round figure, signed.
+   *
+   * Written by `createDocument` since rounding existed and never read back, so
+   * a quotation printed its lines, its tax and a grand total that did not add
+   * up to them — off by up to 49 paise, with nothing on the sheet to explain
+   * the difference. The renderer has had a place to print it all along.
+   */
+  roundOff: Money
   notes: string | null
   terms: string | null
   convertedFrom: string | null
@@ -469,6 +478,7 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
     discount: row['discount'] as Money,
     taxableTotal: row['taxable_total'] as Money,
     taxTotal: row['tax_total'] as Money,
+    roundOff: (row['round_off'] ?? 0) as Money,
     grandTotal: row['grand_total'] as Money,
     notes: row['notes'] as string | null,
     terms: row['terms'] as string | null,

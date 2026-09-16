@@ -35,17 +35,33 @@ describe('migrations', () => {
     const tables = rows.map((r) => r.name)
 
     for (const expected of [
-      'activity_log', 'audit_log', 'bill_items', 'bill_payments', 'bills',
+      'audit_log', 'bill_items', 'bill_payments', 'bills',
       'cash_movements', 'cash_sessions', 'categories', 'customer_item_prices',
       'customers', 'doc_sequences', 'item_prices', 'loyalty_entries',
       'loyalty_redemptions', 'payment_allocations', 'payment_entries',
       'price_lists', 'product_stock', 'product_units', 'products', 'registers',
       'role_pages', 'role_permissions', 'roles', 'sales_return_items',
       'sales_returns', 'settings', 'stock_entries', 'stock_entry_items',
-      'stock_ledger', 'suppliers', 'sync_queue', 'users',
+      'stock_ledger', 'suppliers', 'users',
     ]) {
       expect(tables, `missing table ${expected}`).toContain(expected)
     }
+  })
+
+  it('has got rid of the two tables nothing ever read', async () => {
+    await migrate(db, MIGRATIONS)
+    const rows = await db.query<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+    )
+    const tables = rows.map((r) => r.name)
+
+    /* `activity_log` was written by `writeActivity` since 001 and selected by
+       nothing, ever; `sync_queue` was reserved on day one for a design that was
+       never built, and `change_feed` has done that job since two tills could
+       talk. Asserted rather than assumed, because a dropped table is the kind of
+       thing a later migration reintroduces by copying an older one. */
+    expect(tables).not.toContain('activity_log')
+    expect(tables).not.toContain('sync_queue')
   })
 
   it('rejects non-contiguous versions', async () => {
