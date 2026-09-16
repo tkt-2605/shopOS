@@ -1,9 +1,9 @@
 # Progress
 
-Branch `phase-0-and-the-test-bench`, 15 commits, not pushed. Everything below
+Branch `phase-0-and-the-test-bench`, 18 commits, not pushed. Everything below
 is on this machine only.
 
-State of the tree: **1160 TypeScript tests** passing and 3 skipped (Phase 2c
+State of the tree: **1217 TypeScript tests** passing and 3 skipped (Phase 2c
 placeholders that fail loudly if un-skipped early), **73 Rust tests** passing
 with zero warnings, typecheck clean across core, app and bench, and Layer 2 of
 the test bench green in Docker.
@@ -66,6 +66,28 @@ Every item on the 1a list, and the migration under it.
 - **`round_off` on the last rate row**, so the export ties to `grand_total`.
 - **`receipt.ts`** stopped dividing money by money to recover a quantity.
 
+### Row 4 — Phase 1b, what the paper must carry
+
+- **The place of supply was the shop's own state**, on every invoice it
+  printed, including ones billed to another state and charged IGST. The
+  renderer was never wrong; the thing filling it in was, and every test of the
+  renderer passed throughout because they all built the document by hand. There
+  is a test now that rings a bill up through the real services and renders what
+  the app actually builds.
+- **The sheet carries Rule 46**: recipient address and GSTIN, place of supply
+  as "27 — Maharashtra", reverse charge, CGST/SGST *or* IGST columns, the rate
+  per line, and a rate-wise summary. `rule46.test.ts` reads the rule as a
+  checklist and asserts every clause by text.
+- **The credit note**, which did not exist. A return was a stock movement and a
+  row in a list; under GST it is the document, and a registered buyer cannot
+  reverse the purchase without one.
+- **The tax scheme**: composition and unregistered shops stop being made to
+  charge tax they may not collect, the document is titled accordingly, and the
+  GST reports are hidden with a sentence. See finding 11 for why the *default*
+  is not what the spec asked for.
+- **Migration 029**, turning the roll's title on — and taught to be silent to
+  sync, which took two tries and a failing `sync.test.ts` to get right.
+
 ### Pulled forward out of order
 
 - **Phase 1d's host-sync fix.** The bench demanded it: `host-initiates.test.ts`
@@ -77,13 +99,15 @@ Every item on the 1a list, and the migration under it.
 
 ## What the real database changed
 
-`findings-real-shop.md` has ten findings now. Four affect the plan:
+`findings-real-shop.md` has eleven findings now. Four affect the plan:
 
 1. **CGST ≠ SGST on 29 of 51 lines.** Not in any spec. Fixed.
-2. **The shop charges GST with no GSTIN set.** Phase 1's scheme rule will
-   default it to `unregistered` and stop charging tax. Correct, and a visible
-   change on the day the migration lands. If TRT is registered, the GSTIN must
-   be entered *before* the upgrade.
+2. **The shop charges GST with no GSTIN set.** ~~Phase 1's scheme rule will
+   default it to `unregistered` and stop charging tax.~~ **Settled** — finding
+   11. The premise was wrong: there was no screen that could save a GSTIN until
+   `services/shop.ts`, so the empty field says nothing. The till reads what the
+   shop has been *doing* instead and goes on charging exactly as before. Still
+   an owner decision, no longer an urgent one.
 3. **This database cannot exercise the inter-state path.** Every customer is
    `'33'` — the fabrication the plan predicted — and the shop is also `'33'`,
    so the fabrication and the truth coincide and `SUM(igst_amount)` is zero.
@@ -96,15 +120,20 @@ Every item on the 1a list, and the migration under it.
 
 ## Left
 
-### Phase 1 — the bills have to be right (in progress, ~7 days left)
+### Phase 1 — the bills have to be right (in progress, ~4 days left)
 
-028 and 1a are done. **1b next**: the A4 invoice with the rate-wise summary,
-`ReceiptDoc` carrying the recipient and the place of supply off the 028
-columns, the credit-note print, and the document title per tax scheme. Then
-**1c**: the tax scheme as a shop setting, Rule 46(f)'s `NEEDS_RECIPIENT`, the
-HSN shape warning, `rule46.test.ts`. Then the rest of **1d** -- the amend
-button, retire against soft delete, cash-close history, `changePassword`, and
-the switches that are on and do nothing.
+028, 029, 1a and 1b are done, and the tax scheme out of 1c with them.
+
+**1c next**, and it is all guards: `SHOP_STATE_UNSET` when a registered shop
+has no state; `NEEDS_RECIPIENT` for Rule 46(f), a bill of ₹50,000 or more with
+nobody named on it; `GSTIN_REQUIRED` on the shop form under the regular scheme;
+the HSN shape warning. Guards that can stop a shop billing, so each one wants a
+slower decision than the work before it — and one of them (`GSTIN_REQUIRED`)
+would refuse to save the owner's own shop details as they stand today.
+
+Then the rest of **1d**: the amend button, retire against soft delete per
+table, cash-close history, `changePassword`, the schema-too-new message, and
+the tables that are dead (`activity_log`, `sync_queue`).
 
 **Blocked on nothing.** Its verification is not: five of its eight checks need
 the owner's database with things staged by hand.
