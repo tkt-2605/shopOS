@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { openDatabase } from '../src/db/node-driver.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
-import { salesSummary, taxByRate, gstLines } from '../src/repos/reports.js'
+import { salesSummary, taxByRate, gstLines, gstExceptions } from '../src/repos/reports.js'
+import { RULE_46F_THRESHOLD } from '../src/services/billing.js'
+import { hsnProblem } from '../src/domain/hsn.js'
 import { loadTaxScheme, taxSchemeAnswered } from '../src/services/features.js'
 import { getSetting } from '../src/services/bootstrap.js'
 import type { SqlDriver } from '../src/db/driver.js'
@@ -200,6 +202,33 @@ describe.skipIf(!present)('the GST export over the real shop', () => {
 
       // And it is still a guess, so Settings still asks the owner to settle it.
       expect(await taxSchemeAnswered(db)).toBe(false)
+    })
+  })
+
+  it('is not stopped billing by any of the Phase 1c guards', async () => {
+    await withShop(async (db) => {
+      /* Every guard added in 1c can stop a till, so every one of them is
+         checked against the till that is actually running before it ships. Not
+         one of them fires on this shop today, and that is not luck -- it is why
+         the database was looked at first. */
+
+      // SHOP_STATE_UNSET: set, so no bill is refused.
+      expect(await getSetting(db, 'shop_state_code')).toBe('33')
+
+      // NEEDS_RECIPIENT: the largest bill in the shop's whole history.
+      const biggest = await db.get<{ most: number }>(
+        `SELECT COALESCE(MAX(grand_total), 0) AS most FROM bills WHERE docstatus = 1`)
+      expect(biggest!.most).toBeLessThan(RULE_46F_THRESHOLD)
+
+      // HSN_SHAPE: a warning rather than a refusal either way, and it warns on
+      // none of them.
+      const products = await db.query<{ name: string; hsn_code: string | null }>(
+        `SELECT name, hsn_code FROM products`)
+      expect(products.length).toBeGreaterThan(0)
+      for (const p of products) expect(hsnProblem(p.hsn_code), p.name).toBeNull()
+
+      // And nothing for the CA to come back about.
+      expect(await gstExceptions(db, ALL)).toEqual([])
     })
   })
 

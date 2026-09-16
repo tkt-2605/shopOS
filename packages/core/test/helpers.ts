@@ -28,6 +28,12 @@ export async function freshDb(): Promise<Fixture> {
      otherwise fail against. Saying it out loud in the fixture is better than a
      default that quietly makes the tests pass. */
   await setSetting(db, 'shop_gstin', '33ALNPJ1906G1ZC')
+  /* And in a state, which is the other half of being able to issue an invoice
+     at all: `supplyTypeFor(null, anything)` answers `intra_state`, so a shop
+     with no state code taxes every sale as a local one including the ones that
+     are not. Phase 1c refuses to submit a bill in that condition, and this
+     fixture was in it -- a registered shop, nowhere. */
+  await setSetting(db, 'shop_state_code', '33')
 
   const adminId = newId()
   const now = new Date().toISOString()

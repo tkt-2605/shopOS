@@ -13,11 +13,21 @@ import { writeAudit } from '../integrity/audit.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
 import { loadStockPolicy, loadRounding, loadTaxScheme } from './features.js'
 import { chargesTax } from '../domain/taxScheme.js'
+import { isStateCode } from '../domain/states.js'
 import { checkAvailability, postMovement, reverseVoucher, type StockShortfall } from './stock.js'
 import { nextDocNo } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
 import { applyBillFulfilment, reverseBillFulfilment } from './documents.js'
 import { getSetting } from './bootstrap.js'
+
+/**
+ * Rule 46(f)'s threshold, in paise: fifty thousand rupees.
+ *
+ * Written once, here, because the counter has to warn at the same figure the
+ * service refuses at -- a cashier told at ₹50,000 and refused at ₹49,999 would
+ * stop trusting either number.
+ */
+export const RULE_46F_THRESHOLD = 5_000_000 as Money
 
 export type PaymentMethod = 'cash' | 'upi' | 'card' | 'credit' | 'loyalty'
 
@@ -107,6 +117,30 @@ export type SubmitBillResult =
   | { ok: false; code: 'PAYMENT_MISMATCH'; expected: Money; received: Money }
   | { ok: false; code: 'CREDIT_WITHOUT_CUSTOMER' }
   | { ok: false; code: 'LOYALTY_REJECTED'; reason: string }
+  /**
+   * The shop has not said which state it is in, and it charges tax.
+   *
+   * `supplyTypeFor(null, anything)` answers `intra_state`, so with no shop
+   * state every sale in the product is taxed as a local one -- CGST and SGST --
+   * including a sale to a customer in another state, where the law says IGST.
+   * The bill is wrong, the customer's input credit is wrong, and nothing on
+   * screen says so. It is refused at submit rather than corrected silently,
+   * because there is no honest value to correct it to.
+   *
+   * One setting, on a screen the shop has already seen, and it is asked for at
+   * first run. A till that has been billing has it.
+   */
+  | { ok: false; code: 'SHOP_STATE_UNSET' }
+  /**
+   * Rule 46(f): a tax invoice of ₹50,000 or more to somebody not registered
+   * must carry their name and address.
+   *
+   * A required field rather than a stopped till -- the counter puts a name on
+   * the bill and carries on. Only under the regular scheme, because it is that
+   * rule and no other: Rule 49's bill of supply carries no such threshold, and
+   * a guard with no rule behind it is a guard that stops a shop for nothing.
+   */
+  | { ok: false; code: 'NEEDS_RECIPIENT'; grandTotal: Money; threshold: Money }
 
 export type CancelBillResult =
   | { ok: true; billId: string }
@@ -431,6 +465,24 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
 
   const bill = await loadBill(db, input.billId)
   assertCanApply('bill', parseDocStatus(bill.docstatus), 'submit')
+
+  /* Both guards are here and not in `createBill`, so a cart can always be
+     built: a cashier scanning items must never be stopped halfway by a
+     settings problem they cannot fix with a customer in front of them. They
+     bite at the moment the document is issued, which is the moment either of
+     them starts to matter. */
+  const scheme = await loadTaxScheme(db)
+  if (chargesTax(scheme)) {
+    if (!isStateCode(await getSetting(db, 'shop_state_code'))) {
+      return { ok: false, code: 'SHOP_STATE_UNSET' }
+    }
+    if (bill.grandTotal >= RULE_46F_THRESHOLD && bill.customerId === null) {
+      return {
+        ok: false, code: 'NEEDS_RECIPIENT',
+        grandTotal: bill.grandTotal, threshold: RULE_46F_THRESHOLD,
+      }
+    }
+  }
 
   const lines = await db.query<{
     product_id: string; product_name: string; base_qty: number

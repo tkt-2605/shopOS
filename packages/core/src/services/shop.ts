@@ -1,6 +1,7 @@
 import type { SqlDriver, SqlValue } from '../db/driver.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { getSetting, setSetting } from './bootstrap.js'
+import { loadTaxScheme, taxSchemeAnswered } from './features.js'
 import { isStateCode } from '../domain/states.js'
 import { GSTIN_SHAPE, stateFromGstin } from '../domain/gstin.js'
 
@@ -75,6 +76,21 @@ export type SaveShopResult =
   | { ok: false; code: 'BAD_GSTIN' }
   | { ok: false; code: 'UNKNOWN_STATE' }
   | { ok: false; code: 'GSTIN_STATE_MISMATCH'; gstinState: string; chosenState: string }
+  /**
+   * A shop that has said it is registered, saving itself without a GSTIN.
+   *
+   * Rule 46(a): the supplier's registration number is on every tax invoice, and
+   * this shop is printing tax invoices. Refused rather than warned, because the
+   * screen it is refused on is the screen that fixes it.
+   *
+   * It bites only once a person has answered the scheme question, never on the
+   * till's own guess. A shop that has been trading is *assumed* regular from
+   * the tax on its bills (see `loadTaxScheme`) -- and until `services/shop.ts`
+   * existed there was no screen in this product that could save a GSTIN, so
+   * that shop has none through no fault of its own. Refusing it on a guess
+   * would lock the owner out of the one form that lets them answer.
+   */
+  | { ok: false; code: 'GSTIN_REQUIRED' }
   | { ok: false; code: 'BAD_LOGO' }
   | { ok: false; code: 'LOGO_TOO_BIG'; kb: number; limitKb: number }
 
@@ -137,6 +153,10 @@ export async function saveShopProfile(
       gstinState,
       chosenState: clean.stateCode,
     }
+  }
+
+  if (clean.gstin === null && await taxSchemeAnswered(db) && await loadTaxScheme(db) === 'regular') {
+    return { ok: false, code: 'GSTIN_REQUIRED' }
   }
 
   const before = await loadShopProfile(db)

@@ -142,7 +142,30 @@ export default function Reports() {
     )
     const result = await saveFile(`gst-detail-${range.from}-to-${range.to}.csv`, csv)
     if (!result.ok) { setError(result.message); return }
-    setNotice(`Saved to ${result.path}`)
+
+    /* The lines a CA will come back about, saved beside the export rather than
+       inside it: a CSV with two shapes of row in it is a CSV a spreadsheet
+       cannot read. Written only when there is something to say. */
+    const exceptions = await R.gstExceptions(db, range)
+    if (exceptions.length > 0) {
+      await saveFile(
+        `gst-exceptions-${range.from}-to-${range.to}.csv`,
+        R.toCsv(
+          ['Bill', 'Date', 'Customer', 'GSTIN', 'Item', 'Taxable', 'Problem'],
+          exceptions.map((e) => [
+            e.docNo, e.postingDate, e.customerName, e.gstin, e.productName,
+            rupeeCell(e.taxable), e.problem,
+          ]),
+        ),
+      )
+    }
+
+    setNotice(
+      exceptions.length > 0
+        ? `Saved to ${result.path}. ${exceptions.length} ${exceptions.length === 1 ? 'line needs' : 'lines need'} `
+          + 'an HSN code before filing — saved beside it as gst-exceptions.'
+        : `Saved to ${result.path}`,
+    )
     setTimeout(() => setNotice(null), 8000)
   }
 

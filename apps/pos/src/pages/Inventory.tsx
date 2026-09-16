@@ -5,6 +5,7 @@ import {
   listBarcodes, setBarcodes, listUnits, setUnits,
   listCategories, createCategory, setProductCategory, setVariantOf,
   setLadder, laddersFor, defaultPriceListId, Ladder,
+  hsnProblem, HSN_SHAPE_MESSAGE,
   type Category,
   type ProductListItem,
 } from '@shopos/core'
@@ -390,7 +391,14 @@ export default function Inventory() {
               <input className="input" id="p-brand" value={draft.brand}
                 onChange={(e) => setDraft({ ...draft, brand: e.target.value })} />
             </Field>
-            <Field label="HSN code">
+            {/* Warned, never blocked. Somebody entering three hundred items off
+                a supplier's list is the person most likely to mistype one and
+                least able to stop and look it up — and an item that cannot be
+                saved is an item that cannot be sold. */}
+            <Field
+              label="HSN code"
+              {...(hsnProblem(draft.hsnCode) ? { hint: HSN_SHAPE_MESSAGE } : {})}
+            >
               <input className="input num" id="p-hsn" value={draft.hsnCode}
                 onChange={(e) => setDraft({ ...draft, hsnCode: e.target.value })} />
             </Field>

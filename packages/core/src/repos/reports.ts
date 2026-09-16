@@ -390,6 +390,64 @@ export async function gstLines(db: SqlDriver, range: DateRange): Promise<GstLine
   return lines
 }
 
+export interface GstException {
+  docNo: string
+  postingDate: string
+  customerName: string
+  gstin: string
+  productName: string
+  taxable: Money
+  /** What is wrong with the line, in the words the sheet should use. */
+  problem: string
+}
+
+/**
+ * The lines a CA will come back about.
+ *
+ * A B2B line with no HSN code is the one that matters: the buyer is registered,
+ * the line goes into their input credit, and GSTR-1 wants the code. It is not
+ * worth refusing a sale over — a cashier cannot look up a chapter heading with
+ * a customer at the counter — so it is caught here instead, at the one moment
+ * somebody is actually sitting down with the figures.
+ *
+ * Deliberately a list of documents rather than a count. "14 lines are missing
+ * HSN" is a number nobody can act on; the invoice number and the item name are
+ * what sends somebody to the right row of the product list.
+ *
+ * B2B only. A walk-in's line without an HSN is untidy and harms nobody, and a
+ * sheet that listed every one of those would bury the fourteen that matter.
+ */
+export async function gstExceptions(db: SqlDriver, range: DateRange): Promise<GstException[]> {
+  const s = scope(range)
+  const rows = await db.query<{
+    doc_no: string; posting_date: string; customer_name: string | null
+    gstin: string; product_name: string; taxable: number
+  }>(
+    `SELECT b.doc_no, b.posting_date,
+            COALESCE(b.customer_name, 'Walk-in') AS customer_name,
+            b.customer_gstin AS gstin,
+            bi.product_name, bi.taxable_value AS taxable
+       FROM bill_items bi
+       JOIN bills b ON b.id = bi.bill_id
+      WHERE b.docstatus = 1 AND b.kind = 'sale'
+        AND b.customer_gstin IS NOT NULL AND b.customer_gstin <> ''
+        AND (bi.hsn_code IS NULL OR TRIM(bi.hsn_code) = '')
+        AND b.posting_date BETWEEN ? AND ? ${s.clause}
+      ORDER BY b.posting_date, b.doc_no`,
+    s.params,
+  )
+
+  return rows.map((r) => ({
+    docNo: r.doc_no,
+    postingDate: r.posting_date,
+    customerName: r.customer_name ?? 'Walk-in',
+    gstin: r.gstin,
+    productName: r.product_name,
+    taxable: r.taxable as Money,
+    problem: 'No HSN code on a line billed to a registered buyer',
+  }))
+}
+
 /** RFC 4180: a field containing a comma, quote or newline is quoted, quotes doubled. */
 export function toCsv(headers: string[], rows: (string | number)[][]): string {
   const escape = (v: string | number): string => {

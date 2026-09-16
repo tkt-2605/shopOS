@@ -46,6 +46,7 @@ export type { BootstrapOptions, BootstrapResult } from './services/bootstrap.js'
 
 export {
   createBill, submitBill, cancelBill, amendBill, loadLoyaltyProgram, billSummary,
+  RULE_46F_THRESHOLD,
 } from './services/billing.js'
 export type {
   BillLineInput, CreateBillInput, CreateBillResult,
@@ -150,6 +151,8 @@ export {
   billWording, COMPOSITION_STATEMENT,
 } from './domain/taxScheme.js'
 export type { TaxScheme } from './domain/taxScheme.js'
+export { HSN_SHAPE, isHsn, hsnProblem, HSN_SHAPE_MESSAGE } from './domain/hsn.js'
+export type { HsnProblem } from './domain/hsn.js'
 export { buildInvoiceHtml } from './domain/invoiceHtml.js'
 export type { InvoiceHtmlOptions } from './domain/invoiceHtml.js'
 

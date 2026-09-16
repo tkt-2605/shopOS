@@ -830,7 +830,9 @@ function ShopCard() {
                 ? 'That file is not an image this can print. Use a PNG, JPEG or SVG.'
                 : result.code === 'LOGO_TOO_BIG'
                   ? `That image is ${result.kb} KB and the limit is ${result.limitKb} KB. It rides on every bill and every preview, so a smaller copy is worth making.`
-                  : `This GSTIN belongs to ${stateName(result.gstinState) ?? `state ${result.gstinState}`}, but the state chosen is ${stateName(result.chosenState) ?? result.chosenState}. One of the two is wrong.`,
+                  : result.code === 'GSTIN_REQUIRED'
+                    ? 'This shop is set to charge GST, and a tax invoice has to carry the shop’s own GSTIN. Enter it here, or change the GST scheme above if the shop is not registered.'
+                    : `This GSTIN belongs to ${stateName(result.gstinState) ?? `state ${result.gstinState}`}, but the state chosen is ${stateName(result.chosenState) ?? result.chosenState}. One of the two is wrong.`,
       )
       return
     }
