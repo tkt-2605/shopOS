@@ -1,4 +1,6 @@
+import { eq, and, inArray, isNull, count, max, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 
@@ -53,39 +55,43 @@ export interface Attachment extends StoredFile {
   createdAt: string
 }
 
-interface Row {
-  id: string; entity: string; entity_id: string; file_name: string; stored_path: string
-  mime: string; size_bytes: number; sha256: string; caption: string | null
-  created_by: string; created_at: string
+/** The columns an attachment is read back by, in one place for both readers. */
+const attachmentShape = {
+  id: schema.attachments.id,
+  entity: schema.attachments.entity,
+  entityId: schema.attachments.entityId,
+  fileName: schema.attachments.fileName,
+  storedPath: schema.attachments.storedPath,
+  mime: schema.attachments.mime,
+  sizeBytes: schema.attachments.sizeBytes,
+  sha256: schema.attachments.sha256,
+  caption: schema.attachments.caption,
+  createdBy: schema.attachments.createdBy,
+  createdAt: schema.attachments.createdAt,
 }
 
-const toAttachment = (r: Row): Attachment => ({
-  id: r.id,
-  entity: r.entity as AttachmentEntity,
-  entityId: r.entity_id,
-  fileName: r.file_name,
-  storedPath: r.stored_path,
-  mime: r.mime,
-  sizeBytes: r.size_bytes,
-  sha256: r.sha256,
-  caption: r.caption,
-  createdBy: r.created_by,
-  createdAt: r.created_at,
-})
+type Row = Omit<Attachment, 'entity'> & { entity: string }
 
-const SELECT = `SELECT id, entity, entity_id, file_name, stored_path, mime, size_bytes,
-                       sha256, caption, created_by, created_at
-                  FROM attachments`
+/* `entity` is text in the database. The four this build knows are in
+   `ATTACHMENT_ENTITIES`, and a row naming a fifth -- written by a later build,
+   or by a till that has one -- is handed back as it was read rather than
+   refused: what the caller does with it is show a file that exists. */
+const toAttachment = (r: Row): Attachment => ({ ...r, entity: r.entity as AttachmentEntity })
 
 export async function listAttachments(
   db: SqlDriver,
   entity: AttachmentEntity,
   entityId: string,
 ): Promise<Attachment[]> {
-  const rows = await db.query<Row>(
-    `${SELECT} WHERE entity = ? AND entity_id = ? AND deleted_at IS NULL ORDER BY created_at, id`,
-    [entity, entityId],
-  )
+  const rows = await q(db)
+    .select(attachmentShape)
+    .from(schema.attachments)
+    .where(and(
+      eq(schema.attachments.entity, entity),
+      eq(schema.attachments.entityId, entityId),
+      isNull(schema.attachments.deletedAt),
+    ))
+    .orderBy(schema.attachments.createdAt, schema.attachments.id)
   return rows.map(toAttachment)
 }
 
@@ -97,14 +103,17 @@ export async function countAttachments(
   const counts = new Map<string, number>()
   if (entityIds.length === 0) return counts
 
-  const holes = entityIds.map(() => '?').join(', ')
-  const rows = await db.query<{ entity_id: string; n: number }>(
-    `SELECT entity_id, COUNT(*) AS n FROM attachments
-      WHERE entity = ? AND entity_id IN (${holes}) AND deleted_at IS NULL
-      GROUP BY entity_id`,
-    [entity, ...entityIds],
-  )
-  for (const row of rows) counts.set(row.entity_id, row.n)
+  const rows = await q(db)
+    .select({ entityId: schema.attachments.entityId, n: count() })
+    .from(schema.attachments)
+    .where(and(
+      eq(schema.attachments.entity, entity),
+      inArray(schema.attachments.entityId, entityIds),
+      isNull(schema.attachments.deletedAt),
+    ))
+    .groupBy(schema.attachments.entityId)
+
+  for (const row of rows) counts.set(row.entityId, row.n)
   return counts
 }
 
@@ -136,33 +145,24 @@ export async function recordAttachment(
   const row: Row = {
     id,
     entity: input.entity,
-    entity_id: input.entityId,
-    file_name: input.file.fileName,
-    stored_path: input.file.storedPath,
+    entityId: input.entityId,
+    fileName: input.file.fileName,
+    storedPath: input.file.storedPath,
     mime: input.file.mime,
-    size_bytes: input.file.sizeBytes,
+    sizeBytes: input.file.sizeBytes,
     sha256: input.file.sha256,
     caption: input.caption?.trim() || null,
-    created_by: ctx.actorId,
-    created_at: now,
+    createdBy: ctx.actorId,
+    createdAt: now,
   }
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO attachments
-         (id, entity, entity_id, file_name, stored_path, mime, size_bytes, sha256,
-          caption, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        row.id, row.entity, row.entity_id, row.file_name, row.stored_path, row.mime,
-        row.size_bytes, row.sha256, row.caption, row.created_by, row.created_at,
-      ],
-    )
+    await q(tx).insert(schema.attachments).values(row)
     await writeAudit(tx, ctx, {
       entity: 'attachments',
       entityId: id,
       action: 'create',
-      after: { entity: row.entity, entity_id: row.entity_id, file_name: row.file_name, sha256: row.sha256 },
+      after: { entity: row.entity, entity_id: row.entityId, file_name: row.fileName, sha256: row.sha256 },
     })
   })
 
@@ -183,28 +183,36 @@ export async function removeAttachment(
   ctx: AuditContext & { actorId: string },
   id: string,
 ): Promise<RemovalResult> {
-  const row = await db.get<Row>(`${SELECT} WHERE id = ? AND deleted_at IS NULL`, [id])
+  const [row] = await q(db)
+    .select(attachmentShape)
+    .from(schema.attachments)
+    .where(and(eq(schema.attachments.id, id), isNull(schema.attachments.deletedAt)))
   if (!row) return { orphaned: null }
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
 
   return db.transaction(async (tx) => {
-    await tx.execute(`UPDATE attachments SET deleted_at = ?, rev = rev + 1 WHERE id = ?`, [now, id])
+    await q(tx).update(schema.attachments)
+      .set({ deletedAt: now, rev: sql`${schema.attachments.rev} + 1` })
+      .where(eq(schema.attachments.id, id))
     await writeAudit(tx, ctx, {
       entity: 'attachments',
       entityId: id,
       action: 'delete',
-      before: { entity: row.entity, entity_id: row.entity_id, file_name: row.file_name, sha256: row.sha256 },
+      before: { entity: row.entity, entity_id: row.entityId, file_name: row.fileName, sha256: row.sha256 },
     })
 
     // Asked inside the same transaction as the delete, so two attachments of the
     // same photograph removed at once cannot both decide the file is theirs to
     // take with them.
-    const still = await tx.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM attachments WHERE stored_path = ? AND deleted_at IS NULL`,
-      [row.stored_path],
-    )
-    return { orphaned: (still?.n ?? 0) === 0 ? row.stored_path : null }
+    const [still] = await q(tx)
+      .select({ n: count() })
+      .from(schema.attachments)
+      .where(and(
+        eq(schema.attachments.storedPath, row.storedPath),
+        isNull(schema.attachments.deletedAt),
+      ))
+    return { orphaned: (still?.n ?? 0) === 0 ? row.storedPath : null }
   })
 }
 
@@ -230,15 +238,24 @@ export async function attachmentsToCarry(
   windowDays: number,
 ): Promise<CarriedFile[]> {
   const cutoff = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000).toISOString()
-  const rows = await db.query<{ stored_path: string; sha256: string; size_bytes: number }>(
-    `SELECT stored_path, sha256, MAX(size_bytes) AS size_bytes
-       FROM attachments
-      WHERE deleted_at IS NULL AND created_at >= ?
-      GROUP BY stored_path, sha256
-      ORDER BY stored_path`,
-    [cutoff],
-  )
-  return rows.map((r) => ({ storedPath: r.stored_path, sha256: r.sha256, sizeBytes: r.size_bytes }))
+  const rows = await q(db)
+    .select({
+      storedPath: schema.attachments.storedPath,
+      sha256: schema.attachments.sha256,
+      /* The same bytes are one file however many documents cite them, so the
+         group is the path and the hash. `MAX` picks the size off one of the
+         rows in the group -- they agree, because the hash does. */
+      sizeBytes: max(schema.attachments.sizeBytes),
+    })
+    .from(schema.attachments)
+    .where(and(
+      isNull(schema.attachments.deletedAt),
+      sql`${schema.attachments.createdAt} >= ${cutoff}`,
+    ))
+    .groupBy(schema.attachments.storedPath, schema.attachments.sha256)
+    .orderBy(schema.attachments.storedPath)
+
+  return rows.map((r) => ({ ...r, sizeBytes: r.sizeBytes ?? 0 }))
 }
 
 /** Default window, in days. A setting later; a number the code agrees on now. */

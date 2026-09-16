@@ -1,4 +1,6 @@
+import { eq } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { ROLE_TEMPLATES, PAGES, RESOURCES, type Resource, type ResourcePermissions } from '../integrity/permissions.js'
 import { backfillCustomerCodes } from './customers.js'
 import { newId } from '../ids.js'
@@ -30,7 +32,10 @@ export async function applyUpgrades(db: SqlDriver): Promise<{ pagesGranted: stri
     if (newPages.size === 0 && newResources.size === 0) return
 
     for (const template of ROLE_TEMPLATES) {
-      const role = await tx.get<{ id: string }>(`SELECT id FROM roles WHERE name = ?`, [template.name])
+      const [role] = await q(tx)
+        .select({ id: schema.roles.id })
+        .from(schema.roles)
+        .where(eq(schema.roles.name, template.name))
       if (!role) continue
 
       const pages = template.pages.filter((p) => newPages.has(p))
@@ -56,8 +61,10 @@ export async function applyUpgrades(db: SqlDriver): Promise<{ pagesGranted: stri
  * already known and stays off. That distinction is the whole point.
  */
 export async function pagesNotYetKnown(tx: SqlDriver): Promise<Set<string>> {
-  const seen = await tx.query<{ page_key: string }>(`SELECT DISTINCT page_key FROM role_pages`)
-  const known = new Set(seen.map((r) => r.page_key))
+  const seen = await q(tx)
+    .selectDistinct({ pageKey: schema.rolePages.pageKey })
+    .from(schema.rolePages)
+  const known = new Set(seen.map((r) => r.pageKey))
   return new Set(PAGES.filter((p) => !known.has(p)))
 }
 
@@ -75,7 +82,9 @@ export async function pagesNotYetKnown(tx: SqlDriver): Promise<Set<string>> {
  * whichever role was looked at first and to nobody else.
  */
 export async function resourcesNotYetKnown(tx: SqlDriver): Promise<Set<string>> {
-  const seen = await tx.query<{ resource: string }>(`SELECT DISTINCT resource FROM role_permissions`)
+  const seen = await q(tx)
+    .selectDistinct({ resource: schema.rolePermissions.resource })
+    .from(schema.rolePermissions)
   const known = new Set(seen.map((r) => r.resource))
   return new Set(RESOURCES.filter((r) => !known.has(r)))
 }
@@ -86,26 +95,29 @@ export async function grantResource(
   resource: string,
   allowed: Partial<ResourcePermissions>,
 ): Promise<void> {
-  await tx.execute(
-    `INSERT INTO role_permissions
-       (id, role_id, resource, can_read, can_create, can_write, can_delete, can_submit, can_cancel, can_amend)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (role_id, resource) DO NOTHING`,
-    [
-      newId(), roleId, resource,
-      allowed.read ? 1 : 0, allowed.create ? 1 : 0, allowed.write ? 1 : 0,
-      allowed.delete ? 1 : 0, allowed.submit ? 1 : 0, allowed.cancel ? 1 : 0,
-      allowed.amend ? 1 : 0,
-    ],
-  )
+  /* Nothing on conflict, unlike the seed in `bootstrap.ts`: this runs against a
+     shop that has been configured, and a role already holding a row for this
+     resource has had the owner's answer written into it. */
+  await q(tx).insert(schema.rolePermissions)
+    .values({
+      id: newId(),
+      roleId,
+      resource,
+      canRead: allowed.read ? 1 : 0,
+      canCreate: allowed.create ? 1 : 0,
+      canWrite: allowed.write ? 1 : 0,
+      canDelete: allowed.delete ? 1 : 0,
+      canSubmit: allowed.submit ? 1 : 0,
+      canCancel: allowed.cancel ? 1 : 0,
+      canAmend: allowed.amend ? 1 : 0,
+    })
+    .onConflictDoNothing()
 }
 
 export async function grantPages(tx: SqlDriver, roleId: string, pages: readonly string[]): Promise<void> {
   for (const page of pages) {
-    await tx.execute(
-      `INSERT INTO role_pages (role_id, page_key, visible) VALUES (?, ?, 1)
-       ON CONFLICT (role_id, page_key) DO NOTHING`,
-      [roleId, page],
-    )
+    await q(tx).insert(schema.rolePages)
+      .values({ roleId, pageKey: page, visible: 1 })
+      .onConflictDoNothing()
   }
 }

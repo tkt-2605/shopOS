@@ -1,4 +1,6 @@
+import { eq } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { getSetting, setSetting } from './bootstrap.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
@@ -23,39 +25,37 @@ export interface StoredFormat extends DocFormat {
   builtIn: boolean
 }
 
-interface Row {
-  id: string
-  name: string
-  paper: string
-  kinds: string
-  blocks: string
-  template: string | null
-  updated_at: string
+/** The columns every read of this table wants. One list, so they cannot drift. */
+const formatShape = {
+  id: schema.docFormats.id,
+  name: schema.docFormats.name,
+  paper: schema.docFormats.paper,
+  kinds: schema.docFormats.kinds,
+  blocks: schema.docFormats.blocks,
+  template: schema.docFormats.template,
+  updatedAt: schema.docFormats.updatedAt,
 }
 
-/** The columns every read of this table wants. One list, so they cannot drift. */
-const COLUMNS = 'id, name, paper, kinds, blocks, template, updated_at'
+type Row = { [K in keyof typeof formatShape]: K extends 'template' ? string | null : string }
 
 /* Both shipped formats. Each is the floor its own print path lands on when
    anything else is missing, so neither can be deleted. */
 const BUILT_IN = new Set(Object.values(STANDARD_FOR).map((f) => f.id))
 
 export async function listFormats(db: SqlDriver, paper?: PaperSize): Promise<StoredFormat[]> {
-  const rows = await db.query<Row>(
-    `SELECT ${COLUMNS}
-       FROM doc_formats
-      ${paper ? 'WHERE paper = ?' : ''}
-      ORDER BY created_at`,
-    paper ? [paper] : [],
-  )
+  const rows = await q(db)
+    .select(formatShape)
+    .from(schema.docFormats)
+    .where(paper ? eq(schema.docFormats.paper, paper) : undefined)
+    .orderBy(schema.docFormats.createdAt)
   return rows.map(readRow).filter((f): f is StoredFormat => f !== null)
 }
 
 export async function loadFormat(db: SqlDriver, id: string): Promise<StoredFormat | null> {
-  const row = await db.get<Row>(
-    `SELECT ${COLUMNS} FROM doc_formats WHERE id = ?`,
-    [id],
-  )
+  const [row] = await q(db)
+    .select(formatShape)
+    .from(schema.docFormats)
+    .where(eq(schema.docFormats.id, id))
   return row ? readRow(row) : null
 }
 
@@ -173,22 +173,18 @@ export async function saveFormat(
   const now = ctx.now?.() ?? new Date().toISOString()
 
   await db.transaction(async (tx) => {
+    const fields = {
+      name: clean.name,
+      paper: clean.paper,
+      kinds: json(clean.kinds),
+      blocks: json(clean.blocks),
+      template: clean.template ?? null,
+      updatedAt: now,
+    }
     if (before) {
-      await tx.execute(
-        `UPDATE doc_formats
-            SET name = ?, paper = ?, kinds = ?, blocks = ?, template = ?, updated_at = ?
-          WHERE id = ?`,
-        [clean.name, clean.paper, json(clean.kinds), json(clean.blocks), clean.template ?? null, now, id],
-      )
+      await q(tx).update(schema.docFormats).set(fields).where(eq(schema.docFormats.id, id))
     } else {
-      await tx.execute(
-        `INSERT INTO doc_formats (id, name, paper, kinds, blocks, template, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id, clean.name, clean.paper, json(clean.kinds), json(clean.blocks),
-          clean.template ?? null, now, now,
-        ],
-      )
+      await q(tx).insert(schema.docFormats).values({ ...fields, id, createdAt: now })
     }
 
     /* The blocks go in as one field rather than fifteen. What a person wants
@@ -234,7 +230,7 @@ export async function deleteFormat(
   const now = ctx.now?.() ?? new Date().toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(`DELETE FROM doc_formats WHERE id = ?`, [id])
+    await q(tx).delete(schema.docFormats).where(eq(schema.docFormats.id, id))
 
     /* A choice pointing at a format that is gone would print the standard while
        the screen still named the deleted one. Clearing it here keeps the two
@@ -290,7 +286,7 @@ function readRow(row: Row): StoredFormat | null {
     }
 
     // A format saved before a block existed must not silently lose it.
-    return { ...withEveryBlock(format), updatedAt: row.updated_at, builtIn: BUILT_IN.has(row.id) }
+    return { ...withEveryBlock(format), updatedAt: row.updatedAt, builtIn: BUILT_IN.has(row.id) }
   } catch {
     return null
   }
