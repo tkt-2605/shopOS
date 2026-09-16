@@ -56,6 +56,24 @@ export interface LoopReport {
   error?: string
 }
 
+/**
+ * What one pass actually did, as opposed to what it found.
+ *
+ * `reports` alone could not tell three different situations apart, because all
+ * three of them are an empty array: this shop has never paired with anything,
+ * a round was already in flight so this one did nothing, and a round that
+ * reached every peer and had nothing to carry. The screen was reading the
+ * first two as the third and announcing that both tills agreed -- to shops
+ * with one till, which is most of them.
+ */
+export interface LoopRound {
+  /** Peers this till is paired with, whether or not each answered. */
+  peers: number
+  /** A round was already running; this call did nothing and reports nothing. */
+  skipped: boolean
+  reports: LoopReport[]
+}
+
 let onRound: ((reports: LoopReport[]) => void) | null = null
 
 /** A screen can watch what the loop does, so its own view stays current. */
@@ -84,10 +102,11 @@ export function stopSyncLoop(): void {
  * code — a "catch up now" that took a different path would be a second
  * implementation to keep in step, and the one people press least would rot.
  */
-export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[]> {
-  if (running) return []
+export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> {
+  if (running) return { peers: 0, skipped: true, reports: [] }
   running = true
   const reports: LoopReport[] = []
+  let paired = 0
 
   try {
     // The answering side cannot read device.json; it is told, every round, so a
@@ -100,6 +119,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
     const listenPort = (await servingOn())?.port ?? null
 
     const peers = await pairedPeers(db)
+    paired = peers.length
     const now = Date.now()
 
     for (const peer of peers) {
@@ -153,7 +173,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
   }
 
   if (onRound !== null && reports.length > 0) onRound(reports)
-  return reports
+  return { peers: paired, skipped: false, reports }
 }
 
 function describe(err: unknown): string {

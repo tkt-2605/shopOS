@@ -7,6 +7,7 @@ import {
   type PeerHealth, type RecordedConflict,
 } from '@shopos/core'
 import { runOnce, onSyncRound } from '../core/syncLoop'
+import { syncNotice } from '../core/syncNotice'
 import {
   startServing, stopServing, servingOn, lookAround,
   type ServeInfo, type FoundTill,
@@ -149,10 +150,12 @@ export function SyncCard() {
     setError(null)
     setBusy(true)
     try {
-      const reports = await runOnce(db, true)
-      const refused = reports.find((r) => !r.ok)
-      if (refused?.error) setError(explainRefusal(refused.error))
-      else if (reports.every((r) => r.contested === 0)) setNotice('Both tills agree.')
+      /* "Both tills agree" is a claim about a conversation that happened,
+         and it used to be printed for a shop that has no second till: an empty
+         report list read as "nothing disagreed". See `syncNotice`. */
+      const said = syncNotice(await runOnce(db, true))
+      if (said.kind === 'error') setError(explainRefusal(said.code))
+      else if (said.kind === 'notice') setNotice(said.text)
       await refresh()
     } catch (err) {
       setError(explain(err))

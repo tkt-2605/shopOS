@@ -36,7 +36,10 @@ export default defineConfig({
         },
         test: {
           name: 'pos',
-          include: ['apps/pos/test/**/*.test.tsx'],
+          /* `.ts` as well as `.tsx`: some of what the app decides is plain
+             logic with no window in it, and a pure function does not become a
+             component to get itself tested. */
+          include: ['apps/pos/test/**/*.test.{ts,tsx}'],
           environment: 'jsdom',
         },
       },
