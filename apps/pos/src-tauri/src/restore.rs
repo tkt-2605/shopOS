@@ -67,6 +67,18 @@ pub struct Check {
     /// than be refused over.
     pub warning: Option<String>,
     pub taken_at: Option<String>,
+    /// Submitted bills inside it, and the date of the last one.
+    ///
+    /// The integrity result answers "is this file broken", which is a question
+    /// a shopkeeper did not ask. These answer the one they did: is this the
+    /// backup I want. "1,284 bills, last one 14 September" is a thing somebody
+    /// can check against what they remember; "integrity_check: ok" is not.
+    ///
+    /// It also catches the quiet disaster that passes every other check here —
+    /// a backup of an empty database. Perfectly sound, perfectly restorable,
+    /// and it would wipe the shop.
+    pub bills: i64,
+    pub last_bill: Option<String>,
 }
 
 /// Unpacks a candidate if it needs unpacking, and hands back a plain database
@@ -92,6 +104,8 @@ fn examine(file: &Path, supported: i64) -> Check {
         problem: None,
         warning: None,
         taken_at: None,
+        bills: 0,
+        last_bill: None,
     };
 
     let conn = match Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY) {
@@ -158,6 +172,31 @@ fn examine(file: &Path, supported: i64) -> Check {
                 ));
             }
         }
+    }
+
+    /* After the sentinel check, so `bills` is known to exist. Failures here are
+       not failures of the backup: a schema old enough to have called this table
+       something else still restores, and saying nothing about the count is
+       better than refusing over it. */
+    if let Ok((n, last)) = conn.query_row(
+        "SELECT COUNT(*), MAX(posting_date) FROM bills WHERE docstatus = 1",
+        [],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
+    ) {
+        check.bills = n;
+        check.last_bill = last;
+    }
+
+    /* Sound, restorable, and empty. Every check above passes on a database with
+       no rows in it, and restoring one over a working shop erases the shop. It
+       is a warning rather than a refusal because there is one honest reason to
+       see it -- a till that was backed up on the day it was set up -- and the
+       shopkeeper is the only one who can tell that from the other reason. */
+    if check.bills == 0 && check.warning.is_none() {
+        check.warning = Some(
+            "That backup has no bills in it at all. If this till has been trading, it is not the backup you want -- restoring it would leave you with an empty shop."
+                .into(),
+        );
     }
 
     check.ok = true;
@@ -449,5 +488,115 @@ mod tests {
         let again = apply_pending(&dir);
         assert!(again.restored.is_none() && again.error.is_none());
         assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"the backup");
+    }
+
+    // ── The whole way round, with a real database ──────────────────────────
+
+    /// A shop with bills in it, as a database rather than as the word "backup".
+    fn a_shop_that_has_been_trading(path: &Path, bills: i64) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE bills (id TEXT PRIMARY KEY, docstatus INTEGER, posting_date TEXT);
+             CREATE TABLE bill_items (id TEXT PRIMARY KEY);
+             CREATE TABLE products (id TEXT PRIMARY KEY);
+             CREATE TABLE registers (id TEXT PRIMARY KEY);
+             CREATE TABLE users (id TEXT PRIMARY KEY);
+             PRAGMA user_version = 33;",
+        )
+        .unwrap();
+        for i in 1..=bills {
+            conn.execute(
+                "INSERT INTO bills (id, docstatus, posting_date) VALUES (?1, 1, ?2)",
+                rusqlite::params![format!("bill-{i}"), format!("2026-09-{:02}", (i % 28) + 1)],
+            )
+            .unwrap();
+        }
+    }
+
+    /// Backup to restored shop, without stubs anywhere in the middle.
+    ///
+    /// Every other test here uses the bytes "the backup" and proves the file
+    /// dance — which is the part most likely to go wrong, and not the part a
+    /// shopkeeper is trusting. This one writes a real archive from a real
+    /// database, checks it the way the Backups card does, stages it, applies it
+    /// the way `setup()` does, and then opens what came out and counts the
+    /// bills. If any link in that chain stopped working, nothing else in this
+    /// file would notice.
+    #[test]
+    fn a_backup_becomes_a_working_shop_again() {
+        let dir = a_shop("end-to-end");
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let source = work.join("source.db");
+        a_shop_that_has_been_trading(&source, 12);
+
+        let zip = dir.join("shop-2026-09-16.zip");
+        archive::write(&zip, &work, &source, "0.1.0", "2026-09-16T03:00:00Z", &work, &[]).unwrap();
+
+        // What "Check this backup" shows, before anything is replaced.
+        let unpacked = work.join("inspect.db");
+        let file = materialise(&zip, &unpacked).unwrap();
+        let check = examine(&file, 33);
+        assert!(check.ok, "the archive we just wrote must inspect cleanly: {:?}", check.problem);
+        assert_eq!(check.bills, 12);
+        assert_eq!(check.schema, 33);
+        assert!(check.last_bill.is_some());
+
+        // Stage it the way `restore_begin` does, then finish it the way the next
+        // start does.
+        let staged = work.join("staged.db");
+        archive::extract_database(&zip, &staged).unwrap();
+        let staging = restore_dir(&dir);
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::rename(&staged, staging.join(STAGED)).unwrap();
+        let marker = Marker {
+            source: "shop-2026-09-16.zip".into(),
+            safety: "before-restore-2026-09-16-0905.db".into(),
+            staged_at: "2026-09-16T09:05:00Z".into(),
+        };
+        std::fs::write(staging.join(MARKER), serde_json::to_vec(&marker).unwrap()).unwrap();
+
+        let report = apply_pending(&dir);
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert!(report.restored.is_some());
+
+        /* The point of the whole exercise: open what is now the shop's database
+           and find the shop in it. */
+        let live = Connection::open_with_flags(dir.join(DB_FILE), OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let count: i64 = live
+            .query_row("SELECT COUNT(*) FROM bills WHERE docstatus = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 12, "every bill that went into the backup has to come out of it");
+
+        let version: i64 = live.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 33, "restoring must not lose which migrations have run");
+
+        // And the replaced database's log is gone, or it would corrupt this one.
+        assert!(!dir.join(format!("{DB_FILE}-wal")).exists());
+    }
+
+    /// Sound, restorable, and empty — which every other check passes.
+    #[test]
+    fn a_backup_with_no_bills_in_it_says_so_before_it_is_restored() {
+        let dir = a_shop("empty-backup");
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let source = work.join("empty.db");
+        a_shop_that_has_been_trading(&source, 0);
+
+        let check = examine(&source, 33);
+
+        /* Not a refusal: a till backed up on the day it was set up honestly has
+           no bills, and only the shopkeeper can tell that from the other case.
+           But restoring this over a trading shop erases the shop, so it cannot
+           pass in silence. */
+        assert!(check.ok);
+        assert_eq!(check.bills, 0);
+        let said = check.warning.expect("an empty backup must warn");
+        assert!(said.contains("no bills"), "{said}");
+        assert!(said.contains("empty shop"), "{said}");
     }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { deviceSetting, setDeviceSetting } from '../core/device'
 import {
   Money, Backup, setSetting, loadLoyaltyProgram, CARRY_WINDOW_DAYS,
@@ -13,7 +13,7 @@ import {
   todaysBackupName, recordHookRun, lastHookRun, onHookResult,
   backupFolderProblem, HOOK_SETTING, type BackupEntry, type HookRun,
 } from '../core/backup'
-import { lastRestore, type RestoreReport } from '../core/restore'
+import { lastRestore, inspectBackup, type RestoreReport, type RestoreCheck } from '../core/restore'
 import { appVersion, versionLine, type AppVersion } from '../core/version'
 import { Card, Field, Alert } from '../ui/components'
 import { SyncCard } from '../ui/SyncCard'
@@ -55,6 +55,8 @@ export default function Settings() {
   const [printer, setPrinter] = useState('')
   const [systemDefault, setSystemDefault] = useState<string | null>(null)
   const [backups, setBackups] = useState<BackupEntry[]>([])
+  const [checking, setChecking] = useState<string | null>(null)
+  const [checked, setChecked] = useState<Record<string, CheckResult>>({})
   const [restore, setRestore] = useState<RestoreReport>({ restored: null, error: null })
   const [copyTo, setCopyTo] = useState('')
   const [busy, setBusy] = useState(false)
@@ -97,6 +99,24 @@ export default function Settings() {
   }, [])
 
   useEffect(() => { void refreshBackups() }, [refreshBackups])
+
+  /**
+   * Opens a backup and says what is in it.
+   *
+   * The integrity result is the smaller half of the answer. What a shopkeeper
+   * is actually asking is "is this the one I want", and the thing that answers
+   * that is the bill count and the date of the last bill — figures they can
+   * check against what they remember happening.
+   */
+  async function checkOne(name: string) {
+    setChecking(name)
+    try {
+      const result = await inspectBackup(name)
+      setChecked((was) => ({ ...was, [name]: result }))
+    } finally {
+      setChecking(null)
+    }
+  }
   useEffect(() => { void lastRestore().then(setRestore) }, [])
 
   // Applied immediately so the choice is visible while still on this screen.
@@ -623,7 +643,8 @@ export default function Settings() {
             <thead><tr><th>Backup</th><th className="r">Size</th><th /></tr></thead>
             <tbody>
               {backups.map((f, i) => (
-                <tr key={f.name}>
+                <Fragment key={f.name}>
+                <tr>
                   <td className="num">
                     {f.date}{f.time ? ` ${f.time}` : ''}
                     {i === 0 && <span className="badge ok" style={{ marginLeft: 7 }}>latest</span>}
@@ -633,6 +654,14 @@ export default function Settings() {
                   </td>
                   <td className="r num">{formatSize(f.size)}</td>
                   <td className="r" style={{ whiteSpace: 'nowrap' }}>
+                    {/* Opening it is the only way to know it is a backup. Every
+                        one written since this build checks itself on the way
+                        out, but a file that has sat on a USB stick for a year,
+                        or came off another machine, has been checked by nobody. */}
+                    <button className="btn ghost sm" disabled={checking === f.name}
+                      onClick={() => void checkOne(f.name)}>
+                      {checking === f.name ? 'Checking…' : 'Check'}
+                    </button>
                     <button className="btn ghost sm" disabled={!copyTo || busy}
                       onClick={() => void copyOut(f.name)}>Copy out</button>
                     {i > 0 && (
@@ -641,6 +670,14 @@ export default function Settings() {
                     )}
                   </td>
                 </tr>
+                {checked[f.name] && (
+                  <tr>
+                    <td colSpan={3} style={{ paddingTop: 0 }}>
+                      <BackupVerdict result={checked[f.name]!} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
               {backups.length === 0 && (
                 <tr><td colSpan={3} style={{ color: 'var(--ink-3)' }}>
@@ -1072,6 +1109,39 @@ function Choice<T extends string>({
           </span>
         </label>
       ))}
+    </div>
+  )
+}
+
+/** What `inspectBackup` can come back with: a reading, or a reason it could not take one. */
+type CheckResult = RestoreCheck | { failed: string }
+
+/**
+ * What one backup turned out to contain.
+ *
+ * Ordered by what a shopkeeper is actually asking. "Is this the one I want"
+ * comes first and is answered by the bill count and the last bill's date —
+ * figures they can hold against what they remember. "Is the file broken" is the
+ * smaller question and it is answered by this row existing at all without a
+ * problem on it.
+ */
+function BackupVerdict({ result }: { result: CheckResult }) {
+  if ('failed' in result) return <Alert>{result.failed}</Alert>
+  if (result.problem) return <Alert>{result.problem}</Alert>
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>
+        <strong>{result.bills.toLocaleString('en-IN')}</strong>
+        {result.bills === 1 ? ' bill' : ' bills'}
+        {result.last_bill && <> — the last one dated {result.last_bill}</>}
+        {'. '}
+        {/* Said plainly rather than as a tick: the whole reason this button
+            exists is that "backed up" and "has a backup that opens" were two
+            different things and nothing in the product could tell them apart. */}
+        Opened and checked, nothing damaged.
+      </div>
+      {result.warning && <Alert kind="warn">{result.warning}</Alert>}
     </div>
   )
 }
