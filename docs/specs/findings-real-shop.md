@@ -198,3 +198,44 @@ The live database is one migration behind the code, so it has not been opened
 by a current build. Useful rather than a problem: it is a genuine "needs
 migrating" database, which is what migration 028 and Phase 2c's replay test
 want to run against.
+
+---
+
+## 9. The GST export and the dashboard disagree about tax, by one credit note
+
+Found while putting returns into `taxByRate` and `gstLines`
+(`docs/specs/evidence/returns-in-gst-real-shop.txt` has the figures).
+
+On this database:
+
+- `salesSummary.tax` = 3,137.77
+- the rate rows now come to 3,101.34
+- the difference is 36.43, which is the tax on the shop's one credit note
+
+Both readings are defensible. The dashboard figure is tax charged on bills in
+the period; the rate rows are what the return is filed on, which is net of
+credit notes. They answer different questions.
+
+They are still two numbers on two screens of one product, and a shopkeeper will
+read them as the same number. The Phase 1 checklist says `salesSummary` is to
+be unchanged by this work, so it is unchanged. Left for the 1b/1c review to
+settle, with three ways out: label the dashboard figure "tax charged", net the
+returns off it with `sales_returns.tax_reversed`, or show both.
+
+Not urgent while the shop has one credit note in its whole history. It stops
+being not-urgent the first month it has twenty.
+
+## 10. CGST and SGST still differ on the bills already raised
+
+The rate summary over the whole history:
+
+    12%   cgst = 1,198.21   sgst = 1,198.36
+    18%   cgst =   352.32   sgst =   352.45
+
+That is finding 1 showing through. The fix in `domain/tax.ts` splits evenly
+from the day it shipped; it does not and must not reach back. Those bills were
+issued, the customer holds a copy, and a submitted document is never rewritten.
+
+Worth knowing because the first person to run the GST export after the fix will
+see halves that do not match and reasonably wonder whether the fix worked. It
+did. The bills below it are older than the fix.

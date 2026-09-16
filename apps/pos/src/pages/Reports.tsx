@@ -118,10 +118,15 @@ export default function Reports() {
     const lines = await R.gstLines(db, range)
     if (lines.length === 0) { setError('There are no submitted bills in this range.'); return }
 
+    /* Two columns a CA needs and the sheet did not have: which kind of document
+       a row is, and — for a credit note — the invoice it is raised against,
+       which is what GSTR-1 table 9B is filled from. */
     const csv = R.toCsv(
-      ['Bill', 'Date', 'Customer', 'GSTIN', 'Place of supply', 'Rate %', 'Taxable', 'CGST', 'SGST', 'IGST', 'Total'],
+      ['Document', 'Type', 'Against', 'Date', 'Customer', 'GSTIN', 'Place of supply',
+        'Rate %', 'Taxable', 'CGST', 'SGST', 'IGST', 'Total'],
       lines.map((l) => [
-        l.docNo, l.postingDate, l.customerName, l.gstin, l.placeOfSupply, l.rateBp / 100,
+        l.docNo, l.kind === 'credit_note' ? 'Credit note' : 'Invoice', l.againstDocNo ?? '',
+        l.postingDate, l.customerName, l.gstin, l.placeOfSupply, l.rateBp / 100,
         rupeeCell(l.taxable), rupeeCell(l.cgst), rupeeCell(l.sgst), rupeeCell(l.igst), rupeeCell(l.total),
       ]),
     )

@@ -1,6 +1,6 @@
 import { type Money, format as fmtMoney, inWords } from '../money.js'
 import type { DocWording } from './wording.js'
-import { type Qty, formatQty } from '../quantity.js'
+import { QTY_SCALE, type Qty, formatQty } from '../quantity.js'
 import type { Block, DocFormat, Facts } from './docFormat.js'
 import { rollColumns, STANDARD_RECEIPT, fillTokens } from './docFormat.js'
 
@@ -417,8 +417,12 @@ function itemRows(index: number, item: ReceiptItem, width = WIDTH): string {
   let rows = `${sno} ${name}${LF}${' '.repeat(INDENT)}${qty}${rate}${amount}${LF}`
 
   if (item.mrp && item.mrp > item.rate) {
-    const units = item.lineTotal / item.rate
-    const saved = Math.round((item.mrp - item.rate) * units)
+    /* The quantity is on the line. It used to be recovered by dividing the line
+       total by the rate, which is a different number whenever the line carries a
+       discount -- the saving was then understated by the discount, which is the
+       opposite of the truth -- and is `Infinity` on a free line, printing
+       `Save NaN` on the customer's receipt. Money is never divided by money. */
+    const saved = Math.round(((item.mrp - item.rate) * item.qty) / QTY_SCALE)
     const left = `MRP ${fmtMoney(item.mrp)}`
     const right = `Save ${fmtMoney(saved as Money)}`
     const gap = Math.max(1, width - INDENT - left.length - right.length)

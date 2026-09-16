@@ -102,6 +102,11 @@ interface ComputedReturnLine {
   cgst: Money
   sgst: Money
   igst: Money
+  /* Rule 53 wants the credit note to carry the same HSN and rate as the line it
+     reverses. Copied off the bill line, never off the product, because the rate
+     on the product today is not the rate that was charged. */
+  hsnCode: string | null
+  taxRateBp: number
 }
 
 type ComputeResult =
@@ -121,24 +126,40 @@ async function computeLines(
 ): Promise<ComputeResult> {
   if (lines.length === 0) return { ok: false, code: 'NO_LINES' }
 
-  const bill = await db.get<{ id: string; docstatus: number; place_of_supply: string | null }>(
-    `SELECT id, docstatus, place_of_supply FROM bills WHERE id = ?`,
+  const bill = await db.get<{
+    id: string; docstatus: number; place_of_supply: string | null; supply_type: string | null
+  }>(
+    `SELECT id, docstatus, place_of_supply, supply_type FROM bills WHERE id = ?`,
     [billId],
   )
   if (!bill) throw new Error(`unknown bill: ${billId}`)
   if (bill.docstatus !== SUBMITTED) return { ok: false, code: 'BILL_NOT_SUBMITTED' }
 
-  const shopState = await getSetting(db, 'shop_state_code')
-  const supply = supplyTypeFor(shopState, bill.place_of_supply)
+  /* A credit note reverses tax the shop has already charged and already filed,
+     so it has to reverse the tax that was charged — not the tax the same goods
+     would attract if they were sold again today.
+
+     This used to re-derive the supply type from the shop's current state setting
+     and the customer's state, which is a different question with a different
+     answer: a shop that corrects its own state code, or a customer moved to the
+     right state after the sale, would have found IGST credited back against
+     CGST+SGST collected, and the difference would have sat in the return
+     unexplained. The bill says what it was. Rule 53 asks for exactly that. */
+  const supply = bill.supply_type === 'inter_state' || bill.supply_type === 'intra_state'
+    ? bill.supply_type
+    // Only for a bill submitted before migration 028 backfilled it, which the
+    // migration leaves none of. Deriving is what this did before, so a gap here
+    // is no worse than the behaviour it replaces.
+    : supplyTypeFor(await getSetting(db, 'shop_state_code'), bill.place_of_supply)
 
   const computed: ComputedReturnLine[] = []
 
   for (const line of lines) {
     const item = await db.get<{
       id: string; product_id: string; product_name: string; qty: number; base_qty: number
-      returned_qty: number; line_total: number; tax_rate_bp: number
+      returned_qty: number; line_total: number; tax_rate_bp: number; hsn_code: string | null
     }>(
-      `SELECT id, product_id, product_name, qty, base_qty, returned_qty, line_total, tax_rate_bp
+      `SELECT id, product_id, product_name, qty, base_qty, returned_qty, line_total, tax_rate_bp, hsn_code
          FROM bill_items WHERE id = ? AND bill_id = ?`,
       [line.billItemId, billId],
     )
@@ -173,6 +194,8 @@ async function computeLines(
       productName: item.product_name,
       qty: line.qty,
       baseQty: qty(Math.round((item.base_qty * line.qty) / item.qty)),
+      hsnCode: item.hsn_code,
+      taxRateBp: item.tax_rate_bp,
       refund,
       taxableValue: tax.taxableValue,
       cgst: tax.cgst,
@@ -247,11 +270,12 @@ export async function createReturn(db: SqlDriver, input: CreateReturnInput): Pro
       await tx.execute(
         `INSERT INTO sales_return_items
            (id, return_id, bill_item_id, product_id, qty, base_qty, refund_amount,
-            taxable_value, cgst_amount, sgst_amount, igst_amount)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            taxable_value, cgst_amount, sgst_amount, igst_amount, hsn_code, tax_rate_bp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           newId(), returnId, line.billItemId, line.productId, line.qty, line.baseQty,
           line.refund, line.taxableValue, line.cgst, line.sgst, line.igst,
+          line.hsnCode, line.taxRateBp,
         ],
       )
     }

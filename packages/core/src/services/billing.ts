@@ -489,6 +489,7 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     now,
   )
   const register = await db.get<{ prefix: string }>(`SELECT prefix FROM registers WHERE id = ?`, [bill.registerId])
+  const snapshot = await recipientSnapshot(db, bill)
   const nowIso = now.toISOString()
   let docNo = ''
 
@@ -553,9 +554,19 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
 
     await tx.execute(
       `UPDATE bills
-          SET docstatus = 1, doc_no = ?, paid_total = ?, credit_total = ?, idempotency_key = ?, updated_at = ?
+          SET docstatus = 1, doc_no = ?, paid_total = ?, credit_total = ?, idempotency_key = ?,
+              supply_type = ?, customer_gstin = ?, customer_address = ?, customer_state_code = ?,
+              updated_at = ?
         WHERE id = ?`,
-      [docNo, sub(bill.grandTotal, creditTotal), creditTotal, input.idempotencyKey ?? null, nowIso, input.billId],
+      [
+        docNo, sub(bill.grandTotal, creditTotal), creditTotal, input.idempotencyKey ?? null,
+        // The document takes its own copy of what it said, here and nowhere later.
+        // `reverse_charge` keeps its default of 0: nothing in this product raises
+        // a bill under reverse charge, and a column that lies about it would be
+        // worse than one that does not exist.
+        snapshot.supplyType, snapshot.gstin, snapshot.address, snapshot.stateCode,
+        nowIso, input.billId,
+      ],
     )
 
     /* The order is marked off here and nowhere earlier. Loading an order onto
@@ -768,6 +779,8 @@ interface BillRow {
   /** Carried into an amendment. See `amendBill`. */
   discount: Money
   notes: string | null
+  /** The state the lines were taxed against. See `recipientSnapshot`. */
+  placeOfSupply: string | null
 }
 
 async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
@@ -775,9 +788,10 @@ async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
     id: string; doc_no: string; docstatus: number; register_id: string; session_id: string | null
     customer_id: string | null; posting_date: string; grand_total: number
     converted_from: string | null; discount: number; notes: string | null
+    place_of_supply: string | null
   }>(
     `SELECT id, doc_no, docstatus, register_id, session_id, customer_id, posting_date, grand_total,
-            converted_from, discount, notes
+            converted_from, discount, notes, place_of_supply
        FROM bills WHERE id = ?`,
     [billId],
   )
@@ -794,6 +808,52 @@ async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
     convertedFrom: row.converted_from,
     discount: row.discount as Money,
     notes: row.notes,
+    placeOfSupply: row.place_of_supply,
+  }
+}
+
+interface RecipientSnapshot {
+  supplyType: SupplyType
+  gstin: string | null
+  address: string | null
+  stateCode: string | null
+}
+
+/**
+ * Who the invoice was issued to, decided once, at submit, and never read off a
+ * live join again.
+ *
+ * Migration 028 gave `bills` these columns for one reason: this product read the
+ * recipient's name, address, GSTIN and place of supply out of `customers` every
+ * time anybody reprinted a bill or ran a GST export, so a customer who moved
+ * premises or corrected their GSTIN silently rewrote every invoice ever issued
+ * to them. A reprint stopped matching the copy in the customer's hand.
+ *
+ * The GSTIN and the address are taken from the customer as they stand now,
+ * because now is when the document is being issued.
+ *
+ * The state is not. It is taken from `bills.place_of_supply`, which is the value
+ * `priceBill` decided the tax against when the cart was priced. Reading the
+ * customer's state a second time here would let a record corrected between the
+ * draft being saved and the money being taken produce a bill whose stated place
+ * of supply contradicts the tax printed on its own lines — CGST+SGST under a
+ * heading that says Maharashtra. Whatever else is true, a document may not
+ * disagree with itself. `supply_type` is derived from the same value for the
+ * same reason.
+ */
+async function recipientSnapshot(db: SqlDriver, bill: BillRow): Promise<RecipientSnapshot> {
+  const customer = bill.customerId
+    ? await db.get<{ gstin: string | null; address: string | null }>(
+        `SELECT gstin, address FROM customers WHERE id = ?`,
+        [bill.customerId],
+      )
+    : null
+
+  return {
+    supplyType: await supplyFor(db, bill.placeOfSupply),
+    gstin: customer?.gstin ?? null,
+    address: customer?.address ?? null,
+    stateCode: bill.placeOfSupply,
   }
 }
 
