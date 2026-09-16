@@ -1,4 +1,6 @@
+import { count } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { rupees, type Money } from '../money.js'
 import { fromUnits } from '../quantity.js'
@@ -16,7 +18,7 @@ export interface FirstRunInput {
 }
 
 export async function isFirstRun(db: SqlDriver): Promise<boolean> {
-  const row = await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM users`)
+  const [row] = await q(db).select({ n: count() }).from(schema.users)
   return (row?.n ?? 0) === 0
 }
 
@@ -86,44 +88,61 @@ export async function seedDemoData(db: SqlDriver, actorId: string): Promise<{ pr
   const now = new Date().toISOString()
 
   const wholesaleId = newId()
-  await db.execute(
-    `INSERT INTO price_lists (id, name, is_default, created_at, updated_at) VALUES (?, 'Wholesale', 0, ?, ?)`,
-    [wholesaleId, now, now],
-  )
+  await q(db).insert(schema.priceLists).values({
+    id: wholesaleId, name: 'Wholesale', isDefault: 0, createdAt: now, updatedAt: now,
+  })
 
   const category = newId()
-  await db.execute(`INSERT INTO categories (id, name, created_at, updated_at) VALUES (?, 'Stationery', ?, ?)`, [category, now, now])
+  await q(db).insert(schema.categories).values({
+    id: category, name: 'Stationery', createdAt: now, updatedAt: now,
+  })
 
   const productIds: { id: string; cost: number; stock: number }[] = []
 
   for (const p of DEMO_PRODUCTS) {
     const id = newId()
-    await db.execute(
-      `INSERT INTO products
-         (id, name, brand, category_id, barcode, hsn_code, tax_rate_bp, base_rate, mrp, base_unit, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, p.name, p.brand, category, p.barcode, p.hsn, p.taxPercent * 100, rupees(p.rate), rupees(p.rate), p.unit ?? 'piece', now, now],
-    )
+    await q(db).insert(schema.products).values({
+      id,
+      name: p.name,
+      brand: p.brand,
+      categoryId: category,
+      barcode: p.barcode,
+      hsnCode: p.hsn,
+      taxRateBp: p.taxPercent * 100,
+      baseRate: rupees(p.rate),
+      mrp: rupees(p.rate),
+      baseUnit: p.unit ?? 'piece',
+      createdAt: now,
+      updatedAt: now,
+    })
 
     // The scanner reads product_barcodes, not products.barcode: a product whose
     // printed code has no row here cannot be scanned.
-    await db.execute(
-      `INSERT INTO product_barcodes (id, product_id, barcode, is_primary, created_at) VALUES (?, ?, ?, 1, ?)`,
-      [newId(), id, p.barcode, now],
-    )
+    await q(db).insert(schema.productBarcodes).values({
+      id: newId(), productId: id, barcode: p.barcode, isPrimary: 1, createdAt: now,
+    })
 
     // A dozen for the pen lines, so tiered and unit pricing have something to act on.
     if (p.name.includes('Pen') || p.name.includes('Pencil')) {
-      await db.execute(
-        `INSERT INTO product_units (id, product_id, sale_unit, base_units, is_default, created_at, updated_at)
-         VALUES (?, ?, 'dozen', ?, 0, ?, ?)`,
-        [newId(), id, fromUnits(12), now, now],
-      )
-      await db.execute(
-        `INSERT INTO item_prices (id, product_id, price_list_id, sale_unit, min_qty, rate, created_at, updated_at)
-         VALUES (?, ?, ?, 'piece', ?, ?, ?, ?)`,
-        [newId(), id, wholesaleId, fromUnits(50), rupees(p.rate * 0.85), now, now],
-      )
+      await q(db).insert(schema.productUnits).values({
+        id: newId(),
+        productId: id,
+        saleUnit: 'dozen',
+        baseUnits: fromUnits(12),
+        isDefault: 0,
+        createdAt: now,
+        updatedAt: now,
+      })
+      await q(db).insert(schema.itemPrices).values({
+        id: newId(),
+        productId: id,
+        priceListId: wholesaleId,
+        saleUnit: 'piece',
+        minQty: fromUnits(50),
+        rate: rupees(p.rate * 0.85),
+        createdAt: now,
+        updatedAt: now,
+      })
     }
 
     productIds.push({ id, cost: p.cost, stock: p.stock })
@@ -149,17 +168,18 @@ export async function seedDemoData(db: SqlDriver, actorId: string): Promise<{ pr
   const shopState = await getSetting(db, 'shop_state_code')
 
   for (const c of DEMO_CUSTOMERS) {
-    await db.execute(
-      `INSERT INTO customers (id, name, phone, gstin, credit_limit, credit_enforcement, price_list_id, state_code, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        newId(), c.name, c.phone || null, c.gstin ?? null,
-        rupees(c.creditLimit), c.enforcement,
-        c.name === 'Sri Vidya School' ? wholesaleId : null,
-        resolveCustomerState({ gstin: c.gstin ?? null, shopState }),
-        now, now,
-      ],
-    )
+    await q(db).insert(schema.customers).values({
+      id: newId(),
+      name: c.name,
+      phone: c.phone || null,
+      gstin: c.gstin ?? null,
+      creditLimit: rupees(c.creditLimit),
+      creditEnforcement: c.enforcement,
+      priceListId: c.name === 'Sri Vidya School' ? wholesaleId : null,
+      stateCode: resolveCustomerState({ gstin: c.gstin ?? null, shopState }),
+      createdAt: now,
+      updatedAt: now,
+    })
   }
 
   await setSetting(db, 'loyalty_program', JSON.stringify({

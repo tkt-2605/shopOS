@@ -1,4 +1,6 @@
+import { eq, and, isNotNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { deviceId } from '../device.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import type { PeerHello, SyncTransport } from './sync.js'
@@ -151,13 +153,14 @@ export async function pairWith(
     throw new SyncHttpError(502, 'MALFORMED')
   }
 
-  await db.execute(
-    `INSERT INTO sync_peers (device_id, label, secret, address, created_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (device_id) DO UPDATE SET
-       label = excluded.label, secret = excluded.secret, address = excluded.address`,
-    [agreed.deviceId, agreed.label, agreed.secret, baseUrl, clock.iso()],
-  )
+  const peer = {
+    label: agreed.label,
+    secret: agreed.secret,
+    address: baseUrl,
+  }
+  await q(db).insert(schema.syncPeers)
+    .values({ deviceId: agreed.deviceId, ...peer, createdAt: clock.iso() })
+    .onConflictDoUpdate({ target: schema.syncPeers.deviceId, set: peer })
 
   return {
     deviceId: agreed.deviceId,
@@ -169,13 +172,22 @@ export async function pairWith(
 
 /** Everyone this till can reach, for the sync loop and for a screen. */
 export async function pairedPeers(db: SqlDriver): Promise<PeerAddress[]> {
-  const rows = await db.query<{ device_id: string; secret: string | null; address: string | null }>(
-    `SELECT device_id, secret, address FROM sync_peers
-      WHERE secret IS NOT NULL AND address IS NOT NULL
-      ORDER BY created_at`,
-  )
+  const rows = await q(db)
+    .select({
+      deviceId: schema.syncPeers.deviceId,
+      secret: schema.syncPeers.secret,
+      address: schema.syncPeers.address,
+    })
+    .from(schema.syncPeers)
+    .where(and(isNotNull(schema.syncPeers.secret), isNotNull(schema.syncPeers.address)))
+    .orderBy(schema.syncPeers.createdAt)
+
+  /* Both columns are nullable in the table -- a peer that is half set up has
+     one or the other -- and the query has just asked for the rows where
+     neither is. The non-null assertions say that, and the `where` above is
+     what makes them true. */
   return rows.map((r) => ({
-    deviceId: r.device_id, secret: r.secret!, baseUrl: r.address!,
+    deviceId: r.deviceId, secret: r.secret!, baseUrl: r.address!,
   }))
 }
 
@@ -183,7 +195,7 @@ export async function pairedPeers(db: SqlDriver): Promise<PeerAddress[]> {
 export async function rememberAddress(
   db: SqlDriver, peerDeviceId: string, baseUrl: string,
 ): Promise<void> {
-  await db.execute(
-    `UPDATE sync_peers SET address = ? WHERE device_id = ?`, [baseUrl, peerDeviceId],
-  )
+  await q(db).update(schema.syncPeers)
+    .set({ address: baseUrl })
+    .where(eq(schema.syncPeers.deviceId, peerDeviceId))
 }

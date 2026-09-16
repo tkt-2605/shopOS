@@ -94,10 +94,10 @@ async function planOf(run: (driver: SqlDriver) => Promise<unknown>, match: RegEx
 
 describe('the Bills page, on twenty thousand bills', () => {
   it('finds its fifty rows through an index instead of reading every bill', async () => {
-    const plan = await planOf((d) => listBills(d, { status: 'live' }), /FROM bills b/)
+    const plan = await planOf((d) => listBills(d, { status: 'live' }), reads('bills'))
 
     expect(plan).toContain('USING INDEX idx_bills_ledger')
-    expect(plan).not.toContain('SCAN b')
+    expect(plan).not.toContain('SCAN bills')
     /* The date is in the index, so only the `created_at` tiebreak is sorted.
        "LAST TERM" rather than the whole ORDER BY is the difference between
        sorting fifty rows and sorting nineteen thousand eight hundred. */
@@ -105,7 +105,7 @@ describe('the Bills page, on twenty thousand bills', () => {
   })
 
   it('counts them the same way', async () => {
-    const plan = await planOf((d) => countBills(d, { status: 'live' }), /COUNT\(\*\)/)
+    const plan = await planOf((d) => countBills(d, { status: 'live' }), /count\(\*\)/i)
     expect(plan).toContain('idx_bills_ledger')
   })
 
@@ -117,7 +117,7 @@ describe('the Bills page, on twenty thousand bills', () => {
       reads('bills'),
     )
     expect(plan).toMatch(/USING INDEX idx_bills_(date|ledger)/)
-    expect(plan).not.toContain('SCAN b')
+    expect(plan).not.toContain('SCAN bills')
   })
 })
 

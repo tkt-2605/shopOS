@@ -1,4 +1,6 @@
+import { eq, and, lt, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 import { deviceId } from '../device.js'
@@ -152,9 +154,10 @@ export async function handleSyncRequest(
   const auth = await verify(
     request.auth, request.path, request.body,
     async (id) => {
-      const row = await db.get<{ secret: string | null }>(
-        `SELECT secret FROM sync_peers WHERE device_id = ?`, [id],
-      )
+      const [row] = await q(db)
+        .select({ secret: schema.syncPeers.secret })
+        .from(schema.syncPeers)
+        .where(eq(schema.syncPeers.deviceId, id))
       return row?.secret ?? null
     },
     now,
@@ -171,10 +174,15 @@ export async function handleSyncRequest(
      address and make the shop's next sync dial them instead. */
   const seenAt = peerAddressFrom(request)
   if (seenAt !== null) {
-    await db.execute(
-      `UPDATE sync_peers SET address = ? WHERE device_id = ? AND (address IS NOT ? OR address IS NULL)`,
-      [seenAt, auth.deviceId, seenAt],
-    )
+    /* `IS NOT` rather than `<>`, because the column is nullable and a peer
+       recorded without an address has NULL in it -- which `<>` answers NULL
+       for, and the row is never updated. */
+    await q(db).update(schema.syncPeers)
+      .set({ address: seenAt })
+      .where(and(
+        eq(schema.syncPeers.deviceId, auth.deviceId),
+        sql`${schema.syncPeers.address} IS NOT ${seenAt}`,
+      ))
   }
 
   switch (request.path) {
@@ -221,14 +229,25 @@ async function handlePair(
      Without it the joining till is recorded as a peer that cannot be reached,
      which reads on every later screen as a till that is paired and quiet. */
   const address = peerAddressFrom(request)
-  await db.execute(
-    `INSERT INTO sync_peers (device_id, label, secret, address, created_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (device_id) DO UPDATE SET
-       label = excluded.label, secret = excluded.secret,
-       address = COALESCE(excluded.address, sync_peers.address)`,
-    [theirDevice, asked.label ?? null, secret, address, new Date(now).toISOString()],
-  )
+  await q(db).insert(schema.syncPeers)
+    .values({
+      deviceId: theirDevice,
+      label: asked.label ?? null,
+      secret,
+      address,
+      createdAt: new Date(now).toISOString(),
+    })
+    .onConflictDoUpdate({
+      target: schema.syncPeers.deviceId,
+      set: {
+        label: asked.label ?? null,
+        secret,
+        /* The address only if this pairing learned one. A till re-pairing over
+           a request that carried no port would otherwise forget where the
+           other one is and go quiet with nothing saying why. */
+        address: sql`COALESCE(${address ?? null}, ${schema.syncPeers.address})`,
+      },
+    })
 
   /* A till that has just joined has none of the shop, and the feed only holds
      what has changed since migration 021 -- on a shop that had been selling for
@@ -280,10 +299,14 @@ async function handleFetch(
   /* Their cursor is recorded from what they ask for, not from what we send. A
      till asking for everything after 40 has told us it has 40, and that is the
      only claim about their progress we have any business believing. */
-  await db.execute(
-    `UPDATE sync_peers SET my_cursor = ? WHERE device_id = ? AND my_cursor < ?`,
-    [since, them, since],
-  )
+  /* Never backwards. A request that arrives out of order carries an older
+     cursor, and moving it back would send everything between twice. */
+  await q(db).update(schema.syncPeers)
+    .set({ myCursor: since })
+    .where(and(
+      eq(schema.syncPeers.deviceId, them),
+      lt(schema.syncPeers.myCursor, since),
+    ))
 
   return ok(await collectChanges(db, since, limit))
 }
@@ -317,17 +340,20 @@ async function handleOffer(
      disagree, one of them is lying and neither is worth acting on. */
   if (batch.fromDevice !== them) return refuse(403, 'NOT_YOUR_BATCH')
 
-  const row = await db.get<{ their_cursor: number }>(
-    `SELECT their_cursor FROM sync_peers WHERE device_id = ?`, [them],
-  )
+  const [row] = await q(db)
+    .select({ theirCursor: schema.syncPeers.theirCursor })
+    .from(schema.syncPeers)
+    .where(eq(schema.syncPeers.deviceId, them))
 
-  const both = await changedHere(db, row?.their_cursor ?? 0)
+  const both = await changedHere(db, row?.theirCursor ?? 0)
   await applyBatch(db, batch, both)
 
-  await db.execute(
-    `UPDATE sync_peers SET their_cursor = ?, last_agreed_at = ? WHERE device_id = ? AND their_cursor < ?`,
-    [batch.upTo, clock.iso(), them, batch.upTo],
-  )
+  await q(db).update(schema.syncPeers)
+    .set({ theirCursor: batch.upTo, lastAgreedAt: clock.iso() })
+    .where(and(
+      eq(schema.syncPeers.deviceId, them),
+      lt(schema.syncPeers.theirCursor, batch.upTo),
+    ))
 
   return ok({ upTo: batch.upTo })
 }
