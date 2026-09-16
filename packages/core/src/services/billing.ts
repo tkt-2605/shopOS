@@ -692,6 +692,37 @@ export async function amendBill(
     [input.billId],
   )
 
+  /* Everything the original charged, to the paisa.
+     The line discount was being selected and then dropped on the floor, and the
+     notes were never read at all -- so amending a bill of 1,000 rupees less 100
+     produced a draft for the full 1,000, with tax on the full 1,000. A shop
+     correcting one line of a discounted bill handed the customer a *larger*
+     bill than the one being corrected, and the discount had to be found on the
+     cancelled copy and typed in again.
+
+     ── Why the bill discount is not passed as a bill discount ──────────────
+     `computeTotals` spreads a bill-level discount across the lines that may
+     carry it, and `bill_items.discount` is stored as the line's own discount
+     *plus* its share of that spread. The split is not recoverable from the
+     stored row: the shares are apportioned by weights that are themselves
+     computed from the own-discounts. So carrying the line discounts and the
+     bill discount would subtract the same money twice -- 1,000 less 100 would
+     amend to 900 less another 100. The first version of this did exactly that
+     and the test below caught it.
+
+     Carrying the stored line discounts alone reproduces the original exactly:
+     every line's net, taxable value and tax are identical, and so is the total.
+     What is not reproduced is the presentation -- the amendment shows the whole
+     reduction against the lines rather than some of it on the bill. That is a
+     difference in how it reads, not in what is owed, and it is the honest one
+     of the two available answers.
+
+     ── Why the posting date is not carried ─────────────────────────────────
+     This is a new document raised today. Under GST there is no amended
+     invoice, only a cancellation and a fresh one, so it takes today's date and
+     its own number from the same series. Carrying the old date would back-date
+     a document into a period that may already have been filed. `createBill`
+     defaults it, so it is simply not passed. */
   const created = await createBill(db, {
     registerId: source.registerId,
     customerId: source.customerId,
@@ -704,7 +735,9 @@ export async function amendBill(
       saleUnit: l.sale_unit,
       qty: qty(l.qty),
       rateOverride: l.rate as Money,
+      discount: l.discount as Money,
     })),
+    ...(source.notes !== null ? { notes: source.notes } : {}),
     actorId: input.actorId,
     ...(input.now ? { now: input.now } : {}),
   })
@@ -732,16 +765,19 @@ interface BillRow {
   postingDate: string
   grandTotal: Money
   convertedFrom: string | null
+  /** Carried into an amendment. See `amendBill`. */
+  discount: Money
+  notes: string | null
 }
 
 async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
   const row = await db.get<{
     id: string; doc_no: string; docstatus: number; register_id: string; session_id: string | null
     customer_id: string | null; posting_date: string; grand_total: number
-    converted_from: string | null
+    converted_from: string | null; discount: number; notes: string | null
   }>(
     `SELECT id, doc_no, docstatus, register_id, session_id, customer_id, posting_date, grand_total,
-            converted_from
+            converted_from, discount, notes
        FROM bills WHERE id = ?`,
     [billId],
   )
@@ -756,6 +792,8 @@ async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
     postingDate: row.posting_date,
     grandTotal: row.grand_total as Money,
     convertedFrom: row.converted_from,
+    discount: row.discount as Money,
+    notes: row.notes,
   }
 }
 
