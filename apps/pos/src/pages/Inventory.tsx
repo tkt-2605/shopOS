@@ -11,6 +11,7 @@ import {
   type ProductListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { recordStockCheck } from '../core/maintenance'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 import { usePickList, Results } from '../ui/PickList'
@@ -374,14 +375,25 @@ export default function Inventory() {
     setValuation({ name: p.name, qty: v.qtyOnHand, value: v.totalValue, avg: v.averageCost })
   }
 
+  /**
+   * The full replay, on purpose and by hand.
+   *
+   * One pass, not two. This used to replay the ledger to count the drift and
+   * then replay it again to fix it — twice the longest table in the shop, for
+   * one button. `repair` reports what it changed as it changes it.
+   *
+   * The result is written down where the Dashboard reads it, so the warning
+   * there clears the moment this is dealt with instead of at the next weekly
+   * run. Nothing else on either screen connects the two.
+   */
   async function checkStock() {
-    const drift = await recomputeStock(db)
+    const drift = await recomputeStock(db, { repair: true })
     setNotice(
       drift.length === 0
         ? 'Stock matches the ledger exactly — no drift.'
         : `${drift.length} product(s) drifted from the ledger. Repaired.`,
     )
-    if (drift.length > 0) await recomputeStock(db, { repair: true })
+    await recordStockCheck({ at: new Date().toISOString(), drift: 0 })
     await refresh()
   }
 

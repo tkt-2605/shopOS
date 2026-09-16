@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { openMemoryDatabase } from '@shopos/core/node'
 import {
-  migrate, searchCustomers, countCustomers, totalOutstandingAll, type SqlDriver,
+  migrate, searchCustomers, countCustomers, totalOutstandingAll, recomputeStock,
+  applyBatch, newId, type ChangeBatch, type Row, type SqlDriver, type SqlValue,
 } from '@shopos/core'
+import { EXPECTED_SCHEMA_VERSION } from '../../../packages/core/src/db/schemaVersion.js'
 import { MIGRATIONS } from '@shopos/core/migrations'
 import { buildSyntheticShop, type SyntheticShop } from '../src/build.js'
 
@@ -75,5 +77,78 @@ describe('what the shop is owed, on a shop with six hundred customers', () => {
     const started = Date.now()
     await totalOutstandingAll(db)
     expect(Date.now() - started).toBeLessThan(2000)
+  })
+})
+
+
+/**
+ * How many rows a call actually read.
+ *
+ * A timing assertion on a loaded CI box is a coin toss, and the thing being
+ * claimed here is not "fast" but "does not read the whole ledger". Rows
+ * returned is what that means, it is deterministic, and it is what would change
+ * if somebody quietly dropped the scope again.
+ */
+function counting(db: SqlDriver): { driver: SqlDriver; rows: () => number } {
+  let read = 0
+  const driver: SqlDriver = {
+    query: async <T = Row>(sql: string, params: SqlValue[] = []) => {
+      const rows = await db.query<T>(sql, params)
+      read += rows.length
+      return rows
+    },
+    get: (sql, params) => db.get(sql, params),
+    execute: (sql, params) => db.execute(sql, params),
+    transaction: (fn) => fn(driver),
+    close: () => Promise.resolve(),
+  }
+  return { driver, rows: () => read }
+}
+
+describe('replaying the stock ledger, on forty-seven thousand movements', () => {
+  it('reads the whole ledger when asked about the whole shop', async () => {
+    const { driver, rows } = counting(db)
+    await recomputeStock(driver)
+    expect(rows()).toBeGreaterThan(shop.ledgerRows)
+  })
+
+  it('reads a hundredth of it when asked about one product', async () => {
+    /* The Dashboard used to pay the first of these on every mount, and a sync
+       round that carried one row for one item paid it again. */
+    const { driver, rows } = counting(db)
+    await recomputeStock(driver, { productIds: [shop.productIds[3]!] })
+
+    expect(rows()).toBeGreaterThan(0)
+    expect(rows()).toBeLessThan(shop.ledgerRows / 100)
+  })
+
+  it('finishes a merge carrying one ledger row without walking the shop', async () => {
+    /* The phase's own verification: "a sync round carrying one ledger row
+       replays one product". Counted rather than timed, and counted through
+       `applyBatch` rather than through `recomputeStock`, so it is the merge's
+       own decision being tested and not mine about what it should pass. */
+    const product = shop.productIds[7]!
+    const batch: ChangeBatch = {
+      fromDevice: '2222bbbb-2222-4222-8222-222222222222',
+      schemaVersion: EXPECTED_SCHEMA_VERSION,
+      records: [{
+        table: 'stock_ledger',
+        rowId: newId(),
+        op: 'upsert',
+        row: {
+          id: newId(), product_id: product, posting_date: '2026-09-15',
+          qty_change: -10_000, unit_cost: 1000, balance_qty: 0,
+          voucher_type: 'bill', voucher_id: newId(), created_by: null,
+          created_at: '2026-09-15T10:00:00.000Z',
+        },
+      }],
+      upTo: 1,
+      complete: true,
+    }
+
+    const { driver, rows } = counting(db)
+    const outcome = await applyBatch(driver, batch)
+    expect(outcome.applied).toBe(1)
+    expect(rows()).toBeLessThan(shop.ledgerRows / 100)
   })
 })

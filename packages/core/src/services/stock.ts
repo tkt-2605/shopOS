@@ -1,4 +1,4 @@
-import type { SqlDriver } from '../db/driver.js'
+import type { SqlDriver, SqlValue } from '../db/driver.js'
 import { newId } from '../ids.js'
 import { type Qty, qty, addQty, hasAtLeast, QTY_SCALE } from '../quantity.js'
 import type { Money } from '../money.js'
@@ -207,17 +207,89 @@ export interface StockDrift {
   actualValue: Money
 }
 
-export async function recomputeStock(db: SqlDriver, opts: { repair: boolean } = { repair: false }): Promise<StockDrift[]> {
+export interface RecomputeOptions {
+  /** Write the replayed figure back over the cache, rather than only reporting. */
+  repair?: boolean
+  /**
+   * Replay only these products. Omitted means every product in the shop.
+   *
+   * An empty array is "nothing to replay" and returns at once — it is what a
+   * caller naturally passes when nothing was touched, and treating it as "all"
+   * would be a trap.
+   */
+  productIds?: readonly string[]
+}
+
+/**
+ * How many product ids to put in one `IN (...)`.
+ *
+ * SQLite's parameter ceiling is 32,766 on anything current, so this is not
+ * about the limit; it is about the query plan. A very long `IN` list stops
+ * being a series of index seeks, and a merge that touched four hundred products
+ * is better served by three queries than by one enormous one.
+ */
+const CHUNK = 200
+
+/**
+ * Checks the stock cache against the ledger, and optionally repairs it.
+ *
+ * ## Scoped, since Phase 3
+ *
+ * This replays the ledger, and the ledger is the longest table in the shop. On
+ * a year of trade — 47,000 movements — a full replay is about 160 ms, and it
+ * was being run on every Dashboard mount and after every sync round that
+ * carried a single stock row. Both of those are the wrong shape: opening a
+ * screen should not cost a linear pass over the shop's history, and a merge
+ * that moved one product should not re-derive four hundred.
+ *
+ * With `productIds` it replays only those, which is the same arithmetic on a
+ * hundredth of the rows. Without them it replays everything, which is still
+ * exactly what a periodic drift check wants — the unbounded version is the one
+ * that finds a product nobody has touched, and it stays on the weekly job.
+ */
+export async function recomputeStock(db: SqlDriver, opts: RecomputeOptions = {}): Promise<StockDrift[]> {
+  const scope = opts.productIds
+  if (scope && scope.length === 0) return []
+
+  const drift: StockDrift[] = []
+  const now = new Date().toISOString()
+
+  for (const ids of scope ? chunked(scope, CHUNK) : [null]) {
+    drift.push(...await replay(db, ids, opts.repair === true, now))
+  }
+
+  return drift
+}
+
+/** One pass: `ids` null means the whole shop. */
+async function replay(
+  db: SqlDriver,
+  ids: readonly string[] | null,
+  repair: boolean,
+  now: string,
+): Promise<StockDrift[]> {
+  const holes = ids ? `(${ids.map(() => '?').join(', ')})` : ''
+  const params: SqlValue[] = ids ? [...ids] : []
+
   /* Replayed rather than summed.
-     
+
      The cache used to be checked against SUM(qty_change * unit_cost), which is
      only the same answer while stock never goes below zero. Once a shop can
      sell against a wrong count, the running value floors at zero and a later
      delivery rebases it, and neither of those survives being added up — the
      check would report drift on every overdrawn item for ever. So the ledger is
-     replayed through the one function that defines the rule. */
+     replayed through the one function that defines the rule.
+
+     `ORDER BY product_id, rowid` and not by `posting_date`: the rule depends on
+     the order the movements were *made*, because that is the order the cache
+     was built in. A backdated stock entry belongs where it was entered, not
+     where its date would put it, and sorting by date would make this function
+     disagree with `postMovement` about a shop that has ever backdated one. */
   const ledger = await db.query<{ product_id: string; qty_change: number; unit_cost: number | null }>(
-    `SELECT product_id, qty_change, unit_cost FROM stock_ledger ORDER BY product_id, rowid`,
+    `SELECT product_id, qty_change, unit_cost FROM stock_ledger
+      ${ids ? `WHERE product_id IN ${holes}` : ''}
+      ORDER BY product_id, rowid`,
+    params,
   )
 
   const byProduct = new Map<string, LedgerMovement[]>()
@@ -227,13 +299,17 @@ export async function recomputeStock(db: SqlDriver, opts: { repair: boolean } = 
     byProduct.set(row.product_id, movements)
   }
 
+  /* Driven from `products` rather than from the ledger, so a product whose
+     cache says something and whose ledger says nothing is still caught. That is
+     the drift worth finding: a row written by something outside this module. */
   const cache = await db.query<{ product_id: string; cached: number | null; cached_value: number | null }>(
     `SELECT p.id AS product_id, ps.qty_on_hand AS cached, ps.stock_value AS cached_value
-       FROM products p LEFT JOIN product_stock ps ON ps.product_id = p.id`,
+       FROM products p LEFT JOIN product_stock ps ON ps.product_id = p.id
+      ${ids ? `WHERE p.id IN ${holes}` : ''}`,
+    params,
   )
 
   const drift: StockDrift[] = []
-  const now = new Date().toISOString()
 
   for (const row of cache) {
     const truth = movingAverage(byProduct.get(row.product_id) ?? [])
@@ -249,7 +325,7 @@ export async function recomputeStock(db: SqlDriver, opts: { repair: boolean } = 
       actualValue: truth.totalValue,
     })
 
-    if (opts.repair) {
+    if (repair) {
       await db.execute(
         `INSERT INTO product_stock (product_id, qty_on_hand, stock_value, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT (product_id) DO UPDATE SET
@@ -262,6 +338,12 @@ export async function recomputeStock(db: SqlDriver, opts: { repair: boolean } = 
   }
 
   return drift
+}
+
+function chunked<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
 }
 
 export async function reverseVoucher(

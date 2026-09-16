@@ -11,6 +11,7 @@ import {
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
+import { runStockCheck, startMaintenanceTimer } from './maintenance'
 import { resumeServing } from './syncHost'
 import { startSyncLoop, stopSyncLoop } from './syncLoop'
 import {
@@ -247,6 +248,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
     let stopBackupTimer: (() => void) | null = null
+    let stopMaintenance: (() => void) | null = null
 
     void (async () => {
       try {
@@ -301,6 +303,14 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         stopBackupTimer = startDailyBackupTimer(db, (result) => {
           if (!cancelled) setBackup(result)
         })
+
+        /* The weekly stock replay, on the same two o'clock and behind the same
+           reasoning: too slow to do on a screen, and useless if it only runs on
+           machines that are left switched on overnight. It checks every night
+           and does nothing on six of them, so a till that was off last Sunday
+           gets its turn on Monday rather than waiting another week. */
+        void runStockCheck(db)
+        stopMaintenance = startMaintenanceTimer(db, () => {})
       } catch (err) {
         if (!cancelled) setStatus({ phase: 'failed', error: describe(err), kind: kindOf(err) })
       }
@@ -310,6 +320,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       cancelled = true
       stopSyncLoop()
       stopBackupTimer?.()
+      stopMaintenance?.()
     }
   }, [])
 

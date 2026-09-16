@@ -47,7 +47,16 @@ use crate::paths::{self, DB_FILE};
 /// Everything not on this list is reported as set-or-not with its length, which
 /// is enough to answer "is a hook configured and roughly how long is it"
 /// without carrying the value itself.
-const SAFE_SETTINGS: [&str; 4] = ["thermal_printer", "backup_folder", "ui_density", "ui_theme"];
+const SAFE_SETTINGS: [&str; 6] = [
+    "thermal_printer",
+    "backup_folder",
+    "ui_density",
+    "ui_theme",
+    // When this machine last replayed the stock ledger, and what it found.
+    // A date and a count; the sort of thing a support call opens with.
+    "stock_checked_at",
+    "stock_drift",
+];
 
 /// Audit rows carried. Enough to cover the morning a problem appeared, small
 /// enough to stay sendable over a phone connection.
