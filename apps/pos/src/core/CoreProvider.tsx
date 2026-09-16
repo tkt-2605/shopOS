@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { startupStatus, type StartupFailureKind } from './startup'
+import { logEvent } from './log'
 import {
-  createTauriDriver, migrate, SchemaTooNewError, SchemaUnversionedError, type SqlDriver,
+  createTauriDriver, migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type SqlDriver,
 } from '@shopos/core'
 import {
   DEVICE_LOCAL_KEYS, chooseRegister, chosenRegister, deviceSetting,
@@ -180,7 +181,16 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
        in afterwards. */
     await establishDevice()
 
-    await migrate(db, MIGRATIONS)
+    /* Every migration, as it commits. An upgrade is the most dangerous thing
+       this program does to a shop's data and it used to happen in silence: if a
+       till came back wrong after an update there was no way to tell which
+       migration had run, or how far it got. */
+    const before = await currentVersion(db)
+    await migrate(db, MIGRATIONS, (m) => {
+      logEvent('info', 'migrate', `applied ${m.version} ${m.name}`)
+    })
+    const after = await currentVersion(db)
+    if (after !== before) logEvent('info', 'migrate', `schema ${before} -> ${after}`)
 
     /* Belt and braces, and cheap. `applyingRemote` only ever sets the flag
        inside a transaction, so a merge that failed rolled it back and one that

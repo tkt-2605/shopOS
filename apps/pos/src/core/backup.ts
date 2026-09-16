@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting, setDeviceSetting } from './device'
+import { logEvent } from './log'
 import {
   Backup, backupDatabase, attachmentsToCarry, CARRY_WINDOW_DAYS,
   type BackupFile, type BackupEntry, type SqlDriver,
@@ -258,11 +259,18 @@ export async function runDailyBackup(db: SqlDriver, now = new Date()): Promise<D
   try {
     carried = (await takeBackupNow(db, plan.create, now)).attachments
   } catch (err) {
-    return {
-      created: null, pruned: [], attachments: 0,
-      error: typeof err === 'string' ? err : 'Backup failed.',
-    }
+    const said = typeof err === 'string' ? err : 'Backup failed.'
+    /* The card shows this until the next successful run, and then it is gone.
+       "It failed every day last week and has worked since Tuesday" is a
+       different problem from "it failed this morning", and only the file can
+       tell them apart. */
+    logEvent('error', 'backup', `${plan.create}: ${said}`)
+    return { created: null, pruned: [], attachments: 0, error: said }
   }
+
+  /* The successful ones too, which is what makes the failures readable. A log
+     that only records failures cannot answer "when did this last work". */
+  logEvent('info', 'backup', `wrote ${plan.create}, ${carried} attachment(s)`)
 
   // Only after the new copy is safely written.
   const pruned: string[] = []

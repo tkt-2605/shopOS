@@ -55,7 +55,21 @@ const SENTINEL_TABLES = ['bills', 'bill_items', 'products', 'registers', 'doc_se
  * shops with the same user_version have different schemas — the exact drift the
  * previous system died of. Add a new file instead.
  */
-export async function migrate(db: SqlDriver, migrations: Migration[]): Promise<number> {
+export async function migrate(
+  db: SqlDriver,
+  migrations: Migration[],
+  /**
+   * Told about each migration as it commits.
+   *
+   * A callback rather than a log call, because `packages/core` may not import
+   * Tauri and the log lives on the other side of that line. The detail is worth
+   * carrying: if the eleventh of twelve migrations throws, the error names that
+   * one, and only this says the ten before it went in. On a support call that
+   * is the difference between "the upgrade failed" and "the upgrade failed
+   * here, and the database is at 33 not 22".
+   */
+  onApplied?: (applied: { version: number; name: string }) => void,
+): Promise<number> {
   const ordered = [...migrations].sort((a, b) => a.version - b.version)
   assertContiguous(ordered)
 
@@ -82,6 +96,16 @@ export async function migrate(db: SqlDriver, migrations: Migration[]): Promise<n
       // PRAGMA will not bind a parameter, and the value is a validated integer.
       await tx.execute(`PRAGMA user_version = ${m.version}`)
     })
+
+    /* Guarded, and after the commit. A caller that wants to be told what
+       happened must not be able to stop it happening — an exception thrown by a
+       logger would abandon a migration run halfway, which is the single worst
+       thing that can happen to a shop's database. */
+    try {
+      onApplied?.({ version: m.version, name: m.name })
+    } catch {
+      // Whatever it was, it is not worth a database stuck between versions.
+    }
   }
 
   return pending[pending.length - 1]?.version ?? current

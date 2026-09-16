@@ -3,6 +3,7 @@ import {
   serveAs, type SqlDriver,
 } from '@shopos/core'
 import { chosenRegister } from './device'
+import { logEvent } from './log'
 import { servingOn } from './syncHost'
 import { nextBackoff } from '@shopos/core'
 
@@ -133,6 +134,11 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
         const round = await syncUntilDone(db, httpTransport(peer, fetch, { listenPort }), 50, chosenRegister())
 
         if (round.ok) {
+          /* Coming back after a spell of failures is worth a line: it is what
+             turns a wall of "cannot reach" into a span with an end. */
+          if (mine.backoff > 0) {
+            logEvent('info', 'sync', `${peer.deviceId} is answering again`)
+          }
           state.set(peer.deviceId, { quietUntil: 0, backoff: 0 })
           await recordAttempt(db, peer.deviceId, null)
           reports.push({
@@ -147,6 +153,10 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
              a schema mismatch is fixed by updating a till, and until somebody
              does, saying so every round is the correct amount of noise. */
           await recordAttempt(db, peer.deviceId, round.code)
+          /* Recorded against the peer for the Settings screen, and written down
+             as well. `recordAttempt` keeps the latest state; the log keeps the
+             sequence, which is what answers "since when". */
+          logEvent('warn', 'sync', `${peer.deviceId} refused us: ${round.code}`)
           reports.push({
             peer: peer.deviceId, ok: false, received: 0, sent: 0,
             contested: 0, error: round.code,
@@ -157,6 +167,14 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
         const wait = nextBackoff(mine.backoff)
         state.set(peer.deviceId, { quietUntil: now + wait, backoff: wait })
         await recordAttempt(db, peer.deviceId, describe(err))
+        /* Only the first failure in a run of them. This fires every 45 seconds
+           against a till that is switched off for the night, and eight hours of
+           "could not reach the back counter" would push everything worth
+           reading out of a five-megabyte log. The backoff state is what says
+           whether this is news. */
+        if (mine.backoff === 0) {
+          logEvent('warn', 'sync', `cannot reach ${peer.deviceId}: ${describe(err)}`)
+        }
         reports.push({
           peer: peer.deviceId, ok: false, received: 0, sent: 0,
           contested: 0, error: describe(err),
