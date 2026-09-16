@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Permissions, searchCustomers, createCustomer, updateCustomer, customerByPhone,
+  loadCustomer, STATES, stateName, stateFromGstin,
   type CustomerListItem, type CustomerConflict, type SaveCustomerResult,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -24,12 +25,14 @@ interface Draft {
   phone: string
   gstin: string
   address: string
+  /** Blank means "work it out" — from the GSTIN, or the shop's own state. */
+  stateCode: string
   creditLimit: string
   enforcement: 'none' | 'soft' | 'hard'
 }
 
 const BLANK: Draft = {
-  id: null, code: '', name: '', phone: '', gstin: '', address: '',
+  id: null, code: '', name: '', phone: '', gstin: '', address: '', stateCode: '',
   creditLimit: '0', enforcement: 'hard',
 }
 
@@ -68,13 +71,26 @@ export default function Customers() {
     return () => clearTimeout(id)
   }, [db, draft?.phone, draft?.id])
 
-  function edit(c: CustomerListItem) {
+  /**
+   * The whole customer, not the row from the list.
+   *
+   * This used to fill the form from `CustomerListItem`, which carries neither
+   * the address, the state nor the credit enforcement -- so it defaulted the
+   * three it could not see and then wrote all of them back on save. Editing a
+   * phone number erased the address and moved a customer who had been set to
+   * `none` onto hard credit enforcement, which stops them buying at the
+   * counter. Nothing on the screen said so.
+   */
+  async function edit(c: CustomerListItem) {
     setProblem(null)
     setClash(null)
+    const full = await loadCustomer(db, c.id)
+    if (!full) { setProblem('That customer could not be opened.'); return }
     setDraft({
-      id: c.id, code: c.code ?? '', name: c.name, phone: c.phone ?? '',
-      gstin: c.gstin ?? '', address: '',
-      creditLimit: Money.format(c.creditLimit), enforcement: 'hard',
+      id: full.id, code: full.code ?? '', name: full.name, phone: full.phone ?? '',
+      gstin: full.gstin ?? '', address: full.address ?? '',
+      stateCode: full.stateCode ?? '',
+      creditLimit: Money.format(full.creditLimit), enforcement: full.creditEnforcement,
     })
   }
 
@@ -82,8 +98,17 @@ export default function Customers() {
     if (!clash) return
     const found = (await searchCustomers(db, clash.phone ?? clash.name, 5))
       .find((c) => c.id === clash.id)
-    if (found) edit(found)
+    if (found) await edit(found)
   }
+
+  /**
+   * The state the GSTIN settles, if it settles one.
+   *
+   * Shown instead of the chosen value rather than written into the draft: a
+   * half-typed GSTIN would otherwise keep overwriting a state somebody had
+   * picked, and the service decides the final answer anyway.
+   */
+  const fromGstin = stateFromGstin(draft?.gstin ?? null)
 
   async function save() {
     if (!draft) return
@@ -95,6 +120,7 @@ export default function Customers() {
       phone: draft.phone.trim() || null,
       gstin: draft.gstin.trim() || null,
       address: draft.address.trim() || null,
+      stateCode: draft.stateCode || null,
       creditLimit: (Money.parseMoney(draft.creditLimit) ?? 0) as never,
       creditEnforcement: draft.enforcement,
     }
@@ -147,7 +173,7 @@ export default function Customers() {
                 </td>
                 <td className="r num">{c.loyaltyPoints || '—'}</td>
                 <td className="r">
-                  {canWrite && <button className="btn ghost sm" onClick={() => edit(c)}>Edit</button>}
+                  {canWrite && <button className="btn ghost sm" onClick={() => void edit(c)}>Edit</button>}
                 </td>
               </tr>
             ))}
@@ -215,7 +241,7 @@ export default function Customers() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <Field label="GSTIN">
               <input className="input num" id="c-gstin" value={draft.gstin}
-                onChange={(e) => setDraft({ ...draft, gstin: e.target.value })} />
+                onChange={(e) => setDraft({ ...draft, gstin: e.target.value.toUpperCase() })} />
             </Field>
             <Field label="Credit limit" hint="Zero means no limit.">
               <input className="input num" id="c-limit" value={draft.creditLimit}
@@ -236,6 +262,31 @@ export default function Customers() {
             <input className="input" id="c-address" value={draft.address}
               onChange={(e) => setDraft({ ...draft, address: e.target.value })} />
           </Field>
+
+          <Field
+            label="State"
+            hint={
+              fromGstin
+                ? `Taken from the GSTIN: ${stateName(fromGstin) ?? fromGstin}.`
+                : 'Decides whether a bill charges CGST and SGST or IGST. Left blank, the shop’s own state is used.'
+            }
+          >
+            <select
+              className="input"
+              id="c-state"
+              value={fromGstin ?? draft.stateCode}
+              /* A GSTIN settles it: the number is the registered fact, and a
+                 form that let somebody disagree with it would only produce a
+                 refusal on save. */
+              disabled={fromGstin !== null}
+              onChange={(e) => setDraft({ ...draft, stateCode: e.target.value })}
+            >
+              <option value="">Same as the shop</option>
+              {STATES.map((st) => (
+                <option key={st.code} value={st.code}>{st.code} — {st.name}</option>
+              ))}
+            </select>
+          </Field>
         </Modal>
       )}
     </div>
@@ -250,5 +301,14 @@ function describe(result: Extract<SaveCustomerResult, { ok: false }>): string {
       return `${result.existing.name} already has that number. Open them instead, or turn off “one customer per phone number” in Settings.`
     case 'CODE_TAKEN':
       return `${result.existing.name} already uses the code ${result.existing.code}.`
+    case 'BAD_GSTIN':
+      // Said as a shape rather than as "invalid", which tells nobody what to do.
+      return 'That is not a GSTIN. They are 15 characters, like 33AAACS1234F1Z5.'
+    case 'UNKNOWN_STATE':
+      return 'That is not a state code. Pick one from the list.'
+    case 'GSTIN_STATE_MISMATCH':
+      return `The GSTIN is registered in ${stateName(result.gstinState) ?? result.gstinState}`
+        + ` but the state says ${stateName(result.chosenState) ?? result.chosenState}.`
+        + ' The GSTIN is the registered fact, so clear the state or correct the number.'
   }
 }

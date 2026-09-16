@@ -161,6 +161,58 @@ export interface CustomerListItem {
   loyaltyPoints: number
 }
 
+/**
+ * One customer, whole, for a form that is about to save them back.
+ *
+ * `CustomerListItem` is shaped for the list and carries neither the address,
+ * the state nor the credit enforcement. The Customers screen was filling a form
+ * from it anyway and defaulting the three it could not see -- address to empty,
+ * enforcement to `hard` -- and then writing all of them back. So editing a
+ * customer's phone number silently erased their address and moved a customer
+ * who had been set to `none` onto hard credit enforcement, which stops them
+ * buying at the counter.
+ *
+ * Nothing said so. It is the same failure as everything else in this phase: a
+ * screen that looks like it edited one field and quietly wrote several.
+ */
+export interface CustomerDetail extends CustomerListItem {
+  address: string | null
+  stateCode: string | null
+  creditEnforcement: 'none' | 'soft' | 'hard'
+  isActive: boolean
+}
+
+export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerDetail | null> {
+  const row = await db.get<{
+    id: string; code: string | null; name: string; phone: string | null
+    gstin: string | null; address: string | null; state_code: string | null
+    credit_limit: number; credit_enforcement: 'none' | 'soft' | 'hard'; is_active: number
+  }>(
+    `SELECT id, code, name, phone, gstin, address, state_code,
+            credit_limit, credit_enforcement, is_active
+       FROM customers WHERE id = ? AND deleted_at IS NULL`,
+    [id],
+  )
+  if (!row) return null
+
+  // The three figures the list computes are not what a form needs, and fetching
+  // them here would make an edit wait on a join over every bill they ever had.
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    phone: row.phone,
+    gstin: row.gstin,
+    address: row.address,
+    stateCode: row.state_code,
+    creditLimit: row.credit_limit as Money,
+    creditEnforcement: row.credit_enforcement,
+    isActive: row.is_active === 1,
+    outstanding: 0 as Money,
+    loyaltyPoints: 0,
+  }
+}
+
 export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Promise<CustomerListItem[]> {
   const like = `%${term.trim()}%`
   const rows = await db.query<{

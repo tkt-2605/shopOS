@@ -2,6 +2,8 @@ export * as Money from './money.js'
 export * as Quantity from './quantity.js'
 export { newId, timestampOf } from './ids.js'
 export { setDeviceId, setDeviceIdSource, deviceId } from './device.js'
+export { isStateCode } from './domain/states.js'
+export { GSTIN_SHAPE, isGstin, stateFromGstin, resolveCustomerState } from './domain/gstin.js'
 export { clock, setClock } from './clock.js'
 
 export type { SqlDriver, Row, SqlValue, ExecResult } from './db/driver.js'
@@ -116,11 +118,11 @@ export type {
 
 export {
   searchProducts, findByBarcode, productsByIds, saleUnitsFor, searchCustomers,
-  listBills, countBills, loadBillDetail,
+  listBills, countBills, loadBillDetail, loadCustomer,
 } from './repos/catalog.js'
 export type {
   BillFilter, BillStatusFilter,
-  ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem,
+  ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem, CustomerDetail,
   BillListItem, BillDetail, BillDetailItem,
 } from './repos/catalog.js'
 

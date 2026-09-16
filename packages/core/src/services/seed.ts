@@ -2,7 +2,8 @@ import type { SqlDriver } from '../db/driver.js'
 import { newId } from '../ids.js'
 import { rupees, type Money } from '../money.js'
 import { fromUnits } from '../quantity.js'
-import { bootstrap, setSetting } from './bootstrap.js'
+import { bootstrap, setSetting, getSetting } from './bootstrap.js'
+import { resolveCustomerState } from '../domain/gstin.js'
 import { createUser } from './auth.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
 
@@ -140,14 +141,22 @@ export async function seedDemoData(db: SqlDriver, actorId: string): Promise<{ pr
   })
   if (entry.ok) await submitStockEntry(db, { entryId: entry.entryId, actorId })
 
+  /* Not the literal '33' this used to write. Demo data that carries a
+     fabricated state is how a shop ends up believing every customer is in Tamil
+     Nadu -- and it seeded the same wrong number into every install that ever
+     pressed "with demo data". Derived from the demo GSTIN where there is one,
+     and otherwise from whatever state the shop actually said it is in. */
+  const shopState = await getSetting(db, 'shop_state_code')
+
   for (const c of DEMO_CUSTOMERS) {
     await db.execute(
       `INSERT INTO customers (id, name, phone, gstin, credit_limit, credit_enforcement, price_list_id, state_code, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, '33', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         newId(), c.name, c.phone || null, c.gstin ?? null,
         rupees(c.creditLimit), c.enforcement,
         c.name === 'Sri Vidya School' ? wholesaleId : null,
+        resolveCustomerState({ gstin: c.gstin ?? null, shopState }),
         now, now,
       ],
     )

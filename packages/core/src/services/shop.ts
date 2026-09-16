@@ -1,6 +1,12 @@
 import type { SqlDriver, SqlValue } from '../db/driver.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { getSetting, setSetting } from './bootstrap.js'
+import { isStateCode } from '../domain/states.js'
+import { GSTIN_SHAPE, stateFromGstin } from '../domain/gstin.js'
+
+/* Re-exported because the screens have imported them from here since v1 and
+   the rules themselves are now shared with the customer path. */
+export { STATES, stateName } from '../domain/states.js'
 
 /**
  * Who the shop is, on paper.
@@ -63,70 +69,6 @@ const SETTING: Record<keyof ShopProfile, string> = {
 
 const FIELDS = Object.keys(SETTING) as (keyof ShopProfile)[]
 
-/**
- * The GST state codes, which are the census state codes and are not guessable
- * from the name — 33 is Tamil Nadu, 32 is Kerala, and nothing about either says
- * so. Listed rather than typed, because a shop should pick its state and never
- * meet the number.
- */
-export const STATES: ReadonlyArray<{ code: string; name: string }> = [
-  { code: '01', name: 'Jammu and Kashmir' },
-  { code: '02', name: 'Himachal Pradesh' },
-  { code: '03', name: 'Punjab' },
-  { code: '04', name: 'Chandigarh' },
-  { code: '05', name: 'Uttarakhand' },
-  { code: '06', name: 'Haryana' },
-  { code: '07', name: 'Delhi' },
-  { code: '08', name: 'Rajasthan' },
-  { code: '09', name: 'Uttar Pradesh' },
-  { code: '10', name: 'Bihar' },
-  { code: '11', name: 'Sikkim' },
-  { code: '12', name: 'Arunachal Pradesh' },
-  { code: '13', name: 'Nagaland' },
-  { code: '14', name: 'Manipur' },
-  { code: '15', name: 'Mizoram' },
-  { code: '16', name: 'Tripura' },
-  { code: '17', name: 'Meghalaya' },
-  { code: '18', name: 'Assam' },
-  { code: '19', name: 'West Bengal' },
-  { code: '20', name: 'Jharkhand' },
-  { code: '21', name: 'Odisha' },
-  { code: '22', name: 'Chhattisgarh' },
-  { code: '23', name: 'Madhya Pradesh' },
-  { code: '24', name: 'Gujarat' },
-  { code: '26', name: 'Dadra and Nagar Haveli and Daman and Diu' },
-  { code: '27', name: 'Maharashtra' },
-  { code: '29', name: 'Karnataka' },
-  { code: '30', name: 'Goa' },
-  { code: '31', name: 'Lakshadweep' },
-  { code: '32', name: 'Kerala' },
-  { code: '33', name: 'Tamil Nadu' },
-  { code: '34', name: 'Puducherry' },
-  { code: '35', name: 'Andaman and Nicobar Islands' },
-  { code: '36', name: 'Telangana' },
-  { code: '37', name: 'Andhra Pradesh' },
-  { code: '38', name: 'Ladakh' },
-  { code: '97', name: 'Other territory' },
-]
-
-const STATE_CODES = new Set(STATES.map((s) => s.code))
-
-export function stateName(code: string | null): string | null {
-  if (!code) return null
-  return STATES.find((s) => s.code === code)?.name ?? null
-}
-
-/**
- * 15 characters: two state digits, a ten-character PAN, an entity number, a
- * fixed Z, and a checksum character.
- *
- * The shape is checked and the checksum is not. A shop typing its own GSTIN off
- * its own certificate is not the threat model, and a checksum rule that rejects
- * a number the government itself issued would be the software telling the shop
- * its registration is wrong.
- */
-const GSTIN_SHAPE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/
-
 export type SaveShopResult =
   | { ok: true }
   | { ok: false; code: 'NAME_REQUIRED' }
@@ -181,17 +123,18 @@ export async function saveShopProfile(
     if (kb > LOGO_LIMIT_KB) return { ok: false, code: 'LOGO_TOO_BIG', kb, limitKb: LOGO_LIMIT_KB }
   }
   if (clean.gstin !== null && !GSTIN_SHAPE.test(clean.gstin)) return { ok: false, code: 'BAD_GSTIN' }
-  if (clean.stateCode !== null && !STATE_CODES.has(clean.stateCode)) {
+  if (clean.stateCode !== null && !isStateCode(clean.stateCode)) {
     return { ok: false, code: 'UNKNOWN_STATE' }
   }
 
   /* The two fields that must agree. Caught here rather than at filing time,
      where it is a correction rather than a typo. */
-  if (clean.gstin !== null && clean.stateCode !== null && clean.gstin.slice(0, 2) !== clean.stateCode) {
+  const gstinState = stateFromGstin(clean.gstin)
+  if (gstinState !== null && clean.stateCode !== null && gstinState !== clean.stateCode) {
     return {
       ok: false,
       code: 'GSTIN_STATE_MISMATCH',
-      gstinState: clean.gstin.slice(0, 2),
+      gstinState,
       chosenState: clean.stateCode,
     }
   }
