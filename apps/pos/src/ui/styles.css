@@ -649,8 +649,14 @@ tbody tr:hover { background: var(--accent-soft); }
 
 /* Monospace and pre-wrapped: the receipt is aligned by counting characters, so
    anything proportional here would show a layout the printer will not produce. */
+/* `auto` on the sides, and that is the whole of the alignment bug.
+ *
+ * `paper-thermal_58` caps this at 30em, which on a card three times that wide
+ * left the receipt hugging the left edge with a gutter beside it — so a roll
+ * whose every line is centred *about its own paper* read as a page that had
+ * slipped. The lines were right and the block they sat in was not. */
 .receipt-preview {
-  margin: 0;
+  margin: 0 auto;
   padding: 14px;
   overflow-x: auto;
   font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
@@ -682,6 +688,10 @@ tbody tr:hover { background: var(--accent-soft); }
    so it is given the page's own proportions rather than the panel's. */
 .sheet-preview {
   display: block;
+  /* Centred for the same reason as the roll above: the frame is narrower than
+     the panel, so without this the sheet sits against the left rule and every
+     centred thing on it looks off-centre by the width of the gutter. */
+  margin: 0 auto;
   width: 460px;
   max-width: 100%;
   height: 650px;

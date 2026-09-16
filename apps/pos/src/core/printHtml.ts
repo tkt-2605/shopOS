@@ -5,6 +5,7 @@ import {
   type DocWording, type DocumentKind, type PlaceOfSupply, type ReturnDetailItem,
 } from '@shopos/core'
 import type { PrintResult } from './print'
+import { openSheetPreview } from './sheetPreview'
 
 /**
  * Printing a sheet, as opposed to a roll.
@@ -25,12 +26,67 @@ import type { PrintResult } from './print'
 const LAYOUT_MS = 120
 
 export async function printBillSheet(db: SqlDriver, billId: string): Promise<PrintResult> {
+  const sheet = await billSheetHtml(db, billId)
+  if (!sheet.ok) return sheet
+  return printHtml(sheet.html)
+}
+
+export type SheetHtml =
+  | { ok: true; html: string; docNo: string }
+  | { ok: false; message: string }
+
+/**
+ * The A4 page for a bill, as the string the printer is handed.
+ *
+ * Split out because the preview and the print must be the same document and not
+ * merely the same design. A preview built from the same data through a second
+ * renderer is a second implementation of the layout, and the two drift — which
+ * is exactly the shape of the bug that put the shop's own state on every
+ * invoice as the place of supply while every test of the renderer passed,
+ * because each test built its document by hand.
+ *
+ * `autoPrint` is the only difference between the two callers: the printed copy
+ * carries the script that opens the dialog, and the previewed copy does not,
+ * because a preview that printed itself would not be one.
+ */
+export async function billSheetHtml(
+  db: SqlDriver,
+  billId: string,
+  opts: { autoPrint?: boolean } = {},
+): Promise<SheetHtml> {
   const doc = await sheetDocFor(db, billId)
   if (!doc) return { ok: false, message: 'That bill could not be found.' }
 
   // The sheet the shop chose, which carries its own paper size with it.
   const format = await formatFor(db, { kind: 'bill', channel: 'sheet' })
-  return printHtml(buildInvoiceHtml(doc, format, { autoPrint: true }))
+  return {
+    ok: true,
+    docNo: doc.docNo,
+    html: buildInvoiceHtml(doc, format, { autoPrint: opts.autoPrint !== false }),
+  }
+}
+
+export type PreviewResult =
+  | { ok: true; shown: 'window' }
+  /** No window could be opened. The page is here; show it in the app instead. */
+  | { ok: true; shown: 'blocked'; html: string; docNo: string }
+  | { ok: false; message: string }
+
+/**
+ * Shows the sheet without printing it and without disturbing the counter.
+ *
+ * The bill half rung up is the thing that must not be moved. A preview that
+ * took over the screen would put the cashier's cart behind it while a customer
+ * waits; a window can be pushed aside, kept open beside the till, or closed,
+ * and the till never went anywhere.
+ */
+export async function previewBillSheet(db: SqlDriver, billId: string): Promise<PreviewResult> {
+  const sheet = await billSheetHtml(db, billId, { autoPrint: false })
+  if (!sheet.ok) return sheet
+
+  const outcome = openSheetPreview(sheet.html, sheet.docNo)
+  if (outcome.shown === 'window') return { ok: true, shown: 'window' }
+  return { ok: true, shown: 'blocked', html: sheet.html, docNo: sheet.docNo }
 }
 
 /**

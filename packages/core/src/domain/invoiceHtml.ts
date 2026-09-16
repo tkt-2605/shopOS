@@ -400,9 +400,17 @@ function styles(pageSize: string, preview: boolean): string {
       .edge { height: ${MARGIN}; }
       .sheet { padding: 0 ${MARGIN}; }
     }
-    .shop { margin-bottom: 10px; }
+    /* Centred, over a title band that is centred and a rule that runs the full
+       width. Left-aligned it was the only thing on the top third of the page
+       that was, so the sheet read as though the header had come loose from the
+       document under it. This is also the shape of every invoice an Indian shop
+       already recognises, and it matches the thermal roll — which matters,
+       because the roll and the sheet are the same shop's paper. */
+    .shop { margin-bottom: 10px; text-align: center; }
     .shop-name { font-size: 17pt; font-weight: 700; letter-spacing: -0.01em; }
     .shop div { font-size: 9.5pt; color: #444; }
+    /* A logo above a centred name belongs on the same axis as the name. */
+    .logo { text-align: center; }
     .title {
       margin: 14px 0 10px;
       padding: 6px 0;
@@ -454,13 +462,22 @@ function styles(pageSize: string, preview: boolean): string {
     .tax th, .tax td { padding: 4px 6px; border: 1px solid #bbb; text-align: left; }
     .tax thead th { background: #f2f2f2; }
     .logo { margin: 0 0 6px; }
-    .logo img { display: block; max-width: 60mm; object-fit: contain; }
+    .logo img { display: inline-block; max-width: 60mm; object-fit: contain; }
     .note { margin: 8px 0 0; font-size: 9.5pt; color: #555; }
     /* Boxed, because it is the line that settles an argument about the figures
        above it, and it has to be findable at a glance to do that. */
     .words { margin: 10px 0 0; padding: 6px 8px; border: 1px solid #000; font-size: 10pt; }
     .words .k { display: block; font-size: 8pt; letter-spacing: .06em; text-transform: uppercase; color: #555; }
-    .terms { margin: 16px 0 0; padding-top: 8px; font-size: 9pt; color: #555; border-top: 1px solid #ddd; }
+    /* Centred, on a rule that spans the paper. This is the shop's closing line
+       -- "Goods once sold are not returnable without this bill" -- and hanging
+       it off the left end of a full-width rule was the last thing on the page
+       still sitting against an edge. The thermal roll has always centred it,
+       and the two are the same shop's paper. */
+    .terms {
+      margin: 16px 0 0; padding-top: 8px;
+      font-size: 9pt; color: #555; text-align: center;
+      border-top: 1px solid #ddd;
+    }
     .signature { margin-top: 34px; width: 210px; margin-left: auto; text-align: center; break-inside: avoid; }
     .sign-for { font-size: 9.5pt; color: #444; }
     .sign-rule { margin-top: 40px; border-top: 1px solid #111; }

@@ -7,6 +7,8 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { printBill } from '../core/print'
+import { previewBillSheet } from '../core/printHtml'
+import { SheetFallback } from '../ui/SheetFallback'
 import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBillTabs'
 import { useShortcuts } from '../core/useShortcuts'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
@@ -29,6 +31,9 @@ export default function Billing() {
   const [paying, setPaying] = useState(false)
   const [done, setDone] = useState<{ billId: string; docNo: string; total: number; points: number } | null>(null)
   const [printMsg, setPrintMsg] = useState<string | null>(null)
+  /* Only set when a webview refuses a second window. `sheetPreview.ts` carries
+     why that is not worth an error message. */
+  const [sheet, setSheet] = useState<{ html: string; docNo: string } | null>(null)
   const [redeemPoints, setRedeemPoints] = useState(0)
   const [program, setProgram] = useState<Loyalty.LoyaltyProgram | null>(null)
   const scanRef = useRef<HTMLInputElement>(null)
@@ -673,6 +678,16 @@ export default function Billing() {
             <button className="btn" onClick={() => {
               void printBill(db, done.billId).then((r) => setPrintMsg(r.ok ? null : r.message))
             }}>Print again</button>
+            {/* The A4 sheet, in a window of its own. The counter behind this
+                dialog is untouched, which is the whole point of not putting the
+                preview on the screen the cart is on. */}
+            <button className="btn" onClick={() => {
+              void previewBillSheet(db, done.billId).then((r) => {
+                if (!r.ok) { setPrintMsg(r.message); return }
+                setPrintMsg(null)
+                if (r.shown === 'blocked') setSheet({ html: r.html, docNo: r.docNo })
+              })
+            }}>A4 preview</button>
             <button className="btn primary" onClick={() => { setDone(null); focusScan() }}>New bill</button>
           </>}
         >
@@ -684,6 +699,8 @@ export default function Billing() {
           {printMsg && <Alert kind="warn">{printMsg} The bill is saved — you can print it again.</Alert>}
         </Modal>
       )}
+
+      {sheet && <SheetFallback html={sheet.html} docNo={sheet.docNo} onClose={() => setSheet(null)} />}
     </div>
   )
 }
