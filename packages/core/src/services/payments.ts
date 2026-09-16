@@ -1,4 +1,6 @@
+import { eq, and, ne, gt, desc, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { businessDate } from '../dates.js'
 import { newId } from '../ids.js'
 import { type Money, ZERO, add, sub } from '../money.js'
@@ -72,22 +74,29 @@ export async function recordPayment(db: SqlDriver, input: RecordPaymentInput): P
   await db.transaction(async (tx) => {
     docNo = await nextDocNo(tx, 'payment', input.registerPrefix ?? 'MR', now)
 
-    await tx.execute(
-      `INSERT INTO payment_entries
-         (id, doc_no, docstatus, party_type, customer_id, posting_date, method, amount, reference, notes,
-          created_by, created_at, updated_at)
-       VALUES (?, ?, 1, 'customer', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        paymentId, docNo, input.customerId, postingDate, input.method, input.amount,
-        input.reference ?? null, input.notes ?? null, input.actorId, nowIso, nowIso,
-      ],
-    )
+    await q(tx).insert(schema.paymentEntries).values({
+      id: paymentId,
+      docNo,
+      docstatus: SUBMITTED,
+      partyType: 'customer',
+      customerId: input.customerId,
+      postingDate,
+      method: input.method,
+      amount: input.amount,
+      reference: input.reference ?? null,
+      notes: input.notes ?? null,
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
 
     for (const alloc of allocations) {
-      await tx.execute(
-        `INSERT INTO payment_allocations (id, payment_id, bill_id, amount) VALUES (?, ?, ?, ?)`,
-        [newId(), paymentId, alloc.billId, alloc.amount],
-      )
+      await q(tx).insert(schema.paymentAllocations).values({
+        id: newId(),
+        paymentId,
+        billId: alloc.billId,
+        amount: alloc.amount,
+      })
     }
 
     if (input.registerId && input.method !== 'adjustment') {
@@ -148,22 +157,29 @@ export async function postCreditNote(
   const nowIso = input.now.toISOString()
   const docNo = await nextDocNo(tx, 'payment', input.registerPrefix ?? 'MR', input.now)
 
-  await tx.execute(
-    `INSERT INTO payment_entries
-       (id, doc_no, docstatus, party_type, customer_id, posting_date, method, amount, reference, notes,
-        created_by, created_at, updated_at)
-     VALUES (?, ?, 1, 'customer', ?, ?, 'adjustment', ?, ?, ?, ?, ?, ?)`,
-    [
-      paymentId, docNo, input.customerId, businessDate(input.now), input.amount,
-      input.reference, input.notes ?? null, input.actorId, nowIso, nowIso,
-    ],
-  )
+  await q(tx).insert(schema.paymentEntries).values({
+    id: paymentId,
+    docNo,
+    docstatus: SUBMITTED,
+    partyType: 'customer',
+    customerId: input.customerId,
+    postingDate: businessDate(input.now),
+    method: 'adjustment',
+    amount: input.amount,
+    reference: input.reference,
+    notes: input.notes ?? null,
+    createdBy: input.actorId,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  })
 
   for (const alloc of plan.allocations) {
-    await tx.execute(
-      `INSERT INTO payment_allocations (id, payment_id, bill_id, amount) VALUES (?, ?, ?, ?)`,
-      [newId(), paymentId, alloc.billId, alloc.amount],
-    )
+    await q(tx).insert(schema.paymentAllocations).values({
+      id: newId(),
+      paymentId,
+      billId: alloc.billId,
+      amount: alloc.amount,
+    })
   }
 
   await writeAudit(tx, { actorId: input.actorId }, {
@@ -180,15 +196,17 @@ export async function cancelPayment(
   input: { paymentId: string; reason?: string; actorId: string; now?: Date },
 ): Promise<{ ok: true; paymentId: string }> {
   const now = input.now ?? new Date()
-  const row = await db.get<{ docstatus: number }>(`SELECT docstatus FROM payment_entries WHERE id = ?`, [input.paymentId])
+  const [row] = await q(db)
+    .select({ docstatus: schema.paymentEntries.docstatus })
+    .from(schema.paymentEntries)
+    .where(eq(schema.paymentEntries.id, input.paymentId))
   if (!row) throw new Error(`unknown payment: ${input.paymentId}`)
   assertCanApply('payment', parseDocStatus(row.docstatus), 'cancel')
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE payment_entries SET docstatus = 2, updated_at = ? WHERE id = ?`,
-      [now.toISOString(), input.paymentId],
-    )
+    await q(tx).update(schema.paymentEntries)
+      .set({ docstatus: CANCELLED, updatedAt: now.toISOString() })
+      .where(eq(schema.paymentEntries.id, input.paymentId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'payment_entries', entityId: input.paymentId, action: 'cancel',
       docstatusFrom: SUBMITTED, docstatusTo: CANCELLED,
@@ -200,24 +218,31 @@ export async function cancelPayment(
 }
 
 export async function loadOpenBills(db: SqlDriver, customerId: string): Promise<OpenBill[]> {
-  const rows = await db.query<{
-    id: string; doc_no: string; posting_date: string; credit_total: number; allocated: number
-  }>(
-    `SELECT b.id, b.doc_no, b.posting_date, b.credit_total,
-            COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                        JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
-                       WHERE pa.bill_id = b.id), 0) AS allocated
-       FROM bills b
-      WHERE b.customer_id = ? AND b.docstatus = 1 AND b.credit_total > 0`,
-    [customerId],
-  )
-  return rows.map((r) => ({
-    id: r.id,
-    docNo: r.doc_no,
-    postingDate: r.posting_date,
-    creditTotal: r.credit_total as Money,
-    allocated: r.allocated as Money,
-  }))
+  /* raw: a correlated subquery, which the query builder has no shape for.
+     Joining to the allocations instead would repeat the bill row once per
+     payment against it, so a bill settled in instalments would count its own
+     credit total once per instalment. `bills.id` is written out rather than
+     interpolated because Drizzle renders a column reference unqualified inside
+     a subquery, where a bare `id` binds to the allocation tables first. */
+  const allocated = sql<Money>`COALESCE((
+    SELECT SUM(pa.amount) FROM payment_allocations pa
+      JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = ${SUBMITTED}
+     WHERE pa.bill_id = bills.id), 0)`
+
+  return q(db)
+    .select({
+      id: schema.bills.id,
+      docNo: schema.bills.docNo,
+      postingDate: schema.bills.postingDate,
+      creditTotal: schema.bills.creditTotal,
+      allocated,
+    })
+    .from(schema.bills)
+    .where(and(
+      eq(schema.bills.customerId, customerId),
+      eq(schema.bills.docstatus, SUBMITTED),
+      gt(schema.bills.creditTotal, ZERO),
+    ))
 }
 
 export async function customerOutstanding(db: SqlDriver, customerId: string): Promise<Money> {
@@ -278,11 +303,20 @@ export interface OutstandingTotal {
  * in a total but in no row would be unanswerable.
  */
 export async function totalOutstandingAll(db: SqlDriver): Promise<OutstandingTotal> {
-  const row = await db.get<{
-    total: number; customers: number; over_limit: number
-    worst_id: string | null; worst_name: string | null; worst_owed: number | null
-  }>(
-    /* `balances` is every customer who has ever been billed on credit, with
+  /* raw: three common table expressions feeding six scalar sub-selects, and
+     the one place in this file that still goes through the driver directly.
+
+     The query builder has no shape for a WITH, and taking it through Drizzle as
+     a raw fragment does not work either: the proxy hands raw rows back
+     positionally, because a string of SQL tells it no column names. Reading
+     `row.total` off that gives `undefined` -- which arithmetic turns into
+     `NaN`, and a headline of NaN on the Credit page is a worse failure than the
+     one this function was written to fix. So it stays as it is, named.
+
+     Six separate round trips would read `bills` and `payment_allocations` six
+     times to answer one screen.
+
+     `balances` is every customer who has ever been billed on credit, with
        what they owe now. Starting from `billed` rather than from `customers`
        is deliberate: somebody who has never taken credit cannot owe anything,
        and on a shop with thousands of walk-in accounts that is most of the
@@ -291,6 +325,10 @@ export async function totalOutstandingAll(db: SqlDriver): Promise<OutstandingTot
        The two "worst" columns sort identically, name included, so a tie
        between two customers owing the same amount cannot return one person's
        name beside another person's figure. */
+  const row = await db.get<{
+    total: number; customers: number; over_limit: number
+    worst_id: string | null; worst_name: string | null; worst_owed: number | null
+  }>(
     `WITH billed AS (
        SELECT b.customer_id AS id, SUM(b.credit_total) AS amount
          FROM bills b
@@ -376,36 +414,49 @@ export interface AdvanceCredit {
  * separate pots.
  */
 export async function advanceCredit(db: SqlDriver, customerId: string): Promise<AdvanceCredit> {
-  const receipts = await db.query<{
-    id: string; doc_no: string; posting_date: string; left: number
-  }>(
-    `SELECT pe.id, pe.doc_no, pe.posting_date,
-            pe.amount - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                                   WHERE pa.payment_id = pe.id), 0) AS left
-       FROM payment_entries pe
-      WHERE pe.customer_id = ? AND pe.party_type = 'customer'
-        AND pe.docstatus = 1 AND pe.direction = 'in'
-      ORDER BY pe.posting_date, pe.doc_no`,
-    [customerId],
-  )
+  /* raw: a correlated subquery, as in `loadOpenBills`. What is left in a
+     receipt is what nothing points at, and a join to the allocations would
+     repeat the receipt once per bill it has been spread across. */
+  const left = sql<Money>`${schema.paymentEntries.amount} - COALESCE((
+    SELECT SUM(pa.amount) FROM payment_allocations pa
+     WHERE pa.payment_id = payment_entries.id), 0)`
 
-  const handedBack = await db.get<{ total: number }>(
-    `SELECT COALESCE(SUM(amount), 0) AS total FROM payment_entries
-      WHERE customer_id = ? AND party_type = 'customer'
-        AND docstatus = 1 AND direction = 'out'`,
-    [customerId],
-  )
+  const receipts = await q(db)
+    .select({
+      id: schema.paymentEntries.id,
+      docNo: schema.paymentEntries.docNo,
+      postingDate: schema.paymentEntries.postingDate,
+      left,
+    })
+    .from(schema.paymentEntries)
+    .where(and(
+      eq(schema.paymentEntries.customerId, customerId),
+      eq(schema.paymentEntries.partyType, 'customer'),
+      eq(schema.paymentEntries.docstatus, SUBMITTED),
+      eq(schema.paymentEntries.direction, 'in'),
+    ))
+    .orderBy(schema.paymentEntries.postingDate, schema.paymentEntries.docNo)
+
+  const [handedBack] = await q(db)
+    .select({ total: sql<Money>`COALESCE(SUM(${schema.paymentEntries.amount}), 0)` })
+    .from(schema.paymentEntries)
+    .where(and(
+      eq(schema.paymentEntries.customerId, customerId),
+      eq(schema.paymentEntries.partyType, 'customer'),
+      eq(schema.paymentEntries.docstatus, SUBMITTED),
+      eq(schema.paymentEntries.direction, 'out'),
+    ))
 
   const over = receipts.filter((r) => r.left > 0)
-  const total = over.reduce((sum, r) => sum + r.left, 0) - (handedBack?.total ?? 0)
+  const total = over.reduce<number>((sum, r) => sum + r.left, 0) - (handedBack?.total ?? 0)
 
   return {
     amount: paiseOrZero(total),
     receipts: over.map((r) => ({
       paymentId: r.id,
-      docNo: r.doc_no,
-      postingDate: r.posting_date,
-      left: r.left as Money,
+      docNo: r.docNo,
+      postingDate: r.postingDate,
+      left: r.left,
     })),
   }
 }
@@ -482,11 +533,17 @@ export async function applyAdvance(
          rather than a second row: `payment_allocations` is unique on
          (payment_id, bill_id), and two rows for one pair would be the same
          money counted twice by every query that sums them. */
-      await tx.execute(
-        `INSERT INTO payment_allocations (id, payment_id, bill_id, amount) VALUES (?, ?, ?, ?)
-         ON CONFLICT (payment_id, bill_id) DO UPDATE SET amount = amount + excluded.amount`,
-        [newId(), row.paymentId, row.billId, row.amount],
-      )
+      await q(tx).insert(schema.paymentAllocations)
+        .values({
+          id: newId(),
+          paymentId: row.paymentId,
+          billId: row.billId,
+          amount: row.amount as Money,
+        })
+        .onConflictDoUpdate({
+          target: [schema.paymentAllocations.paymentId, schema.paymentAllocations.billId],
+          set: { amount: sql`amount + excluded.amount` },
+        })
     }
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'payment_entries',
@@ -561,16 +618,22 @@ export async function refundAdvance(
   await db.transaction(async (tx) => {
     docNo = await nextDocNo(tx, 'payment', input.registerPrefix ?? 'MR', now)
 
-    await tx.execute(
-      `INSERT INTO payment_entries
-         (id, doc_no, docstatus, party_type, customer_id, posting_date, method, amount,
-          direction, reference, notes, created_by, created_at, updated_at)
-       VALUES (?, ?, 1, 'customer', ?, ?, ?, ?, 'out', ?, ?, ?, ?, ?)`,
-      [
-        paymentId, docNo, input.customerId, postingDate, input.method, input.amount,
-        input.reference ?? null, input.notes ?? null, input.actorId, nowIso, nowIso,
-      ],
-    )
+    await q(tx).insert(schema.paymentEntries).values({
+      id: paymentId,
+      docNo,
+      docstatus: SUBMITTED,
+      partyType: 'customer',
+      customerId: input.customerId,
+      postingDate,
+      method: input.method,
+      amount: input.amount,
+      direction: 'out',
+      reference: input.reference ?? null,
+      notes: input.notes ?? null,
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
 
     if (input.registerId && input.method !== 'adjustment') {
       const session = await openSessionFor(tx, input.registerId)
@@ -656,37 +719,44 @@ export async function listCustomerPayments(
   customerId: string,
   limit = 50,
 ): Promise<CustomerPayment[]> {
-  const rows = await db.query<{
-    id: string; doc_no: string; posting_date: string; method: string
-    amount: number; reference: string | null; notes: string | null; docstatus: number
-  }>(
-    `SELECT id, doc_no, posting_date, method, amount, reference, notes, docstatus
-       FROM payment_entries
-      WHERE customer_id = ? AND party_type = 'customer'
-      ORDER BY posting_date DESC, created_at DESC
-      LIMIT ?`,
-    [customerId, limit],
-  )
+  const rows = await q(db)
+    .select({
+      id: schema.paymentEntries.id,
+      docNo: schema.paymentEntries.docNo,
+      postingDate: schema.paymentEntries.postingDate,
+      method: schema.paymentEntries.method,
+      amount: schema.paymentEntries.amount,
+      reference: schema.paymentEntries.reference,
+      notes: schema.paymentEntries.notes,
+      docstatus: schema.paymentEntries.docstatus,
+    })
+    .from(schema.paymentEntries)
+    .where(and(
+      eq(schema.paymentEntries.customerId, customerId),
+      eq(schema.paymentEntries.partyType, 'customer'),
+    ))
+    .orderBy(desc(schema.paymentEntries.postingDate), desc(schema.paymentEntries.createdAt))
+    .limit(limit)
 
   const out: CustomerPayment[] = []
   for (const r of rows) {
-    const allocs = await db.query<{ doc_no: string; amount: number }>(
-      `SELECT b.doc_no, pa.amount FROM payment_allocations pa
-         JOIN bills b ON b.id = pa.bill_id
-        WHERE pa.payment_id = ?
-        ORDER BY b.posting_date`,
-      [r.id],
-    )
+    const allocs = await q(db)
+      .select({ docNo: schema.bills.docNo, amount: schema.paymentAllocations.amount })
+      .from(schema.paymentAllocations)
+      .innerJoin(schema.bills, eq(schema.bills.id, schema.paymentAllocations.billId))
+      .where(eq(schema.paymentAllocations.paymentId, r.id))
+      .orderBy(schema.bills.postingDate)
+
     out.push({
       paymentId: r.id,
-      docNo: r.doc_no,
-      postingDate: r.posting_date,
+      docNo: r.docNo,
+      postingDate: r.postingDate,
       method: r.method as ReceiptMethod,
-      amount: r.amount as Money,
+      amount: r.amount,
       reference: r.reference,
       notes: r.notes,
       docstatus: r.docstatus,
-      allocatedTo: allocs.map((a) => ({ docNo: a.doc_no, amount: a.amount as Money })),
+      allocatedTo: allocs,
     })
   }
   return out
@@ -765,33 +835,48 @@ export async function recordOpeningBalance(
 ): Promise<OpeningBalanceResult> {
   if (input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
 
-  const existing = await db.get<{ doc_no: string }>(
-    `SELECT doc_no FROM bills WHERE customer_id = ? AND kind = 'opening' AND docstatus = 1`,
-    [input.customerId],
-  )
-  if (existing) return { ok: false, code: 'ALREADY_SET', docNo: existing.doc_no }
+  const [existing] = await q(db)
+    .select({ docNo: schema.bills.docNo })
+    .from(schema.bills)
+    .where(and(
+      eq(schema.bills.customerId, input.customerId),
+      eq(schema.bills.kind, 'opening'),
+      eq(schema.bills.docstatus, SUBMITTED),
+    ))
+  if (existing) return { ok: false, code: 'ALREADY_SET', docNo: existing.docNo }
 
   const now = input.now ?? new Date()
   const nowIso = now.toISOString()
   const postingDate = input.asOf ?? businessDate(now)
   const billId = newId()
 
-  const customer = await db.get<{ name: string }>(`SELECT name FROM customers WHERE id = ?`, [input.customerId])
+  const [customer] = await q(db)
+    .select({ name: schema.customers.name })
+    .from(schema.customers)
+    .where(eq(schema.customers.id, input.customerId))
 
   let docNo = ''
   await db.transaction(async (tx) => {
     docNo = await nextDocNo(tx, 'bill', input.registerPrefix ?? 'OB', now)
-    await tx.execute(
-      `INSERT INTO bills
-         (id, doc_no, docstatus, kind, register_id, customer_id, customer_name, posting_date,
-          subtotal, discount, taxable_total, tax_total, round_off, grand_total,
-          paid_total, credit_total, notes, created_by, created_at, updated_at)
-       VALUES (?, ?, 1, 'opening', ?, ?, ?, ?, 0, 0, 0, 0, 0, ?, 0, ?, ?, ?, ?, ?)`,
-      [
-        billId, docNo, input.registerId, input.customerId, customer?.name ?? null, postingDate,
-        input.amount, input.amount, input.note ?? 'Balance carried over', input.actorId, nowIso, nowIso,
-      ],
-    )
+    await q(tx).insert(schema.bills).values({
+      id: billId,
+      docNo,
+      docstatus: SUBMITTED,
+      kind: 'opening',
+      registerId: input.registerId,
+      customerId: input.customerId,
+      customerName: customer?.name ?? null,
+      postingDate,
+      /* The whole of it is owed and none of it was paid, which is what an
+         opening balance is. The other money columns keep their defaults of
+         zero: nothing was sold, so there is no subtotal and no tax. */
+      grandTotal: input.amount,
+      creditTotal: input.amount,
+      notes: input.note ?? 'Balance carried over',
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'bills', entityId: billId, action: 'submit',
       docstatusTo: SUBMITTED,
@@ -888,45 +973,71 @@ export async function customerAccount(
   const from = range.from ?? null
   const to = range.to ?? null
 
-  const bills = await db.query<{
-    id: string; doc_no: string; posting_date: string; kind: string
-    grand_total: number; credit_total: number
-  }>(
-    `SELECT id, doc_no, posting_date, kind, grand_total, credit_total
-       FROM bills WHERE customer_id = ? AND docstatus = 1`,
-    [customerId],
-  )
+  const bills = await q(db)
+    .select({
+      id: schema.bills.id,
+      docNo: schema.bills.docNo,
+      postingDate: schema.bills.postingDate,
+      kind: schema.bills.kind,
+      grandTotal: schema.bills.grandTotal,
+      creditTotal: schema.bills.creditTotal,
+    })
+    .from(schema.bills)
+    .where(and(
+      eq(schema.bills.customerId, customerId),
+      eq(schema.bills.docstatus, SUBMITTED),
+    ))
 
-  const counterPaid = await db.query<{ bill_id: string; method: string; paid: number }>(
-    `SELECT bp.bill_id, bp.method, SUM(bp.amount) AS paid
-       FROM bill_payments bp JOIN bills b ON b.id = bp.bill_id
-      WHERE b.customer_id = ? AND b.docstatus = 1 AND bp.method <> 'credit'
-      GROUP BY bp.bill_id, bp.method`,
-    [customerId],
-  )
+  const counterPaid = await q(db)
+    .select({
+      billId: schema.billPayments.billId,
+      method: schema.billPayments.method,
+      paid: sql<Money>`SUM(${schema.billPayments.amount})`,
+    })
+    .from(schema.billPayments)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.billPayments.billId))
+    .where(and(
+      eq(schema.bills.customerId, customerId),
+      eq(schema.bills.docstatus, SUBMITTED),
+      ne(schema.billPayments.method, 'credit'),
+    ))
+    .groupBy(schema.billPayments.billId, schema.billPayments.method)
 
-  const returns = await db.query<{
-    id: string; doc_no: string; posting_date: string; refund_total: number
-    refund_method: string; credit_note_id: string | null
-  }>(
-    `SELECT r.id, r.doc_no, r.posting_date, r.refund_total, r.refund_method, r.credit_note_id
-       FROM sales_returns r JOIN bills b ON b.id = r.bill_id
-      WHERE b.customer_id = ? AND r.docstatus = 1`,
-    [customerId],
-  )
+  const returns = await q(db)
+    .select({
+      id: schema.salesReturns.id,
+      docNo: schema.salesReturns.docNo,
+      postingDate: schema.salesReturns.postingDate,
+      refundTotal: schema.salesReturns.refundTotal,
+      refundMethod: schema.salesReturns.refundMethod,
+      creditNoteId: schema.salesReturns.creditNoteId,
+    })
+    .from(schema.salesReturns)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.salesReturns.billId))
+    .where(and(
+      eq(schema.bills.customerId, customerId),
+      eq(schema.salesReturns.docstatus, SUBMITTED),
+    ))
 
-  const payments = await db.query<{
-    id: string; doc_no: string; posting_date: string; amount: number
-    method: string; reference: string | null; direction: string
-  }>(
-    `SELECT id, doc_no, posting_date, amount, method, reference, direction
-       FROM payment_entries
-      WHERE customer_id = ? AND party_type = 'customer' AND docstatus = 1`,
-    [customerId],
-  )
+  const payments = await q(db)
+    .select({
+      id: schema.paymentEntries.id,
+      docNo: schema.paymentEntries.docNo,
+      postingDate: schema.paymentEntries.postingDate,
+      amount: schema.paymentEntries.amount,
+      method: schema.paymentEntries.method,
+      reference: schema.paymentEntries.reference,
+      direction: schema.paymentEntries.direction,
+    })
+    .from(schema.paymentEntries)
+    .where(and(
+      eq(schema.paymentEntries.customerId, customerId),
+      eq(schema.paymentEntries.partyType, 'customer'),
+      eq(schema.paymentEntries.docstatus, SUBMITTED),
+    ))
 
   const raisedByReturn = new Set(
-    returns.map((r) => r.credit_note_id).filter((id): id is string => id !== null),
+    returns.map((r) => r.creditNoteId).filter((id): id is string => id !== null),
   )
 
   type Row = Omit<StatementEntry, 'balance'>
@@ -936,44 +1047,44 @@ export async function customerAccount(
     rows.push({
       kind: b.kind === 'opening' ? 'opening' : 'bill',
       id: b.id,
-      docNo: b.doc_no,
-      postingDate: b.posting_date,
+      docNo: b.docNo,
+      postingDate: b.postingDate,
       description: b.kind === 'opening' ? 'Balance brought forward' : 'Goods',
-      debit: b.grand_total as Money,
+      debit: b.grandTotal,
       credit: ZERO,
     })
   }
 
   for (const p of counterPaid) {
-    const bill = bills.find((b) => b.id === p.bill_id)
+    const bill = bills.find((b) => b.id === p.billId)
     if (!bill) continue
     rows.push({
       kind: 'counter',
-      id: `${p.bill_id}-${p.method}`,
-      docNo: bill.doc_no,
-      postingDate: bill.posting_date,
+      id: `${p.billId}-${p.method}`,
+      docNo: bill.docNo,
+      postingDate: bill.postingDate,
       description: p.method === 'loyalty'
         ? 'Paid with points'
         : `Paid at the counter — ${titleOf(p.method)}`,
       debit: ZERO,
-      credit: p.paid as Money,
+      credit: p.paid,
     })
   }
 
   for (const r of returns) {
-    const onAccount = r.credit_note_id !== null
+    const onAccount = r.creditNoteId !== null
     rows.push({
       kind: 'return',
       id: r.id,
-      docNo: r.doc_no,
-      postingDate: r.posting_date,
+      docNo: r.docNo,
+      postingDate: r.postingDate,
       description: onAccount
         ? 'Goods returned — put on your account'
-        : `Goods returned — refunded in ${titleOf(r.refund_method).toLowerCase()}`,
+        : `Goods returned — refunded in ${titleOf(r.refundMethod).toLowerCase()}`,
       debit: ZERO,
       // Money handed back leaves the account where it was: the goods went back
       // and so did the cash.
-      credit: (onAccount ? r.refund_total : 0) as Money,
+      credit: onAccount ? r.refundTotal : ZERO,
     })
   }
 
@@ -988,10 +1099,10 @@ export async function customerAccount(
       rows.push({
         kind: 'refund',
         id: p.id,
-        docNo: p.doc_no,
-        postingDate: p.posting_date,
+        docNo: p.docNo,
+        postingDate: p.postingDate,
         description: `Credit refunded — ${titleOf(p.method)}`,
-        debit: p.amount as Money,
+        debit: p.amount,
         credit: ZERO,
       })
       continue
@@ -1001,15 +1112,15 @@ export async function customerAccount(
     rows.push({
       kind: written ? 'writeoff' : 'receipt',
       id: p.id,
-      docNo: p.doc_no,
-      postingDate: p.posting_date,
+      docNo: p.docNo,
+      postingDate: p.postingDate,
       description: written
         ? 'Written off'
         : p.method === 'adjustment'
           ? (p.reference ?? 'Adjustment')
           : `Payment — ${titleOf(p.method)}`,
       debit: ZERO,
-      credit: p.amount as Money,
+      credit: p.amount,
     })
   }
 
@@ -1053,7 +1164,7 @@ export async function customerAccount(
     // back in cash is still a return even though the account did not move.
     if (row.kind === 'return') {
       const r = returns.find((x) => x.id === row.id)
-      returned += r?.refund_total ?? 0
+      returned += r?.refundTotal ?? 0
     }
 
     entries.push({ ...row, balance: running as Money })
