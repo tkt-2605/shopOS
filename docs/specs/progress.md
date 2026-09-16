@@ -1,18 +1,19 @@
 # Progress
 
-Branch `phase-0-and-the-test-bench`, 38 commits ahead of `main`, pushed to
-`origin/phase-0-and-the-test-bench`. Not merged to `main`, and nothing is
-released: no installer, no tag, no update anybody's till will fetch.
+Branch `phase-2-foundations`, 30 commits ahead of `main`, pushed to
+`origin/phase-2-foundations`. Not merged to `main`, and nothing is released: no
+installer, no tag, no update anybody's till will fetch.
 
 `tools/fixtures/` is gitignored as a folder and no `.db` is tracked. **The
 fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,385 TypeScript tests** passing and 3 skipped (Phase 2c
-placeholders that fail loudly if un-skipped early) across 101 files, **108 Rust
-tests** passing with a clean build, typecheck clean across core, app and both
-bench packages, and Layer 2 of the test bench green in Docker. Schema at 34.
+State of the tree: **1,480 TypeScript tests** passing and **none skipped** --
+the three Phase 2c placeholders are real tests now -- across 110 files, **111
+Rust tests** passing with a clean build, typecheck clean across core, app and
+both bench packages, and Layer 2 of the test bench green in Docker. Schema at
+35.
 
 ---
 
@@ -240,6 +241,149 @@ bills through `createBill`/`submitBill` rather than asserting about rows.
 - "Report a problem" on Settings, which says in those words that nothing is
   sent.
 
+### Row 8 — Phase 2, foundations while the installed base is zero
+
+**Complete.** All three parts, thirty commits, one service per commit through
+2a as the spec asked.
+
+#### 2a — typed queries
+
+`packages/core/src/db/schema.ts` is the shape of the database in a file the
+compiler can read: seeded once by `drizzle-kit pull` against a copy of the
+owner's migrated database, then owned by hand. `drizzle-kit` is deliberately
+not a dependency -- two of its three commands write DDL at a database, and a
+tool that can rewrite a shop's schema has no business being one `npm install`
+away from a developer in a hurry.
+
+Two things had to exist before a single query moved.
+
+**Rows by position.** Drizzle's proxy hands its callback positional rows and
+maps them onto the columns it asked for. The Tauri driver's rows are built in
+Rust as a `serde_json::Map`, which sorts its keys -- so `SELECT b, a` arrives
+as `{a, b}` and every column is off by one with plausible values in the wrong
+fields. A Cargo feature would have fixed the sort until somebody upgraded a
+dependency that turned it off again, and nothing would have gone red.
+`queryValues` asks SQLite for positions instead, through all three drivers, and
+`positionalRows.test.ts` pins it.
+
+**Brands that survive the read.** `money()` and `qtyCol()` carry `Money` and
+`Qty` through the column type, so the `paise(row.grand_total)` re-wrapping that
+every repo used to do -- and that a column somebody forgot to wrap slipped
+straight past -- is gone. They are casts and not conversions on purpose:
+validating on read would throw on rows already in a shop's database, turning a
+data problem into a till that will not open a screen.
+
+Twenty-two services and repos moved, in the spec's risk order: `billing`,
+`returns`, `payments`, `cash`, `reports`, `stock`/`stockEntry`, `pricing`,
+`documents`, then the rest. Before `reports.ts` -- the file a shopkeeper files
+a GST return from -- all ten reports were recorded against a year of the
+synthetic shop as digests, and the harness was proved to bite by dropping the
+credit-note UNION.
+
+What stays written out is marked `// raw:` with its reason, and the reasons are
+of three kinds: a window function (`reorder.ts`), a correlated subquery against
+the outer row (the customer balances, the bill's returns, the supplier's
+purchases, the audit log's subject), and a statement whose table and columns
+are not known until run time (`sync.ts`, `changefeed.ts`'s seed). Every one of
+them writes its table name out in full -- `bills.id`, not `id` -- because a
+bare column inside a subquery binds to the inner table and answers about the
+wrong one, which is a bug SQLite is happy to run.
+
+Three things the conversion found that the tests had not:
+
+- **The khata balance in `archiveCustomer` was only half tested.** The one
+  settling test paid cash at the counter, which leaves `credit_total` at zero,
+  so the allocation half of the subtraction could have returned anything. There
+  is a test now that takes a bill on credit, sees the archive refused, records
+  a receipt and sees it allowed.
+- **`bootstrap` writes at head.** A typed insert names every column the table
+  has, which turned up a fixture calling it against a database deliberately
+  stopped at version 1. The app migrates before anything reaches `firstRun`, so
+  the order is written down now rather than rediscovered.
+- **The failed-sign-in counter was read and written back.** Two tills signing
+  in as the same user could both read 3 and both write 4. It is incremented in
+  the database now.
+
+#### 2b — a `SqlDriver` for Turso
+
+`libsql-driver.ts`, for Phase 6's headless till. `@libsql/client` is
+deliberately not a dependency: one deployment out of three needs it, it carries
+native binaries, and core is the package every test in the product builds. The
+three methods this uses are written out as an interface, and Phase 6 hands in
+`createClient({ url, authToken })`, which satisfies it structurally.
+
+Its test answers libSQL's interface with a real SQLite file and then migrates,
+bootstraps and sells something through it, because the question worth asking is
+whether a bill submitted through this driver comes out the same as one
+submitted through the node driver. Three properties are mutation-checked: a
+rollback that rolls back, columns read by position, and `intMode: 'bigint'` --
+a legal way to create a libSQL client that would otherwise hand a `bigint` to
+arithmetic expecting paise.
+
+#### 2c — migrations that can be rolled out
+
+The handshake demanded that the two schema versions be exactly equal, which is
+right while every till in a shop is updated by one person on one afternoon and
+wrong the first time it is not: an update rolls out, the second till is
+switched off, it comes back on Monday and the shop cannot sync at all with
+nothing on either screen saying why.
+
+Every migration is now classified additive or breaking in `migrationKinds.ts`
+-- a module that reads nothing off disk, because `db/migrations.ts` uses
+`node:fs`, the app globs the same folder through Vite, and `sync.ts` runs in
+the webview where `node:fs` does not exist. `MIN_PEER_SCHEMA_VERSION` is
+derived as one past the last breaking migration rather than typed next to the
+list, because a number typed next to a list is a number that stops matching it.
+A pair is allowed when each side is at or above the other's floor.
+
+The bias is deliberate and written into the file: calling a breaking migration
+additive lets two tills corrupt each other's books quietly, and calling an
+additive one breaking refuses a sync somebody can fix. `030` is the standing
+example -- it drops two tables nothing replicates and is marked breaking
+anyway.
+
+Three things that would each have undone the phase were caught:
+
+- **`handleOffer` carried the same equality check** on the pushed batch. A pair
+  would have agreed at `hello` and then had every batch refused.
+- **A missing `minPeerSchema` means something specific.** A pre-2c build sends
+  no field *and* refuses anything but an exact match, so absent is read as
+  "they demand equality" -- which puts the refusal here, with a reason, rather
+  than halfway through.
+- **Both directions are checked**, because the danger is not symmetrical: the
+  newer till writes columns the older has no place for, the older sends rows
+  missing columns the newer has made NOT NULL. The refusal names which side is
+  behind.
+
+`applyBatch` reads every incoming row through the receiving database's own
+columns, cached per table per driver, and reports `ignoredColumns` and
+`ignoredTables` on the round so the newer till can say the other one is behind.
+`schema-skew.test.ts` is un-skipped with six tests, one of which carries a real
+bill across the version difference -- a rule that said yes and moved nothing
+would pass the handshake assertion on its own.
+
+`migrationReplay.test.ts` runs the thirty-five in order over the owner's own
+database and asserts that the file is still sound, that no foreign key dangles,
+and that no table came out with fewer rows than it went in with. The row counts
+are an allow-list rather than a tolerance, and the tables that do move are named
+separately so the exceptions cannot quietly grow.
+
+#### The checklist
+
+Every line of the spec's verification section is a test, and none of them needs
+the app running:
+
+| Check | Where |
+|---|---|
+| `schemaParity` against the real shop migrated to head | `schemaParity.test.ts` |
+| `(b, a)` comes back as `[b, a]` through both drivers | `positionalRows.test.ts` |
+| a Drizzle query inside a transaction goes through `sql_tx_query_values` | `positionalRows.test.ts:168` |
+| `db.query`, `db.get`, `db.execute` in a converted service finds only `// raw:` | grepped at each commit |
+| replay green on the real copy | `migrationReplay.test.ts` |
+| replay green on the synthetic shop | `shape.test.ts:174`, which builds it by running the same migrations |
+| a till at N and one at N−1 sync; a breaking one refuses | `schema-skew.test.ts` |
+
+
 ### Pulled forward out of order
 
 - **Phase 1d's host-sync fix.** The bench demanded it: `host-initiates.test.ts`
@@ -389,11 +533,11 @@ Two things worth carrying forward rather than forgetting:
   whether the weekly job should start collecting them is a real question, and
   the weekly job now exists to hang it on.
 
-### Phase 2 — foundations (~8 days)
+### Phase 2 — foundations
 
-Must not start until 1a–1c are merged, or Drizzle rewrites a query the GST fix
-is changing. 2a by risk, then 2c's migration classification — which un-skips
-`schema-skew.test.ts` in the same commit — then 2b's libSQL driver.
+**Done.** Row 8 has it. The one thing left from the spec that is not code is
+the customer-buckets rehearsal, which the spec itself defers: it is Phase 5's
+proof of this phase, not this phase's.
 
 ### Phase 4 — getting it onto a shop's PC (~6 days + the certificate)
 
