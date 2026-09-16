@@ -1,4 +1,6 @@
+import { eq, gt, count, max } from 'drizzle-orm'
 import type { SqlDriver, TxOptions } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { REPLICATED } from '../domain/replicaShape.js'
 
 /**
@@ -33,14 +35,6 @@ export interface Change {
   at: string
 }
 
-interface FeedRow {
-  seq: number
-  table_name: string
-  row_id: string
-  op: ChangeOp
-  at: string
-}
-
 /**
  * Everything that has changed after `cursor`, oldest first.
  *
@@ -53,21 +47,24 @@ export async function changesSince(
   cursor: number,
   limit = 500,
 ): Promise<Change[]> {
-  const rows = await db.query<FeedRow>(
-    `SELECT seq, table_name, row_id, op, at
-       FROM change_feed
-      WHERE seq > ?
-      ORDER BY seq
-      LIMIT ?`,
-    [cursor, limit],
-  )
-  return rows.map((r) => ({
-    seq: r.seq,
-    table: r.table_name,
-    rowId: r.row_id,
-    op: r.op,
-    at: r.at,
-  }))
+  const rows = await q(db)
+    .select({
+      seq: schema.changeFeed.seq,
+      table: schema.changeFeed.tableName,
+      rowId: schema.changeFeed.rowId,
+      op: schema.changeFeed.op,
+      at: schema.changeFeed.at,
+    })
+    .from(schema.changeFeed)
+    .where(gt(schema.changeFeed.seq, cursor))
+    .orderBy(schema.changeFeed.seq)
+    .limit(limit)
+
+  /* `op` is text in the database and this build knows two values for it. A row
+     written by a later build could hold a third, and it is passed on as it was
+     read rather than refused: the sender resolves the row either way, and a
+     word this build does not know is not a reason to stop replicating. */
+  return rows.map((r) => ({ ...r, op: r.op as ChangeOp }))
 }
 
 /**
@@ -78,17 +75,18 @@ export async function changesSince(
  * over and never sent again.
  */
 export async function feedHead(db: SqlDriver): Promise<number> {
-  const row = await db.get<{ head: number | null }>(
-    `SELECT MAX(seq) AS head FROM change_feed`,
-  )
+  const [row] = await q(db)
+    .select({ head: max(schema.changeFeed.seq) })
+    .from(schema.changeFeed)
   return row?.head ?? 0
 }
 
 /** How much is waiting. For the screen Phase 3 owes a person. */
 export async function pendingCount(db: SqlDriver, cursor = 0): Promise<number> {
-  const row = await db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM change_feed WHERE seq > ?`, [cursor],
-  )
+  const [row] = await q(db)
+    .select({ n: count() })
+    .from(schema.changeFeed)
+    .where(gt(schema.changeFeed.seq, cursor))
   return row?.n ?? 0
 }
 
@@ -114,22 +112,30 @@ export async function applyingRemote<T>(
   opts: TxOptions = {},
 ): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.execute(`UPDATE sync_state SET applying = 1 WHERE id = 1`)
+    await setApplying(tx, 1)
     try {
       return await fn(tx)
     } finally {
       // Before the commit, so no committed state ever has it set. On the throwing
       // path this runs and is then rolled back anyway, which is the same answer.
-      await tx.execute(`UPDATE sync_state SET applying = 0 WHERE id = 1`)
+      await setApplying(tx, 0)
     }
   }, opts)
 }
 
+/** The one row. The table has held exactly one since migration 021 made it. */
+async function setApplying(db: SqlDriver, value: 0 | 1): Promise<void> {
+  await q(db).update(schema.syncState)
+    .set({ applying: value })
+    .where(eq(schema.syncState.id, 1))
+}
+
 /** Whether the feed is currently switched off. For tests and for a diagnostic. */
 export async function isApplyingRemote(db: SqlDriver): Promise<boolean> {
-  const row = await db.get<{ applying: number }>(
-    `SELECT applying FROM sync_state WHERE id = 1`,
-  )
+  const [row] = await q(db)
+    .select({ applying: schema.syncState.applying })
+    .from(schema.syncState)
+    .where(eq(schema.syncState.id, 1))
   return row?.applying === 1
 }
 
@@ -143,7 +149,7 @@ export async function isApplyingRemote(db: SqlDriver): Promise<boolean> {
  * UPDATE against a one-row table.
  */
 export async function resetSyncState(db: SqlDriver): Promise<void> {
-  await db.execute(`UPDATE sync_state SET applying = 0 WHERE id = 1`)
+  await setApplying(db, 0)
 }
 
 /**
@@ -174,6 +180,11 @@ export async function seedFeedWithEverything(db: SqlDriver): Promise<number> {
          the rows: these have not changed. A write to the rows themselves would
          raise every `rev` in the shop and make this till look newer than every
          other one, which is a lie that then wins every merge. */
+      /* raw: the table and its key column are identifiers taken from
+         `REPLICATED` at run time, which a query builder has no shape for -- and
+         the count of rows an INSERT … SELECT touched does not come back through
+         the proxy the typed queries go over. Both halves of this statement need
+         what the driver gives directly. */
       const result = await tx.execute(
         `INSERT INTO change_feed (table_name, row_id, op, at)
          SELECT ?, "${shape.key}", 'upsert', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -198,6 +209,8 @@ export async function seedFeedWithEverything(db: SqlDriver): Promise<number> {
  * never learns about, and nothing afterwards will mention it again.
  */
 export async function pruneFeed(db: SqlDriver, upTo: number): Promise<number> {
+  // raw: how many rows were forgotten is the answer, and the proxy the typed
+  // queries go over does not carry a row count back.
   const result = await db.execute(`DELETE FROM change_feed WHERE seq <= ?`, [upTo])
   return result.rowsAffected
 }
