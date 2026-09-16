@@ -11,7 +11,7 @@
     "test": "vitest run",
     "pull-shop-db": "node tools/pull-shop-db.mjs",
     "test:watch": "vitest",
-    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/pos --noEmit && tsc -p tools/virtual-till --noEmit"
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/pos --noEmit && tsc -p tools/virtual-till --noEmit && tsc -p tools/synthetic-shop --noEmit"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
