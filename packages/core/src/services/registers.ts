@@ -1,4 +1,6 @@
+import { eq, ne, and, isNull, count, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { writeAudit } from '../integrity/audit.js'
 import { assertDeletable } from '../integrity/links.js'
@@ -19,19 +21,33 @@ export interface Register {
 }
 
 export async function listRegisters(db: SqlDriver, includeInactive = false): Promise<Register[]> {
-  const rows = await db.query<{ id: string; name: string; prefix: string; is_active: number; open_count: number }>(
-    `SELECT r.id, r.name, r.prefix, r.is_active,
-            (SELECT COUNT(*) FROM cash_sessions s WHERE s.register_id = r.id AND s.closed_at IS NULL) AS open_count
-       FROM registers r
-      ${includeInactive ? '' : 'WHERE r.is_active = 1'}
-      ORDER BY r.name`,
-  )
+  const rows = await q(db)
+    .select({
+      id: schema.registers.id,
+      name: schema.registers.name,
+      prefix: schema.registers.prefix,
+      isActive: schema.registers.isActive,
+      /* A left join and a count rather than a subquery. The join carries "not
+         closed" in its own condition: in `where` it would turn the left join
+         into an inner one and drop every counter that is not open, which is
+         every counter before the shop opens. */
+      openSessions: count(schema.cashSessions.id),
+    })
+    .from(schema.registers)
+    .leftJoin(schema.cashSessions, and(
+      eq(schema.cashSessions.registerId, schema.registers.id),
+      isNull(schema.cashSessions.closedAt),
+    ))
+    .where(and(...(includeInactive ? [] : [eq(schema.registers.isActive, 1)])))
+    .groupBy(schema.registers.id)
+    .orderBy(schema.registers.name)
+
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
     prefix: r.prefix,
-    isActive: r.is_active === 1,
-    hasOpenSession: r.open_count > 0,
+    isActive: r.isActive === 1,
+    hasOpenSession: r.openSessions > 0,
   }))
 }
 
@@ -68,10 +84,8 @@ export async function createRegister(
   const now = new Date().toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO registers (id, name, prefix, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-      [id, name, prefix, now, now],
-    )
+    await q(tx).insert(schema.registers)
+      .values({ id, name, prefix, createdAt: now, updatedAt: now })
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'registers', entityId: id, action: 'create', after: { name, prefix },
     })
@@ -87,10 +101,15 @@ export async function renameRegister(
   const name = input.name.trim()
   if (await exists(db, 'name', name, input.registerId)) return { ok: false, code: 'NAME_TAKEN' }
 
-  const before = await db.get<{ name: string }>(`SELECT name FROM registers WHERE id = ?`, [input.registerId])
+  const [before] = await q(db)
+    .select({ name: schema.registers.name })
+    .from(schema.registers)
+    .where(eq(schema.registers.id, input.registerId))
+
   await db.transaction(async (tx) => {
-    await tx.execute(`UPDATE registers SET name = ?, updated_at = ? WHERE id = ?`,
-      [name, new Date().toISOString(), input.registerId])
+    await q(tx).update(schema.registers)
+      .set({ name, updatedAt: new Date().toISOString() })
+      .where(eq(schema.registers.id, input.registerId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'registers', entityId: input.registerId, action: 'update',
       before: { name: before?.name ?? null }, after: { name },
@@ -108,16 +127,20 @@ export async function setRegisterActive(
   input: { registerId: string; isActive: boolean; actorId: string },
 ): Promise<{ ok: true } | { ok: false; code: 'HAS_OPEN_SESSION' }> {
   if (!input.isActive) {
-    const open = await db.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM cash_sessions WHERE register_id = ? AND closed_at IS NULL`,
-      [input.registerId],
-    )
+    const [open] = await q(db)
+      .select({ n: count() })
+      .from(schema.cashSessions)
+      .where(and(
+        eq(schema.cashSessions.registerId, input.registerId),
+        isNull(schema.cashSessions.closedAt),
+      ))
     if ((open?.n ?? 0) > 0) return { ok: false, code: 'HAS_OPEN_SESSION' }
   }
 
   await db.transaction(async (tx) => {
-    await tx.execute(`UPDATE registers SET is_active = ?, updated_at = ? WHERE id = ?`,
-      [input.isActive ? 1 : 0, new Date().toISOString(), input.registerId])
+    await q(tx).update(schema.registers)
+      .set({ isActive: input.isActive ? 1 : 0, updatedAt: new Date().toISOString() })
+      .where(eq(schema.registers.id, input.registerId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'registers', entityId: input.registerId, action: 'update',
       after: { is_active: input.isActive ? 1 : 0 },
@@ -128,7 +151,7 @@ export async function setRegisterActive(
 
 export async function deleteRegister(db: SqlDriver, registerId: string): Promise<void> {
   await assertDeletable(db, 'registers', registerId)
-  await db.execute(`DELETE FROM registers WHERE id = ?`, [registerId])
+  await q(db).delete(schema.registers).where(eq(schema.registers.id, registerId))
 }
 
 /**
@@ -152,14 +175,23 @@ export async function resolveDeviceRegister(
   chosen: string | null,
 ): Promise<string | null> {
   if (chosen) {
-    const live = await db.get<{ id: string }>(
-      `SELECT id FROM registers WHERE id = ? AND is_active = 1`, [chosen],
-    )
+    const [live] = await q(db)
+      .select({ id: schema.registers.id })
+      .from(schema.registers)
+      .where(and(eq(schema.registers.id, chosen), eq(schema.registers.isActive, 1)))
     if (live) return live.id
   }
-  const fallback = await db.get<{ id: string }>(
-    `SELECT id FROM registers WHERE is_active = 1 ORDER BY rowid LIMIT 1`,
-  )
+
+  const [fallback] = await q(db)
+    .select({ id: schema.registers.id })
+    .from(schema.registers)
+    .where(eq(schema.registers.isActive, 1))
+    /* raw: `rowid`, which is not a column and so is not in the schema. The
+       order it gives is the order the counters were created in, which is what
+       makes the fallback the shop's first counter rather than an arbitrary
+       one. */
+    .orderBy(sql`rowid`)
+    .limit(1)
   return fallback?.id ?? null
 }
 
@@ -184,9 +216,15 @@ export async function forgetLegacyDeviceRegister(db: SqlDriver): Promise<void> {
 }
 
 async function exists(db: SqlDriver, column: 'name' | 'prefix', value: string, exceptId?: string): Promise<boolean> {
-  const row = await db.get<{ id: string }>(
-    `SELECT id FROM registers WHERE ${column} = ? AND (? IS NULL OR id <> ?)`,
-    [value, exceptId ?? null, exceptId ?? ''],
-  )
+  /* The column was interpolated into the SQL by name. It is picked from the
+     table here instead, so a third caller cannot pass a string that is not a
+     column of `registers`. */
+  const [row] = await q(db)
+    .select({ id: schema.registers.id })
+    .from(schema.registers)
+    .where(and(
+      eq(schema.registers[column], value),
+      ...(exceptId === undefined ? [] : [ne(schema.registers.id, exceptId)]),
+    ))
   return row !== undefined
 }
