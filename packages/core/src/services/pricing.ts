@@ -1,4 +1,6 @@
+import { eq, and, ne, isNull, asc, desc, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import type { Money } from '../money.js'
 import { type Qty, qty, QTY_SCALE } from '../quantity.js'
@@ -40,14 +42,18 @@ export type SetUnitsResult =
   | { ok: false; code: 'IN_USE'; saleUnit: string; billCount: number }
 
 export async function listUnits(db: SqlDriver, productId: string): Promise<SaleUnit[]> {
-  const rows = await db.query<{ id: string; sale_unit: string; base_units: number; is_default: number }>(
-    `SELECT id, sale_unit, base_units, is_default FROM product_units
-      WHERE product_id = ? ORDER BY base_units`,
-    [productId],
-  )
-  return rows.map((r) => ({
-    id: r.id, saleUnit: r.sale_unit, baseUnits: qty(r.base_units), isDefault: r.is_default === 1,
-  }))
+  const rows = await q(db)
+    .select({
+      id: schema.productUnits.id,
+      saleUnit: schema.productUnits.saleUnit,
+      baseUnits: schema.productUnits.baseUnits,
+      isDefault: schema.productUnits.isDefault,
+    })
+    .from(schema.productUnits)
+    .where(eq(schema.productUnits.productId, productId))
+    .orderBy(asc(schema.productUnits.baseUnits))
+
+  return rows.map((r) => ({ ...r, isDefault: r.isDefault === 1 }))
 }
 
 /**
@@ -67,9 +73,10 @@ export async function setUnits(
   productId: string,
   inputs: SaleUnitInput[],
 ): Promise<SetUnitsResult> {
-  const product = await db.get<{ base_unit: string }>(
-    `SELECT base_unit FROM products WHERE id = ? AND deleted_at IS NULL`, [productId],
-  )
+  const [product] = await q(db)
+    .select({ baseUnit: schema.products.baseUnit })
+    .from(schema.products)
+    .where(and(eq(schema.products.id, productId), isNull(schema.products.deletedAt)))
   if (!product) throw new Error('no such product')
 
   const cleaned: SaleUnitInput[] = []
@@ -77,7 +84,7 @@ export async function setUnits(
   for (const input of inputs) {
     const name = input.saleUnit.trim()
     if (name === '' || seen.has(name)) continue
-    if (name === product.base_unit) return { ok: false, code: 'CLASHES_WITH_BASE', saleUnit: name }
+    if (name === product.baseUnit) return { ok: false, code: 'CLASHES_WITH_BASE', saleUnit: name }
     if (input.baseUnits <= 0) return { ok: false, code: 'BAD_FACTOR', saleUnit: name }
     seen.add(name)
     cleaned.push({ saleUnit: name, baseUnits: input.baseUnits, isDefault: input.isDefault ?? false })
@@ -86,10 +93,13 @@ export async function setUnits(
   const existing = await listUnits(db, productId)
   for (const unit of existing) {
     if (seen.has(unit.saleUnit)) continue
-    const used = await db.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM bill_items WHERE product_id = ? AND sale_unit = ?`,
-      [productId, unit.saleUnit],
-    )
+    const [used] = await q(db)
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(schema.billItems)
+      .where(and(
+        eq(schema.billItems.productId, productId),
+        eq(schema.billItems.saleUnit, unit.saleUnit),
+      ))
     if ((used?.n ?? 0) > 0) {
       return { ok: false, code: 'IN_USE', saleUnit: unit.saleUnit, billCount: used?.n ?? 0 }
     }
@@ -98,13 +108,19 @@ export async function setUnits(
   const now = (ctx.now ?? (() => new Date().toISOString()))()
 
   await db.transaction(async (tx) => {
-    await tx.execute(`DELETE FROM product_units WHERE product_id = ?`, [productId])
+    await q(tx).delete(schema.productUnits)
+      .where(eq(schema.productUnits.productId, productId))
+
     for (const input of cleaned) {
-      await tx.execute(
-        `INSERT INTO product_units (id, product_id, sale_unit, base_units, is_default, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [newId(), productId, input.saleUnit, input.baseUnits, input.isDefault ? 1 : 0, now, now],
-      )
+      await q(tx).insert(schema.productUnits).values({
+        id: newId(),
+        productId,
+        saleUnit: input.saleUnit,
+        baseUnits: input.baseUnits,
+        isDefault: input.isDefault ? 1 : 0,
+        createdAt: now,
+        updatedAt: now,
+      })
     }
     await writeAudit(tx, ctx, {
       entity: 'products', entityId: productId, action: 'update',
@@ -133,20 +149,37 @@ export async function listPriceLists(
   db: SqlDriver,
   options: { includeArchived?: boolean } = {},
 ): Promise<PriceList[]> {
-  const rows = await db.query<{
-    id: string; name: string; is_default: number; deleted_at: string | null
-    customers: number; prices: number
-  }>(
-    `SELECT l.id, l.name, l.is_default, l.deleted_at,
-            (SELECT COUNT(*) FROM customers c WHERE c.price_list_id = l.id AND c.deleted_at IS NULL) AS customers,
-            (SELECT COUNT(*) FROM item_prices p WHERE p.price_list_id = l.id AND p.deleted_at IS NULL) AS prices
-       FROM price_lists l
-      WHERE ${options.includeArchived ? '1 = 1' : 'l.deleted_at IS NULL'}
-      ORDER BY l.deleted_at IS NOT NULL, l.is_default DESC, l.name`,
-  )
+  /* raw: two correlated counts. A pair of joins would multiply one by the
+     other -- a list with four customers and nine rates would report thirty-six
+     of each -- and a shopkeeper about to archive a list is reading these two
+     numbers to decide whether they can. */
+  const customers = sql<number>`(SELECT COUNT(*) FROM customers c
+     WHERE c.price_list_id = price_lists.id AND c.deleted_at IS NULL)`
+  const prices = sql<number>`(SELECT COUNT(*) FROM item_prices p
+     WHERE p.price_list_id = price_lists.id AND p.deleted_at IS NULL)`
+
+  const rows = await q(db)
+    .select({
+      id: schema.priceLists.id,
+      name: schema.priceLists.name,
+      isDefault: schema.priceLists.isDefault,
+      deletedAt: schema.priceLists.deletedAt,
+      customerCount: customers,
+      priceCount: prices,
+    })
+    .from(schema.priceLists)
+    .where(options.includeArchived ? undefined : isNull(schema.priceLists.deletedAt))
+    // Live lists first, the default at the top of them, then by name.
+    .orderBy(
+      asc(sql`${schema.priceLists.deletedAt} IS NOT NULL`),
+      desc(schema.priceLists.isDefault),
+      asc(schema.priceLists.name),
+    )
+
   return rows.map((r) => ({
-    id: r.id, name: r.name, isDefault: r.is_default === 1, archived: r.deleted_at !== null,
-    customerCount: r.customers, priceCount: r.prices,
+    ...r,
+    isDefault: r.isDefault === 1,
+    archived: r.deletedAt !== null,
   }))
 }
 
@@ -167,11 +200,16 @@ export async function createPriceList(
 ): Promise<PriceListResult> {
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
-  const taken = await db.get<{ id: string; deleted_at: string | null }>(
-    `SELECT id, deleted_at FROM price_lists WHERE name = ? COLLATE NOCASE`, [name],
-  )
+  const [taken] = await q(db)
+    .select({ id: schema.priceLists.id, deletedAt: schema.priceLists.deletedAt })
+    .from(schema.priceLists)
+    /* raw: `COLLATE NOCASE`, which decides whether "wholesale" and "Wholesale"
+       are the same name. The unique index on this column carries the same
+       collation, so a comparison without it would let a shop past this check
+       and into the constraint. */
+    .where(sql`${schema.priceLists.name} = ${name} COLLATE NOCASE`)
   if (taken) {
-    return taken.deleted_at === null
+    return taken.deletedAt === null
       ? { ok: false, code: 'NAME_TAKEN' }
       : { ok: false, code: 'NAME_TAKEN_ARCHIVED', priceListId: taken.id }
   }
@@ -181,12 +219,14 @@ export async function createPriceList(
 
   await db.transaction(async (tx) => {
     // One default, always: a shop with two has no answer for a walk-in customer.
-    if (input.isDefault) await tx.execute(`UPDATE price_lists SET is_default = 0`)
-    await tx.execute(
-      `INSERT INTO price_lists (id, name, is_default, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, name, input.isDefault ? 1 : 0, now, now],
-    )
+    if (input.isDefault) await q(tx).update(schema.priceLists).set({ isDefault: 0 })
+    await q(tx).insert(schema.priceLists).values({
+      id,
+      name,
+      isDefault: input.isDefault ? 1 : 0,
+      createdAt: now,
+      updatedAt: now,
+    })
     await writeAudit(tx, ctx, {
       entity: 'price_lists', entityId: id, action: 'create', after: { name, is_default: input.isDefault ? 1 : 0 },
     })
@@ -200,39 +240,46 @@ export async function updatePriceList(
   ctx: AuditContext & { actorId: string },
   input: { priceListId: string; name?: string; isDefault?: boolean; isActive?: boolean },
 ): Promise<PriceListResult> {
-  const before = await db.get<{ name: string; is_default: number }>(
-    `SELECT name, is_default FROM price_lists WHERE id = ? AND deleted_at IS NULL`,
-    [input.priceListId],
-  )
+  const [before] = await q(db)
+    .select({ name: schema.priceLists.name, isDefault: schema.priceLists.isDefault })
+    .from(schema.priceLists)
+    .where(and(eq(schema.priceLists.id, input.priceListId), isNull(schema.priceLists.deletedAt)))
   if (!before) throw new Error('no such price list')
 
   const name = input.name?.trim() ?? before.name
   if (name === '') return { ok: false, code: 'NO_NAME' }
   if (name !== before.name) {
-    const taken = await db.get<{ id: string; deleted_at: string | null }>(
-      `SELECT id, deleted_at FROM price_lists WHERE name = ? COLLATE NOCASE AND id <> ?`,
-      [name, input.priceListId],
-    )
+    const [taken] = await q(db)
+      .select({ id: schema.priceLists.id, deletedAt: schema.priceLists.deletedAt })
+      .from(schema.priceLists)
+      // raw: `COLLATE NOCASE`, as in `createPriceList`.
+      .where(and(
+        sql`${schema.priceLists.name} = ${name} COLLATE NOCASE`,
+        ne(schema.priceLists.id, input.priceListId),
+      ))
     if (taken) {
-      return taken.deleted_at === null
+      return taken.deletedAt === null
         ? { ok: false, code: 'NAME_TAKEN' }
         : { ok: false, code: 'NAME_TAKEN_ARCHIVED', priceListId: taken.id }
     }
   }
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
-  const isDefault = input.isDefault ?? before.is_default === 1
+  const isDefault = input.isDefault ?? before.isDefault === 1
 
   await db.transaction(async (tx) => {
-    if (isDefault) await tx.execute(`UPDATE price_lists SET is_default = 0`)
-    await tx.execute(
-      `UPDATE price_lists SET name = ?, is_default = ?, updated_at = ?, rev = rev + 1
-        WHERE id = ?`,
-      [name, isDefault ? 1 : 0, now, input.priceListId],
-    )
+    if (isDefault) await q(tx).update(schema.priceLists).set({ isDefault: 0 })
+    await q(tx).update(schema.priceLists)
+      .set({
+        name,
+        isDefault: isDefault ? 1 : 0,
+        updatedAt: now,
+        rev: sql`${schema.priceLists.rev} + 1`,
+      })
+      .where(eq(schema.priceLists.id, input.priceListId))
     await writeAudit(tx, ctx, {
       entity: 'price_lists', entityId: input.priceListId, action: 'update',
-      before: { name: before.name, is_default: before.is_default },
+      before: { name: before.name, is_default: before.isDefault },
       after: { name, is_default: isDefault ? 1 : 0 },
     })
   })
@@ -275,23 +322,27 @@ export async function archivePriceList(
   ctx: AuditContext & { actorId: string },
   priceListId: string,
 ): Promise<ArchivePriceListResult> {
-  const list = await db.get<{ is_default: number }>(
-    `SELECT is_default FROM price_lists WHERE id = ? AND deleted_at IS NULL`, [priceListId],
-  )
+  const [list] = await q(db)
+    .select({ isDefault: schema.priceLists.isDefault })
+    .from(schema.priceLists)
+    .where(and(eq(schema.priceLists.id, priceListId), isNull(schema.priceLists.deletedAt)))
   if (!list) throw new Error('no such price list')
-  if (list.is_default === 1) return { ok: false, code: 'IS_DEFAULT' }
+  if (list.isDefault === 1) return { ok: false, code: 'IS_DEFAULT' }
 
-  const on = await db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM customers WHERE price_list_id = ? AND deleted_at IS NULL`,
-    [priceListId],
-  )
+  const [on] = await q(db)
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(schema.customers)
+    .where(and(
+      eq(schema.customers.priceListId, priceListId),
+      isNull(schema.customers.deletedAt),
+    ))
   if ((on?.n ?? 0) > 0) return { ok: false, code: 'IN_USE', customerCount: on?.n ?? 0 }
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE price_lists SET deleted_at = ?, updated_at = ? WHERE id = ?`, [now, now, priceListId],
-    )
+    await q(tx).update(schema.priceLists)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(eq(schema.priceLists.id, priceListId))
     await writeAudit(tx, ctx, { entity: 'price_lists', entityId: priceListId, action: 'delete' })
   })
 
@@ -311,9 +362,9 @@ export async function restorePriceList(
 ): Promise<void> {
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE price_lists SET deleted_at = NULL, updated_at = ? WHERE id = ?`, [now, priceListId],
-    )
+    await q(tx).update(schema.priceLists)
+      .set({ deletedAt: null, updatedAt: now })
+      .where(eq(schema.priceLists.id, priceListId))
     await writeAudit(tx, ctx, {
       entity: 'price_lists', entityId: priceListId, action: 'update',
       before: { 'On the list': 'removed' }, after: { 'On the list': 'yes' },
@@ -356,31 +407,34 @@ export async function listItemPrices(
   db: SqlDriver,
   filter: { productId?: string; priceListId?: string } = {},
 ): Promise<ItemPrice[]> {
-  const where = ['p.deleted_at IS NULL']
-  const args: string[] = []
-  if (filter.productId) { where.push('p.product_id = ?'); args.push(filter.productId) }
-  if (filter.priceListId) { where.push('p.price_list_id = ?'); args.push(filter.priceListId) }
-
-  const rows = await db.query<{
-    id: string; product_id: string; product_name: string; price_list_id: string
-    price_list_name: string; sale_unit: string; min_qty: number; rate: number
-    valid_from: string | null; valid_to: string | null
-  }>(
-    `SELECT p.id, p.product_id, pr.name AS product_name, p.price_list_id, l.name AS price_list_name,
-            p.sale_unit, p.min_qty, p.rate, p.valid_from, p.valid_to
-       FROM item_prices p
-       JOIN products pr ON pr.id = p.product_id
-       JOIN price_lists l ON l.id = p.price_list_id
-      WHERE ${where.join(' AND ')}
-      ORDER BY pr.name, l.is_default DESC, l.name, p.sale_unit, p.min_qty`,
-    args,
-  )
-  return rows.map((r) => ({
-    id: r.id, productId: r.product_id, productName: r.product_name,
-    priceListId: r.price_list_id, priceListName: r.price_list_name,
-    saleUnit: r.sale_unit, minQty: qty(r.min_qty), rate: r.rate as Money,
-    validFrom: r.valid_from, validTo: r.valid_to,
-  }))
+  return q(db)
+    .select({
+      id: schema.itemPrices.id,
+      productId: schema.itemPrices.productId,
+      productName: schema.products.name,
+      priceListId: schema.itemPrices.priceListId,
+      priceListName: schema.priceLists.name,
+      saleUnit: schema.itemPrices.saleUnit,
+      minQty: schema.itemPrices.minQty,
+      rate: schema.itemPrices.rate,
+      validFrom: schema.itemPrices.validFrom,
+      validTo: schema.itemPrices.validTo,
+    })
+    .from(schema.itemPrices)
+    .innerJoin(schema.products, eq(schema.products.id, schema.itemPrices.productId))
+    .innerJoin(schema.priceLists, eq(schema.priceLists.id, schema.itemPrices.priceListId))
+    .where(and(
+      isNull(schema.itemPrices.deletedAt),
+      ...(filter.productId ? [eq(schema.itemPrices.productId, filter.productId)] : []),
+      ...(filter.priceListId ? [eq(schema.itemPrices.priceListId, filter.priceListId)] : []),
+    ))
+    .orderBy(
+      asc(schema.products.name),
+      desc(schema.priceLists.isDefault),
+      asc(schema.priceLists.name),
+      asc(schema.itemPrices.saleUnit),
+      asc(schema.itemPrices.minQty),
+    )
 }
 
 /**
@@ -405,29 +459,45 @@ export async function setItemPrice(
   const minQty = input.minQty ?? qty(0)
   const now = (ctx.now ?? (() => new Date().toISOString()))()
 
-  const existing = await db.get<{ id: string; rate: number }>(
-    `SELECT id, rate FROM item_prices
-      WHERE product_id = ? AND price_list_id = ? AND sale_unit = ? AND min_qty = ?`,
-    [input.productId, input.priceListId, input.saleUnit, minQty],
-  )
+  const [existing] = await q(db)
+    .select({ id: schema.itemPrices.id, rate: schema.itemPrices.rate })
+    .from(schema.itemPrices)
+    .where(and(
+      eq(schema.itemPrices.productId, input.productId),
+      eq(schema.itemPrices.priceListId, input.priceListId),
+      eq(schema.itemPrices.saleUnit, input.saleUnit),
+      eq(schema.itemPrices.minQty, minQty),
+    ))
 
   const id = existing?.id ?? newId()
   await db.transaction(async (tx) => {
     if (existing) {
-      await tx.execute(
-        `UPDATE item_prices SET rate = ?, valid_from = ?, valid_to = ?, deleted_at = NULL,
-                                updated_at = ?, rev = rev + 1
-          WHERE id = ?`,
-        [input.rate, input.validFrom ?? null, input.validTo ?? null, now, id],
-      )
+      /* `deleted_at = NULL` on the way past: writing the same rung again is how
+         a shop brings back a rate it removed, and leaving it archived would
+         make the screen show a rung the resolver ignores. */
+      await q(tx).update(schema.itemPrices)
+        .set({
+          rate: input.rate,
+          validFrom: input.validFrom ?? null,
+          validTo: input.validTo ?? null,
+          deletedAt: null,
+          updatedAt: now,
+          rev: sql`${schema.itemPrices.rev} + 1`,
+        })
+        .where(eq(schema.itemPrices.id, id))
     } else {
-      await tx.execute(
-        `INSERT INTO item_prices
-           (id, product_id, price_list_id, sale_unit, min_qty, rate, valid_from, valid_to, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, input.productId, input.priceListId, input.saleUnit, minQty, input.rate,
-         input.validFrom ?? null, input.validTo ?? null, now, now],
-      )
+      await q(tx).insert(schema.itemPrices).values({
+        id,
+        productId: input.productId,
+        priceListId: input.priceListId,
+        saleUnit: input.saleUnit,
+        minQty,
+        rate: input.rate,
+        validFrom: input.validFrom ?? null,
+        validTo: input.validTo ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
     }
     await writeAudit(tx, ctx, {
       entity: 'item_prices', entityId: id, action: existing ? 'update' : 'create',
@@ -448,10 +518,9 @@ export async function removeItemPrice(
   await db.transaction(async (tx) => {
     // Soft, because a submitted bill points at this row through price_source_id
     // and support has to be able to answer "why was this ₹42" next March.
-    await tx.execute(
-      `UPDATE item_prices SET deleted_at = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-      [now, now, itemPriceId],
-    )
+    await q(tx).update(schema.itemPrices)
+      .set({ deletedAt: now, updatedAt: now, rev: sql`${schema.itemPrices.rev} + 1` })
+      .where(eq(schema.itemPrices.id, itemPriceId))
     await writeAudit(tx, ctx, { entity: 'item_prices', entityId: itemPriceId, action: 'delete' })
   })
 }
@@ -476,30 +545,33 @@ export async function listCustomerPrices(
   db: SqlDriver,
   filter: { customerId?: string; productId?: string } = {},
 ): Promise<CustomerPrice[]> {
-  const where = ['cp.deleted_at IS NULL']
-  const args: string[] = []
-  if (filter.customerId) { where.push('cp.customer_id = ?'); args.push(filter.customerId) }
-  if (filter.productId) { where.push('cp.product_id = ?'); args.push(filter.productId) }
-
-  const rows = await db.query<{
-    id: string; customer_id: string; customer_name: string; product_id: string
-    product_name: string; sale_unit: string; min_qty: number; rate: number
-    valid_from: string | null; valid_to: string | null
-  }>(
-    `SELECT cp.id, cp.customer_id, c.name AS customer_name, cp.product_id, p.name AS product_name,
-            cp.sale_unit, cp.min_qty, cp.rate, cp.valid_from, cp.valid_to
-       FROM customer_item_prices cp
-       JOIN customers c ON c.id = cp.customer_id
-       JOIN products p ON p.id = cp.product_id
-      WHERE ${where.join(' AND ')}
-      ORDER BY c.name, p.name, cp.sale_unit, cp.min_qty`,
-    args,
-  )
-  return rows.map((r) => ({
-    id: r.id, customerId: r.customer_id, customerName: r.customer_name,
-    productId: r.product_id, productName: r.product_name, saleUnit: r.sale_unit,
-    minQty: qty(r.min_qty), rate: r.rate as Money, validFrom: r.valid_from, validTo: r.valid_to,
-  }))
+  return q(db)
+    .select({
+      id: schema.customerItemPrices.id,
+      customerId: schema.customerItemPrices.customerId,
+      customerName: schema.customers.name,
+      productId: schema.customerItemPrices.productId,
+      productName: schema.products.name,
+      saleUnit: schema.customerItemPrices.saleUnit,
+      minQty: schema.customerItemPrices.minQty,
+      rate: schema.customerItemPrices.rate,
+      validFrom: schema.customerItemPrices.validFrom,
+      validTo: schema.customerItemPrices.validTo,
+    })
+    .from(schema.customerItemPrices)
+    .innerJoin(schema.customers, eq(schema.customers.id, schema.customerItemPrices.customerId))
+    .innerJoin(schema.products, eq(schema.products.id, schema.customerItemPrices.productId))
+    .where(and(
+      isNull(schema.customerItemPrices.deletedAt),
+      ...(filter.customerId ? [eq(schema.customerItemPrices.customerId, filter.customerId)] : []),
+      ...(filter.productId ? [eq(schema.customerItemPrices.productId, filter.productId)] : []),
+    ))
+    .orderBy(
+      asc(schema.customers.name),
+      asc(schema.products.name),
+      asc(schema.customerItemPrices.saleUnit),
+      asc(schema.customerItemPrices.minQty),
+    )
 }
 
 export async function setCustomerPrice(
@@ -519,29 +591,42 @@ export async function setCustomerPrice(
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   const minQty = input.minQty ?? qty(0)
-  const existing = await db.get<{ id: string; rate: number }>(
-    `SELECT id, rate FROM customer_item_prices
-      WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND min_qty = ?`,
-    [input.customerId, input.productId, input.saleUnit, minQty],
-  )
+  const [existing] = await q(db)
+    .select({ id: schema.customerItemPrices.id, rate: schema.customerItemPrices.rate })
+    .from(schema.customerItemPrices)
+    .where(and(
+      eq(schema.customerItemPrices.customerId, input.customerId),
+      eq(schema.customerItemPrices.productId, input.productId),
+      eq(schema.customerItemPrices.saleUnit, input.saleUnit),
+      eq(schema.customerItemPrices.minQty, minQty),
+    ))
   const id = existing?.id ?? newId()
 
   await db.transaction(async (tx) => {
     if (existing) {
-      await tx.execute(
-        `UPDATE customer_item_prices SET rate = ?, valid_from = ?, valid_to = ?, deleted_at = NULL,
-                                         updated_at = ?, rev = rev + 1
-          WHERE id = ?`,
-        [input.rate, input.validFrom ?? null, input.validTo ?? null, now, id],
-      )
+      await q(tx).update(schema.customerItemPrices)
+        .set({
+          rate: input.rate,
+          validFrom: input.validFrom ?? null,
+          validTo: input.validTo ?? null,
+          deletedAt: null,
+          updatedAt: now,
+          rev: sql`${schema.customerItemPrices.rev} + 1`,
+        })
+        .where(eq(schema.customerItemPrices.id, id))
     } else {
-      await tx.execute(
-        `INSERT INTO customer_item_prices
-           (id, customer_id, product_id, sale_unit, min_qty, rate, valid_from, valid_to, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, input.customerId, input.productId, input.saleUnit, minQty, input.rate,
-         input.validFrom ?? null, input.validTo ?? null, now, now],
-      )
+      await q(tx).insert(schema.customerItemPrices).values({
+        id,
+        customerId: input.customerId,
+        productId: input.productId,
+        saleUnit: input.saleUnit,
+        minQty,
+        rate: input.rate,
+        validFrom: input.validFrom ?? null,
+        validTo: input.validTo ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
     }
     await writeAudit(tx, ctx, {
       entity: 'customer_item_prices', entityId: id, action: existing ? 'update' : 'create',
@@ -560,10 +645,9 @@ export async function removeCustomerPrice(
 ): Promise<void> {
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE customer_item_prices SET deleted_at = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-      [now, now, id],
-    )
+    await q(tx).update(schema.customerItemPrices)
+      .set({ deletedAt: now, updatedAt: now, rev: sql`${schema.customerItemPrices.rev} + 1` })
+      .where(eq(schema.customerItemPrices.id, id))
     await writeAudit(tx, ctx, { entity: 'customer_item_prices', entityId: id, action: 'delete' })
   })
 }
@@ -576,17 +660,18 @@ export async function setCustomerPriceList(
   priceListId: string | null,
 ): Promise<void> {
   const now = (ctx.now ?? (() => new Date().toISOString()))()
-  const before = await db.get<{ price_list_id: string | null }>(
-    `SELECT price_list_id FROM customers WHERE id = ?`, [customerId],
-  )
+  const [before] = await q(db)
+    .select({ priceListId: schema.customers.priceListId })
+    .from(schema.customers)
+    .where(eq(schema.customers.id, customerId))
+
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE customers SET price_list_id = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-      [priceListId, now, customerId],
-    )
+    await q(tx).update(schema.customers)
+      .set({ priceListId, updatedAt: now, rev: sql`${schema.customers.rev} + 1` })
+      .where(eq(schema.customers.id, customerId))
     await writeAudit(tx, ctx, {
       entity: 'customers', entityId: customerId, action: 'update',
-      before: { price_list_id: before?.price_list_id ?? null },
+      before: { price_list_id: before?.priceListId ?? null },
       after: { price_list_id: priceListId },
     })
   })
@@ -616,11 +701,15 @@ export async function setLadder(
     return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
   }
 
-  const existing = await db.query<{ id: string; min_qty: number }>(
-    `SELECT id, min_qty FROM item_prices
-      WHERE product_id = ? AND price_list_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
-    [input.productId, input.priceListId, input.saleUnit],
-  )
+  const existing = await q(db)
+    .select({ id: schema.itemPrices.id, minQty: schema.itemPrices.minQty })
+    .from(schema.itemPrices)
+    .where(and(
+      eq(schema.itemPrices.productId, input.productId),
+      eq(schema.itemPrices.priceListId, input.priceListId),
+      eq(schema.itemPrices.saleUnit, input.saleUnit),
+      isNull(schema.itemPrices.deletedAt),
+    ))
   const keep = new Set<number>(input.rungs.map((r) => r.minQty))
 
   for (const rung of input.rungs) {
@@ -635,10 +724,10 @@ export async function setLadder(
   }
 
   for (const row of existing) {
-    if (!keep.has(row.min_qty)) await removeItemPrice(db, ctx, row.id)
+    if (!keep.has(row.minQty)) await removeItemPrice(db, ctx, row.id)
   }
 
-  return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.min_qty)).length }
+  return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.minQty)).length }
 }
 
 /** The same, for a rate that belongs to one customer and one item. */
@@ -651,11 +740,15 @@ export async function setCustomerLadder(
     return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
   }
 
-  const existing = await db.query<{ id: string; min_qty: number }>(
-    `SELECT id, min_qty FROM customer_item_prices
-      WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
-    [input.customerId, input.productId, input.saleUnit],
-  )
+  const existing = await q(db)
+    .select({ id: schema.customerItemPrices.id, minQty: schema.customerItemPrices.minQty })
+    .from(schema.customerItemPrices)
+    .where(and(
+      eq(schema.customerItemPrices.customerId, input.customerId),
+      eq(schema.customerItemPrices.productId, input.productId),
+      eq(schema.customerItemPrices.saleUnit, input.saleUnit),
+      isNull(schema.customerItemPrices.deletedAt),
+    ))
   const keep = new Set<number>(input.rungs.map((r) => r.minQty))
 
   for (const rung of input.rungs) {
@@ -670,10 +763,10 @@ export async function setCustomerLadder(
   }
 
   for (const row of existing) {
-    if (!keep.has(row.min_qty)) await removeCustomerPrice(db, ctx, row.id)
+    if (!keep.has(row.minQty)) await removeCustomerPrice(db, ctx, row.id)
   }
 
-  return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.min_qty)).length }
+  return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.minQty)).length }
 }
 
 /** One product's ladder on one list, in the order it applies. */
@@ -681,26 +774,32 @@ export async function ladderFor(
   db: SqlDriver,
   input: { productId: string; priceListId: string; saleUnit: string },
 ): Promise<Rung[]> {
-  const rows = await db.query<{ min_qty: number; rate: number }>(
-    `SELECT min_qty, rate FROM item_prices
-      WHERE product_id = ? AND price_list_id = ? AND sale_unit = ? AND deleted_at IS NULL
-      ORDER BY min_qty`,
-    [input.productId, input.priceListId, input.saleUnit],
-  )
-  return rows.map((r) => ({ minQty: qty(r.min_qty), rate: r.rate as Money }))
+  return q(db)
+    .select({ minQty: schema.itemPrices.minQty, rate: schema.itemPrices.rate })
+    .from(schema.itemPrices)
+    .where(and(
+      eq(schema.itemPrices.productId, input.productId),
+      eq(schema.itemPrices.priceListId, input.priceListId),
+      eq(schema.itemPrices.saleUnit, input.saleUnit),
+      isNull(schema.itemPrices.deletedAt),
+    ))
+    .orderBy(asc(schema.itemPrices.minQty))
 }
 
 export async function customerLadderFor(
   db: SqlDriver,
   input: { customerId: string; productId: string; saleUnit: string },
 ): Promise<Rung[]> {
-  const rows = await db.query<{ min_qty: number; rate: number }>(
-    `SELECT min_qty, rate FROM customer_item_prices
-      WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND deleted_at IS NULL
-      ORDER BY min_qty`,
-    [input.customerId, input.productId, input.saleUnit],
-  )
-  return rows.map((r) => ({ minQty: qty(r.min_qty), rate: r.rate as Money }))
+  return q(db)
+    .select({ minQty: schema.customerItemPrices.minQty, rate: schema.customerItemPrices.rate })
+    .from(schema.customerItemPrices)
+    .where(and(
+      eq(schema.customerItemPrices.customerId, input.customerId),
+      eq(schema.customerItemPrices.productId, input.productId),
+      eq(schema.customerItemPrices.saleUnit, input.saleUnit),
+      isNull(schema.customerItemPrices.deletedAt),
+    ))
+    .orderBy(asc(schema.customerItemPrices.minQty))
 }
 
 /**
@@ -713,20 +812,28 @@ export async function laddersFor(
   db: SqlDriver,
   priceListId: string,
 ): Promise<Map<string, Rung[]>> {
-  const rows = await db.query<{ product_id: string; sale_unit: string; min_qty: number; rate: number }>(
-    `SELECT ip.product_id, ip.sale_unit, ip.min_qty, ip.rate
-       FROM item_prices ip
-       JOIN products p ON p.id = ip.product_id
-      WHERE ip.price_list_id = ? AND ip.deleted_at IS NULL AND ip.sale_unit = p.base_unit
-      ORDER BY ip.product_id, ip.min_qty`,
-    [priceListId],
-  )
+  const rows = await q(db)
+    .select({
+      productId: schema.itemPrices.productId,
+      minQty: schema.itemPrices.minQty,
+      rate: schema.itemPrices.rate,
+    })
+    .from(schema.itemPrices)
+    .innerJoin(schema.products, eq(schema.products.id, schema.itemPrices.productId))
+    .where(and(
+      eq(schema.itemPrices.priceListId, priceListId),
+      isNull(schema.itemPrices.deletedAt),
+      // The base-unit ladder only: a column of rates in a list of products is
+      // per piece, and a box rate in it would read as a very expensive piece.
+      eq(schema.itemPrices.saleUnit, schema.products.baseUnit),
+    ))
+    .orderBy(asc(schema.itemPrices.productId), asc(schema.itemPrices.minQty))
 
   const ladders = new Map<string, Rung[]>()
   for (const row of rows) {
-    const rungs = ladders.get(row.product_id) ?? []
-    rungs.push({ minQty: qty(row.min_qty), rate: row.rate as Money })
-    ladders.set(row.product_id, rungs)
+    const rungs = ladders.get(row.productId) ?? []
+    rungs.push({ minQty: row.minQty, rate: row.rate })
+    ladders.set(row.productId, rungs)
   }
   return ladders
 }
@@ -739,15 +846,21 @@ export async function laddersFor(
  * looking as though it works.
  */
 async function unitExists(db: SqlDriver, productId: string, saleUnit: string): Promise<boolean> {
-  const base = await db.get<{ base_unit: string }>(
-    `SELECT base_unit FROM products WHERE id = ? AND deleted_at IS NULL`, [productId],
-  )
+  const [base] = await q(db)
+    .select({ baseUnit: schema.products.baseUnit })
+    .from(schema.products)
+    .where(and(eq(schema.products.id, productId), isNull(schema.products.deletedAt)))
   if (!base) return false
-  if (base.base_unit === saleUnit) return true
-  const row = await db.get<{ id: string }>(
-    `SELECT id FROM product_units WHERE product_id = ? AND sale_unit = ?`, [productId, saleUnit],
-  )
-  return row !== undefined && row !== null
+  if (base.baseUnit === saleUnit) return true
+
+  const [row] = await q(db)
+    .select({ id: schema.productUnits.id })
+    .from(schema.productUnits)
+    .where(and(
+      eq(schema.productUnits.productId, productId),
+      eq(schema.productUnits.saleUnit, saleUnit),
+    ))
+  return row !== undefined
 }
 
 /**
