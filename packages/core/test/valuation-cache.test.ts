@@ -8,7 +8,6 @@ import { newId } from '../src/ids.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { migrate } from '../src/db/migrate.js'
 import { openMemoryDatabase } from '../src/db/node-driver.js'
-import { bootstrap } from '../src/services/bootstrap.js'
 import { freshDb, makeProduct, type Fixture } from './helpers.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
@@ -211,11 +210,14 @@ describe('reversal', () => {
 describe('upgrading a shop that already has stock', () => {
   /* The column arrives with DEFAULT 0, which for a running total is not a neutral
      starting point — it is a claim that the goods cost nothing. Run the real
-     migration over a database that stopped at version 1. */
+     migration over a database that stopped at version 1.
+
+     No `bootstrap` here: it writes at head, and the app only ever calls it
+     after `migrate` has run. What this fixture needs is the stock a shop had
+     before the upgrade, which is the two rows below. */
   it('backfills the cache from the ledger, so the first sale after an upgrade is costed', async () => {
     const db = openMemoryDatabase()
     await migrate(db, MIGRATIONS.filter((m) => m.version === 1))
-    await bootstrap(db, { shopName: 'Old Shop' })
 
     const productId = newId()
     const now = new Date().toISOString()
@@ -249,7 +251,6 @@ describe('upgrading a shop that already has stock', () => {
   it('leaves a product with nothing on hand at zero', async () => {
     const db = openMemoryDatabase()
     await migrate(db, MIGRATIONS.filter((m) => m.version === 1))
-    await bootstrap(db, { shopName: 'Old Shop' })
 
     const productId = newId()
     const now = new Date().toISOString()
