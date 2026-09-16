@@ -9,10 +9,10 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,306 TypeScript tests** passing and 3 skipped (Phase 2c
-placeholders that fail loudly if un-skipped early) across 94 files, **101 Rust
-tests** passing with zero warnings, typecheck clean across core, app and bench,
-and Layer 2 of the test bench green in Docker. Schema at 33.
+State of the tree: **1,380 TypeScript tests** passing and 3 skipped (Phase 2c
+placeholders that fail loudly if un-skipped early) across 100 files, **108 Rust
+tests** passing with a clean build, typecheck clean across core, app and both
+bench packages, and Layer 2 of the test bench green in Docker. Schema at 34.
 
 ---
 
@@ -154,15 +154,23 @@ to `EXPECTED_SCHEMA_VERSION` on every run and asserts the schema, the integrity
 check, the supply types and the money. Every future migration re-runs it the
 moment it is registered.
 
-### Row 7 — Phase 3 begins, a shop must not be able to lose data
+### Row 7 — Phase 3, a shop must not be able to lose data
 
-Three commits, taken in the order that makes each one verifiable when it lands.
+**Complete.** Nine commits, taken in the order that makes each one verifiable
+when it lands.
 
 | Commit | What it stops |
 |---|---|
 | `481ecc0` | **The log file.** Rust and webview events in one file in one order, five files of a megabyte. `ErrorBoundary.tsx` had a `TODO(phase-3)` sitting on the `console.error` it replaces |
 | `bc3be06` | **An icon that did nothing when double-clicked.** `setup()` ended in `Db::open(..)?`, so a database that would not open meant no window at all -- and `windows_subsystem = "windows"` means no console either. Plus `quick_check` at open, and advice per failure kind |
 | `f0e6f93` | **A backup nobody had opened.** The archive is now read back and `integrity_check`ed before it is allowed to wear today's name, and there is a "Check" button per backup |
+| `8bd13ef` | **The three things the log was supposed to catch and did not.** Migrations, the backup outcome both ways, and sync refusals from both ends |
+| `494c19e` | **A support call conducted down a phone line.** One zip to send. Redaction is an allowlist, not a denylist; `users.password_hash` and `sync_peers.secret` are never read at all |
+| `5b69450` | **Four bugs that only exist at size, with nothing of that size to look at.** `tools/synthetic-shop`: 20,000 bills over a year, generated and seeded, in two and a quarter seconds |
+| `63d2fa7` | **"Total outstanding" was the total of the five hundred rows on the screen.** Short by ₹2,80,542.65 of ₹19,67,837.26 on a shop with 600 customers — fourteen per cent, and always in the direction that never prompts a question |
+| `064418f` | **Two indexes, measured rather than guessed.** The Bills page's default view went 24.8 ms to 0.48 ms. The third index the phase asked for is not here: it would have made the one query it was for slower |
+| `49216a5` | **Opening the home screen replayed the whole stock ledger.** Scoped to the products a caller names; the unbounded replay moves to the 02:00 timer, weekly |
+| `6b9424a` | **One watchdog timeout for a bill and for a merge.** Per-transaction budgets, and a write outside the token refused instead of silently joining the transaction that is running |
 
 Three things in these were worth more than their task-list line.
 
@@ -184,6 +192,53 @@ of an already-damaged database produces a well-formed zip with a correct CRC
 whose every byte round-trips. Only `integrity_check` on the extracted database
 notices, and it runs before the rename, so a failed archive never wears today's
 name at all.
+
+### What the synthetic shop found that a task list could not
+
+The generator was built first so the scale work could be measured instead of
+reasoned about, and it earned that on the first run.
+
+**Two of the three indexes the phase asked for were right and the third was
+wrong.** `stock_ledger(product_id, posting_date, created_at)` would have put a
+column between `posting_date` and the rowid, and `productValuation` orders by
+`posting_date, rowid` — so the index written to speed that query up hands it a
+sort it does not currently have. The item was written from the query and not
+from the schema. `idx_stock_ledger_product` is left exactly as it has been since
+001.
+
+**`audit_log(actor_id)` alone would have made the common case forty times
+worse** — 0.25 ms to 9.8 ms for a cashier who rang up half the shop, because
+with no ordering inside the actor SQLite seeks all 9,401 of her rows and sorts
+every one to show a hundred. `(actor_id, at DESC)` keeps the rare actor's
+forty-fold win and leaves the busy one alone. The plan test fails if the second
+column is removed.
+
+**The generator's own cross-check caught a real bug in a real shape.**
+`product_stock` is written from a running position kept as it sells;
+`recomputeStock` replays the ledger through `movingAverage`. They disagreed on
+32 products: a cancelled bill was putting stock back at the product's original
+cost rather than at what the sale took off the shelf, which is a silent
+revaluation — the shop's books move because a bill was cancelled.
+
+**A fixture full of tax the till would have refused to charge.** `bootstrap`
+leaves no GSTIN and no state code, so the first attempt to bill against the
+finished shop was refused by Phase 1c's own guard. Found because the shape test
+bills through `createBill`/`submitBill` rather than asserting about rows.
+
+### What Phase 3 changed on screens, not only underneath
+
+- The Credit page's three headline figures are the shop's, from one query, and
+  the table under them says "Showing 500 of 600" when it is short. With the
+  total fixed and the table unchanged the page would have contradicted itself in
+  public with no explanation anywhere on it.
+- The Dashboard's "Outstanding credit" is now the same number, from the same
+  function, as the Credit page's. It was its own query with its own definition:
+  two screens, one label, two answers.
+- The Dashboard's drift warning reads what the weekly replay found and says
+  when. Inventory's repair button records what *it* found, so the warning clears
+  when a person deals with it rather than at the next weekly run.
+- "Report a problem" on Settings, which says in those words that nothing is
+  sent.
 
 ### Pulled forward out of order
 
@@ -277,43 +332,36 @@ and every customer are `'33'`. Specifically, still to do by hand:
 
 Everything a terminal can check is checked.
 
-### Phase 3 — a shop must not be able to lose data (in progress, ~3 days left)
+### Phase 3 — a shop must not be able to lose data
 
-Six of the spec's eleven file-level items are done (Row 7). What is left:
+**Done.** All eleven of the spec's file-level items, plus the synthetic shop
+none of them could be verified without. Row 7 has the commits.
 
-1. ~~**`diagnostics_bundle()`**~~ **Done** — `494c19e`. Redaction is an
-   allowlist rather than a denylist, so a setting nobody has considered is
-   withheld by default; `users.password_hash` and `sync_peers.secret` are never
-   read at all. The phase's "open the bundle by hand" check is a test that
-   seeds three secrets and asserts none reach the zip.
-2. **`recomputeStock(db, productIds?)`** — replays only the products given.
-   `sync.ts:328` passes the ids in the batch; the Dashboard stops calling it on
-   mount and reads `product_stock` instead. The unbounded replay is also what
-   fixes drift, so a weekly full replay stays on the 02:00 timer.
-3. **Migration 034, additive** — indexes on `audit_log(actor_id)`,
-   `bills(kind, docstatus, posting_date)` and
-   `stock_ledger(product_id, posting_date, created_at)`. The spec calls it 029;
-   that number went to `029_document_says_what_it_is` during Phase 1b.
-4. **`totalOutstandingAll(db)`** — one `SUM` over the open-bill query, so the
-   Credit page's "Total outstanding" stops being the total of the 500 rows it
-   happens to display.
-5. **`budgetMs` on `sql_tx_begin`** — the watchdog reads the budget off
-   `ActiveTx`, so a legitimate 90-second merge is never rolled back under the
-   JavaScript while a stuck bill is still cleared in 15. `sql_execute` refused
-   while a transaction is open; `sql_query` still allowed, so the screen keeps
-   working during a long merge.
-6. ~~**The log's remaining callers.**~~ **Done** — `8bd13ef`. Migrations (via
-   an `onApplied` callback on `migrate`, guarded so a throwing logger cannot
-   abandon a run), the backup outcome both ways, and sync refusals from both
-   ends. An unreachable peer is logged on the first failure only: it retries
-   every 45 seconds, and a night of "cannot reach the back counter" would push
-   everything worth reading out of a five-megabyte file.
-7. **A synthetic 20,000-bill shop.** Items 2, 3 and 5 all have verification
-   steps that need one (`EXPLAIN QUERY PLAN` showing no full scan on a Dashboard
-   mount; a 500-change merge completing without the watchdog firing; 600
-   customers for the outstanding total). Nobody previously felt free to
-   fabricate it. The fixture being dummy data unblocks this, and it belongs in
-   the bench as a generator rather than a checked-in file.
+Four of the spec's verification lines still need the app running by hand, and
+are listed under *Needs the app running* below. Everything a terminal can check
+is checked, including three lines the spec wrote as manual checks:
+
+- "the diagnostics bundle opened by hand: no token, log present, version
+  present" — a test seeds three secrets, writes a real zip, reads every entry
+  back the way a recipient would, and asserts none of the three appear.
+  Mutation-tested: neutering the allowlist fails five tests.
+- "`EXPLAIN QUERY PLAN` in a test" — eight of them, and each explains the
+  statement the repo actually issued rather than a copy of it kept in the test.
+- "a merge of 500 changes completes without the watchdog firing" — five hundred
+  real bills with their lines against the 20,000-bill shop, under a second and
+  a half against a budget of ninety.
+
+Two things worth carrying forward rather than forgetting:
+
+- **`sql_execute` now refuses with "a transaction is open"**, which is the right
+  words for a log and the wrong words for a shopkeeper. No screen renders it
+  today; when Phase 4 goes over error surfaces it should get a sentence about
+  the till being busy taking in changes from the other counter.
+- **Nothing runs `ANALYZE`**, so SQLite plans from fixed guesses about
+  selectivity. Every plan in 034 was checked both with and without statistics
+  and is the same either way, so this is not a gap in that migration — but
+  whether the weekly job should start collecting them is a real question, and
+  the weekly job now exists to hang it on.
 
 ### Phase 2 — foundations (~8 days)
 
@@ -371,18 +419,23 @@ From Phase 1, which is otherwise code complete:
       before contacting it (the logic is a tested pure function now; the LAN
       half is still a LAN)
 
-From Phase 3, as each lands:
+From Phase 3, which is code complete. These are the four that a terminal
+genuinely cannot do — each needs a machine broken in a particular way:
 
 - [ ] overwrite `shop.db` with random bytes; the window opens on `CouldNotStart`
       with the reason, and `logs/shopos.log` has the same line
 - [ ] lock `shop.db` from another process; `kind: 'locked'`, message names the file
-- [ ] flip one byte inside a backup zip; "Check" says so
 - [ ] break the rclone token; the next backup shows the card red with the output
-- [ ] the diagnostics bundle opened by hand: no token in `device.json`, log
-      present, version present
-- [ ] restore into a Windows Sandbox and raise a bill from the restored data
 - [ ] power cut on a VM during a burst of 50 bills; every bill whose submit
-      returned is present
+      returned is present (Layer 3's procedure)
+
+Three more the spec wrote as manual checks are now tests and are not repeated
+here: the diagnostics bundle's contents, the query plans, and the 500-change
+merge. Two are covered by tests that already exist — a flipped byte inside a
+backup zip (`archive.rs`), and a restore that is billed against end to end
+(`restore.rs`) — though the second is still worth doing once in a Windows
+Sandbox, because what that proves is the installer and the file paths, not the
+code.
 
 ## Not committed
 
