@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Money, searchCustomers, countCustomers, customerStatement, customerAccount, recordPayment,
-  Permissions, totalOutstandingAll,
+  Permissions, totalOutstandingAll, applyAdvance, refundAdvance,
   listCustomerPayments, cancelPayment, writeOff, recordOpeningBalance, businessDate, addDays,
   type CustomerListItem, type CustomerStatementRow, type CustomerPayment, type CustomerAccount,
   type OutstandingTotal,
@@ -85,7 +85,11 @@ export default function Credit() {
       countCustomers(db),
     ])
     setEveryone(all)
-    setCustomers(all.filter((c) => c.outstanding > 0))
+    /* Anybody the shop has something to settle with, either way round. A
+       customer who is 490 in credit is exactly as much of a loose end as one
+       who owes 490, and leaving them out of "Owing" put them on no list at
+       all. */
+    setCustomers(all.filter((c) => c.outstanding > 0 || c.advance > 0))
     setBook(shopWide)
     setKnown(howMany)
   }, [db])
@@ -213,6 +217,13 @@ export default function Credit() {
                   <Rupees value={c.outstanding} />
                   {c.creditLimit > 0 && c.outstanding > c.creditLimit && (
                     <span className="badge bad" style={{ marginLeft: 7 }}>over limit</span>
+                  )}
+                  {/* Money the shop is holding for them. It has always been in
+                      the database and on no screen, so somebody who had paid
+                      ahead read here as owing nothing — true, and not the whole
+                      truth, because the shop owes them. */}
+                  {c.advance > 0 && (
+                    <div className="src">{Money.formatWithSymbol(c.advance)} in credit</div>
                   )}
                 </td>
                 <td className="r">
@@ -355,6 +366,80 @@ function AccountPanel({
       result.unallocated > 0
         ? `${result.docNo} — ${Money.formatWithSymbol(result.allocated)} ${what}, ${Money.formatWithSymbol(result.unallocated)} left over.`
         : `${result.docNo} — ${Money.formatWithSymbol(result.allocated)} ${what}.`,
+    )
+  }
+
+  /**
+   * Spends what the shop is holding against what the customer owes.
+   *
+   * No money moves: this only changes which bill the money already in the till
+   * is pointed at. Aimed at the highlighted bill when there is one, for the
+   * same reason a payment is — "I am settling last Tuesday's" is a different
+   * instruction from "settle the oldest".
+   */
+  async function keepAdvance() {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    const result = await applyAdvance(db, {
+      customerId: account.customer.id,
+      ...(targetBill ? { billId: targetBill } : {}),
+      actorId,
+    })
+    setBusy(false)
+
+    if (!result.ok) {
+      setError(result.code === 'NOTHING_OWED'
+        ? 'There is nothing owing to put it against. It stays on their account until there is.'
+        : 'There is nothing held on this account.')
+      return
+    }
+    await onChanged(`${Money.formatWithSymbol(result.applied)} of their credit used against the khata.`)
+  }
+
+  /**
+   * Hands the money back over the counter.
+   *
+   * Confirmed first, because unlike everything else on this screen it takes
+   * cash out of the drawer, and the way to undo it is another transaction
+   * rather than a button.
+   */
+  async function handBack() {
+    if (busy || !statement) return
+    const held = statement.advance
+    const asked = Money.parseMoney(amount)
+    /* The amount box if a figure has been typed into it, otherwise the whole
+       of it. Refunding part is the ordinary case where a customer wants some
+       of it back and leaves the rest on account. */
+    const giving = asked !== null && asked > 0 && asked <= held ? asked : held
+
+    if (!(await ask(
+      `Hand back ${Money.formatWithSymbol(giving)} to ${account.customer.name}?`
+      + ` It comes out of the drawer and is recorded against this account.`,
+    ))) return
+
+    setBusy(true)
+    setError(null)
+    const result = await refundAdvance(db, {
+      customerId: account.customer.id,
+      amount: giving,
+      method: settle === 'writeoff' ? 'cash' : settle,
+      reference: reference.trim(),
+      registerId,
+      actorId,
+    })
+    setBusy(false)
+
+    if (!result.ok) {
+      setError(result.code === 'MORE_THAN_HELD'
+        ? `Only ${Money.formatWithSymbol(result.held)} is held on this account.`
+        : 'Enter an amount greater than zero.')
+      return
+    }
+    await onChanged(
+      result.left > 0
+        ? `${result.docNo} — ${Money.formatWithSymbol(result.refunded)} handed back, ${Money.formatWithSymbol(result.left)} still on their account.`
+        : `${result.docNo} — ${Money.formatWithSymbol(result.refunded)} handed back.`,
     )
   }
 
@@ -559,13 +644,51 @@ function AccountPanel({
                     <span>Returned</span><Rupees value={statement.totals.returned} />
                   </div>
                 )}
-                <div className="total-line grand">
-                  <span>Balance due</span>
-                  <Rupees value={statement.closingBalance} className="amount" />
-                </div>
+                {/* "Balance due -490.00" is what this used to say, and a
+                    negative amount due reads as a mistake in the arithmetic
+                    rather than as money. It is the shop holding 490 of theirs,
+                    so it is put in those words and the minus sign goes. */}
+                {statement.closingBalance < 0 ? (
+                  <div className="total-line grand">
+                    <span>In credit</span>
+                    <Rupees value={-statement.closingBalance as never} className="amount" />
+                  </div>
+                ) : (
+                  <div className="total-line grand">
+                    <span>Balance due</span>
+                    <Rupees value={statement.closingBalance} className="amount" />
+                  </div>
+                )}
               </div>
             </div>
           </>
+        )}
+
+        {statement && statement.advance > 0 && (
+          /* The two things a shop does with money it is holding. Offered here,
+             next to the figure, because this is where somebody notices it —
+             and until now there was nowhere to do either. */
+          <div className="short-gate">
+            <div className="short-gate-text">
+              <div className="short-gate-head">
+                Holding {Money.formatWithSymbol(statement.advance)} of theirs
+              </div>
+              <div className="short-gate-line">
+                Paid more than was owed. Keep it against their next bill, or hand it back.
+              </div>
+              <div className="short-gate-note">
+                Keeping it moves no money — nothing leaves the drawer and the day’s
+                takings are untouched. Handing it back takes it out of the drawer
+                and is recorded with its own number.
+              </div>
+            </div>
+            <button className="btn sm" disabled={busy || !canTake} onClick={() => void keepAdvance()}>
+              Use against a bill
+            </button>
+            <button className="btn sm" disabled={busy || !canTake} onClick={() => void handBack()}>
+              Refund it
+            </button>
+          </div>
         )}
 
         {error && <Alert>{error}</Alert>}

@@ -42,6 +42,7 @@ const FILES: ReadonlyArray<readonly [number, string]> = [
   [32, '032_the_retirement_that_never_was.sql'],
   [33, '033_a_setting_nothing_asks_for.sql'],
   [34, '034_two_questions_the_tables_would_not_answer.sql'],
+  [35, '035_money_that_goes_the_other_way.sql'],
 ]
 
 export const MIGRATIONS: Migration[] = FILES.map(([version, file]) => ({

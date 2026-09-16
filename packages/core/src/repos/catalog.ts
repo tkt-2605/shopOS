@@ -166,6 +166,14 @@ export interface CustomerListItem {
   phone: string | null
   gstin: string | null
   outstanding: Money
+  /**
+   * What the shop is holding for them, over and above any bill.
+   *
+   * Zero for almost everybody. A customer can have both: an advance on
+   * their receipts and something owing on a bill raised since, and
+   * netting the two into one signed number would lose which is which.
+   */
+  advance: Money
   creditLimit: Money
   loyaltyPoints: number
   /** Out of every search but this one. See `archiveCustomer`. */
@@ -225,6 +233,7 @@ export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerD
     creditEnforcement: row.credit_enforcement,
     isActive: row.is_active === 1,
     outstanding: 0 as Money,
+    advance: 0 as Money,
     loyaltyPoints: 0,
   }
 }
@@ -246,7 +255,8 @@ export async function searchCustomers(
   const archivedClause = opts.includeArchived ? '' : 'AND c.deleted_at IS NULL'
   const rows = await db.query<{
     id: string; code: string | null; name: string; phone: string | null; gstin: string | null
-    credit_limit: number; outstanding: number; points: number; deleted_at: string | null
+    credit_limit: number; outstanding: number; advance: number
+    points: number; deleted_at: string | null
   }>(
     `SELECT c.id, c.code, c.name, c.phone, c.gstin, c.credit_limit,
             COALESCE((SELECT SUM(b.credit_total) FROM bills b WHERE b.customer_id = c.id AND b.docstatus = 1), 0)
@@ -254,6 +264,23 @@ export async function searchCustomers(
                         JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
                         JOIN bills b2 ON b2.id = pa.bill_id
                        WHERE b2.customer_id = c.id), 0) AS outstanding,
+            /* What the shop is holding for them: receipts taken in, less what
+               any allocation points at, less what has been handed back. It was
+               in the database all along and on no screen anywhere, so a
+               customer 490 in credit read as a customer owing nothing --- true,
+               and not the whole truth, because the shop owes *them*. */
+            MAX(0,
+              COALESCE((SELECT SUM(pe.amount) FROM payment_entries pe
+                         WHERE pe.customer_id = c.id AND pe.party_type = 'customer'
+                           AND pe.docstatus = 1 AND pe.direction = 'in'), 0)
+            - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
+                          JOIN payment_entries pe2 ON pe2.id = pa.payment_id
+                         WHERE pe2.customer_id = c.id AND pe2.docstatus = 1
+                           AND pe2.direction = 'in'), 0)
+            - COALESCE((SELECT SUM(pe3.amount) FROM payment_entries pe3
+                         WHERE pe3.customer_id = c.id AND pe3.party_type = 'customer'
+                           AND pe3.docstatus = 1 AND pe3.direction = 'out'), 0)
+            ) AS advance,
             COALESCE((SELECT SUM(le.points - le.consumed) FROM loyalty_entries le
                        WHERE le.customer_id = c.id AND le.cancelled_at IS NULL
                          AND (le.expires_at IS NULL OR le.expires_at > ?)), 0) AS points,
@@ -273,6 +300,7 @@ export async function searchCustomers(
     phone: r.phone,
     gstin: r.gstin,
     outstanding: r.outstanding as Money,
+    advance: r.advance as Money,
     creditLimit: r.credit_limit as Money,
     loyaltyPoints: r.points,
     archived: r.deleted_at !== null,

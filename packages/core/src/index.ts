@@ -187,10 +187,12 @@ export type { ArchiveCustomerResult } from './services/customers.js'
 export type { CustomerInput, CustomerConflict, SaveCustomerResult } from './services/customers.js'
 export {
   listCustomerPayments, writeOff, recordOpeningBalance, customerAccount,
+  advanceCredit, applyAdvance, refundAdvance,
 } from './services/payments.js'
 export type {
   CustomerPayment, OpeningBalanceResult,
   CustomerAccount, StatementEntry, StatementKind,
+  AdvanceCredit, AdvanceReceipt, ApplyAdvanceResult, RefundAdvanceResult,
 } from './services/payments.js'
 export type { Shortfall, ShortfallSummary } from './repos/shortfalls.js'
 export type { DateRange } from './repos/reports.js'
