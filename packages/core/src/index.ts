@@ -244,7 +244,7 @@ export * as Backup from './services/backup.js'
 export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind } from './services/backup.js'
 
 export {
-  listSuppliers, supplierSummaries, createSupplier, updateSupplier, deleteSupplier,
+  listSuppliers, supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
   findOrCreateSupplier, supplierPurchases,
 } from './services/suppliers.js'
 export type { Supplier, SupplierSummary, SupplierResult, PurchaseLine } from './services/suppliers.js'
