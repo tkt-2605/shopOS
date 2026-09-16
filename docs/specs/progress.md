@@ -1,6 +1,6 @@
 # Progress
 
-Branch `phase-0-and-the-test-bench`, 20 commits, pushed to
+Branch `phase-0-and-the-test-bench`, 34 commits ahead of `main`, pushed to
 `origin/phase-0-and-the-test-bench`. Not merged to `main`, and nothing is
 released: no installer, no tag, no update anybody's till will fetch.
 
@@ -9,10 +9,10 @@ The owner's own database is **not** in the repository and never has been --
 `findings-real-shop.md` and `evidence/returns-in-gst-real-shop.txt` are the
 aggregates this work was checked against, and they are in the shop's own repo.
 
-State of the tree: **1239 TypeScript tests** passing and 3 skipped (Phase 2c
-placeholders that fail loudly if un-skipped early), **73 Rust tests** passing
-with zero warnings, typecheck clean across core, app and bench, and Layer 2 of
-the test bench green in Docker.
+State of the tree: **1,277 TypeScript tests** passing and 3 skipped (Phase 2c
+placeholders that fail loudly if un-skipped early) across 91 files, **73 Rust
+tests** passing with zero warnings, typecheck clean across core, app and bench,
+and Layer 2 of the test bench green in Docker. Schema at 33.
 
 ---
 
@@ -108,6 +108,52 @@ landed with 1b and covers all four documents the spec asks for.
 never on the till's own guess — otherwise it would refuse the one form that
 lets the owner answer it. Agreed with the owner before it was written.
 
+### Row 6 — Phase 1d, the switches that were on and did nothing
+
+Eight commits, one per thing. The shape repeats: a service that worked, was
+tested, and that nothing in the product could reach.
+
+| Commit | What was on and did nothing |
+|---|---|
+| `3332ad9` | amend on a cancelled bill; `changePassword`; group rename/remove; the schema-too-new screen, which showed the right message and then offered **Restore a backup** — to a till that is merely behind, which would have replaced what the newer version wrote |
+| `28ddae1` | `closeSession` has written `expected_cash`, `actual_cash` and `variance` since v1 and nothing ever selected them. Drawer tab under Reports |
+| `6caa662` | `activity_log` (written since 001, read by nothing) and `sync_queue` (reserved on day one, never held a row) dropped in 030 |
+| `6d5ef1b` | `products.is_active` — the column worked and no shop could reach it, so shops renamed things to "OLD - do not use" |
+| `f478ebd` | customers archive; refuses while they still owe money, with the amount |
+| `9d4aba8` | `deleteSupplier` ran `DELETE FROM suppliers` under a comment saying it never removed anything, and its refusal told shops to "switch it off instead" when nothing could |
+| `39dc0b5` | `price_lists` had **both** retirement columns and half a feature in each: `is_active` written and never read, `deleted_at` read everywhere and never written. 031 drops the first, `archivePriceList` supplies the second |
+| `5d738e7` | `users.deleted_at` and `roles.deleted_at`, filtered by nine queries and set by none. 032 drops both |
+| `dd2b948` | "Both tills agree" printed to shops with one till |
+| `d156cd8` | `schema_bootstrapped_at`, a settings row in every shop that nothing asks for. 033 |
+
+Two of these were more than tidying.
+
+**`reauthenticate` was not checking whether you were still staff.** It selected
+the user `WHERE deleted_at IS NULL` — a condition nothing in ShopOS could make
+false — and never looked at `is_active`. A cashier disabled while still holding
+a signed-in window could retype their password and walk into Settings. The dead
+column was standing in for a real check; dropping it forced the real one.
+Finding 13.
+
+**Archiving a price list had to be taught to the resolver.** A customer keeps
+pointing at an archived list, because that pointer is how restoring puts them
+back on their old rates — so `pricingContextFor` checks the list where the rate
+is decided. Without that, archiving would have been `is_active` all over again.
+
+The `IN_USE` refusal on price lists is the first guard written in 1c or 1d that
+**fires on the owner's shop**: one customer is on Wholesale, so Remove refuses
+and names the count rather than moving them to Retail rates overnight. Finding
+12.
+
+Migrations 031–033 were each run against a copy of the owner's database:
+`change_feed` unchanged at 195 rows every time, so none of them repeats 029 and
+manufactures a sync conflict on rows nobody touched; `integrity_check` ok; no
+foreign-key violations; 29 submitted bills and ₹27,328 unmoved. That last pair
+is a test now, not a note — `reportsAgainstRealShop.test.ts` migrates the copy
+to `EXPECTED_SCHEMA_VERSION` on every run and asserts the schema, the integrity
+check, the supply types and the money. Every future migration re-runs it the
+moment it is registered.
+
 ### Pulled forward out of order
 
 - **Phase 1d's host-sync fix.** The bench demanded it: `host-initiates.test.ts`
@@ -119,7 +165,7 @@ lets the owner answer it. Agreed with the owner before it was written.
 
 ## What the real database changed
 
-`findings-real-shop.md` has eleven findings now. Four affect the plan:
+`findings-real-shop.md` has thirteen findings now. Four affect the plan:
 
 1. **CGST ≠ SGST on 29 of 51 lines.** Not in any spec. Fixed.
 2. **The shop charges GST with no GSTIN set.** ~~Phase 1's scheme rule will
@@ -140,22 +186,41 @@ lets the owner answer it. Agreed with the owner before it was written.
 
 ## Left
 
-### Phase 1 — the bills have to be right (in progress, ~2 days left)
+### Phase 1 — the bills have to be right (code complete)
 
-028, 029, 1a, 1b and 1c are done.
+028 through 033, 1a, 1b, 1c and 1d are all done. 1,277 tests pass, 3 skipped,
+91 files, typecheck clean.
 
-1c is done too. **What is left of Phase 1 is 1d**, which is the switches that
-are on and do nothing: the amend button on a cancelled bill, retire against
-soft delete per table (one commit each), cash-close history under Reports,
-`changePassword` in the user menu, the schema-too-new message at startup, and
-the tables that are dead — `activity_log` and `sync_queue`, both dropped in a
-migration. The sync fix out of 1d is long since done.
+Two items in 1d's list came out differently from the spec, both after reading
+the code:
 
-None of it is tax. It is the smallest and least risky work in the phase, and
-every item wants a screenshot or a test showing the switch doing something.
+- **`tax_reversed` stays.** The spec said drop it unless a grep finds a reader.
+  `loadReturnDetail` reads it and the return sheet shows it — a reader that
+  arrived with the credit-note work in 1b, so the spec was right when it was
+  written and is wrong now.
+- **`suppliers.is_active` stays too,** alongside the new archive. The spec
+  assumed suppliers needed `deleted_at` wired and nothing else; the table
+  already had a working `is_active`. They are different questions — "off" is
+  not buying from them just now, "removed" is off the list — and collapsing
+  them would have lost one.
 
-**Blocked on nothing.** Its verification is not: five of its eight checks need
-the owner's database with things staged by hand.
+**What is left of Phase 1 is verification a person has to do.** Five of its
+eight checks need the owner's database with things staged by hand, because that
+database cannot exercise the inter-state path on its own (finding 3): the shop
+and every customer are `'33'`. Specifically, still to do by hand:
+
+- [ ] shop state set to `27` on a copy; a bill to a `27` customer stores
+      CGST+SGST and one to a `33` customer stores IGST, both read off
+      `bill_items`
+- [ ] amend a cancelled ₹900 bill; the draft is ₹900 with tax on ₹900
+- [ ] the A4 print of a real bill read against Rule 46's list, on paper
+- [ ] composition scheme on a copy: zero tax stored, *Bill of Supply* printed
+      with the Rule 49 statement, GST tab hidden
+- [ ] on a real LAN with the joiner idle, the host never says "Both tills
+      agree" before contacting it — the logic is now a tested pure function
+      (`syncNotice`), but the LAN half is still a LAN
+
+Everything a terminal can check is checked.
 
 ### Phase 3 — a shop must not be able to lose data (~5 days)
 

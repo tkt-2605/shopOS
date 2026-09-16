@@ -11,6 +11,7 @@ import { RULE_46F_THRESHOLD } from '../src/services/billing.js'
 import { hsnProblem } from '../src/domain/hsn.js'
 import { loadTaxScheme, taxSchemeAnswered } from '../src/services/features.js'
 import { getSetting } from '../src/services/bootstrap.js'
+import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -69,6 +70,58 @@ async function withShop<T>(fn: (db: SqlDriver) => Promise<T>): Promise<T> {
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+/**
+ * The first line of the phase's verification list, which was being done by hand
+ * against a copy and then believed for the rest of the day.
+ *
+ * It is worth having as a test because the thing it checks is a migration run,
+ * and a migration run is the one operation in this product that touches every
+ * row a shop owns at once. Every new migration re-runs this the moment it is
+ * registered.
+ */
+describe.skipIf(!present)('the owner\u2019s database, brought up to date', () => {
+  it('arrives at the schema this build expects, intact', async () => {
+    /* `migratedCopy` hands back an open driver as well as the directory, and
+       Windows will not unlink a file something still has open. */
+    const { db, dir } = migratedCopy()
+    try {
+      await db.close()
+      const raw = new Database(join(dir, 'shop.db'))
+      expect(raw.pragma('user_version', { simple: true })).toBe(EXPECTED_SCHEMA_VERSION)
+      expect(raw.pragma('integrity_check', { simple: true })).toBe('ok')
+      expect(raw.pragma('foreign_key_check')).toEqual([])
+      raw.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('gives every submitted bill a supply type', async () => {
+    await withShop(async (db) => {
+      /* Migration 028 backfills it. A bill with no supply type is a bill whose
+         tax cannot be split into heads or reported, and the returns path reads
+         this column to decide whether a credit note reverses CGST and SGST or
+         IGST -- so a null here is a credit note that reverses the wrong tax. */
+      const missing = await db.query<{ doc_no: string }>(
+        `SELECT doc_no FROM bills WHERE docstatus = 1 AND supply_type IS NULL`)
+      expect(missing.map((b) => b.doc_no)).toEqual([])
+    })
+  })
+
+  it('carries no sale that lost its money in the move', async () => {
+    await withShop(async (db) => {
+      /* The figure from the evidence file captured before any of this phase
+         ran: 29 submitted bills, 27,328 rupees. Migrations 029 through 033 add
+         columns, drop dead ones and delete a setting; not one of them may move
+         a paisa, and this is where that stops being a claim. */
+      const row = await db.get<{ n: number; total: number }>(
+        `SELECT COUNT(*) AS n, COALESCE(SUM(grand_total), 0) AS total
+           FROM bills WHERE docstatus = 1 AND kind = 'sale'`)
+      expect(row).toEqual({ n: 29, total: 2_732_800 })
+    })
+  })
+})
 
 describe.skipIf(!present)('the GST export over the real shop', () => {
   it('leaves the sales summary exactly as it was', async () => {
