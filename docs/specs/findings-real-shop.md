@@ -305,3 +305,38 @@ count, rather than moving that customer to Retail rates overnight without anyone
 deciding to. Every other 1c and 1d guard written so far declines to fire on this
 database; this is the first that does, and it does it on the case it was written
 for.
+
+## Finding 13 — the users column that was decorating a real hole
+
+Checked before migration 032 drops `users.deleted_at` and `roles.deleted_at`,
+against the owner's database:
+
+| table | rows | with `deleted_at` set |
+|---|---|---|
+| `users` | 1 (`admin`, active) | 0 |
+| `roles` | 4 (all system) | 0 |
+
+Nothing is un-hidden by the drop, because nothing was hidden. After 031 and 032
+run in sequence on a copy: `change_feed` 195 rows before and after, one
+administrator still resolves, `integrity_check` ok, no foreign-key violations.
+
+The part worth recording is what the dead column was covering.
+
+`reauthenticate` is the gate in front of Settings, the drawer, and everything
+else that asks for the password a second time. It selected the user
+`WHERE id = ? AND deleted_at IS NULL` — a condition nothing in ShopOS could
+ever make false — and then checked the password. It never checked `is_active`.
+
+So a cashier disabled on the staff screen while still holding a signed-in
+window could retype their own password and walk straight into Settings. The
+front door was shut (`login` returns `ACCOUNT_DISABLED`) and the inner door was
+asking a question that had only one answer.
+
+The column is dropped and that query now asks `is_active = 1`. The test that
+covered this used to reach past the product and write `deleted_at` in raw SQL,
+which is precisely why nobody noticed: it proved the branch worked for a state
+the product could not produce, while the state it *could* produce went
+untested. It now disables the user the way the owner would.
+
+TRT has one user, so nothing was exploitable on this shop. It would have been
+on the two-till shop this phase is building towards.

@@ -35,9 +35,8 @@ export async function listRoles(db: SqlDriver): Promise<RoleSummary[]> {
     id: string; name: string; description: string | null; is_system: number; n: number
   }>(
     `SELECT r.id, r.name, r.description, r.is_system,
-            (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id AND u.deleted_at IS NULL) AS n
+            (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id) AS n
        FROM roles r
-      WHERE r.deleted_at IS NULL
       ORDER BY r.is_system DESC, r.name`,
   )
   return rows.map((r) => ({
@@ -51,7 +50,7 @@ export async function listRoles(db: SqlDriver): Promise<RoleSummary[]> {
 
 export async function loadRoleMatrix(db: SqlDriver, roleId: string): Promise<RoleMatrix | null> {
   const role = await db.get<{ id: string; name: string; description: string | null; is_system: number }>(
-    `SELECT id, name, description, is_system FROM roles WHERE id = ? AND deleted_at IS NULL`,
+    `SELECT id, name, description, is_system FROM roles WHERE id = ?`,
     [roleId],
   )
   if (!role) return null
@@ -102,7 +101,7 @@ export async function createRole(
   input: { name: string; description?: string; copyFromId?: string; actorId: string },
 ): Promise<RoleResult> {
   const name = input.name.trim()
-  const clash = await db.get<{ id: string }>(`SELECT id FROM roles WHERE name = ? AND deleted_at IS NULL`, [name])
+  const clash = await db.get<{ id: string }>(`SELECT id FROM roles WHERE name = ?`, [name])
   if (clash) return { ok: false, code: 'NAME_TAKEN' }
 
   const source = input.copyFromId ? await loadRoleMatrix(db, input.copyFromId) : null
@@ -132,7 +131,7 @@ export async function renameRole(
 ): Promise<RoleResult> {
   const name = input.name.trim()
   const clash = await db.get<{ id: string }>(
-    `SELECT id FROM roles WHERE name = ? AND id <> ? AND deleted_at IS NULL`, [name, input.roleId],
+    `SELECT id FROM roles WHERE name = ? AND id <> ?`, [name, input.roleId],
   )
   if (clash) return { ok: false, code: 'NAME_TAKEN' }
 
@@ -277,7 +276,7 @@ async function assertSomeoneCanAdminister(tx: SqlDriver): Promise<void> {
        FROM users u
        JOIN role_permissions rp ON rp.role_id = u.role_id AND rp.resource = 'role' AND rp.can_write = 1
        JOIN role_pages pg ON pg.role_id = u.role_id AND pg.page_key = 'roles' AND pg.visible = 1
-      WHERE u.is_active = 1 AND u.deleted_at IS NULL`,
+      WHERE u.is_active = 1`,
   )
   if ((row?.n ?? 0) === 0) throw new LockoutError()
 }
@@ -288,7 +287,7 @@ export async function wouldLeaveNoAdministrator(
   change: { userId: string; roleId?: string; isActive?: boolean },
 ): Promise<boolean> {
   const rows = await db.query<{ id: string; role_id: string; is_active: number }>(
-    `SELECT id, role_id, is_active FROM users WHERE deleted_at IS NULL`,
+    `SELECT id, role_id, is_active FROM users`,
   )
   const admins = await db.query<{ role_id: string }>(
     `SELECT rp.role_id
