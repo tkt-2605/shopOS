@@ -2,7 +2,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { businessDate } from '../dates.js'
 import { newId } from '../ids.js'
 import { type Money, ZERO, paise, add, sub } from '../money.js'
-import { type Qty, qty, addQty, subQty } from '../quantity.js'
+import { QTY_SCALE, type Qty, qty, addQty, subQty } from '../quantity.js'
 import { splitTax, supplyTypeFor } from '../domain/tax.js'
 import { splitRefund, type RefundBasis, type RefundSplit } from '../domain/returns.js'
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
@@ -102,6 +102,11 @@ interface ComputedReturnLine {
   cgst: Money
   sgst: Money
   igst: Money
+  /* Rule 53 wants the credit note to carry the same HSN and rate as the line it
+     reverses. Copied off the bill line, never off the product, because the rate
+     on the product today is not the rate that was charged. */
+  hsnCode: string | null
+  taxRateBp: number
 }
 
 type ComputeResult =
@@ -121,24 +126,40 @@ async function computeLines(
 ): Promise<ComputeResult> {
   if (lines.length === 0) return { ok: false, code: 'NO_LINES' }
 
-  const bill = await db.get<{ id: string; docstatus: number; place_of_supply: string | null }>(
-    `SELECT id, docstatus, place_of_supply FROM bills WHERE id = ?`,
+  const bill = await db.get<{
+    id: string; docstatus: number; place_of_supply: string | null; supply_type: string | null
+  }>(
+    `SELECT id, docstatus, place_of_supply, supply_type FROM bills WHERE id = ?`,
     [billId],
   )
   if (!bill) throw new Error(`unknown bill: ${billId}`)
   if (bill.docstatus !== SUBMITTED) return { ok: false, code: 'BILL_NOT_SUBMITTED' }
 
-  const shopState = await getSetting(db, 'shop_state_code')
-  const supply = supplyTypeFor(shopState, bill.place_of_supply)
+  /* A credit note reverses tax the shop has already charged and already filed,
+     so it has to reverse the tax that was charged — not the tax the same goods
+     would attract if they were sold again today.
+
+     This used to re-derive the supply type from the shop's current state setting
+     and the customer's state, which is a different question with a different
+     answer: a shop that corrects its own state code, or a customer moved to the
+     right state after the sale, would have found IGST credited back against
+     CGST+SGST collected, and the difference would have sat in the return
+     unexplained. The bill says what it was. Rule 53 asks for exactly that. */
+  const supply = bill.supply_type === 'inter_state' || bill.supply_type === 'intra_state'
+    ? bill.supply_type
+    // Only for a bill submitted before migration 028 backfilled it, which the
+    // migration leaves none of. Deriving is what this did before, so a gap here
+    // is no worse than the behaviour it replaces.
+    : supplyTypeFor(await getSetting(db, 'shop_state_code'), bill.place_of_supply)
 
   const computed: ComputedReturnLine[] = []
 
   for (const line of lines) {
     const item = await db.get<{
       id: string; product_id: string; product_name: string; qty: number; base_qty: number
-      returned_qty: number; line_total: number; tax_rate_bp: number
+      returned_qty: number; line_total: number; tax_rate_bp: number; hsn_code: string | null
     }>(
-      `SELECT id, product_id, product_name, qty, base_qty, returned_qty, line_total, tax_rate_bp
+      `SELECT id, product_id, product_name, qty, base_qty, returned_qty, line_total, tax_rate_bp, hsn_code
          FROM bill_items WHERE id = ? AND bill_id = ?`,
       [line.billItemId, billId],
     )
@@ -173,6 +194,8 @@ async function computeLines(
       productName: item.product_name,
       qty: line.qty,
       baseQty: qty(Math.round((item.base_qty * line.qty) / item.qty)),
+      hsnCode: item.hsn_code,
+      taxRateBp: item.tax_rate_bp,
       refund,
       taxableValue: tax.taxableValue,
       cgst: tax.cgst,
@@ -247,11 +270,12 @@ export async function createReturn(db: SqlDriver, input: CreateReturnInput): Pro
       await tx.execute(
         `INSERT INTO sales_return_items
            (id, return_id, bill_item_id, product_id, qty, base_qty, refund_amount,
-            taxable_value, cgst_amount, sgst_amount, igst_amount)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            taxable_value, cgst_amount, sgst_amount, igst_amount, hsn_code, tax_rate_bp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           newId(), returnId, line.billItemId, line.productId, line.qty, line.baseQty,
           line.refund, line.taxableValue, line.cgst, line.sgst, line.igst,
+          line.hsnCode, line.taxRateBp,
         ],
       )
     }
@@ -636,6 +660,140 @@ export interface ReturnListItem {
   pointsRestored: number
   refundMethod: RefundMethod
   reason: string | null
+}
+
+export interface ReturnDetailItem {
+  productName: string
+  saleUnit: string
+  qty: Qty
+  /** What one unit was refunded at, back out of the refund and the quantity. */
+  rate: Money
+  refund: Money
+  taxableValue: Money
+  cgst: Money
+  sgst: Money
+  igst: Money
+  hsnCode: string | null
+  taxRateBp: number
+}
+
+/**
+ * A credit note, with everything Rule 53 says has to be on one.
+ *
+ * The rule is short and every clause of it is a field here: the supplier's
+ * details, a serial number, the date, the recipient's details, **the invoice it
+ * is raised against and that invoice's date**, the taxable value and the tax
+ * credited, and a signature.
+ *
+ * The recipient and the supply type come off the bill's 028 snapshot rather
+ * than off `customers`, for the reason the snapshot exists: a credit note is a
+ * document that has been issued, and it has to keep saying what it said.
+ */
+export interface ReturnDetail {
+  id: string
+  docNo: string
+  docstatus: number
+  postingDate: string
+  refundTotal: Money
+  refundCash: Money
+  refundMethod: RefundMethod
+  reason: string | null
+  taxReversed: Money
+
+  /** Rule 53(1)(e): the invoice, and its date. */
+  billId: string
+  againstDocNo: string
+  againstDate: string
+
+  customerName: string | null
+  customerAddress: string | null
+  customerGstin: string | null
+  customerStateCode: string | null
+  placeOfSupply: string | null
+  supplyType: 'intra_state' | 'inter_state' | null
+
+  createdBy: string | null
+  items: ReturnDetailItem[]
+}
+
+/** One return, whole, for the credit note print and the screen that offers it. */
+export async function loadReturnDetail(db: SqlDriver, returnId: string): Promise<ReturnDetail | null> {
+  const head = await db.get<{
+    id: string; doc_no: string; docstatus: number; posting_date: string
+    refund_total: number; refund_cash: number; refund_method: string; reason: string | null
+    tax_reversed: number; bill_id: string; username: string | null
+    bill_doc_no: string; bill_date: string
+    customer_name: string | null; customer_address: string | null; customer_gstin: string | null
+    customer_state_code: string | null; place_of_supply: string | null; supply_type: string | null
+  }>(
+    `SELECT r.id, r.doc_no, r.docstatus, r.posting_date, r.refund_total, r.refund_cash,
+            r.refund_method, r.reason, r.tax_reversed, r.bill_id, u.username,
+            b.doc_no AS bill_doc_no, b.posting_date AS bill_date,
+            b.customer_name, b.customer_address, b.customer_gstin, b.customer_state_code,
+            b.place_of_supply, b.supply_type
+       FROM sales_returns r
+       JOIN bills b ON b.id = r.bill_id
+       LEFT JOIN users u ON u.id = r.created_by
+      WHERE r.id = ?`,
+    [returnId],
+  )
+  if (!head) return null
+
+  const rows = await db.query<{
+    product_name: string; sale_unit: string; qty: number; refund_amount: number
+    taxable_value: number; cgst_amount: number; sgst_amount: number; igst_amount: number
+    hsn_code: string | null; tax_rate_bp: number
+  }>(
+    /* The unit is on the bill line, not on the return line: a return records
+       how many came back, and what one of them is called is the invoice's
+       answer. Joined rather than duplicated for that reason. */
+    `SELECT ri.product_id, bi.product_name, bi.sale_unit, ri.qty, ri.refund_amount,
+            ri.taxable_value, ri.cgst_amount, ri.sgst_amount, ri.igst_amount,
+            ri.hsn_code, ri.tax_rate_bp
+       FROM sales_return_items ri
+       JOIN bill_items bi ON bi.id = ri.bill_item_id
+      WHERE ri.return_id = ?`,
+    [returnId],
+  )
+
+  return {
+    id: head.id,
+    docNo: head.doc_no,
+    docstatus: head.docstatus,
+    postingDate: head.posting_date,
+    refundTotal: head.refund_total as Money,
+    refundCash: head.refund_cash as Money,
+    refundMethod: head.refund_method as RefundMethod,
+    reason: head.reason,
+    taxReversed: head.tax_reversed as Money,
+    billId: head.bill_id,
+    againstDocNo: head.bill_doc_no,
+    againstDate: head.bill_date,
+    customerName: head.customer_name,
+    customerAddress: head.customer_address,
+    customerGstin: head.customer_gstin,
+    customerStateCode: head.customer_state_code,
+    placeOfSupply: head.place_of_supply,
+    supplyType: head.supply_type === 'inter_state' || head.supply_type === 'intra_state'
+      ? head.supply_type
+      : null,
+    createdBy: head.username,
+    items: rows.map((r) => ({
+      productName: r.product_name,
+      saleUnit: r.sale_unit,
+      qty: qty(r.qty),
+      // Back out of the refund and the quantity, never off the product: this is
+      // what the goods were credited at, which is what the invoice charged.
+      rate: paise(r.qty === 0 ? 0 : Math.round((r.refund_amount * QTY_SCALE) / r.qty)),
+      refund: r.refund_amount as Money,
+      taxableValue: r.taxable_value as Money,
+      cgst: r.cgst_amount as Money,
+      sgst: r.sgst_amount as Money,
+      igst: r.igst_amount as Money,
+      hsnCode: r.hsn_code,
+      taxRateBp: r.tax_rate_bp,
+    })),
+  }
 }
 
 /** The returns already taken against a bill, for the screen that shows it. */

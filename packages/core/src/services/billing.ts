@@ -11,12 +11,23 @@ import { calculateEarned, planRedemption, type LoyaltyProgram, type LoyaltyEntry
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, assertAmendable, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
-import { loadStockPolicy, loadRounding } from './features.js'
+import { loadStockPolicy, loadRounding, loadTaxScheme } from './features.js'
+import { chargesTax } from '../domain/taxScheme.js'
+import { isStateCode } from '../domain/states.js'
 import { checkAvailability, postMovement, reverseVoucher, type StockShortfall } from './stock.js'
 import { nextDocNo } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
 import { applyBillFulfilment, reverseBillFulfilment } from './documents.js'
 import { getSetting } from './bootstrap.js'
+
+/**
+ * Rule 46(f)'s threshold, in paise: fifty thousand rupees.
+ *
+ * Written once, here, because the counter has to warn at the same figure the
+ * service refuses at -- a cashier told at ₹50,000 and refused at ₹49,999 would
+ * stop trusting either number.
+ */
+export const RULE_46F_THRESHOLD = 5_000_000 as Money
 
 export type PaymentMethod = 'cash' | 'upi' | 'card' | 'credit' | 'loyalty'
 
@@ -106,6 +117,30 @@ export type SubmitBillResult =
   | { ok: false; code: 'PAYMENT_MISMATCH'; expected: Money; received: Money }
   | { ok: false; code: 'CREDIT_WITHOUT_CUSTOMER' }
   | { ok: false; code: 'LOYALTY_REJECTED'; reason: string }
+  /**
+   * The shop has not said which state it is in, and it charges tax.
+   *
+   * `supplyTypeFor(null, anything)` answers `intra_state`, so with no shop
+   * state every sale in the product is taxed as a local one -- CGST and SGST --
+   * including a sale to a customer in another state, where the law says IGST.
+   * The bill is wrong, the customer's input credit is wrong, and nothing on
+   * screen says so. It is refused at submit rather than corrected silently,
+   * because there is no honest value to correct it to.
+   *
+   * One setting, on a screen the shop has already seen, and it is asked for at
+   * first run. A till that has been billing has it.
+   */
+  | { ok: false; code: 'SHOP_STATE_UNSET' }
+  /**
+   * Rule 46(f): a tax invoice of ₹50,000 or more to somebody not registered
+   * must carry their name and address.
+   *
+   * A required field rather than a stopped till -- the counter puts a name on
+   * the bill and carries on. Only under the regular scheme, because it is that
+   * rule and no other: Rule 49's bill of supply carries no such threshold, and
+   * a guard with no rule behind it is a guard that stops a shop for nothing.
+   */
+  | { ok: false; code: 'NEEDS_RECIPIENT'; grandTotal: Money; threshold: Money }
 
 export type CancelBillResult =
   | { ok: true; billId: string }
@@ -160,6 +195,19 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
   const sessionId = input.sessionId ?? (await openSessionFor(db, input.registerId))
   const customer = input.customerId ? await loadCustomer(db, input.customerId) : null
   const supply = await supplyFor(db, customer?.stateCode ?? null)
+
+  /* A composition dealer may not collect tax on supplies at all (Section 10,
+     Rule 49) and an unregistered shop has none to collect. Until now this
+     product charged CGST and SGST on every line whatever the shop was, and
+     handed the customer a document headed "Tax Invoice" to prove it.
+
+     The rate is zeroed on the *line*, not on the product: the product's rate is
+     a fact about the goods and has to survive the day the shop registers,
+     whereas `bill_items.tax_rate_bp` is what this bill charged -- which was
+     nothing. Everything downstream then follows without knowing the scheme
+     exists: `splitTax` at 0 makes the taxable value the line total, the GST
+     export reports a 0% row, and a return reverses nothing. */
+  const taxed = chargesTax(await loadTaxScheme(db))
   const pricing = await pricingContextFor(db, input.customerId ?? null)
 
   const computed: ComputedLine[] = []
@@ -210,7 +258,7 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
       rate: priced.rate,
       mrp: (product.mrp ?? null) as Money | null,
       discount,
-      taxRateBp: product.tax_rate_bp,
+      taxRateBp: taxed ? product.tax_rate_bp : 0,
       priceSource: priced.source,
       priceSourceId: priced.sourceId,
       discountBlocked,
@@ -418,6 +466,24 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
   const bill = await loadBill(db, input.billId)
   assertCanApply('bill', parseDocStatus(bill.docstatus), 'submit')
 
+  /* Both guards are here and not in `createBill`, so a cart can always be
+     built: a cashier scanning items must never be stopped halfway by a
+     settings problem they cannot fix with a customer in front of them. They
+     bite at the moment the document is issued, which is the moment either of
+     them starts to matter. */
+  const scheme = await loadTaxScheme(db)
+  if (chargesTax(scheme)) {
+    if (!isStateCode(await getSetting(db, 'shop_state_code'))) {
+      return { ok: false, code: 'SHOP_STATE_UNSET' }
+    }
+    if (bill.grandTotal >= RULE_46F_THRESHOLD && bill.customerId === null) {
+      return {
+        ok: false, code: 'NEEDS_RECIPIENT',
+        grandTotal: bill.grandTotal, threshold: RULE_46F_THRESHOLD,
+      }
+    }
+  }
+
   const lines = await db.query<{
     product_id: string; product_name: string; base_qty: number
     line_total: number; loyalty_blocked: number
@@ -489,6 +555,7 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     now,
   )
   const register = await db.get<{ prefix: string }>(`SELECT prefix FROM registers WHERE id = ?`, [bill.registerId])
+  const snapshot = await recipientSnapshot(db, bill)
   const nowIso = now.toISOString()
   let docNo = ''
 
@@ -553,9 +620,19 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
 
     await tx.execute(
       `UPDATE bills
-          SET docstatus = 1, doc_no = ?, paid_total = ?, credit_total = ?, idempotency_key = ?, updated_at = ?
+          SET docstatus = 1, doc_no = ?, paid_total = ?, credit_total = ?, idempotency_key = ?,
+              supply_type = ?, customer_gstin = ?, customer_address = ?, customer_state_code = ?,
+              updated_at = ?
         WHERE id = ?`,
-      [docNo, sub(bill.grandTotal, creditTotal), creditTotal, input.idempotencyKey ?? null, nowIso, input.billId],
+      [
+        docNo, sub(bill.grandTotal, creditTotal), creditTotal, input.idempotencyKey ?? null,
+        // The document takes its own copy of what it said, here and nowhere later.
+        // `reverse_charge` keeps its default of 0: nothing in this product raises
+        // a bill under reverse charge, and a column that lies about it would be
+        // worse than one that does not exist.
+        snapshot.supplyType, snapshot.gstin, snapshot.address, snapshot.stateCode,
+        nowIso, input.billId,
+      ],
     )
 
     /* The order is marked off here and nowhere earlier. Loading an order onto
@@ -692,6 +769,37 @@ export async function amendBill(
     [input.billId],
   )
 
+  /* Everything the original charged, to the paisa.
+     The line discount was being selected and then dropped on the floor, and the
+     notes were never read at all -- so amending a bill of 1,000 rupees less 100
+     produced a draft for the full 1,000, with tax on the full 1,000. A shop
+     correcting one line of a discounted bill handed the customer a *larger*
+     bill than the one being corrected, and the discount had to be found on the
+     cancelled copy and typed in again.
+
+     ── Why the bill discount is not passed as a bill discount ──────────────
+     `computeTotals` spreads a bill-level discount across the lines that may
+     carry it, and `bill_items.discount` is stored as the line's own discount
+     *plus* its share of that spread. The split is not recoverable from the
+     stored row: the shares are apportioned by weights that are themselves
+     computed from the own-discounts. So carrying the line discounts and the
+     bill discount would subtract the same money twice -- 1,000 less 100 would
+     amend to 900 less another 100. The first version of this did exactly that
+     and the test below caught it.
+
+     Carrying the stored line discounts alone reproduces the original exactly:
+     every line's net, taxable value and tax are identical, and so is the total.
+     What is not reproduced is the presentation -- the amendment shows the whole
+     reduction against the lines rather than some of it on the bill. That is a
+     difference in how it reads, not in what is owed, and it is the honest one
+     of the two available answers.
+
+     ── Why the posting date is not carried ─────────────────────────────────
+     This is a new document raised today. Under GST there is no amended
+     invoice, only a cancellation and a fresh one, so it takes today's date and
+     its own number from the same series. Carrying the old date would back-date
+     a document into a period that may already have been filed. `createBill`
+     defaults it, so it is simply not passed. */
   const created = await createBill(db, {
     registerId: source.registerId,
     customerId: source.customerId,
@@ -704,7 +812,9 @@ export async function amendBill(
       saleUnit: l.sale_unit,
       qty: qty(l.qty),
       rateOverride: l.rate as Money,
+      discount: l.discount as Money,
     })),
+    ...(source.notes !== null ? { notes: source.notes } : {}),
     actorId: input.actorId,
     ...(input.now ? { now: input.now } : {}),
   })
@@ -732,16 +842,22 @@ interface BillRow {
   postingDate: string
   grandTotal: Money
   convertedFrom: string | null
+  /** Carried into an amendment. See `amendBill`. */
+  discount: Money
+  notes: string | null
+  /** The state the lines were taxed against. See `recipientSnapshot`. */
+  placeOfSupply: string | null
 }
 
 async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
   const row = await db.get<{
     id: string; doc_no: string; docstatus: number; register_id: string; session_id: string | null
     customer_id: string | null; posting_date: string; grand_total: number
-    converted_from: string | null
+    converted_from: string | null; discount: number; notes: string | null
+    place_of_supply: string | null
   }>(
     `SELECT id, doc_no, docstatus, register_id, session_id, customer_id, posting_date, grand_total,
-            converted_from
+            converted_from, discount, notes, place_of_supply
        FROM bills WHERE id = ?`,
     [billId],
   )
@@ -756,6 +872,54 @@ async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
     postingDate: row.posting_date,
     grandTotal: row.grand_total as Money,
     convertedFrom: row.converted_from,
+    discount: row.discount as Money,
+    notes: row.notes,
+    placeOfSupply: row.place_of_supply,
+  }
+}
+
+interface RecipientSnapshot {
+  supplyType: SupplyType
+  gstin: string | null
+  address: string | null
+  stateCode: string | null
+}
+
+/**
+ * Who the invoice was issued to, decided once, at submit, and never read off a
+ * live join again.
+ *
+ * Migration 028 gave `bills` these columns for one reason: this product read the
+ * recipient's name, address, GSTIN and place of supply out of `customers` every
+ * time anybody reprinted a bill or ran a GST export, so a customer who moved
+ * premises or corrected their GSTIN silently rewrote every invoice ever issued
+ * to them. A reprint stopped matching the copy in the customer's hand.
+ *
+ * The GSTIN and the address are taken from the customer as they stand now,
+ * because now is when the document is being issued.
+ *
+ * The state is not. It is taken from `bills.place_of_supply`, which is the value
+ * `priceBill` decided the tax against when the cart was priced. Reading the
+ * customer's state a second time here would let a record corrected between the
+ * draft being saved and the money being taken produce a bill whose stated place
+ * of supply contradicts the tax printed on its own lines — CGST+SGST under a
+ * heading that says Maharashtra. Whatever else is true, a document may not
+ * disagree with itself. `supply_type` is derived from the same value for the
+ * same reason.
+ */
+async function recipientSnapshot(db: SqlDriver, bill: BillRow): Promise<RecipientSnapshot> {
+  const customer = bill.customerId
+    ? await db.get<{ gstin: string | null; address: string | null }>(
+        `SELECT gstin, address FROM customers WHERE id = ?`,
+        [bill.customerId],
+      )
+    : null
+
+  return {
+    supplyType: await supplyFor(db, bill.placeOfSupply),
+    gstin: customer?.gstin ?? null,
+    address: customer?.address ?? null,
+    stateCode: bill.placeOfSupply,
   }
 }
 

@@ -187,7 +187,16 @@ export const STANDARD_RECEIPT: DocFormat = {
   blocks: [
     { kind: 'logo', on: false },
     { kind: 'shop', on: true },
-    { kind: 'title', on: false, opts: { label: 'TAX INVOICE' } },
+    /* On, since Phase 1b. A counter sale's tax invoice is this roll -- there is
+       no sheet behind it -- and Rule 46 requires the document to say what it is.
+       It matters most for the shops that are not on the regular scheme: a
+       composition dealer's paper has to say "Bill of Supply" and carry the Rule
+       49 sentence, and a document that says nothing about itself defaults to
+       being read as a tax invoice, which is exactly what it must not be.
+
+       The label here is the floor; the bill's own wording outranks it and is
+       what carries the scheme. */
+    { kind: 'title', on: true, opts: { label: 'TAX INVOICE' } },
     { kind: 'meta', on: true },
     { kind: 'party', on: false },
     { kind: 'items', on: true },

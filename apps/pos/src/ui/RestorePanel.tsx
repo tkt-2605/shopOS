@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, Modal } from './components'
-import { describeBackups, type BackupEntry } from '../core/backup'
+import { describeBackups, backupFolderProblem, type BackupEntry } from '../core/backup'
 import { beginRestore, inspectBackup, type RestoreCheck } from '../core/restore'
 
 /**
@@ -21,8 +21,24 @@ export function RestorePanel({ standalone = false }: { standalone?: boolean }) {
   const [confirm, setConfirm] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** Why the list is empty, when it is empty because the folder would not open. */
+  const [listProblem, setListProblem] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => setFiles(await describeBackups()), [])
+  /**
+   * A folder that will not list is said so, not shown as an empty list. On this
+   * panel above all: a person restoring has already lost something, and "No
+   * backups yet" here would tell them the copies they took are gone when the
+   * folder is merely unreadable.
+   */
+  const refresh = useCallback(async () => {
+    try {
+      setFiles(await describeBackups())
+      setListProblem(null)
+    } catch (err) {
+      setFiles([])
+      setListProblem(backupFolderProblem(err))
+    }
+  }, [])
   useEffect(() => { void refresh() }, [refresh])
 
   async function open(file: BackupEntry) {
@@ -61,7 +77,13 @@ export function RestorePanel({ standalone = false }: { standalone?: boolean }) {
         first, so a restore can itself be undone.
       </div>
 
-      {files.length === 0 && <Alert kind="warn">There are no backups on this machine.</Alert>}
+      {/* The folder problem replaces the empty-list line rather than joining it:
+          "there are no backups" and "the folder could not be read" are opposite
+          claims, and showing both would leave the person guessing which is true. */}
+      {listProblem && <Alert>{listProblem}</Alert>}
+      {!listProblem && files.length === 0 && (
+        <Alert kind="warn">There are no backups on this machine.</Alert>
+      )}
 
       {files.length > 0 && (
         <div className="card card-scroll">

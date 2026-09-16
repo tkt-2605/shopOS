@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Reports as R, Money, Quantity, businessDate, listRegisters, type DateRange, type Register,
+  Reports as R, Money, Quantity, listRegisters, chargesTax, listSessions,
+  type DateRange, type Register, type ClosedSession,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'
 import { saveFile } from '../core/exportFile'
 import { reportPdf } from '../core/pdf'
 
-type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff'
+type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'days', label: 'By day' },
@@ -16,6 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'tax', label: 'GST' },
   { id: 'tenders', label: 'Payments' },
   { id: 'staff', label: 'Staff' },
+  { id: 'drawer', label: 'Drawer' },
 ]
 
 interface Data {
@@ -27,10 +29,15 @@ interface Data {
   tax: R.TaxRateRow[]
   tenders: R.TenderRow[]
   staff: R.StaffRow[]
+  sessions: ClosedSession[]
 }
 
 export default function Reports() {
-  const { db } = useCore()
+  const { db, taxScheme } = useCore()
+  /* Whether there is a GST report to run at all. A composition dealer and an
+     unregistered shop collect none, so the tab would be a page of zeroes and
+     the export a file of them. */
+  const collectsTax = chargesTax(taxScheme)
   const [range, setRange] = useState<DateRange>(() => rangePreset('month'))
   const [registers, setRegisters] = useState<Register[]>([])
   const [tab, setTab] = useState<Tab>('days')
@@ -53,7 +60,7 @@ export default function Reports() {
     setBusy(true)
     setError(null)
     try {
-      const [summary, days, products, margin, marginRows, tax, tenders, staff] = await Promise.all([
+      const [summary, days, products, margin, marginRows, tax, tenders, staff, sessions] = await Promise.all([
         R.salesSummary(db, range),
         R.salesByDay(db, range),
         R.topProducts(db, range, 25),
@@ -62,8 +69,9 @@ export default function Reports() {
         R.taxByRate(db, range),
         R.paymentMix(db, range),
         R.salesByStaff(db, range),
+        listSessions(db, range),
       ])
-      setData({ summary, days, products, margin, marginRows, tax, tenders, staff })
+      setData({ summary, days, products, margin, marginRows, tax, tenders, staff, sessions })
     } catch (err) {
       setData(null)
       setError(`The reports could not be built: ${err instanceof Error ? err.message : String(err)}`)
@@ -73,6 +81,11 @@ export default function Reports() {
   }, [db, range])
 
   useEffect(() => { void load() }, [load])
+
+  /* A shop that switches to composition while looking at the GST tab would
+     otherwise be left on a tab that is no longer offered, with no way back to
+     it and no way off it. */
+  useEffect(() => { if (!collectsTax && tab === 'tax') setTab('days') }, [collectsTax, tab])
 
   async function exportCsv() {
     setError(null)
@@ -118,16 +131,44 @@ export default function Reports() {
     const lines = await R.gstLines(db, range)
     if (lines.length === 0) { setError('There are no submitted bills in this range.'); return }
 
+    /* Two columns a CA needs and the sheet did not have: which kind of document
+       a row is, and — for a credit note — the invoice it is raised against,
+       which is what GSTR-1 table 9B is filled from. */
     const csv = R.toCsv(
-      ['Bill', 'Date', 'Customer', 'GSTIN', 'Place of supply', 'Rate %', 'Taxable', 'CGST', 'SGST', 'IGST', 'Total'],
+      ['Document', 'Type', 'Against', 'Date', 'Customer', 'GSTIN', 'Place of supply',
+        'Rate %', 'Taxable', 'CGST', 'SGST', 'IGST', 'Total'],
       lines.map((l) => [
-        l.docNo, l.postingDate, l.customerName, l.gstin, l.placeOfSupply, l.rateBp / 100,
+        l.docNo, l.kind === 'credit_note' ? 'Credit note' : 'Invoice', l.againstDocNo ?? '',
+        l.postingDate, l.customerName, l.gstin, l.placeOfSupply, l.rateBp / 100,
         rupeeCell(l.taxable), rupeeCell(l.cgst), rupeeCell(l.sgst), rupeeCell(l.igst), rupeeCell(l.total),
       ]),
     )
     const result = await saveFile(`gst-detail-${range.from}-to-${range.to}.csv`, csv)
     if (!result.ok) { setError(result.message); return }
-    setNotice(`Saved to ${result.path}`)
+
+    /* The lines a CA will come back about, saved beside the export rather than
+       inside it: a CSV with two shapes of row in it is a CSV a spreadsheet
+       cannot read. Written only when there is something to say. */
+    const exceptions = await R.gstExceptions(db, range)
+    if (exceptions.length > 0) {
+      await saveFile(
+        `gst-exceptions-${range.from}-to-${range.to}.csv`,
+        R.toCsv(
+          ['Bill', 'Date', 'Customer', 'GSTIN', 'Item', 'Taxable', 'Problem'],
+          exceptions.map((e) => [
+            e.docNo, e.postingDate, e.customerName, e.gstin, e.productName,
+            rupeeCell(e.taxable), e.problem,
+          ]),
+        ),
+      )
+    }
+
+    setNotice(
+      exceptions.length > 0
+        ? `Saved to ${result.path}. ${exceptions.length} ${exceptions.length === 1 ? 'line needs' : 'lines need'} `
+          + 'an HSN code before filing — saved beside it as gst-exceptions.'
+        : `Saved to ${result.path}`,
+    )
     setTimeout(() => setNotice(null), 8000)
   }
 
@@ -152,7 +193,9 @@ export default function Reports() {
         )}
 
         <div style={{ flex: 1 }} />
-        <button className="btn sm" onClick={() => void exportGstLines()}>Export GST detail</button>
+        {collectsTax && (
+          <button className="btn sm" onClick={() => void exportGstLines()}>Export GST detail</button>
+        )}
       </div>
 
       {!s ? (
@@ -175,7 +218,13 @@ export default function Reports() {
                   : `${(data.margin.marginBp / 100).toFixed(1)}% of ${Money.formatWithSymbol(data.margin.revenue)}`
               }
             />
-            <Stat label="GST collected" value={<Rupees value={s.tax} />} sub={`on ${Money.formatWithSymbol(s.taxable)} taxable`} />
+            {/* A shop that may not collect GST has none to report, and a tile
+                reading ₹0.00 for ever is a tile that teaches people the row
+                means nothing. The sentence under the tabs says why it is gone,
+                because a missing report with no explanation reads as a fault. */}
+            {collectsTax && (
+              <Stat label="GST collected" value={<Rupees value={s.tax} />} sub={`on ${Money.formatWithSymbol(s.taxable)} taxable`} />
+            )}
             <Stat label="Sold on credit" value={<Rupees value={s.credit} />} sub={`${Money.formatWithSymbol(s.paid)} taken at the counter`} />
             {/* Only when the shop rounds. A tile reading ₹0.00 every day on a
                 counter that charges what the bill comes to is a tile that
@@ -191,7 +240,7 @@ export default function Reports() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="segment">
-              {TABS.map((t) => (
+              {TABS.filter((t) => t.id !== 'tax' || collectsTax).map((t) => (
                 <button key={t.id} aria-selected={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</button>
               ))}
             </div>
@@ -200,6 +249,14 @@ export default function Reports() {
             <button className="btn sm" onClick={() => void exportPdf()}>Save as PDF</button>
           </div>
 
+          {!collectsTax && (
+            <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              {taxScheme === 'composition'
+                ? 'This shop is on the composition scheme, so it does not collect GST from customers and there is no GST report to run. The bills go out as a Bill of Supply.'
+                : 'This shop is not registered for GST, so it does not charge it and there is no GST report to run. Settings is where that changes.'}
+            </div>
+          )}
+
           <Card>
             {tab === 'days' && <DaysTable rows={data.days} />}
             {tab === 'products' && <ProductsTable rows={data.products} />}
@@ -207,6 +264,7 @@ export default function Reports() {
             {tab === 'tax' && <TaxTable rows={data.tax} total={s.tax} />}
             {tab === 'tenders' && <TendersTable rows={data.tenders} />}
             {tab === 'staff' && <StaffTable rows={data.staff} />}
+            {tab === 'drawer' && <DrawerTable rows={data.sessions} />}
           </Card>
 
           {s.discount > 0 && (
@@ -357,6 +415,61 @@ function TendersTable({ rows }: { rows: R.TenderRow[] }) {
   )
 }
 
+/**
+ * Every drawer that has been counted, and by how much it was out.
+ *
+ * `closeSession` has written `expected_cash`, `actual_cash` and `variance`
+ * since v1 and nothing read them back. A shop could see tonight's figure on the
+ * screen it counted on and never again — so "is it short on the same person's
+ * shift every week" had no answer anywhere in the product. It is one query and
+ * a table, and it is the whole reason the column exists.
+ */
+function DrawerTable({ rows }: { rows: ClosedSession[] }) {
+  if (rows.length === 0) return <Empty>No drawer has been counted in this range</Empty>
+
+  const over = rows.reduce((sum, r) => sum + Math.max(0, r.variance), 0)
+  const short = rows.reduce((sum, r) => sum + Math.min(0, r.variance), 0)
+
+  return (
+    <>
+      <table>
+        <thead>
+          <tr>
+            <th>Closed</th><th>Counter</th><th>Counted by</th>
+            <th className="r">Expected</th><th className="r">Counted</th><th className="r">Out by</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td className="num">{r.postingDate}</td>
+              <td>{r.registerName}</td>
+              <td>{r.closedBy ?? '—'}</td>
+              <td className="r"><Rupees value={r.expectedCash} /></td>
+              <td className="r"><Rupees value={r.actualCash} /></td>
+              {/* Red either way. Money over is not good news — it is the same
+                  evidence that something was rung up wrong, and a shop that
+                  only ever looks at the shortfalls finds half the mistakes. */}
+              <td className="r" style={r.variance === 0 ? undefined : { color: 'var(--danger)' }}>
+                {r.variance === 0 ? '—' : Money.formatWithSymbol(r.variance)}
+              </td>
+              <td style={{ color: 'var(--ink-3)' }}>{r.notes ?? ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--ink-3)' }}>
+        {rows.length} {rows.length === 1 ? 'close' : 'closes'} in this range
+        {short !== 0 && <>, {Money.formatWithSymbol(Math.abs(short) as never)} short in total</>}
+        {over !== 0 && <>, {Money.formatWithSymbol(over as never)} over</>}
+        {short === 0 && over === 0 && ', every one of them exact'}.
+      </div>
+    </>
+  )
+}
+
 function StaffTable({ rows }: { rows: R.StaffRow[] }) {
   if (rows.length === 0) return <Empty>Nobody billed in this range</Empty>
   return (
@@ -495,6 +608,25 @@ function tableFor(tab: Tab, data: Data | null): Table | null {
           { label: 'Total', width: 1.4, right: true },
         ],
         rows: data.staff.map((r) => [r.username, String(r.bills), rupeeCell(r.total)]),
+      }
+    case 'drawer':
+      return {
+        name: 'drawer-closes',
+        title: 'Drawer closes',
+        columns: [
+          { label: 'Closed', width: 1.2 },
+          { label: 'Counter', width: 1.4 },
+          { label: 'Counted by', width: 1.4 },
+          { label: 'Expected', width: 1.2, right: true },
+          { label: 'Counted', width: 1.2, right: true },
+          { label: 'Out by', width: 1.1, right: true },
+          { label: 'Note', width: 2 },
+        ],
+        rows: data.sessions.map((r) => [
+          r.postingDate, r.registerName, r.closedBy ?? '',
+          rupeeCell(r.expectedCash), rupeeCell(r.actualCash), rupeeCell(r.variance),
+          r.notes ?? '',
+        ]),
       }
   }
 }

@@ -9,6 +9,7 @@ import { getSetting } from './bootstrap.js'
 import {
   constantTimeEquals, mintPairingCode, mintSecret, verify,
 } from './syncAuth.js'
+import { clock } from '../clock.js'
 
 /**
  * The side of a sync that answers.
@@ -29,6 +30,45 @@ export interface SyncRequest {
   body: string
   /** The signature header, absent on `/pair` which has no secret yet. */
   auth?: string | null
+  /**
+   * The IP the request came from, as the listener saw it, and the port the
+   * caller says it is listening on — together, where to reach that till.
+   *
+   * Supplied by whatever is holding the socket (`sync_server.rs` in the app,
+   * `node:http` in the bench), because it is the only thing that knows. This is
+   * how the answering till learns an address at all: before this, a till that
+   * had been *joined* had a peer row with a secret and no address, and
+   * `pairedPeers` filters on `address IS NOT NULL` — so the front counter had
+   * zero peers it could reach and could receive a sync but never start one.
+   *
+   * The port is taken from an unsigned header, so a peer could lie about it.
+   * That buys nothing: the address is only ever used to open a connection that
+   * must then authenticate with the shared secret, so a wrong one is a failed
+   * round and not a disclosure.
+   */
+  remoteAddress?: string | null
+  listenPort?: number | null
+}
+
+/** The header a till advertises its own listening port in. */
+export const LISTEN_PORT_HEADER = 'x-shopos-port'
+
+/**
+ * Where a till that just contacted us can be reached, or null if we cannot say.
+ *
+ * Both halves are required. An IP with no port is not an address, and a port
+ * with no IP would have to be guessed — and a guessed address that happens to
+ * resolve is worse than none, because it points the shop's sync at a stranger.
+ */
+export function peerAddressFrom(request: SyncRequest): string | null {
+  const host = request.remoteAddress?.trim()
+  const port = request.listenPort
+  if (!host || typeof port !== 'number' || !Number.isInteger(port) || port <= 0) return null
+  // IPv6 needs brackets in a URL, and `::ffff:127.0.0.1` is how a dual-stack
+  // listener reports a plain IPv4 caller.
+  const plain = host.startsWith('::ffff:') ? host.slice(7) : host
+  const bracketed = plain.includes(':') ? `[${plain}]` : plain
+  return `http://${bracketed}:${port}`
 }
 
 export interface SyncResponse {
@@ -60,15 +100,32 @@ let offered: LiveCode | null = null
  * side refuses.
  */
 let servingRegister: string | null = null
+let servingRegisterSource: (() => string | null) | null = null
 
 export function serveAs(registerId: string | null): void {
   servingRegister = registerId
 }
 
+/**
+ * For a host serving more than one till from one process — `tools/virtual-till`.
+ *
+ * Same reasoning as `setDeviceIdSource`, and the same failure if it is missing:
+ * two tills sharing this global answer `/hello` with one another's counter, so
+ * the `SAME_REGISTER` refusal that `same-register.test.ts` exists to prove
+ * either never fires or fires against the wrong till. The app never calls this.
+ */
+export function setServingRegisterSource(fn: (() => string | null) | null): void {
+  servingRegisterSource = fn
+}
+
+function currentServingRegister(): string | null {
+  return servingRegisterSource ? servingRegisterSource() : servingRegister
+}
+
 export const PAIRING_WINDOW_MS = 10 * 60 * 1000
 
 /** Shown on the till that already has the shop. */
-export function offerPairing(now = Date.now()): string {
+export function offerPairing(now = clock.now()): string {
   const code = mintPairingCode()
   offered = { code, expiresAt: now + PAIRING_WINDOW_MS }
   return code
@@ -79,7 +136,7 @@ export function withdrawPairing(): void {
   offered = null
 }
 
-export function pairingOnOffer(now = Date.now()): string | null {
+export function pairingOnOffer(now = clock.now()): string | null {
   if (offered === null) return null
   return offered.expiresAt > now ? offered.code : null
 }
@@ -87,7 +144,7 @@ export function pairingOnOffer(now = Date.now()): string | null {
 export async function handleSyncRequest(
   db: SqlDriver,
   request: SyncRequest,
-  now = Date.now(),
+  now = clock.now(),
 ): Promise<SyncResponse> {
   if (request.path === '/pair') return handlePair(db, request, now)
 
@@ -102,6 +159,22 @@ export async function handleSyncRequest(
     now,
   )
   if (!auth.ok) return refuse(401, auth.code)
+
+  /* On every accepted request, not only on pairing. A till moves desks, the
+     router hands out a new lease overnight, the shop swaps the switch — and
+     the address recorded the day they paired stops working, with nothing to
+     re-record it. The request that just authenticated is proof of where that
+     till is *now*, and it is the cheapest possible place to learn it.
+
+     Only after `auth.ok`, so an unauthenticated caller cannot move a peer's
+     address and make the shop's next sync dial them instead. */
+  const seenAt = peerAddressFrom(request)
+  if (seenAt !== null) {
+    await db.execute(
+      `UPDATE sync_peers SET address = ? WHERE device_id = ? AND (address IS NOT ? OR address IS NULL)`,
+      [seenAt, auth.deviceId, seenAt],
+    )
+  }
 
   switch (request.path) {
     case '/hello': return handleHello(db, auth.deviceId)
@@ -143,10 +216,17 @@ async function handlePair(
   if (!constantTimeEquals(live.code, given)) return refuse(403, 'WRONG_CODE')
 
   const secret = mintSecret()
+  /* The address, here, at the one moment both tills are certainly talking.
+     Without it the joining till is recorded as a peer that cannot be reached,
+     which reads on every later screen as a till that is paired and quiet. */
+  const address = peerAddressFrom(request)
   await db.execute(
-    `INSERT INTO sync_peers (device_id, label, secret, created_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (device_id) DO UPDATE SET label = excluded.label, secret = excluded.secret`,
-    [theirDevice, asked.label ?? null, secret, new Date(now).toISOString()],
+    `INSERT INTO sync_peers (device_id, label, secret, address, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT (device_id) DO UPDATE SET
+       label = excluded.label, secret = excluded.secret,
+       address = COALESCE(excluded.address, sync_peers.address)`,
+    [theirDevice, asked.label ?? null, secret, address, new Date(now).toISOString()],
   )
 
   /* A till that has just joined has none of the shop, and the feed only holds
@@ -176,7 +256,7 @@ async function handleHello(db: SqlDriver, them: string): Promise<SyncResponse> {
     /* Which counter this till bills on. Two tills on one counter mint invoice
        numbers from the same series, so the asking side refuses before a bill
        crosses and collides. */
-    registerId: await resolveDeviceRegister(db, servingRegister),
+    registerId: await resolveDeviceRegister(db, currentServingRegister()),
     // How far we have read of theirs is, from where they stand, how far they
     // have been read. The two cursors are one number seen from two sides.
     yourCursorWithThem: row?.their_cursor ?? 0,
@@ -239,7 +319,7 @@ async function handleOffer(
 
   await db.execute(
     `UPDATE sync_peers SET their_cursor = ?, last_agreed_at = ? WHERE device_id = ? AND their_cursor < ?`,
-    [batch.upTo, new Date().toISOString(), them, batch.upTo],
+    [batch.upTo, clock.iso(), them, batch.upTo],
   )
 
   return ok({ upTo: batch.upTo })

@@ -14,6 +14,15 @@ export interface ProductListItem {
   taxRateBp: number
   hsnCode: string | null
   isStockTracked: boolean
+  /**
+   * Still sold here. False means retired: hidden from the counter's search and
+   * the reorder list, still on every report and every old bill.
+   *
+   * Returned because the one screen that shows retired products has to be able
+   * to say which they are. Everywhere else filters them out in SQL and never
+   * sees a false.
+   */
+  isActive: boolean
   qtyOnHand: Qty
   /** Margin too thin to carry a discount, or to pay loyalty points on. */
   discountBlocked: boolean
@@ -60,7 +69,7 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
 
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
             p.discount_blocked, p.loyalty_blocked, p.return_blocked,
             p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
@@ -91,7 +100,7 @@ export async function productsByIds(db: SqlDriver, ids: string[]): Promise<Produ
 
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
             p.discount_blocked, p.loyalty_blocked, p.return_blocked,
             p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
@@ -110,7 +119,7 @@ export async function productsByIds(db: SqlDriver, ids: string[]): Promise<Produ
 export async function findByBarcode(db: SqlDriver, barcode: string): Promise<ProductListItem | null> {
   const row = await db.get<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
             p.discount_blocked, p.loyalty_blocked, p.return_blocked,
             p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
@@ -159,13 +168,85 @@ export interface CustomerListItem {
   outstanding: Money
   creditLimit: Money
   loyaltyPoints: number
+  /** Out of every search but this one. See `archiveCustomer`. */
+  archived: boolean
 }
 
-export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Promise<CustomerListItem[]> {
+/**
+ * One customer, whole, for a form that is about to save them back.
+ *
+ * `CustomerListItem` is shaped for the list and carries neither the address,
+ * the state nor the credit enforcement. The Customers screen was filling a form
+ * from it anyway and defaulting the three it could not see -- address to empty,
+ * enforcement to `hard` -- and then writing all of them back. So editing a
+ * customer's phone number silently erased their address and moved a customer
+ * who had been set to `none` onto hard credit enforcement, which stops them
+ * buying at the counter.
+ *
+ * Nothing said so. It is the same failure as everything else in this phase: a
+ * screen that looks like it edited one field and quietly wrote several.
+ */
+export interface CustomerDetail extends CustomerListItem {
+  address: string | null
+  stateCode: string | null
+  creditEnforcement: 'none' | 'soft' | 'hard'
+  isActive: boolean
+}
+
+export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerDetail | null> {
+  const row = await db.get<{
+    id: string; code: string | null; name: string; phone: string | null
+    gstin: string | null; address: string | null; state_code: string | null
+    credit_limit: number; credit_enforcement: 'none' | 'soft' | 'hard'; is_active: number
+    deleted_at: string | null
+  }>(
+    /* Archived customers are loadable, deliberately: the screen that can bring
+       one back has to be able to open them first, and an old bill's customer
+       has to stay readable. The searches are where they disappear. */
+    `SELECT id, code, name, phone, gstin, address, state_code,
+            credit_limit, credit_enforcement, is_active, deleted_at
+       FROM customers WHERE id = ?`,
+    [id],
+  )
+  if (!row) return null
+
+  // The three figures the list computes are not what a form needs, and fetching
+  // them here would make an edit wait on a join over every bill they ever had.
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    phone: row.phone,
+    gstin: row.gstin,
+    address: row.address,
+    stateCode: row.state_code,
+    creditLimit: row.credit_limit as Money,
+    archived: row.deleted_at !== null,
+    creditEnforcement: row.credit_enforcement,
+    isActive: row.is_active === 1,
+    outstanding: 0 as Money,
+    loyaltyPoints: 0,
+  }
+}
+
+/**
+ * The customers a screen should offer.
+ *
+ * `includeArchived` is for the one screen that can bring them back. Everywhere
+ * else -- the counter's picker above all -- an archived customer is gone, which
+ * is what archiving them was for.
+ */
+export async function searchCustomers(
+  db: SqlDriver,
+  term = '',
+  limit = 50,
+  opts: { includeArchived?: boolean } = {},
+): Promise<CustomerListItem[]> {
   const like = `%${term.trim()}%`
+  const archivedClause = opts.includeArchived ? '' : 'AND c.deleted_at IS NULL'
   const rows = await db.query<{
     id: string; code: string | null; name: string; phone: string | null; gstin: string | null
-    credit_limit: number; outstanding: number; points: number
+    credit_limit: number; outstanding: number; points: number; deleted_at: string | null
   }>(
     `SELECT c.id, c.code, c.name, c.phone, c.gstin, c.credit_limit,
             COALESCE((SELECT SUM(b.credit_total) FROM bills b WHERE b.customer_id = c.id AND b.docstatus = 1), 0)
@@ -175,9 +256,10 @@ export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Pro
                        WHERE b2.customer_id = c.id), 0) AS outstanding,
             COALESCE((SELECT SUM(le.points - le.consumed) FROM loyalty_entries le
                        WHERE le.customer_id = c.id AND le.cancelled_at IS NULL
-                         AND (le.expires_at IS NULL OR le.expires_at > ?)), 0) AS points
+                         AND (le.expires_at IS NULL OR le.expires_at > ?)), 0) AS points,
+            c.deleted_at
        FROM customers c
-      WHERE c.deleted_at IS NULL AND c.is_active = 1
+      WHERE c.is_active = 1 ${archivedClause}
         AND (? = '' OR c.name LIKE ? OR c.phone LIKE ? OR c.code LIKE ?)
       ORDER BY c.name
       LIMIT ?`,
@@ -193,7 +275,38 @@ export async function searchCustomers(db: SqlDriver, term = '', limit = 50): Pro
     outstanding: r.outstanding as Money,
     creditLimit: r.credit_limit as Money,
     loyaltyPoints: r.points,
+    archived: r.deleted_at !== null,
   }))
+}
+
+/**
+ * How many customers a search would find, ignoring the limit.
+ *
+ * `searchCustomers` stops at its limit and says nothing about having stopped,
+ * so a screen showing five hundred of six hundred looks exactly like a screen
+ * showing all six hundred. This is what lets it say which of the two it is.
+ *
+ * The filter is `searchCustomers`' filter, written out again rather than shared,
+ * which is a risk worth naming: if one grows a condition the other must too.
+ * The alternative was a `countOnly` flag threaded through a function whose
+ * whole job is to return rows, and a boolean that changes what a function
+ * returns is the worse trade.
+ */
+export async function countCustomers(
+  db: SqlDriver,
+  term = '',
+  opts: { includeArchived?: boolean } = {},
+): Promise<number> {
+  const like = `%${term.trim()}%`
+  const archivedClause = opts.includeArchived ? '' : 'AND c.deleted_at IS NULL'
+  const row = await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n
+       FROM customers c
+      WHERE c.is_active = 1 ${archivedClause}
+        AND (? = '' OR c.name LIKE ? OR c.phone LIKE ? OR c.code LIKE ?)`,
+    [term.trim(), like, like, like],
+  )
+  return row?.n ?? 0
 }
 
 export interface BillListItem {
@@ -341,6 +454,27 @@ export interface BillDetail extends BillListItem {
   cancelReason: string | null
   items: BillDetailItem[]
   payments: { method: string; amount: Money; reference: string | null }[]
+
+  /**
+   * What the paper said, as the bill recorded it at submit — migration 028.
+   *
+   * Every one of these used to be read off a live join to `customers`, or
+   * invented by the renderer: `printHtml.ts` printed the *shop's* own state as
+   * the place of supply on every invoice it produced, including the ones billed
+   * to another state. A reprint has to match the copy in the customer's hand,
+   * and the only way it can is for the bill to hold its own answer.
+   *
+   * Null on a draft, which has not said anything to anybody yet, and on bills
+   * raised before 028 for the one column the migration would have had to
+   * fabricate to fill.
+   */
+  supplyType: 'intra_state' | 'inter_state' | null
+  customerGstin: string | null
+  customerAddress: string | null
+  customerStateCode: string | null
+  /** Where the supply was made, which is not always where the customer is. */
+  placeOfSupply: string | null
+  reverseCharge: boolean
 }
 
 export interface BillDetailItem {
@@ -357,6 +491,8 @@ export interface BillDetailItem {
   sgst: Money
   igst: Money
   hsnCode: string | null
+  /** Rule 46(k): the rate, per line, not only the amount it came to. */
+  taxRateBp: number
   priceSource: string
   returnedQty: Qty
 }
@@ -368,11 +504,15 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     subtotal: number; discount: number; taxable_total: number; tax_total: number
     round_off: number
     grand_total: number; credit_total: number; cancel_reason: string | null; username: string | null
+    supply_type: string | null; customer_gstin: string | null; customer_address: string | null
+    customer_state_code: string | null; place_of_supply: string | null; reverse_charge: number
   }>(
     `SELECT b.id, b.doc_no, b.docstatus, b.posting_date, b.customer_id, b.customer_name,
             b.subtotal, b.discount,
             b.taxable_total, b.tax_total, b.round_off, b.grand_total, b.credit_total,
-            b.cancel_reason, u.username
+            b.cancel_reason, u.username,
+            b.supply_type, b.customer_gstin, b.customer_address, b.customer_state_code,
+            b.place_of_supply, b.reverse_charge
        FROM bills b LEFT JOIN users u ON u.id = b.created_by
       WHERE b.id = ?`,
     [billId],
@@ -383,10 +523,10 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     id: string; product_id: string; product_name: string; sale_unit: string
     qty: number; rate: number; line_total: number
     taxable_value: number; cgst_amount: number; sgst_amount: number; igst_amount: number
-    hsn_code: string | null; price_source: string; returned_qty: number
+    hsn_code: string | null; tax_rate_bp: number; price_source: string; returned_qty: number
   }>(
     `SELECT id, product_id, product_name, sale_unit, qty, rate, line_total, taxable_value,
-            cgst_amount, sgst_amount, igst_amount, hsn_code, price_source, returned_qty
+            cgst_amount, sgst_amount, igst_amount, hsn_code, tax_rate_bp, price_source, returned_qty
        FROM bill_items WHERE bill_id = ? ORDER BY idx`,
     [billId],
   )
@@ -428,10 +568,19 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
       sgst: i.sgst_amount as Money,
       igst: i.igst_amount as Money,
       hsnCode: i.hsn_code,
+      taxRateBp: i.tax_rate_bp,
       priceSource: i.price_source,
       returnedQty: qty(i.returned_qty),
     })),
     payments: payments.map((p) => ({ method: p.method, amount: p.amount as Money, reference: p.reference })),
+    supplyType: head.supply_type === 'inter_state' || head.supply_type === 'intra_state'
+      ? head.supply_type
+      : null,
+    customerGstin: head.customer_gstin,
+    customerAddress: head.customer_address,
+    customerStateCode: head.customer_state_code,
+    placeOfSupply: head.place_of_supply,
+    reverseCharge: head.reverse_charge === 1,
   }
 }
 
@@ -447,6 +596,7 @@ interface ProductRow {
   tax_rate_bp: number
   hsn_code: string | null
   is_stock_tracked: number
+  is_active: number
   qty_on_hand: number
   discount_blocked: number
   loyalty_blocked: number
@@ -473,6 +623,7 @@ function toProduct(r: ProductRow): ProductListItem {
     taxRateBp: r.tax_rate_bp,
     hsnCode: r.hsn_code,
     isStockTracked: r.is_stock_tracked === 1,
+    isActive: r.is_active === 1,
     qtyOnHand: qty(r.qty_on_hand),
     discountBlocked: r.discount_blocked === 1,
     loyaltyBlocked: r.loyalty_blocked === 1,

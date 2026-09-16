@@ -1,4 +1,6 @@
-import { type SqlDriver, type SqlValue, type Row, type ExecResult, SqlError } from './driver.js'
+import {
+  type SqlDriver, type SqlValue, type Row, type ExecResult, type TxOptions, SqlError,
+} from './driver.js'
 
 type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
 
@@ -27,8 +29,17 @@ class TauriDriver implements SqlDriver {
     return this.call<ExecResult>('sql_execute', { sql, params }, sql)
   }
 
-  async transaction<T>(fn: (tx: SqlDriver) => Promise<T>): Promise<T> {
-    const token = await this.call<string>('sql_tx_begin', {}, 'BEGIN IMMEDIATE')
+  async transaction<T>(fn: (tx: SqlDriver) => Promise<T>, opts: TxOptions = {}): Promise<T> {
+    /* The budget goes with the transaction rather than being a constant in
+       Rust, because a bill and a merge want different numbers and one constant
+       cannot be both. `driver.ts` carries which breaks at which setting.
+
+       Undefined rather than a number when the caller said nothing, so the
+       default lives in one place — in Rust, next to the watchdog that reads
+       it — instead of being written down twice. */
+    const token = await this.call<string>(
+      'sql_tx_begin', { budgetMs: opts.budgetMs }, 'BEGIN IMMEDIATE',
+    )
     const tx = new TxDriver(this.invoke, token)
     let committed = false
     try {
@@ -76,7 +87,14 @@ class TxDriver extends TauriDriver {
     return this.call<ExecResult>('sql_tx_execute', { token: this.token, sql, params }, sql)
   }
 
-  /** Nested calls join the transaction already open rather than starting another. */
+  /**
+   * Nested calls join the transaction already open rather than starting another.
+   *
+   * A budget passed here is ignored, and deliberately so: the transaction is
+   * already running under the budget the outermost caller set, and there is
+   * nothing to re-negotiate. Honouring it would mean a helper deep inside a
+   * merge could quietly shorten the merge's own deadline.
+   */
   override async transaction<T>(fn: (tx: SqlDriver) => Promise<T>): Promise<T> {
     return fn(this)
   }

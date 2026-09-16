@@ -3,7 +3,7 @@ import { rupees } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
 import {
   listSuppliers, supplierSummaries, createSupplier, updateSupplier,
-  deleteSupplier, findOrCreateSupplier, supplierPurchases,
+  archiveSupplier, restoreSupplier, findOrCreateSupplier, supplierPurchases,
 } from '../src/services/suppliers.js'
 import { createStockEntry, submitStockEntry } from '../src/services/stockEntry.js'
 import { freshDb, makeProduct, type Fixture } from './helpers.js'
@@ -120,24 +120,44 @@ describe('suppliers', () => {
     expect(lines[0]!.docNo).not.toMatch(/^DRAFT/)
   })
 
-  it('refuses to delete a supplier goods were bought from, and says where', async () => {
+  it('archives a supplier goods were bought from, rather than refusing', async () => {
     const p = await makeProduct(fx.db)
     const made = await createSupplier(fx.db, { name: 'Sakthi Agencies', actorId: fx.adminId })
     if (!made.ok) throw new Error('setup failed')
     await receive(made.supplierId, p, 5, rupees(100))
 
-    const result = await deleteSupplier(fx.db, { supplierId: made.supplierId, actorId: fx.adminId })
-    expect(result.ok).toBe(false)
-    if (result.ok) return
-    expect(result.message).toContain('stock entries')
-    expect(result.message).toContain('Switch it off instead')
+    /* This used to refuse with "Switch it off instead", which pointed at a
+       thing that did not exist: nothing in the product removed a supplier from
+       the list. Archiving is safe whether or not anything references them,
+       because the row stays. */
+    expect(await archiveSupplier(fx.db, { supplierId: made.supplierId, actorId: fx.adminId }))
+      .toEqual({ ok: true })
+    expect(await listSuppliers(fx.db, true)).toHaveLength(0)
   })
 
-  it('removes one that was never used', async () => {
+  it('keeps the purchase history it is the supplier of', async () => {
+    const p = await makeProduct(fx.db)
+    const made = await createSupplier(fx.db, { name: 'Sakthi Agencies', actorId: fx.adminId })
+    if (!made.ok) throw new Error('setup failed')
+    await receive(made.supplierId, p, 5, rupees(100))
+
+    await archiveSupplier(fx.db, { supplierId: made.supplierId, actorId: fx.adminId })
+
+    /* The row is what gives received stock its cost, and deleting it -- which
+       is what this did whenever nothing happened to reference it -- would leave
+       a shop with a stock entry from nobody. */
+    const bought = await supplierPurchases(fx.db, made.supplierId)
+    expect(bought.length).toBeGreaterThan(0)
+  })
+
+  it('brings one back exactly as it was', async () => {
     const made = await createSupplier(fx.db, { name: 'Typo Vendor', actorId: fx.adminId })
     if (!made.ok) throw new Error('setup failed')
 
-    expect(await deleteSupplier(fx.db, { supplierId: made.supplierId, actorId: fx.adminId })).toEqual({ ok: true })
+    await archiveSupplier(fx.db, { supplierId: made.supplierId, actorId: fx.adminId })
     expect(await listSuppliers(fx.db, true)).toHaveLength(0)
+
+    await restoreSupplier(fx.db, { supplierId: made.supplierId, actorId: fx.adminId })
+    expect(await listSuppliers(fx.db, true)).toHaveLength(1)
   })
 })

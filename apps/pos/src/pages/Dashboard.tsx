@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Money, Quantity, businessDate, recomputeStock, type SqlDriver } from '@shopos/core'
+import { Money, Quantity, businessDate, totalOutstandingAll, type SqlDriver } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
+import { lastStockCheck, type StockCheck } from '../core/maintenance'
 import { Stat, Card, Empty, Alert, Rupees } from '../ui/components'
 
 interface Snapshot {
@@ -8,7 +9,8 @@ interface Snapshot {
   todayBills: number
   outstanding: number
   lowStock: { name: string; qty: number; unit: string }[]
-  driftCount: number
+  /** What the last full ledger replay found, or null if one has never run. */
+  stock: StockCheck | null
 }
 
 export default function Dashboard() {
@@ -27,10 +29,10 @@ export default function Dashboard() {
         <Stat label="Low stock" value={snap.lowStock.length} sub="items under 10 units" />
       </div>
 
-      {snap.driftCount > 0 && (
+      {snap.stock && snap.stock.drift > 0 && (
         <Alert>
-          {snap.driftCount} product(s) show a difference between the stock ledger and the cached
-          quantity. Run a stock recompute from Inventory.
+          {snap.stock.drift} product(s) show a difference between the stock ledger and the cached
+          quantity, as of {whenChecked(snap.stock.at)}. Run a stock recompute from Inventory.
         </Alert>
       )}
 
@@ -64,12 +66,14 @@ async function load(db: SqlDriver): Promise<Snapshot> {
     [today],
   )
 
-  const credit = await db.get<{ total: number }>(
-    `SELECT COALESCE(SUM(b.credit_total), 0)
-          - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                        JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1), 0) AS total
-       FROM bills b WHERE b.docstatus = 1`,
-  )
+  /* The same figure the Credit page shows, from the same function.
+   *
+   * It used to be its own query here, netting every payment ever taken off
+   * every credit ever given across the whole shop — which is a different number
+   * from the one on the Credit page, because that one adds up the customers who
+   * owe and leaves out the ones in credit. Two screens, one label, two answers,
+   * and no way for a shopkeeper to tell which was the real one. */
+  const credit = await totalOutstandingAll(db)
 
   const low = await db.query<{ name: string; qty: number; base_unit: string }>(
     `SELECT p.name, COALESCE(ps.qty_on_hand, 0) AS qty, p.base_unit
@@ -83,10 +87,27 @@ async function load(db: SqlDriver): Promise<Snapshot> {
   return {
     todaySales: sales?.total ?? 0,
     todayBills: sales?.n ?? 0,
-    outstanding: Math.max(0, credit?.total ?? 0),
+    outstanding: credit.total,
     lowStock: low.map((r) => ({ name: r.name, qty: r.qty, unit: r.base_unit })),
-    driftCount: (await recomputeStock(db)).length,
+    /* Read, not computed.
+     *
+     * This line used to be `(await recomputeStock(db)).length` — a replay of
+     * the entire stock ledger, every time anybody opened the home screen, to
+     * decide whether to show one line of warning. On a year of trade that is
+     * about 160 ms before the page can paint, and it grows with every sale the
+     * shop has ever made. The replay now runs on the 02:00 timer once a week
+     * and this reads what it found. */
+    stock: lastStockCheck(),
   }
+}
+
+/** "today", "yesterday", or the date — enough to place it, no more. */
+function whenChecked(at: string): string {
+  const day = at.slice(0, 10)
+  const today = businessDate()
+  if (day === today) return 'today'
+  const yesterday = new Date(Date.parse(`${today}T12:00:00Z`) - 86_400_000).toISOString().slice(0, 10)
+  return day === yesterday ? 'yesterday' : day
 }
 
 export { Money }

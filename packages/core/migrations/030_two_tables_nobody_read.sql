@@ -1,0 +1,40 @@
+-- Two tables that have never answered a question.
+--
+-- ── activity_log ──────────────────────────────────────────────────────────
+--
+-- Written by `writeActivity` since 001 and selected by nothing, ever. It was
+-- meant to be the friendly half of the history -- "Ravi sold 3 notebooks" --
+-- next to `audit_log`, which is the exact half. Only the exact half was ever
+-- built, and a second history nobody can read is not a feature that is not
+-- finished, it is rows accumulating in a shop's database for no purpose.
+--
+-- `audit_log` stays and is untouched. It has an actor, an entity, a docstatus
+-- transition and a diff, which is everything this held and more; and unlike
+-- this one it is what answers "who cancelled that bill".
+--
+-- The owner's database has rows in here. They are being dropped rather than
+-- migrated into `audit_log`, deliberately: an activity row carries a sentence
+-- and no diff, so it cannot become an audit row without inventing the fields
+-- that make an audit row worth having. Anything they record about a bill is
+-- already in `audit_log` beside them, written in the same transaction.
+--
+-- ── sync_queue ────────────────────────────────────────────────────────────
+--
+-- Reserved on day one for a design that was never built. Migration 021's
+-- `change_feed` is how a till knows what it still has to send, and it has been
+-- doing that job since two tills could talk to each other at all. This table
+-- has never held a row on any machine.
+--
+-- Its unique index goes with it, and so does the reader's reasonable assumption
+-- that a table called `sync_queue` in a syncing product is load-bearing. That
+-- assumption cost somebody an hour once; `replicaShape.ts` carried a note
+-- saying "reserved on day one and never used" precisely because of it.
+--
+-- ── Both are local ────────────────────────────────────────────────────────
+--
+-- Neither is replicated (`NOT_REPLICATED` in `replicaShape.ts`), so no till
+-- learns about this from another and there is nothing to merge. Every till
+-- runs the migration and arrives at the same schema.
+
+DROP TABLE IF EXISTS activity_log;
+DROP TABLE IF EXISTS sync_queue;

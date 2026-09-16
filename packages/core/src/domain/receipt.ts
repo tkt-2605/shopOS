@@ -1,6 +1,6 @@
 import { type Money, format as fmtMoney, inWords } from '../money.js'
 import type { DocWording } from './wording.js'
-import { type Qty, formatQty } from '../quantity.js'
+import { QTY_SCALE, type Qty, formatQty } from '../quantity.js'
 import type { Block, DocFormat, Facts } from './docFormat.js'
 import { rollColumns, STANDARD_RECEIPT, fillTokens } from './docFormat.js'
 
@@ -41,7 +41,6 @@ const INDENT = SNO + 1
 function itemColumn(width: number): number {
   return Math.floor((width - INDENT) / 3)
 }
-const COL = itemColumn(WIDTH)
 
 export interface ReceiptShop {
   name: string
@@ -78,6 +77,42 @@ export interface ReceiptItem {
   cgst?: Money
   sgst?: Money
   igst?: Money
+  /**
+   * The rate this line was charged at, in basis points.
+   *
+   * Rule 46(k) asks the invoice to state the rate of tax per line, not only the
+   * amount. A customer handed CGST 45.00 and SGST 45.00 against a taxable value
+   * of 500.00 can work out that it was 18% between them; they should not have
+   * to.
+   */
+  taxRateBp?: number
+}
+
+/**
+ * Who the document was issued to, and where the supply was made.
+ *
+ * Rule 46(b), (e) and (f): an invoice carries the recipient's name, address and
+ * GSTIN, and the place of supply along with the name of the state. The state
+ * *name*, spelled out — an invoice that says "33" and nothing else satisfies
+ * nobody reading it.
+ *
+ * Every one of these is optional and every one of them may be null, because a
+ * counter sale to somebody who did not give a name is a real thing and the
+ * document has to be printable anyway. What a renderer must never do is fill a
+ * gap with a guess; see `supplyType`.
+ */
+export interface PlaceOfSupply {
+  code: string
+  name: string
+}
+
+/** One row of the rate-wise summary a sheet carries and a roll cannot. */
+export interface RateSummaryRow {
+  rateBp: number
+  taxable: Money
+  cgst: Money
+  sgst: Money
+  igst: Money
 }
 
 export interface ReceiptDoc {
@@ -111,8 +146,62 @@ export interface ReceiptDoc {
   /* Sheet-only, for the same reason as the item fields above. */
   customerAddress?: string | null
   customerGstin?: string | null
-  placeOfSupply?: string | null
   terms?: string | null
+
+  /**
+   * Where the supply was made, as a code and the name of that state.
+   *
+   * The recipient's details stay flat — `customerName`, `customerAddress`,
+   * `customerGstin` — rather than being gathered into a `recipient` object as
+   * the phase spec sketches it. They were already flat, the template tokens and
+   * the thermal blocks already read them there, and a second name for the
+   * customer alongside `customerName` is how two fields that mean one thing
+   * start disagreeing.
+   *
+   * This one is a pair because it has to print as both: "Place of supply: 27 —
+   * Maharashtra". It used to be the shop's own state, unconditionally, on every
+   * invoice including the ones billed to another state.
+   */
+  placeOfSupply?: PlaceOfSupply | null
+  /** The recipient's own state, which is not always where the supply happened. */
+  customerState?: PlaceOfSupply | null
+
+  /**
+   * Which pair of taxes this document charged, as the bill recorded it.
+   *
+   * Passed rather than worked out from the amounts, because a bill of entirely
+   * exempt goods carries no tax at all and there is nothing in the figures to
+   * tell an exempt inter-state supply from an exempt local one. Absent means
+   * the document predates the question, and the renderer leaves the columns
+   * where they are rather than guessing.
+   */
+  supplyType?: 'intra_state' | 'inter_state'
+
+  /**
+   * Rule 46(p). Nothing in this product raises a bill under reverse charge, so
+   * this is false wherever it is set — but the invoice still has to say so, and
+   * a field that is always absent is one nobody notices is missing.
+   */
+  reverseCharge?: boolean
+
+  /** Rate by rate, which is how a GST return is filed and how a CA reads a bill. */
+  rateSummary?: RateSummaryRow[]
+
+  /**
+   * The invoice this document is raised against, and its date.
+   *
+   * Rule 53(1)(e): a credit note has to carry both. Without them it is a piece
+   * of paper saying money was returned, attached to nothing.
+   */
+  againstDocNo?: string | null
+  againstDate?: string | null
+
+  /**
+   * The sentence a shop is required to print because of the scheme it is under
+   * — Rule 49's "composition taxable person, not eligible to collect tax on
+   * supplies". Absent for a shop that owes no such statement.
+   */
+  schemeStatement?: string | null
 
   /** After this date a quoted price is no longer the shop's promise. */
   validUntil?: string | null
@@ -123,6 +212,46 @@ export interface ReceiptDoc {
    * what every caller before documents existed meant.
    */
   wording?: DocWording
+}
+
+/**
+ * A rate as a shopkeeper writes it: 1800 basis points is "18%", 250 is "2.5%".
+ *
+ * Never "18.00%". A trailing zero on a tax rate reads as a precision the rate
+ * does not have, and every rate in the schedule is a whole or a half.
+ */
+export function formatRate(rateBp: number): string {
+  const percent = rateBp / 100
+  return `${Number.isInteger(percent) ? percent : percent.toFixed(2).replace(/0+$/, '')}%`
+}
+
+/**
+ * The lines gathered rate by rate.
+ *
+ * Built from the document's own lines rather than re-read from anywhere, so a
+ * summary can never disagree with the table above it. Lines that carry no tax
+ * figures at all are left out: a document raised before the columns existed
+ * gets no summary rather than a summary of zeroes.
+ */
+export function rateSummaryOf(items: ReceiptItem[]): RateSummaryRow[] {
+  const byRate = new Map<number, RateSummaryRow>()
+
+  for (const item of items) {
+    if (item.taxableValue === undefined) continue
+    const rateBp = item.taxRateBp ?? 0
+    const row = byRate.get(rateBp)
+      ?? { rateBp, taxable: 0 as Money, cgst: 0 as Money, sgst: 0 as Money, igst: 0 as Money }
+
+    byRate.set(rateBp, {
+      rateBp,
+      taxable: (row.taxable + item.taxableValue) as Money,
+      cgst: (row.cgst + (item.cgst ?? 0)) as Money,
+      sgst: (row.sgst + (item.sgst ?? 0)) as Money,
+      igst: (row.igst + (item.igst ?? 0)) as Money,
+    })
+  }
+
+  return [...byRate.values()].sort((a, b) => a.rateBp - b.rateBp)
 }
 
 /**
@@ -165,6 +294,11 @@ export function buildReceipt(doc: ReceiptDoc, format: DocFormat = STANDARD_RECEI
 
 const DEFAULT_FOOTER = 'Thank you. Goods once sold are not returnable without this bill.'
 
+/** Whether the document charged tax under any head at all. */
+function taxCharged(doc: ReceiptDoc): boolean {
+  return doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0
+}
+
 function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
   switch (block.kind) {
     case 'shop': {
@@ -177,9 +311,19 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     }
 
     case 'title': {
-      const label = block.opts?.label?.trim()
+      /* A document that knows what it is outranks the label the shop typed,
+         which was typed for its bills — the same precedence the sheet renderer
+         uses, so a credit note is not a "Tax Invoice" on one paper and a credit
+         note on the other. */
+      const label = doc.wording?.title ?? block.opts?.label?.trim()
       if (!label) return ''
-      return [ALIGN_CENTER, MODE_TALL, cut(label, Math.floor(width / 2)), LF, MODE_NORMAL, ALIGN_LEFT].join('')
+
+      const out = [ALIGN_CENTER, MODE_TALL, cut(label, Math.floor(width / 2)), LF, MODE_NORMAL]
+      // Rule 49. Small print, but print: it is the sentence that makes a Bill
+      // of Supply legal rather than a tax invoice missing its tax.
+      if (doc.schemeStatement) out.push(MODE_SMALL, wrap(doc.schemeStatement, smallColumns(width)), MODE_NORMAL)
+      out.push(ALIGN_LEFT)
+      return out.join('')
     }
 
     case 'meta': {
@@ -217,7 +361,13 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     case 'totals': {
       const out = [kv('Subtotal', fmtMoney(doc.subtotal), width)]
       if (doc.discount > 0) out.push(kv('Discount', `-${fmtMoney(doc.discount)}`, width))
-      out.push(kv('Taxable value', fmtMoney(doc.taxableTotal), width))
+      /* Left off a document that charged no tax and took nothing off, where it
+         would be the subtotal again under a heading that claims something the
+         document is not allowed to claim -- a bill of supply has no taxable
+         value, it has a value. */
+      if (taxCharged(doc) || doc.taxableTotal !== doc.subtotal) {
+        out.push(kv('Taxable value', fmtMoney(doc.taxableTotal), width))
+      }
       if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
       if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
       if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
@@ -235,9 +385,24 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
       // shop turns on *instead*, having turned the tax lines off up there.
       if (doc.cgst === 0 && doc.sgst === 0 && doc.igst === 0) return ''
       const out = [`${BOLD_ON}Tax${BOLD_OFF}${LF}`, kv('Taxable value', fmtMoney(doc.taxableTotal), width)]
+
+      /* Rate by rate when the document knows its rates, because a bill carrying
+         5% and 18% goods says almost nothing with one CGST figure across both.
+         One line per rate and no more: the per-line split a sheet prints has
+         nowhere to go in 42 columns, and a roll that runs to a second page is a
+         roll the shop stops using. */
+      for (const r of doc.rateSummary ?? []) {
+        const tax = (r.cgst + r.sgst + r.igst) as Money
+        out.push(kv(`${formatRate(r.rateBp)} on ${fmtMoney(r.taxable)}`, fmtMoney(tax), width))
+      }
+
+      /* The heads stay, under the rate lines rather than instead of them. Rule
+         46(m) wants the amount charged under each head named, and this roll is
+         the tax invoice for a counter sale — there is no sheet behind it. */
       if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
       if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
       if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
+
       out.push(rule('-', width))
       return out.join('')
     }
@@ -418,8 +583,12 @@ function itemRows(index: number, item: ReceiptItem, width = WIDTH): string {
   let rows = `${sno} ${name}${LF}${' '.repeat(INDENT)}${qty}${rate}${amount}${LF}`
 
   if (item.mrp && item.mrp > item.rate) {
-    const units = item.lineTotal / item.rate
-    const saved = Math.round((item.mrp - item.rate) * units)
+    /* The quantity is on the line. It used to be recovered by dividing the line
+       total by the rate, which is a different number whenever the line carries a
+       discount -- the saving was then understated by the discount, which is the
+       opposite of the truth -- and is `Infinity` on a free line, printing
+       `Save NaN` on the customer's receipt. Money is never divided by money. */
+    const saved = Math.round(((item.mrp - item.rate) * item.qty) / QTY_SCALE)
     const left = `MRP ${fmtMoney(item.mrp)}`
     const right = `Save ${fmtMoney(saved as Money)}`
     const gap = Math.max(1, width - INDENT - left.length - right.length)

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { rupees, type Money } from '../src/money.js'
+import { rupees } from '../src/money.js'
 import { fromUnits, toUnits } from '../src/quantity.js'
 import { createBill, submitBill, cancelBill } from '../src/services/billing.js'
 import { createReturn, submitReturn } from '../src/services/returns.js'

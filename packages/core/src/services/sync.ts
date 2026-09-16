@@ -1,4 +1,5 @@
 import type { Row, SqlDriver, SqlValue } from '../db/driver.js'
+import { MERGE_BUDGET_MS } from '../db/driver.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { deviceId } from '../device.js'
 import { newId } from '../ids.js'
@@ -10,6 +11,7 @@ import { applyingRemote, changesSince, pendingCount, pruneFeed } from './changef
 import { getSetting } from './bootstrap.js'
 import { recomputeStock } from './stock.js'
 import { resolveDeviceRegister } from './registers.js'
+import { clock } from '../clock.js'
 
 /**
  * Two tills agreeing.
@@ -181,7 +183,7 @@ export async function syncWith(
 
   await db.execute(
     `UPDATE sync_peers SET last_agreed_at = ? WHERE device_id = ?`,
-    [new Date().toISOString(), hello.deviceId],
+    [clock.iso(), hello.deviceId],
   )
 
   return {
@@ -320,16 +322,44 @@ export async function applyBatch(
      nothing went below zero, so "Counts that need fixing" stayed empty and
      nobody was ever told.
 
-     Only when ledger rows actually arrived, because this replays the whole
-     ledger — and after the merge rather than inside it, so a busy counter is not
-     held behind a long transaction. A recompute that is missed is picked up by
-     the next sync or by the Dashboard's drift check; a counter that stalls
-     mid-sale is not recoverable in the same way. */
-  if (outcome.applied > 0 && batch.records.some((r) => r.table === 'stock_ledger')) {
-    await recomputeStock(db, { repair: true })
+     Only the products whose ledger rows actually arrived, and after the merge
+     rather than inside it, so a busy counter is not held behind a long
+     transaction. A recompute that is missed is picked up by the next sync or by
+     the weekly replay; a counter that stalls mid-sale is not recoverable in the
+     same way.
+
+     Scoped since Phase 3. This used to replay the whole ledger — every product
+     in the shop, forty-seven thousand movements on a year of trade, because one
+     row for one item came across. */
+  if (outcome.applied > 0) {
+    const touched = productsIn(batch)
+    if (touched === null || touched.length > 0) {
+      await recomputeStock(db, { repair: true, ...(touched ? { productIds: touched } : {}) })
+    }
   }
 
   return outcome
+}
+
+/**
+ * Which products a batch has something to say about, or null for "cannot tell".
+ *
+ * A deletion carries no row, so there is no way to learn from the batch alone
+ * which product the deleted movement belonged to. That answers null and the
+ * caller replays everything, which is slow and correct — and the alternative,
+ * guessing, leaves one product's cache wrong with nothing to notice it until
+ * the weekly replay. The ledger is append-only in practice, so this is a path
+ * that should almost never be taken.
+ */
+function productsIn(batch: ChangeBatch): string[] | null {
+  const ids = new Set<string>()
+  for (const record of batch.records) {
+    if (record.table !== 'stock_ledger') continue
+    const id = record.row?.['product_id']
+    if (typeof id !== 'string') return null
+    ids.add(id)
+  }
+  return [...ids]
 }
 
 async function mergeBatch(
@@ -337,6 +367,14 @@ async function mergeBatch(
   batch: ChangeBatch,
   changedHereToo: ReadonlySet<string>,
 ): Promise<{ applied: number; contested: ContestedChange[] }> {
+  /* Ninety seconds rather than a bill's fifteen.
+   *
+   * The whole batch is one transaction on purpose: half a merge is not a state
+   * any reconciliation rule can describe. On a till that has been offline a week
+   * that can legitimately take a minute, and under a bill's budget the watchdog
+   * rolls it back — so the next round starts again from the beginning, takes
+   * just as long, and is rolled back again. A till far enough behind would never
+   * catch up, and nobody would diagnose that from the shop floor. */
   return applyingRemote(db, async (tx) => {
     let applied = 0
     const contested: ContestedChange[] = []
@@ -429,14 +467,14 @@ async function mergeBatch(
            (id, at, peer_device, table_name, row_id, winner, explain)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          newId(), new Date().toISOString(), batch.fromDevice,
+          newId(), clock.iso(), batch.fromDevice,
           complaint.table, complaint.rowId, complaint.winner, complaint.explain,
         ],
       )
     }
 
     return { applied, contested }
-  })
+  }, { budgetMs: MERGE_BUDGET_MS })
 }
 
 export interface RecordedConflict extends ContestedChange {
@@ -509,7 +547,7 @@ export async function recordAttempt(
 ): Promise<void> {
   await db.execute(
     `UPDATE sync_peers SET last_error = ?, last_tried_at = ? WHERE device_id = ?`,
-    [error, new Date().toISOString(), peerDeviceId],
+    [error, clock.iso(), peerDeviceId],
   )
 }
 
@@ -557,7 +595,7 @@ async function rememberPeer(
   await db.execute(
     `INSERT INTO sync_peers (device_id, label, created_at) VALUES (?, ?, ?)
      ON CONFLICT (device_id) DO UPDATE SET label = excluded.label`,
-    [hello.deviceId, hello.label, new Date().toISOString()],
+    [hello.deviceId, hello.label, clock.iso()],
   )
   const row = await db.get<{ their_cursor: number; my_cursor: number }>(
     `SELECT their_cursor, my_cursor FROM sync_peers WHERE device_id = ?`,

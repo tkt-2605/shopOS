@@ -18,12 +18,35 @@
  */
 
 let current: string | null = null
+let source: (() => string | null) | null = null
 
 /** Called once at startup by the host. Passing null unsets it, which is what a sign-out and a test teardown both want. */
 export function setDeviceId(id: string | null): void {
   current = id === null ? null : (id.trim() || null)
 }
 
+/**
+ * For a host that runs more than one till in one process — the test bench, and
+ * later the cloud peer, which serves several shops from one supervisor.
+ *
+ * The comment above says a device is a property of the program that is running,
+ * and that is true of the app: one window, one machine, one identity for the
+ * life of the process. It stops being true the moment two tills share a
+ * process, which is exactly what `tools/virtual-till` does so that a sync can
+ * be asserted from both ends on one PC. A module-global there means the second
+ * till overwrites the first, and every row either of them writes is attributed
+ * to whichever called `setDeviceId` last — silently, and in a way that would
+ * make the provenance tests pass while proving nothing.
+ *
+ * A resolver rather than moving this to `AsyncLocalStorage` here: `node:async_hooks`
+ * does not exist in the webview, and core has to run in both. The bench owns the
+ * per-till context and hands in a function that reads it; the app never calls
+ * this and its path is unchanged.
+ */
+export function setDeviceIdSource(fn: (() => string | null) | null): void {
+  source = fn
+}
+
 export function deviceId(): string | null {
-  return current
+  return source ? source() : current
 }

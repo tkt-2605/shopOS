@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  listAttachments, recordAttachment, removeAttachment,
+  listAttachments, recordAttachment, removeAttachment, ACCEPTED_MIME,
   type Attachment, type AttachmentEntity,
 } from '@shopos/core'
 import { useDb, useCore } from '../core/CoreProvider'
@@ -137,7 +137,10 @@ export function Attachments({
         ref={picker}
         type="file"
         multiple
-        accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"
+        /* The list the service accepts, rather than a copy of it typed here:
+           two lists mean a shop offered a file type that is refused the moment
+           it is chosen, or refused one that would have been fine. */
+        accept={ACCEPTED_MIME.join(',')}
         style={{ display: 'none' }}
         onChange={(e) => {
           void take(Array.from(e.target.files ?? []))

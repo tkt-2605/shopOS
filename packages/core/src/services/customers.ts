@@ -1,8 +1,11 @@
 import type { SqlDriver, SqlValue } from '../db/driver.js'
 import { newId } from '../ids.js'
-import { type Money, ZERO } from '../money.js'
+import { type Money, ZERO, paise } from '../money.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { isOn } from './features.js'
+import { getSetting } from './bootstrap.js'
+import { isGstin, resolveCustomerState, stateFromGstin } from '../domain/gstin.js'
+import { isStateCode } from '../domain/states.js'
 import type { CreditEnforcement } from '../domain/credit.js'
 
 /**
@@ -32,6 +35,16 @@ export interface CustomerInput {
   email?: string | null
   gstin?: string | null
   address?: string | null
+  /**
+   * Which state they are in, which is what decides CGST+SGST against IGST.
+   *
+   * Optional because the counter should not stop for it: left out, it is
+   * derived from the GSTIN when there is one and otherwise defaults to the
+   * shop's own state, which for a walk-in is right far more often than it is
+   * wrong. What it may never again be is the literal `'33'` this INSERT used to
+   * carry, which made every customer in every shop a Tamil Nadu customer.
+   */
+  stateCode?: string | null
   creditLimit?: Money
   creditEnforcement?: CreditEnforcement
   isActive?: boolean
@@ -50,6 +63,15 @@ export type SaveCustomerResult =
   /** Somebody already answers to this phone, and this shop has said that is not allowed. */
   | { ok: false; code: 'PHONE_TAKEN'; existing: CustomerConflict }
   | { ok: false; code: 'CODE_TAKEN'; existing: CustomerConflict }
+  /** Fifteen characters in the shape the government issues. The checksum is not checked. */
+  | { ok: false; code: 'BAD_GSTIN' }
+  | { ok: false; code: 'UNKNOWN_STATE' }
+  /**
+   * The GSTIN says one state and the form says another. Caught at the counter,
+   * where it is a typo, rather than at filing time where it is a correction to
+   * a return.
+   */
+  | { ok: false; code: 'GSTIN_STATE_MISMATCH'; gstinState: string; chosenState: string }
 
 export async function createCustomer(
   db: SqlDriver,
@@ -66,6 +88,75 @@ export async function updateCustomer(
   input: CustomerInput,
 ): Promise<SaveCustomerResult> {
   return save(db, ctx, customerId, input)
+}
+
+export type ArchiveCustomerResult =
+  | { ok: true }
+  /**
+   * They still owe money, so hiding them would hide the khata.
+   *
+   * The whole point of archiving is that they stop appearing in searches — and
+   * a balance nobody can find is a debt the shop has written off without
+   * deciding to. Settle it, or write it off on purpose, and then archive them.
+   */
+  | { ok: false; code: 'OWES_MONEY'; outstanding: Money }
+
+/**
+ * A customer who has stopped coming.
+ *
+ * `customers.deleted_at` has been filtered by `searchCustomers`, by the pricing
+ * lookup and by the credit report since they were written, and nothing has ever
+ * set it. A shop whose list had filled up with one-off walk-ins, duplicates and
+ * people who moved away could do nothing about any of them.
+ *
+ * Archived, never deleted. Every bill they were ever issued names them, their
+ * loyalty points are theirs, and the khata is a record of money that changed
+ * hands. What archiving does is take them out of the searches — the counter's
+ * customer picker and the customer list — and nothing else.
+ */
+export async function archiveCustomer(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  customerId: string,
+): Promise<ArchiveCustomerResult> {
+  const owed = await db.get<{ due: number }>(
+    `SELECT COALESCE(SUM(b.credit_total), 0)
+          - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
+                        JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
+                        JOIN bills b2 ON b2.id = pa.bill_id
+                       WHERE b2.customer_id = ?), 0) AS due
+       FROM bills b WHERE b.customer_id = ? AND b.docstatus = 1`,
+    [customerId, customerId],
+  )
+  const outstanding = paise(Math.max(0, owed?.due ?? 0))
+  if (outstanding > 0) return { ok: false, code: 'OWES_MONEY', outstanding }
+
+  const now = ctx.now?.() ?? new Date().toISOString()
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      `UPDATE customers SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+      [now, now, customerId],
+    )
+    await writeAudit(tx, ctx, { entity: 'customers', entityId: customerId, action: 'delete' })
+  })
+  return { ok: true }
+}
+
+/** Back into the searches, exactly as they were. */
+export async function restoreCustomer(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  customerId: string,
+): Promise<void> {
+  const now = ctx.now?.() ?? new Date().toISOString()
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      `UPDATE customers SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL`,
+      [now, customerId],
+    )
+    await writeAudit(tx, ctx, { entity: 'customers', entityId: customerId, action: 'update',
+      after: { Archived: 'no' } })
+  })
 }
 
 /**
@@ -119,6 +210,25 @@ async function save(
     if (clash) return { ok: false, code: 'CODE_TAKEN', existing: clash }
   }
 
+  const gstin = input.gstin?.trim().toUpperCase() || null
+  if (gstin !== null && !isGstin(gstin)) return { ok: false, code: 'BAD_GSTIN' }
+
+  const chosen = input.stateCode?.trim() || null
+  if (chosen !== null && !isStateCode(chosen)) return { ok: false, code: 'UNKNOWN_STATE' }
+
+  const fromGstin = stateFromGstin(gstin)
+  if (fromGstin !== null && chosen !== null && fromGstin !== chosen) {
+    return { ok: false, code: 'GSTIN_STATE_MISMATCH', gstinState: fromGstin, chosenState: chosen }
+  }
+
+  /* The shop's own state, as the default for somebody who has not said. A
+     counter shop's customers are overwhelmingly local, and the alternative --
+     leaving it null -- reads as inter-state nowhere and as "unknown place of
+     supply" on the invoice. `resolveCustomerState` carries the order. */
+  const stateCode = resolveCustomerState({
+    gstin, chosen, shopState: await getSetting(db, 'shop_state_code'),
+  })
+
   const now = ctx.now?.() ?? new Date().toISOString()
   const limit = input.creditLimit ?? ZERO
   const enforcement = input.creditEnforcement ?? 'hard'
@@ -126,7 +236,8 @@ async function save(
 
   const before = customerId
     ? await db.get<Record<string, SqlValue>>(
-      `SELECT code, name, phone, email, gstin, address, credit_limit, credit_enforcement, is_active
+      `SELECT code, name, phone, email, gstin, address, state_code,
+              credit_limit, credit_enforcement, is_active
          FROM customers WHERE id = ?`, [customerId],
     )
     : null
@@ -138,20 +249,20 @@ async function save(
     if (customerId) {
       await tx.execute(
         `UPDATE customers SET code = ?, name = ?, phone = ?, email = ?, gstin = ?, address = ?,
-                credit_limit = ?, credit_enforcement = ?, is_active = ?,
+                state_code = ?, credit_limit = ?, credit_enforcement = ?, is_active = ?,
                 updated_at = ?, rev = rev + 1
           WHERE id = ?`,
-        [code, name, phone, input.email?.trim() || null, input.gstin?.trim() || null,
-         input.address?.trim() || null, limit, enforcement, active, now, customerId],
+        [code, name, phone, input.email?.trim() || null, gstin,
+         input.address?.trim() || null, stateCode, limit, enforcement, active, now, customerId],
       )
     } else {
       await tx.execute(
         `INSERT INTO customers
            (id, code, name, phone, email, gstin, address, credit_limit, credit_enforcement,
             is_active, state_code, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '33', ?, ?)`,
-        [id, code, name, phone, input.email?.trim() || null, input.gstin?.trim() || null,
-         input.address?.trim() || null, limit, enforcement, active, now, now],
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, code, name, phone, input.email?.trim() || null, gstin,
+         input.address?.trim() || null, limit, enforcement, active, stateCode, now, now],
       )
     }
 
@@ -162,6 +273,7 @@ async function save(
       before: before ?? {},
       after: {
         code, name, phone,
+        gstin, state_code: stateCode,
         credit_limit: limit,
         credit_enforcement: enforcement,
         is_active: active,

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Permissions,
-  listBills, countBills, loadBillDetail, cancelBill, listReturns, cancelReturn,
+  listBills, countBills, loadBillDetail, cancelBill, amendBill, listReturns, cancelReturn,
   type BillListItem, type BillDetail, type ReturnListItem, type BillStatusFilter,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { goTo } from '../core/nav'
 import {
   Modal, Empty, Alert, Rupees, DocStatusBadge, DateRangePicker, rangePreset, type Range,
 } from '../ui/components'
 import { printBill } from '../core/print'
-import { printBillSheet } from '../core/printHtml'
+import { printBillSheet, printCreditNoteSheet } from '../core/printHtml'
 import { Attachments } from '../ui/Attachments'
 import { ReturnSheet } from '../ui/ReturnSheet'
 import { usePickList } from '../ui/PickList'
@@ -56,6 +57,10 @@ export default function Bills() {
   const [returning, setReturning] = useState(false)
   const [returns, setReturns] = useState<ReturnListItem[]>([])
   const [note, setNote] = useState<string | null>(null)
+  /* The return just taken, so the credit note can be offered where the person
+     already is rather than left to be found again in a list. Cleared with the
+     notice it sits beside. */
+  const [creditNoteFor, setCreditNoteFor] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setError(null)
@@ -108,6 +113,41 @@ export default function Bills() {
     setOpen(null)
   }
 
+  /**
+   * A corrected bill, from a cancelled one.
+   *
+   * `amendBill` has been in the service since v1 with no caller, so a shop that
+   * cancelled a bill to fix one line had to ring the whole thing up again from
+   * the cancelled copy -- and lose the discount, which the old `amendBill`
+   * dropped anyway until Phase 1a.
+   *
+   * Worded as what it is. Under GST there is no such thing as an amended
+   * invoice: the cancelled one keeps its number and stays cancelled, and this
+   * is a new document with today's date and the next number in the series. The
+   * button says "Raise a corrected bill" and the confirmation says the rest,
+   * because a shopkeeper who thinks they are editing a bill is a shopkeeper
+   * about to be surprised by their own return.
+   */
+  async function amend(bill: BillDetail) {
+    if (!(await ask(
+      `Raise a corrected bill from ${bill.docNo}? `
+      + `${bill.docNo} stays cancelled and keeps its number — under GST a bill cannot be edited. `
+      + 'A new draft opens at the counter with the same items, prices and discount, '
+      + 'and takes its own number when it is paid.',
+    ))) return
+
+    const result = await amendBill(db, { billId: bill.id, actorId: user.id })
+    if (!result.ok) {
+      setError(`That bill could not be corrected: ${result.code}.`)
+      return
+    }
+
+    /* The draft is on this counter now, and the counter picks up its open
+       drafts when it mounts. Nothing else to hand over. */
+    setOpen(null)
+    goTo('billing')
+  }
+
   async function undoReturn(returnId: string, docNo: string) {
     if (!(await ask(`Cancel ${docNo}? The goods go back out of stock and the refund is taken back.`))) return
     await cancelReturn(db, { returnId, actorId: user.id })
@@ -122,6 +162,7 @@ export default function Bills() {
     const result = await printBill(db, billId)
     if (result.ok) {
       setNote('Sent to the printer.')
+      setCreditNoteFor(null)
       setTimeout(() => setNote(null), 5000)
       return
     }
@@ -135,6 +176,22 @@ export default function Bills() {
     const result = await printBillSheet(db, billId)
     if (result.ok) {
       setNote('Opening the print dialog.')
+      setCreditNoteFor(null)
+      setTimeout(() => setNote(null), 5000)
+      return
+    }
+    setError(result.message)
+  }
+
+  /* A return has been a row in this table and nothing else: the customer walked
+     out with the money and no paper. Under GST the credit note is the document,
+     and a registered buyer cannot reverse the purchase at their end without
+     one. */
+  async function printCreditNote(returnId: string) {
+    const result = await printCreditNoteSheet(db, returnId)
+    if (result.ok) {
+      setNote('Opening the print dialog.')
+      setCreditNoteFor(null)
       setTimeout(() => setNote(null), 5000)
       return
     }
@@ -176,7 +233,17 @@ export default function Bills() {
       {error && <div style={{ marginBottom: 14 }}><Alert>{error}</Alert></div>}
       {note && (
         <div style={{ marginBottom: 14 }}>
-          <Alert kind="ok">{note}</Alert>
+          <Alert kind="ok">
+            {note}
+            {creditNoteFor && (
+              <button
+                className="btn ghost sm" style={{ marginLeft: 10 }}
+                onClick={() => void printCreditNote(creditNoteFor)}
+              >
+                Print credit note
+              </button>
+            )}
+          </Alert>
         </div>
       )}
 
@@ -284,6 +351,9 @@ export default function Bills() {
               {canSell && open.docstatus === 1 && (
                 <button className="btn" onClick={() => sellAgain(open)}>Sell these again</button>
               )}
+              {canSell && open.docstatus === 2 && (
+                <button className="btn" onClick={() => void amend(open)}>Raise a corrected bill</button>
+              )}
               {open.docstatus === 1 && anythingLeft(open) && (
                 canReturn
                   ? <button className="btn" onClick={() => setReturning(true)}>Take goods back</button>
@@ -376,8 +446,16 @@ export default function Bills() {
                         {r.pointsRestored > 0 && <div className="src">+ {r.pointsRestored} points</div>}
                       </td>
                       <td className="r">
+                        {r.docstatus === 1 && (
+                          <button className="btn ghost sm" onClick={() => void printCreditNote(r.id)}>
+                            Credit note
+                          </button>
+                        )}
                         {canUnreturn && r.docstatus === 1 && (
-                          <button className="btn ghost sm" onClick={() => void undoReturn(r.id, r.docNo)}>
+                          <button
+                            className="btn ghost sm" style={{ marginLeft: 6 }}
+                            onClick={() => void undoReturn(r.id, r.docNo)}
+                          >
                             Cancel
                           </button>
                         )}
@@ -397,10 +475,11 @@ export default function Bills() {
         <ReturnSheet
           bill={open}
           onClose={() => setReturning(false)}
-          onDone={async (message) => {
+          onDone={async (message, returnId) => {
             setReturning(false)
             setNote(message)
-            setTimeout(() => setNote(null), 8000)
+            setCreditNoteFor(returnId)
+            setTimeout(() => { setNote(null); setCreditNoteFor(null) }, 8000)
             setOpen(await loadBillDetail(db, open.id))
             await refresh()
           }}

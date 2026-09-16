@@ -1,12 +1,17 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { createTauriDriver, migrate, type SqlDriver } from '@shopos/core'
+import { startupStatus, type StartupFailureKind } from './startup'
+import { logEvent } from './log'
+import {
+  createTauriDriver, migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type SqlDriver,
+} from '@shopos/core'
 import {
   DEVICE_LOCAL_KEYS, chooseRegister, chosenRegister, deviceSetting,
   establishDevice, recordStranded, setDeviceSetting,
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
-import { runDailyBackup } from './backup'
+import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
+import { runStockCheck, startMaintenanceTimer } from './maintenance'
 import { resumeServing } from './syncHost'
 import { startSyncLoop, stopSyncLoop } from './syncLoop'
 import {
@@ -16,6 +21,7 @@ import {
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
+  loadTaxScheme, setTaxScheme, taxSchemeAnswered, type TaxScheme,
   loadShopProfile,
 } from '@shopos/core'
 import type {
@@ -33,7 +39,33 @@ type Status =
   | { phase: 'starting' }
   | { phase: 'setup' }
   | { phase: 'ready' }
-  | { phase: 'failed'; error: string }
+  /**
+   * `kind` so the screen can offer the right way out, not only the right words.
+   *
+   * A database written by a newer build and a database that is damaged both
+   * stop the till, and the two want opposite advice: one wants this machine
+   * updated, and the other wants a backup restored. Offering "Restore a
+   * backup…" first to a shop whose till is merely behind invites them to
+   * overwrite a newer database with an older copy, which is how a day's billing
+   * is lost while following the instructions on the screen.
+   */
+  | { phase: 'failed'; error: string; kind: FailureKind }
+
+/**
+ * Every way the till can fail to open, from both sides of the bridge.
+ *
+ * The first three are Rust's, decided from SQLite's own error codes before the
+ * webview has asked the database anything. The next two are the webview's,
+ * raised by the migration runner. They are one union because `CouldNotStart` has
+ * to give one answer, and the answers are opposites: a till that is merely
+ * behind must not be offered a Restore button, and a till with a damaged file
+ * must not be told to go and update itself.
+ */
+export type FailureKind =
+  | StartupFailureKind
+  | 'schema_too_new'
+  | 'schema_unversioned'
+  | 'other'
 
 interface CoreValue {
   db: SqlDriver
@@ -72,6 +104,30 @@ interface CoreValue {
   rounding: Rounding
   setRoundingTo: (rule: Rounding) => Promise<void>
   setStockPolicyTo: (policy: StockPolicy) => Promise<void>
+  /**
+   * Which GST scheme the shop is under, and whether a person has ever said.
+   *
+   * In context for the same reason as `rounding`: the cart works out its own
+   * totals as the cashier types, the service works them out again when it
+   * writes the bill, and a screen that thought the shop charged tax while the
+   * service thought it did not would show one figure and charge another.
+   *
+   * `taxSchemeAsked` is false until somebody answers. Until then the till is
+   * deriving the scheme from whether a GSTIN is set, which is a guess -- a good
+   * one, and still a guess about whether this shop may collect tax.
+   */
+  taxScheme: TaxScheme
+  taxSchemeAsked: boolean
+  setTaxSchemeTo: (scheme: TaxScheme) => Promise<void>
+  /**
+   * How the last automatic backup went, or null before the first one has run.
+   *
+   * Held here rather than fetched by the Settings screen because the screen is
+   * not open when it happens — the backup runs at startup and again at 02:00,
+   * and its failure used to be returned to a `void` call and dropped. A shop
+   * whose backup folder had gone read-only found out when it needed the backup.
+   */
+  backup: DailyResult | null
   reloadRegister: () => Promise<void>
   setUser: (user: SessionUser | null) => void
   completeSetup: (input: { shopName: string; password: string; withDemo: boolean }) => Promise<void>
@@ -126,7 +182,16 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
        in afterwards. */
     await establishDevice()
 
-    await migrate(db, MIGRATIONS)
+    /* Every migration, as it commits. An upgrade is the most dangerous thing
+       this program does to a shop's data and it used to happen in silence: if a
+       till came back wrong after an update there was no way to tell which
+       migration had run, or how far it got. */
+    const before = await currentVersion(db)
+    await migrate(db, MIGRATIONS, (m) => {
+      logEvent('info', 'migrate', `applied ${m.version} ${m.name}`)
+    })
+    const after = await currentVersion(db)
+    if (after !== before) logEvent('info', 'migrate', `schema ${before} -> ${after}`)
 
     /* Belt and braces, and cheap. `applyingRemote` only ever sets the flag
        inside a transaction, so a merge that failed rolled it back and one that
@@ -176,12 +241,28 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   const [features, setFeatures] = useState<Features>(FEATURES_OFF)
   const [stockPolicy, setPolicy] = useState<StockPolicy>(STOCK_POLICY_DEFAULT)
   const [rounding, setRound] = useState<Rounding>(ROUNDING_DEFAULT)
+  const [taxScheme, setScheme] = useState<TaxScheme>('regular')
+  const [taxSchemeAsked, setSchemeAsked] = useState(true)
+  const [backup, setBackup] = useState<DailyResult | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    let stopBackupTimer: (() => void) | null = null
+    let stopMaintenance: (() => void) | null = null
 
     void (async () => {
       try {
+        /* Before the driver and before the migrations, because both would fail
+           with something less true. A file that is not a database produces a
+           SQL error about a missing `settings` table, and the shop reads that
+           and starts wondering what it did to its settings. */
+        const refused = await startupStatus()
+        if (cancelled) return
+        if (refused) {
+          setStatus({ phase: 'failed', error: refused.message, kind: refused.kind })
+          return
+        }
+
         const { needsSetup } = await startOnce()
         if (cancelled) return
 
@@ -205,21 +286,41 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         setFeatures(await loadFeatures(db))
         setPolicy(await loadStockPolicy(db))
         setRound(await loadRounding(db))
+        await refreshScheme()
         await devAutoLogin()
         if (!cancelled) setStatus({ phase: 'ready' })
 
         // After the counter is usable, never in front of it. A shop opening for
         // the day waits for nothing, and a backup that fails is reported on the
-        // Settings screen rather than blocking the till.
-        void runDailyBackup(db)
+        // Settings screen and by a dot in the top bar rather than blocking the
+        // till.
+        void runDailyBackup(db).then((result) => {
+          if (!cancelled) setBackup(result)
+        })
+
+        // And again at 02:00, for the machines that are never switched off.
+        // `backup.ts` carries why once-per-opening was not enough on its own.
+        stopBackupTimer = startDailyBackupTimer(db, (result) => {
+          if (!cancelled) setBackup(result)
+        })
+
+        /* The weekly stock replay, on the same two o'clock and behind the same
+           reasoning: too slow to do on a screen, and useless if it only runs on
+           machines that are left switched on overnight. It checks every night
+           and does nothing on six of them, so a till that was off last Sunday
+           gets its turn on Monday rather than waiting another week. */
+        void runStockCheck(db)
+        stopMaintenance = startMaintenanceTimer(db, () => {})
       } catch (err) {
-        if (!cancelled) setStatus({ phase: 'failed', error: describe(err) })
+        if (!cancelled) setStatus({ phase: 'failed', error: describe(err), kind: kindOf(err) })
       }
     })()
 
     return () => {
       cancelled = true
       stopSyncLoop()
+      stopBackupTimer?.()
+      stopMaintenance?.()
     }
   }, [])
 
@@ -276,6 +377,17 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setRound(await loadRounding(db))
   }
 
+  async function refreshScheme() {
+    setScheme(await loadTaxScheme(db))
+    setSchemeAsked(await taxSchemeAnswered(db))
+  }
+
+  async function setTaxSchemeTo(scheme: TaxScheme) {
+    if (!user) return
+    await setTaxScheme(db, { actorId: user.id }, scheme)
+    await refreshScheme()
+  }
+
   async function loadRegister() {
     /* Which counter this machine is used to be a row in `settings`, which the
        whole shop shares — so two tills would have claimed the same counter and
@@ -306,6 +418,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setFeatures(await loadFeatures(db))
     setPolicy(await loadStockPolicy(db))
     setRound(await loadRounding(db))
+    await refreshScheme()
     setStatus({ phase: 'ready' })
   }
 
@@ -313,7 +426,8 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={{
       db, status, user, registerId, registerName,
       shop, refreshShop, shopName: shop.name,
-      features, stockPolicy, rounding,
+      features, stockPolicy, rounding, backup,
+      taxScheme, taxSchemeAsked, setTaxSchemeTo,
       setFeatureFlag, setStockPolicyTo, setRoundingTo,
       reloadRegister: loadRegister, setUser, completeSetup,
     }}>
@@ -325,4 +439,16 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 function describe(err: unknown): string {
   if (err instanceof Error) return err.message
   return String(err)
+}
+
+/**
+ * What kind of not-starting this is.
+ *
+ * By class rather than by reading the message, so a reworded error does not
+ * silently turn into "other" and start offering the wrong advice again.
+ */
+function kindOf(err: unknown): FailureKind {
+  if (err instanceof SchemaTooNewError) return 'schema_too_new'
+  if (err instanceof SchemaUnversionedError) return 'schema_unversioned'
+  return 'other'
 }

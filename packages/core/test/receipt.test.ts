@@ -107,6 +107,37 @@ describe('receipt content', () => {
     expect(visibleLines(buildReceipt(noMrp)).join('\n')).not.toContain('Save')
   })
 
+  it('counts the saving off the quantity, not off the line total', () => {
+    /* The quantity used to be recovered by dividing the line total by the rate,
+       which is the same number only on a line with no discount. Twelve pens at
+       ₹10 with ₹20 off the line came out as ten pens, and the receipt told the
+       customer they had saved ₹20 against MRP when they had saved ₹24. */
+    const discounted: ReceiptDoc = {
+      ...doc,
+      items: [{
+        name: 'Ball Pen Blue', qty: fromUnits(12), saleUnit: 'piece',
+        rate: rupees(10), lineTotal: rupees(100), mrp: rupees(12),
+      }],
+    }
+    expect(visibleLines(buildReceipt(discounted)).join('\n')).toContain('Save')
+    expect(visibleLines(buildReceipt(discounted)).join('\n')).toContain('24.00')
+  })
+
+  it('prints a figure rather than NaN on a line given away', () => {
+    // Money divided by money, where the money is zero. The receipt printed
+    // `Save NaN` and the cashier had to explain it.
+    const free: ReceiptDoc = {
+      ...doc,
+      items: [{
+        name: 'Ruler 30cm', qty: fromUnits(2), saleUnit: 'piece',
+        rate: 0 as Money, lineTotal: 0 as Money, mrp: rupees(15),
+      }],
+    }
+    const text = visibleLines(buildReceipt(free)).join('\n')
+    expect(text).not.toContain('NaN')
+    expect(text).toContain('30.00')
+  })
+
   it('breaks out the tax the way a tax invoice must', () => {
     const text = visibleLines(buildReceipt(doc)).join('\n')
     expect(text).toContain('Taxable value')

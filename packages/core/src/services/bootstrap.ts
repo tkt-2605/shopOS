@@ -90,7 +90,6 @@ export async function bootstrap(db: SqlDriver, opts: BootstrapOptions): Promise<
     }
 
     await setSetting(tx, 'shop_name', opts.shopName, now)
-    await setSetting(tx, 'schema_bootstrapped_at', now, now)
 
     /* Which shop this is, minted once and never again. Setting up is what
        creates a shop; a second till *joins* one, and the difference is the whole

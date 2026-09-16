@@ -36,7 +36,7 @@ export async function login(
     password_hash: string; is_active: number; failed_logins: number; locked_until: string | null
   }>(
     `SELECT id, username, full_name, role_id, password_hash, is_active, failed_logins, locked_until
-       FROM users WHERE username = ? AND deleted_at IS NULL`,
+       FROM users WHERE username = ?`,
     [input.username.trim().toLowerCase()],
   )
 
@@ -123,8 +123,15 @@ export async function reauthenticate(
 ): Promise<ReauthResult> {
   const nowIso = (input.now ?? new Date()).toISOString()
 
+  /* `is_active`, not the `deleted_at` this used to ask about. Nothing could
+     ever set that column, so the check was decorative -- and what it was
+     standing in for is real: a cashier disabled while still signed in could
+     retype their password and walk into Settings, because the question being
+     asked was whether they had been deleted rather than whether they were
+     still staff. Migration 032 drops the column and this asks the question it
+     was pretending to ask. */
   const user = await db.get<{ id: string; password_hash: string }>(
-    `SELECT id, password_hash FROM users WHERE id = ? AND deleted_at IS NULL`,
+    `SELECT id, password_hash FROM users WHERE id = ? AND is_active = 1`,
     [input.userId],
   )
 
@@ -267,7 +274,6 @@ export async function listStaff(db: SqlDriver): Promise<StaffMember[]> {
     `SELECT u.id, u.username, u.full_name, u.role_id, r.name AS role_name,
             u.is_active, u.last_login_at, u.failed_logins
        FROM users u JOIN roles r ON r.id = u.role_id
-      WHERE u.deleted_at IS NULL
       ORDER BY u.is_active DESC, u.username`,
   )
   return rows.map((u) => ({

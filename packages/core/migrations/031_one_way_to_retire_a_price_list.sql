@@ -1,0 +1,43 @@
+-- One way to retire a price list, not two.
+--
+-- `price_lists` carried both `is_active` and `deleted_at`, which is one
+-- retirement concept too many for a table that had neither of them working.
+--
+-- ── What each one actually did ────────────────────────────────────────────
+--
+-- `is_active` was written on every insert and every update and read by
+-- nothing. Not by `listPriceLists`, not by `defaultPriceListId`, not by
+-- `loadTiers`, not by the resolver. A list marked inactive went on pricing
+-- every line it had ever priced, for every customer on it, in complete
+-- silence. That is worse than an unimplemented feature: the column looked
+-- like a switch, `updatePriceList` took an `isActive` argument, and the whole
+-- arrangement would have convinced a reader that turning a list off was a
+-- thing this software could do.
+--
+-- `deleted_at` was filtered everywhere -- `listPriceLists`, `createPriceList`,
+-- `updatePriceList`, `defaultPriceListId` all say `deleted_at IS NULL` -- and
+-- set by nothing. The reading half was complete and there was no writing half,
+-- so a list typed in by mistake stayed on the screen for the life of the shop.
+--
+-- So the two halves of a working feature existed, in different columns, and
+-- neither column had both. This migration removes the one with no readers;
+-- `archivePriceList` in `services/pricing.ts` supplies the writing half of the
+-- one that has them.
+--
+-- ── Why dropping is safe here ─────────────────────────────────────────────
+--
+-- No index, trigger or view names `is_active` on this table:
+-- `idx_price_lists_one_default` is on `is_default`, and the two triggers from
+-- 019 and 021 name only `rev` and `id`. SQLite will refuse the statement
+-- outright if that ever stops being true, which is the check being relied on.
+--
+-- `price_lists` IS replicated, unlike the two tables 030 dropped, but two
+-- tills never exchange a row across a schema change: the handshake in
+-- `services/sync.ts` refuses on `schemaVersion` mismatch before any row moves.
+-- Every till runs this and arrives at the same shape.
+--
+-- Nothing is lost. Every row in the owner's database has is_active = 1, which
+-- is the default the column was created with and the only value anything ever
+-- wrote.
+
+ALTER TABLE price_lists DROP COLUMN is_active;

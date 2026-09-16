@@ -3,19 +3,29 @@ mod attachments;
 mod backup;
 mod db;
 mod device;
+mod diagnostics;
 mod discovery;
 mod exports;
 mod hook;
+mod log;
 mod paths;
 mod pdf;
 mod printing;
 mod restore;
 mod sync_server;
+mod version;
 
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    /* Before the builder, so that a panic inside `setup()` -- the place most
+       likely to meet a broken database -- is written down even though no
+       window ever appears. In release there is no console for it to fall out
+       of: `main.rs` sets `windows_subsystem = "windows"`, and the only symptom
+       of a panic here is an icon that does nothing when it is double-clicked. */
+    log::install_panic_hook();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -24,6 +34,10 @@ pub fn run() {
             std::fs::create_dir_all(dir.join("backups"))?;
             std::fs::create_dir_all(dir.join("attachments"))?;
 
+            // The first thing that can write anything down, and therefore the
+            // first thing done with a folder to write it in.
+            log::open(&dir);
+
             // Order matters here and nowhere else in the program. A staged
             // restore has to be applied while nothing holds a handle on the
             // database, which is true exactly once: now, before Db::open. The
@@ -31,10 +45,42 @@ pub fn run() {
             // backup that this session will take.
             paths::sweep_work_dir(&dir);
             let report = restore::apply_pending(&dir);
+            /* A restore applied at startup is the single most consequential
+               thing this program does to a shop's data, and until now it left
+               a message on one screen for one run and no trace at all. */
+            if let Some(m) = report.restored.as_ref() {
+                log::write("info", "restore", &format!("applied backup {}", m.source));
+            }
+            if let Some(e) = report.error.as_ref() {
+                log::write("error", "restore", e);
+            }
 
-            let database = db::Db::open(&dir.join(paths::DB_FILE))?;
-            database.start_watchdog();
-            app.manage(database);
+            /* Never `?`. This used to be `Db::open(..)?`, which made a
+               database that would not open into a setup that returned `Err`,
+               which made Tauri never create a window -- and with
+               `windows_subsystem = "windows"` there is no console either. The
+               whole symptom was an icon that did nothing when it was
+               double-clicked: no message, no log, and no way to reach the
+               Restore button that would have fixed it.
+
+               The failure is carried into the app instead, and `App.tsx` asks
+               for it before it asks for anything else. */
+            let opened = db::Db::open(&dir.join(paths::DB_FILE));
+            match &opened {
+                Ok(database) => match database.user_version() {
+                    Ok(v) => log::write("info", "startup", &format!("database open, schema {v}")),
+                    Err(e) => log::write("warn", "startup", &format!("schema unreadable: {e}")),
+                },
+                Err(f) => log::write(
+                    "error",
+                    "startup",
+                    &format!("{:?}: {} ({})", f.kind, f.message, f.db_path),
+                ),
+            }
+            if let Ok(database) = &opened {
+                database.start_watchdog();
+            }
+            app.manage(db::DbState(opened));
             app.manage(restore::LastRestore(report));
 
             // Nothing listens until a shop asks for it. A single-till shop --
@@ -44,6 +90,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            log::log_event,
+            db::startup_status,
+            diagnostics::diagnostics_bundle,
             db::sql_query,
             db::sql_execute,
             db::sql_tx_begin,
@@ -80,6 +129,7 @@ pub fn run() {
             restore::restore_begin,
             restore::restore_report,
             restore::restore_abandon,
+            version::app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shopos");

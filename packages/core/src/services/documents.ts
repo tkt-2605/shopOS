@@ -9,7 +9,7 @@ import { supplyTypeFor, type SupplyType } from '../domain/tax.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
 import { getSetting } from './bootstrap.js'
 import { nextDocNo } from './numbering.js'
-import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import { writeAudit } from '../integrity/audit.js'
 
 /**
  * Quotations, sales orders and purchase orders.
@@ -375,6 +375,8 @@ export interface DocumentItemRow {
   productId: string
   productName: string
   hsnCode: string | null
+  /** Rule 46(k), for the sheet renderer: the rate, not only the amount. */
+  taxRateBp: number
   saleUnit: string
   qty: Qty
   rate: Money
@@ -392,10 +394,29 @@ export interface DocumentItemRow {
 export interface DocumentDetail extends DocumentListItem {
   customerId: string | null
   supplierId: string | null
+  /**
+   * Which pair of taxes the document charged.
+   *
+   * Off `documents.place_of_supply`, which -- unlike the column of the same
+   * name on `bills` -- holds `intra_state` or `inter_state` rather than a state
+   * code. Named for what it holds here rather than repeating the mistake: the
+   * renderer needs to know which tax columns to print, and there is no state in
+   * the row to print as a place of supply.
+   */
+  supplyType: 'intra_state' | 'inter_state' | null
   subtotal: Money
   discount: Money
   taxableTotal: Money
   taxTotal: Money
+  /**
+   * The paise added or dropped to reach a round figure, signed.
+   *
+   * Written by `createDocument` since rounding existed and never read back, so
+   * a quotation printed its lines, its tax and a grand total that did not add
+   * up to them — off by up to 49 paise, with nothing on the sheet to explain
+   * the difference. The renderer has had a place to print it all along.
+   */
+  roundOff: Money
   notes: string | null
   terms: string | null
   convertedFrom: string | null
@@ -424,6 +445,7 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
     productId: i['product_id'] as string,
     productName: i['product_name'] as string,
     hsnCode: i['hsn_code'] as string | null,
+    taxRateBp: i['tax_rate_bp'] as number,
     saleUnit: i['sale_unit'] as string,
     qty: i['qty'] as Qty,
     rate: i['rate'] as Money,
@@ -448,12 +470,15 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
     postingDate: row['posting_date'] as string,
     validUntil: row['valid_until'] as string | null,
     partyName: row['party_name'] as string | null,
+    supplyType: row['place_of_supply'] === 'inter_state' ? 'inter_state'
+      : row['place_of_supply'] === 'intra_state' ? 'intra_state' : null,
     customerId: row['customer_id'] as string | null,
     supplierId: row['supplier_id'] as string | null,
     subtotal: row['subtotal'] as Money,
     discount: row['discount'] as Money,
     taxableTotal: row['taxable_total'] as Money,
     taxTotal: row['tax_total'] as Money,
+    roundOff: (row['round_off'] ?? 0) as Money,
     grandTotal: row['grand_total'] as Money,
     notes: row['notes'] as string | null,
     terms: row['terms'] as string | null,

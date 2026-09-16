@@ -1,0 +1,24 @@
+ Container shopos-bench-till-a1-1  Starting
+ Container shopos-bench-till-a1-1  Started
+ Container shopos-bench-till-b1-1  Started
+ Container shopos-bench-till-a2-1  Started
+
+== look-around from till-a1 ==
+[{"address":"172.21.0.3:7801","device":"2222bbbb-2222-4222-8222-222222222222","label":"Back counter","shop":"Shop A","shop_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","port":7801}]
+
+ok   till-a1 found till-a2 on its own network
+ok   till-a1 did not find the other shop
+ok   till-a1 did not find itself
+
+== a sync across the real network ==
+     code       CWYRZUH7
+     pair       {"ok":true,"peer":"1111aaaa-1111-4111-8111-111111111111","shopId":"01a0a70e-cb9a-7efe-8c2e-db09357b892b"}
+     a2 syncs   {"ok":true,"peer":"1111aaaa-1111-4111-8111-111111111111","received":11,"sent":0,"contested":[],"more":false}
+     a2 counter {"registerId":"01a0a70e-f801-7b38-9f26-e27e6a8151c3"}
+     a2 bills   {"id":"01a0a70e-fb2c-7569-89c1-8576632662aa"}
+     a1 fetches {"ok":true,"peer":"2222bbbb-2222-4222-8222-222222222222","received":2,"sent":0,"contested":[],"more":false}
+ok   host-initiated sync across containers ({"table":"bills","count":1})
+
+Layer 2: all checks passed
+
+[exited with code 0]

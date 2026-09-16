@@ -1,0 +1,11 @@
+{
+  "name": "@shopos/virtual-till",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A headless ShopOS till. Two of them on one PC, or one per container.",
+  "bin": { "virtual-till": "./src/cli.ts" },
+  "dependencies": {
+    "@shopos/core": "*"
+  }
+}

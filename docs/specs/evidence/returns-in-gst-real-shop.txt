@@ -1,0 +1,79 @@
+Returns in the GST export, over the owner's own database
+========================================================
+
+tools/fixtures/real-shop.db, pulled with `npm run pull-shop-db`, migrated to
+head (28) on a throwaway copy. Figures printed by the report functions
+themselves, not by hand-written SQL.
+
+The fixture is gitignored real trade. These figures are here because the
+assertions in reportsAgainstRealShop.test.ts are relative -- they say "agrees
+with what the bills hold" -- and a relative assertion passes on an empty
+database too. This is the absolute reading on the day the work was done.
+
+
+Summary (whole history)
+-----------------------
+
+  bills   = 29
+  total   = 27,328.00
+  returns =    340.00
+  net     = 26,988.00
+  tax     =  3,137.77
+
+
+Rate summary, after the change
+------------------------------
+
+  12%   taxable = 19,971.43   cgst = 1,198.21   sgst = 1,198.36   igst = 0.00
+  18%   taxable =  3,915.23   cgst =   352.32   sgst =   352.45   igst = 0.00
+
+Two things to read off this.
+
+**The credit note is in it.** Before the change these rows were
+19,971.43 + 303.57 of taxable value at 12%, declaring goods the shop had taken
+back and handed the money for. The export now nets it.
+
+**CGST and SGST still do not match.** 1,198.21 against 1,198.36 at 12%, and
+352.32 against 352.45 at 18%. That is the bug fixed in
+`8d55a02 CGST and SGST are the same number, and on 29 lines they were not`,
+showing through in bills raised before the fix. It is not re-derived and must
+not be: those bills were issued, the customer holds a copy, and a submitted
+document is never rewritten. New bills split evenly; these stay as charged.
+
+
+The one credit note the shop has raised
+---------------------------------------
+
+  credit_note  CRN/MR/26-27/00001
+    against    INV/MR/26-27/00001
+    dated      2026-09-12
+    rate       12%
+    taxable    -303.57
+    tax         -36.43
+    total      -340.00
+
+39 rows in the export, 1 of them a credit note. It carries the invoice number
+it reverses, which is Rule 53(1)(e) and which GSTR-1 table 9B is filled from.
+
+
+Rounding
+--------
+
+The shop's `round_off_rule` is `none`, so every bill's rate rows already summed
+to its grand total and the round_off change is a no-op here. It is proved on a
+made-up bill instead, in `returnsInGst.test.ts` -- which is exactly the kind of
+claim the fixture cannot check, and is said out loud rather than left implied.
+
+
+One divergence this exposed, not fixed here
+-------------------------------------------
+
+`salesSummary.tax` is 3,137.77. The rate rows now come to 3,101.34. The
+difference is 36.43, which is the tax on the credit note.
+
+Both are defensible: the dashboard figure is tax charged on bills in the
+period, the rate rows are what the return is filed on, which is net of credit
+notes. They are not the same question. But they are two numbers on two screens
+of one product that a shopkeeper will read as the same number, and the phase
+checklist says `salesSummary` is to be left unchanged by this work, so it has
+been. Recorded in findings-real-shop.md for the 1b/1c review to settle.

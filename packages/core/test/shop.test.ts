@@ -102,7 +102,11 @@ describe('the shop profile', () => {
     )
 
     expect(row?.actor_id).toBe(fx.adminId)
-    expect(JSON.parse(row!.diff)['gstin']).toEqual({ from: null, to: '33ABCDE1234F1Z5' })
+    // The fixture is a registered shop, so this is a correction rather than a
+    // first entry — and "the GSTIN on our invoices changed and nobody touched
+    // it" is exactly the question this row exists to answer.
+    expect(JSON.parse(row!.diff)['gstin'])
+      .toEqual({ from: '33ALNPJ1906G1ZC', to: '33ABCDE1234F1Z5' })
   })
 
   it('leaves the fields nobody touched out of the history', async () => {
@@ -112,9 +116,12 @@ describe('the shop profile', () => {
       `SELECT diff FROM audit_log WHERE entity_id = 'shop_profile'`,
     )
 
-    // `name` moved too — from 'Test Shop' to 'Sri Stores' — but the six fields
-    // that stayed null must not be in there, or the history becomes a dump.
-    expect(Object.keys(JSON.parse(row!.diff)).sort()).toEqual(['name', 'phone'])
+    /* `name` moved too — from 'Test Shop' to 'Sri Stores' — and `gstin` and
+       `stateCode` are cleared, because BLANK carries neither and the fixture is
+       a registered shop in a state. The four fields that were null and stayed
+       null must not be in there, or the history becomes a dump. */
+    expect(Object.keys(JSON.parse(row!.diff)).sort())
+      .toEqual(['gstin', 'name', 'phone', 'stateCode'])
   })
 
   it('names the state a code belongs to, because nobody knows 33 by heart', () => {

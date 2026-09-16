@@ -4,7 +4,7 @@ import {
 } from '../src/services/formats.js'
 import { STANDARD_RECEIPT, rollColumns, type Block } from '../src/domain/docFormat.js'
 import {
-  buildReceipt, visibleLines, previewLines, smallColumns, type ReceiptDoc,
+  buildReceipt, previewLines, smallColumns, type ReceiptDoc,
 } from '../src/domain/receipt.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'

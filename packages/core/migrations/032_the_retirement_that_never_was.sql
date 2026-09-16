@@ -1,0 +1,58 @@
+-- `deleted_at` on users and roles: filtered by nine queries, set by none.
+--
+-- ── users ─────────────────────────────────────────────────────────────────
+--
+-- This table already has a retirement path and it works. `setUserActive`
+-- writes `is_active`, `login` refuses with ACCOUNT_DISABLED, the staff screen
+-- has the switch, and `assertSomeoneCanAdminister` will not let a shop tick
+-- away its own last administrator. That is the right shape for a user: a
+-- person who leaves stops being able to sign in, and their name stays on every
+-- bill they wrote, because they did write them.
+--
+-- `deleted_at` was a second, weaker way of saying the same thing, and nothing
+-- ever said it. Worse, the queries disagreed about it. `login` and
+-- `reauthenticate` filtered on it; `changePassword` and `updateUser` did not.
+-- `listStaff` filtered; `createUser`'s username check did not. So if a single
+-- row had ever had it set -- by a support script, by a future feature, by a
+-- merge from a till running code that set it -- that user would have been
+-- refused a sign-in while still appearing to `createUser` as taking up their
+-- username, and `wouldLeaveNoAdministrator` would have counted a different set
+-- of people from the one `listStaff` showed the owner.
+--
+-- That is a split brain in the one table where the failure mode is a shop
+-- locked out of its own till, sitting there waiting for somebody to set a
+-- column. The column goes; `is_active` is the answer and it is the only one.
+--
+-- Where the filter was standing in for a real check, it is replaced by one:
+-- `reauthenticate` now requires `is_active = 1`. Until now a cashier who was
+-- disabled while still signed in could re-enter their password and walk into
+-- Settings, because the query asked whether they were deleted -- which nothing
+-- could make true -- instead of whether they were still staff.
+--
+-- ── roles ─────────────────────────────────────────────────────────────────
+--
+-- `deleteRole` is a hard DELETE, deliberately and correctly. `checkLinks`
+-- refuses while any user still has the role, naming the count and one of them;
+-- `role_permissions` and `role_pages` cascade; `assertSomeoneCanAdminister`
+-- runs inside the transaction, so a delete that would lock the shop out rolls
+-- back rather than being reported afterwards. A role with nobody in it and
+-- nothing pointing at it is a row that can go for good, and there is no
+-- history that needs it -- `audit_log` keeps the name in the diff.
+--
+-- So `roles.deleted_at` never had a writer either, and unlike `users` there is
+-- no argument that it should have one.
+--
+-- ── What this changes for a shop ──────────────────────────────────────────
+--
+-- Nothing visible, which is the point. Verified against the owner's database
+-- before dropping: 1 user and 4 roles, every `deleted_at` null. No row is
+-- being un-hidden, because no row was hidden. Every till runs this and the
+-- sync handshake in `services/sync.ts` refuses a peer on a different
+-- `schemaVersion`, so no row crosses a version boundary carrying a column the
+-- other end no longer has.
+--
+-- No index, trigger or view names either column; SQLite refuses DROP COLUMN
+-- outright if that stops being true, which is the check being relied on.
+
+ALTER TABLE users DROP COLUMN deleted_at;
+ALTER TABLE roles DROP COLUMN deleted_at;

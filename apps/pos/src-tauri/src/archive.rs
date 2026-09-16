@@ -137,9 +137,89 @@ pub fn write(
 
     zip.finish().map_err(|e| format!("Could not finish the archive: {e}"))?;
 
+    /* Before the rename, deliberately.
+
+       A backup nobody has opened is not a backup, it is a hope. Until now this
+       function wrote a zip and said it had succeeded, and the first time anyone
+       found out otherwise was the day they needed it -- which is the one day a
+       shop cannot afford to find out.
+
+       Verifying the `.part` rather than the finished file means an archive that
+       fails never exists under today's name at all. `Temp` deletes it on the way
+       out of this function, so the failure leaves nothing behind for tomorrow's
+       backup to mistake for a backup that was already taken, and `Err` turns the
+       Backups card red. */
+    verify(&part.0, db_file, work)?;
+
     super::paths::remove_if_present(target)?;
     std::fs::rename(&part.0, target).map_err(|e| format!("Could not save {}: {e}", target.display()))?;
     Ok(())
+}
+
+/// Opens the archive that has just been written and reads the database back out
+/// of it.
+///
+/// Three checks, each catching something the one before it cannot:
+///
+/// **The zip round-trips.** `extract_database` copies through the reader, and
+/// that is what verifies the entry's CRC-32 -- a truncated write, a bad sector
+/// under the part file, a disk that filled up between `write_all` and `finish`.
+///
+/// **The database inside is sound.** `integrity_check`, not `quick_check`: this
+/// is the one place in the product with time to spend, running once a day
+/// against a copy while the counter goes on serving customers. It is the check
+/// that catches a `VACUUM INTO` of an already-damaged database -- a backup that
+/// is a perfect copy of something broken, which is the failure most likely to
+/// go unnoticed for months.
+///
+/// **It is the same size as what went in.** The vacuumed copy and the extracted
+/// copy are the same bytes, so their page counts agree or something between the
+/// two lied about what it stored.
+fn verify(archive: &Path, source: &Path, work: &Path) -> Result<(), String> {
+    /* Named after the archive rather than a fixed "verify.db". Two backups
+       written into one work folder at the same time -- which is what the tests
+       do, and what two windows racing each other would do -- must not unpack
+       over one another and each accuse the other of being damaged. */
+    let stem = archive
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("backup");
+    let check = Temp(work.join(format!("{stem}.verify.db")));
+    super::paths::remove_if_present(&check.0)?;
+
+    extract_database(archive, &check.0)
+        .map_err(|e| format!("This backup could not be read back after writing, so it was not kept ({e})."))?;
+
+    let conn = Connection::open_with_flags(&check.0, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("This backup could not be opened after writing, so it was not kept ({e})."))?;
+
+    let verdict: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|e| format!("This backup could not be checked after writing, so it was not kept ({e})."))?;
+    if verdict != "ok" {
+        return Err(format!(
+            "This backup was damaged the moment it was written, so it was not kept: {verdict}"
+        ));
+    }
+
+    let got = page_count(&conn)?;
+    let want = {
+        let original = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| format!("Could not re-read the copy to check it: {e}"))?;
+        page_count(&original)?
+    };
+    if got != want {
+        return Err(format!(
+            "This backup came back the wrong size ({got} pages, expected {want}), so it was not kept."
+        ));
+    }
+
+    Ok(())
+}
+
+fn page_count(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("PRAGMA page_count", [], |r| r.get(0))
+        .map_err(|e| format!("Could not count the pages: {e}"))
 }
 
 fn add<W: Write + Seek>(
@@ -442,5 +522,97 @@ mod tests {
         std::fs::write(&junk, b"not a zip at all").unwrap();
         let out = scratch("junk-out.db");
         assert!(extract_database(&junk, &out).is_err());
+    }
+
+    // ── Proving the backup after it is written ─────────────────────────────
+
+    /// The ordinary day: it is written, it is checked, it is there.
+    #[test]
+    fn a_good_backup_is_checked_and_kept() {
+        let db = scratch("verified-good.db");
+        a_database(&db, 12);
+        let work = db.parent().unwrap().to_path_buf();
+        let zip = scratch("shop-verified-good.zip");
+
+        write(&zip, &work, &db, "0.1.0", "2026-09-16T03:00:00Z", &work, &[]).unwrap();
+
+        assert!(zip.exists(), "a backup that verifies must be kept");
+        // And the check left nothing behind for tomorrow's backup to trip over.
+        let stem = zip.file_name().unwrap().to_str().unwrap();
+        assert!(!work.join(format!("{stem}.verify.db")).exists());
+    }
+
+    /// A database that is already damaged when the backup is taken.
+    ///
+    /// This is the failure worth having the check for. The zip is perfectly
+    /// well-formed, its CRC is correct, and every byte of it round-trips — it
+    /// is a flawless copy of something broken. Nothing before this would have
+    /// noticed, and the shop would have found out on the day it restored.
+    #[test]
+    fn a_backup_of_a_damaged_database_is_refused_and_not_kept() {
+        let db = scratch("verified-damaged.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = DELETE;
+                 CREATE TABLE bills (id TEXT PRIMARY KEY, doc_no TEXT);
+                 INSERT INTO bills VALUES ('one', 'INV/26-27/00001');
+                 CREATE INDEX idx_doc_no ON bills(doc_no);
+                 PRAGMA user_version = 12;",
+            )
+            .unwrap();
+        }
+
+        /* Scribble past the header, which is what a failing disk does. The
+           header is left intact deliberately: a mangled one is refused when the
+           file is opened and never reaches `integrity_check`. */
+        let mut bytes = std::fs::read(&db).unwrap();
+        let from = bytes.len() / 2;
+        for b in bytes[from..].iter_mut() {
+            *b = 0x5a;
+        }
+        std::fs::write(&db, &bytes).unwrap();
+
+        let work = db.parent().unwrap().to_path_buf();
+        let zip = scratch("shop-verified-damaged.zip");
+        let result = write(&zip, &work, &db, "0.1.0", "2026-09-16T03:00:00Z", &work, &[]);
+
+        assert!(result.is_err(), "a damaged database must not pass as a backup");
+        let said = result.unwrap_err();
+        assert!(
+            said.contains("damaged") || said.contains("could not be"),
+            "the card has to say something a person can act on: {said}"
+        );
+
+        /* And nothing wearing today's name is left behind. A zip that failed
+           its check must not sit in the folder looking like the backup for the
+           sixteenth, because the next thing that reads this folder is either
+           tomorrow's "have we backed up today" or a shopkeeper in trouble. */
+        assert!(!zip.exists(), "a backup that failed its check must not be kept");
+    }
+
+    /// The check has to be able to fail, which is easy to lose by accident.
+    ///
+    /// If `verify` were ever wired to the wrong file — the source instead of the
+    /// archive — every one of these tests would still pass and the check would
+    /// be worth nothing. This one corrupts the *archive* after it is built.
+    #[test]
+    fn the_check_reads_the_archive_and_not_the_original() {
+        let db = scratch("verified-source.db");
+        a_database(&db, 12);
+        let work = db.parent().unwrap().to_path_buf();
+
+        let zip = scratch("shop-verified-source.zip");
+        write(&zip, &work, &db, "0.1.0", "2026-09-16T03:00:00Z", &work, &[]).unwrap();
+
+        // Truncating the archive leaves the source database perfectly healthy.
+        let bytes = std::fs::read(&zip).unwrap();
+        std::fs::write(&zip, &bytes[..bytes.len() / 2]).unwrap();
+
+        let out = scratch("verified-source-out.db");
+        assert!(
+            extract_database(&zip, &out).is_err(),
+            "the reader must refuse a truncated archive, which is what verify relies on"
+        );
     }
 }

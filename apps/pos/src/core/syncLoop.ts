@@ -3,6 +3,9 @@ import {
   serveAs, type SqlDriver,
 } from '@shopos/core'
 import { chosenRegister } from './device'
+import { logEvent } from './log'
+import { servingOn } from './syncHost'
+import { nextBackoff } from '@shopos/core'
 
 /**
  * Catching up without anybody pressing anything.
@@ -34,9 +37,6 @@ import { chosenRegister } from './device'
  *  anybody walks to the other counter to look for it. */
 const EVERY_MS = 45_000
 
-/** A till that is off should be tried occasionally, not constantly. */
-const BACKOFF_START_MS = 60_000
-const BACKOFF_MAX_MS = 10 * 60_000
 
 interface PeerState {
   /** Not before this time. Zero when the peer is answering normally. */
@@ -55,6 +55,24 @@ export interface LoopReport {
   sent: number
   contested: number
   error?: string
+}
+
+/**
+ * What one pass actually did, as opposed to what it found.
+ *
+ * `reports` alone could not tell three different situations apart, because all
+ * three of them are an empty array: this shop has never paired with anything,
+ * a round was already in flight so this one did nothing, and a round that
+ * reached every peer and had nothing to carry. The screen was reading the
+ * first two as the third and announcing that both tills agreed -- to shops
+ * with one till, which is most of them.
+ */
+export interface LoopRound {
+  /** Peers this till is paired with, whether or not each answered. */
+  peers: number
+  /** A round was already running; this call did nothing and reports nothing. */
+  skipped: boolean
+  reports: LoopReport[]
 }
 
 let onRound: ((reports: LoopReport[]) => void) | null = null
@@ -85,17 +103,24 @@ export function stopSyncLoop(): void {
  * code — a "catch up now" that took a different path would be a second
  * implementation to keep in step, and the one people press least would rot.
  */
-export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[]> {
-  if (running) return []
+export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> {
+  if (running) return { peers: 0, skipped: true, reports: [] }
   running = true
   const reports: LoopReport[] = []
+  let paired = 0
 
   try {
     // The answering side cannot read device.json; it is told, every round, so a
     // counter chosen five minutes ago is not still being announced as the old one.
     serveAs(chosenRegister())
 
+    /* Told to the other till on every request, so it can record where to reach
+       us. A single-till shop is not listening and sends nothing, which is
+       correct: there is nobody to come back to it. */
+    const listenPort = (await servingOn())?.port ?? null
+
     const peers = await pairedPeers(db)
+    paired = peers.length
     const now = Date.now()
 
     for (const peer of peers) {
@@ -106,9 +131,14 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
         /* Which counter this machine sits at, so the other till can be refused
            if it is on the same one — two tills on one counter mint invoice
            numbers from the same series and collide on the first bill. */
-        const round = await syncUntilDone(db, httpTransport(peer), 50, chosenRegister())
+        const round = await syncUntilDone(db, httpTransport(peer, fetch, { listenPort }), 50, chosenRegister())
 
         if (round.ok) {
+          /* Coming back after a spell of failures is worth a line: it is what
+             turns a wall of "cannot reach" into a span with an end. */
+          if (mine.backoff > 0) {
+            logEvent('info', 'sync', `${peer.deviceId} is answering again`)
+          }
           state.set(peer.deviceId, { quietUntil: 0, backoff: 0 })
           await recordAttempt(db, peer.deviceId, null)
           reports.push({
@@ -123,6 +153,10 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
              a schema mismatch is fixed by updating a till, and until somebody
              does, saying so every round is the correct amount of noise. */
           await recordAttempt(db, peer.deviceId, round.code)
+          /* Recorded against the peer for the Settings screen, and written down
+             as well. `recordAttempt` keeps the latest state; the log keeps the
+             sequence, which is what answers "since when". */
+          logEvent('warn', 'sync', `${peer.deviceId} refused us: ${round.code}`)
           reports.push({
             peer: peer.deviceId, ok: false, received: 0, sent: 0,
             contested: 0, error: round.code,
@@ -130,11 +164,17 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
         }
       } catch (err) {
         // Could not be reached at all: switched off, asleep, moved, unplugged.
-        const wait = mine.backoff === 0
-          ? BACKOFF_START_MS
-          : Math.min(mine.backoff * 2, BACKOFF_MAX_MS)
+        const wait = nextBackoff(mine.backoff)
         state.set(peer.deviceId, { quietUntil: now + wait, backoff: wait })
         await recordAttempt(db, peer.deviceId, describe(err))
+        /* Only the first failure in a run of them. This fires every 45 seconds
+           against a till that is switched off for the night, and eight hours of
+           "could not reach the back counter" would push everything worth
+           reading out of a five-megabyte log. The backoff state is what says
+           whether this is news. */
+        if (mine.backoff === 0) {
+          logEvent('warn', 'sync', `cannot reach ${peer.deviceId}: ${describe(err)}`)
+        }
         reports.push({
           peer: peer.deviceId, ok: false, received: 0, sent: 0,
           contested: 0, error: describe(err),
@@ -151,7 +191,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopReport[
   }
 
   if (onRound !== null && reports.length > 0) onRound(reports)
-  return reports
+  return { peers: paired, skipped: false, reports }
 }
 
 function describe(err: unknown): string {

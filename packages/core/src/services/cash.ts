@@ -169,3 +169,83 @@ export async function countDrawer(denominations: Record<string, number>): Promis
   }
   return paise(total)
 }
+
+export interface ClosedSession {
+  id: string
+  registerId: string
+  registerName: string
+  openedAt: string
+  openedBy: string | null
+  closedAt: string
+  closedBy: string | null
+  openingCash: Money
+  expectedCash: Money
+  actualCash: Money
+  /** Actual less expected. Negative is money missing, positive is money over. */
+  variance: Money
+  notes: string | null
+  /** The day the close belongs to, for filtering by a business day. */
+  postingDate: string
+}
+
+/**
+ * Every drawer that has been counted and closed.
+ *
+ * `closeSession` has written `expected_cash`, `actual_cash` and `variance`
+ * since v1 and nothing has ever read them back. A shop counting its drawer
+ * every evening could see tonight's variance on the screen it was counted on,
+ * and then never again -- so the question a shopkeeper actually asks, "is it
+ * short on the same person's shift every week", had no answer anywhere in the
+ * product.
+ *
+ * The date used for filtering is the *close*, not the open: a session opened at
+ * 9pm and closed after midnight belongs to the night it was counted, which is
+ * the evening somebody is asking about.
+ *
+ * Open sessions are left out. A drawer that has not been counted has no
+ * variance, and a zero in that column would read as one that balanced.
+ */
+export async function listSessions(
+  db: SqlDriver,
+  range: { from: string; to: string; registerId?: string | null },
+): Promise<ClosedSession[]> {
+  const scoped = range.registerId
+    ? { clause: 'AND s.register_id = ?', params: [range.from, range.to, range.registerId] }
+    : { clause: '', params: [range.from, range.to] }
+
+  const rows = await db.query<{
+    id: string; register_id: string; register_name: string | null
+    opened_at: string; opened_by: string | null; closed_at: string; closed_by: string | null
+    opening_cash: number; expected_cash: number | null; actual_cash: number | null
+    variance: number | null; notes: string | null
+  }>(
+    `SELECT s.id, s.register_id, r.name AS register_name,
+            s.opened_at, o.username AS opened_by,
+            s.closed_at, c.username AS closed_by,
+            s.opening_cash, s.expected_cash, s.actual_cash, s.variance, s.notes
+       FROM cash_sessions s
+       LEFT JOIN registers r ON r.id = s.register_id
+       LEFT JOIN users o ON o.id = s.opened_by
+       LEFT JOIN users c ON c.id = s.closed_by
+      WHERE s.docstatus = 1 AND s.closed_at IS NOT NULL
+        AND substr(s.closed_at, 1, 10) BETWEEN ? AND ? ${scoped.clause}
+      ORDER BY s.closed_at DESC`,
+    scoped.params,
+  )
+
+  return rows.map((r) => ({
+    id: r.id,
+    registerId: r.register_id,
+    registerName: r.register_name ?? 'this counter',
+    openedAt: r.opened_at,
+    openedBy: r.opened_by,
+    closedAt: r.closed_at,
+    closedBy: r.closed_by,
+    openingCash: r.opening_cash as Money,
+    expectedCash: (r.expected_cash ?? 0) as Money,
+    actualCash: (r.actual_cash ?? 0) as Money,
+    variance: (r.variance ?? 0) as Money,
+    notes: r.notes,
+    postingDate: r.closed_at.slice(0, 10),
+  }))
+}

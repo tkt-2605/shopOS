@@ -35,17 +35,33 @@ describe('migrations', () => {
     const tables = rows.map((r) => r.name)
 
     for (const expected of [
-      'activity_log', 'audit_log', 'bill_items', 'bill_payments', 'bills',
+      'audit_log', 'bill_items', 'bill_payments', 'bills',
       'cash_movements', 'cash_sessions', 'categories', 'customer_item_prices',
       'customers', 'doc_sequences', 'item_prices', 'loyalty_entries',
       'loyalty_redemptions', 'payment_allocations', 'payment_entries',
       'price_lists', 'product_stock', 'product_units', 'products', 'registers',
       'role_pages', 'role_permissions', 'roles', 'sales_return_items',
       'sales_returns', 'settings', 'stock_entries', 'stock_entry_items',
-      'stock_ledger', 'suppliers', 'sync_queue', 'users',
+      'stock_ledger', 'suppliers', 'users',
     ]) {
       expect(tables, `missing table ${expected}`).toContain(expected)
     }
+  })
+
+  it('has got rid of the two tables nothing ever read', async () => {
+    await migrate(db, MIGRATIONS)
+    const rows = await db.query<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+    )
+    const tables = rows.map((r) => r.name)
+
+    /* `activity_log` was written by `writeActivity` since 001 and selected by
+       nothing, ever; `sync_queue` was reserved on day one for a design that was
+       never built, and `change_feed` has done that job since two tills could
+       talk. Asserted rather than assumed, because a dropped table is the kind of
+       thing a later migration reintroduces by copying an older one. */
+    expect(tables).not.toContain('activity_log')
+    expect(tables).not.toContain('sync_queue')
   })
 
   it('rejects non-contiguous versions', async () => {
@@ -175,5 +191,75 @@ describe('refusing a schema this build cannot run', () => {
     await migrate(db, MIGRATIONS.slice(0, 1))
     expect(await currentVersion(db)).toBe(1)
     await expect(migrate(db, MIGRATIONS)).resolves.toBe(MIGRATIONS.length)
+  })
+})
+
+/**
+ * Saying what happened, without being able to change what happens.
+ *
+ * An upgrade is the most dangerous thing this program does to a shop's data,
+ * and until now it did it in silence: a till that came back wrong after an
+ * update had nothing on disk saying which migration ran, or how far the run
+ * got. The callback exists so `apps/pos` can write that down — `packages/core`
+ * may not import Tauri, so the log is on the other side of that line.
+ */
+describe('being told which migrations ran', () => {
+  it('names each one, in order, as it commits', async () => {
+    const seen: number[] = []
+    await migrate(db, MIGRATIONS.slice(0, 3), (m) => { seen.push(m.version) })
+
+    expect(seen).toEqual([1, 2, 3])
+  })
+
+  it('names the file, which is what a person reads', async () => {
+    const seen: string[] = []
+    await migrate(db, MIGRATIONS.slice(0, 1), (m) => { seen.push(m.name) })
+
+    // "applied 1 001_initial.sql" beats "applied migration 1" on a phone call.
+    expect(seen[0]).toMatch(/^001_/)
+  })
+
+  it('says nothing about migrations that were already in', async () => {
+    await migrate(db, MIGRATIONS.slice(0, 2))
+
+    const seen: number[] = []
+    await migrate(db, MIGRATIONS.slice(0, 4), (m) => { seen.push(m.version) })
+
+    /* Only what this run did. A line per migration on every start would put a
+       hundred lines of nothing between the shop and the event worth reading. */
+    expect(seen).toEqual([3, 4])
+  })
+
+  it('only speaks after the change is committed', async () => {
+    const versions: number[] = []
+    await migrate(db, MIGRATIONS.slice(0, 2), () => {
+      /* Read inside the callback: whatever it says has already happened, so a
+         log line can never describe a migration that then rolled back. */
+      versions.push(-1)
+    })
+
+    expect(versions).toHaveLength(2)
+    expect(await currentVersion(db)).toBe(2)
+  })
+
+  it('cannot stop the run by throwing', async () => {
+    /* The reason this is guarded rather than trusted. A logger that throws —
+       out of disk, a missing bridge, a bug in a format string — would otherwise
+       abandon the migration run halfway and leave the shop's database stuck
+       between two versions, which is the single worst state it can be in. */
+    const reached: number[] = []
+    await expect(
+      migrate(db, MIGRATIONS.slice(0, 3), (m) => {
+        reached.push(m.version)
+        throw new Error('the disk is full')
+      }),
+    ).resolves.toBe(3)
+
+    expect(reached).toEqual([1, 2, 3])
+    expect(await currentVersion(db)).toBe(3)
+  })
+
+  it('is optional, which is how every other caller uses it', async () => {
+    await expect(migrate(db, MIGRATIONS.slice(0, 2))).resolves.toBe(2)
   })
 })

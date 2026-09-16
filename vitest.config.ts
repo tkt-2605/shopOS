@@ -20,13 +20,26 @@ export default defineConfig({
         },
       },
       {
+        test: {
+          name: 'bench',
+          include: ['tools/*/test/**/*.test.ts'],
+          environment: 'node',
+          // Two tills, two SQLite files and two HTTP servers per scenario. The
+          // default 5 s is not enough for `third-till`, which bills 200 times.
+          testTimeout: 30_000,
+        },
+      },
+      {
         plugins: [react()],
         resolve: {
           alias: { '@shopos/core': new URL('./packages/core/src/index.ts', import.meta.url).pathname },
         },
         test: {
           name: 'pos',
-          include: ['apps/pos/test/**/*.test.tsx'],
+          /* `.ts` as well as `.tsx`: some of what the app decides is plain
+             logic with no window in it, and a pure function does not become a
+             component to get itself tested. */
+          include: ['apps/pos/test/**/*.test.{ts,tsx}'],
           environment: 'jsdom',
         },
       },

@@ -1,7 +1,8 @@
 import {
-  buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadShopProfile, stateName,
+  buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadReturnDetail, loadShopProfile,
+  loadTaxScheme, billWording, schemeStatement, rateSummaryOf, stateName,
   type SqlDriver, type ReceiptDoc, type ReceiptItem, type BillDetailItem,
-  type DocWording, type DocumentKind,
+  type DocWording, type DocumentKind, type PlaceOfSupply, type ReturnDetailItem,
 } from '@shopos/core'
 import type { PrintResult } from './print'
 
@@ -30,6 +31,106 @@ export async function printBillSheet(db: SqlDriver, billId: string): Promise<Pri
   // The sheet the shop chose, which carries its own paper size with it.
   const format = await formatFor(db, { kind: 'bill', channel: 'sheet' })
   return printHtml(buildInvoiceHtml(doc, format, { autoPrint: true }))
+}
+
+/**
+ * The credit note for a return.
+ *
+ * A return has been a movement in the database and a line in a list, and the
+ * customer has walked out with the money and no paper. Under GST the credit
+ * note *is* the document — Section 34 and Rule 53 — and it is what the
+ * customer's own accounts need to reverse the purchase at their end. A
+ * registered buyer cannot do anything with a refund they have no note for.
+ *
+ * The same A4 renderer as the invoice, deliberately. The two documents carry
+ * the same fields and differ in what they say about themselves, and a second
+ * renderer would be a second place for the place of supply to go wrong.
+ */
+export async function printCreditNoteSheet(db: SqlDriver, returnId: string): Promise<PrintResult> {
+  const doc = await creditNoteDocFor(db, returnId)
+  if (!doc) return { ok: false, message: 'That return could not be found.' }
+
+  /* No shipped format declares `credit_note`, so this falls through to the
+     standard sheet — which is the right answer and leaves the door open for a
+     shop that wants its own. */
+  const format = await formatFor(db, { kind: 'credit_note', channel: 'sheet' })
+  return printHtml(buildInvoiceHtml(doc, format, { autoPrint: true }))
+}
+
+const CREDIT_NOTE_WORDING: DocWording = {
+  title: 'Credit Note', docNo: 'Credit note no.', party: 'Credited to', by: 'Raised by',
+}
+
+/** The return as the sheet renderer wants it. Exported for the same reason as `sheetDocFor`. */
+export async function creditNoteDocFor(db: SqlDriver, returnId: string): Promise<ReceiptDoc | null> {
+  const ret = await loadReturnDetail(db, returnId)
+  if (!ret) return null
+
+  const shop = await loadShopProfile(db)
+  const items = ret.items.map((i): ReceiptItem => ({
+    name: i.productName,
+    qty: i.qty,
+    saleUnit: i.saleUnit,
+    rate: i.rate,
+    lineTotal: i.refund,
+    hsnCode: i.hsnCode,
+    taxableValue: i.taxableValue,
+    taxRateBp: i.taxRateBp,
+    cgst: i.cgst,
+    sgst: i.sgst,
+    igst: i.igst,
+  }))
+
+  const sum = (pick: (i: ReturnDetailItem) => number) =>
+    ret.items.reduce((total, i) => total + pick(i), 0) as never
+
+  /* Positive figures under a heading that says what they are, which is how a
+     credit note is written: the document's own title carries the direction, and
+     a sheet of negative numbers is read as a mistake. The GST export is where
+     the sign belongs, and it has one. */
+  return {
+    shop: {
+      name: shop.name, address: shop.address, phone: shop.phone,
+      email: shop.email, gstin: shop.gstin, logo: shop.logo,
+    },
+    docNo: ret.docNo,
+    postingDate: ret.postingDate,
+    cashier: ret.createdBy,
+
+    // Rule 53(1)(e). Without these two it is a piece of paper saying money was
+    // returned, attached to nothing.
+    againstDocNo: ret.againstDocNo,
+    againstDate: ret.againstDate,
+
+    customerName: ret.customerName,
+    customerAddress: ret.customerAddress,
+    customerGstin: ret.customerGstin,
+    customerState: placeOf(ret.customerStateCode),
+    placeOfSupply: placeOf(ret.placeOfSupply),
+    ...(ret.supplyType ? { supplyType: ret.supplyType } : {}),
+    reverseCharge: false,
+
+    items,
+    rateSummary: rateSummaryOf(items),
+    subtotal: ret.refundTotal,
+    discount: 0 as never,
+    taxableTotal: sum((i) => i.taxableValue),
+    cgst: sum((i) => i.cgst),
+    sgst: sum((i) => i.sgst),
+    igst: sum((i) => i.igst),
+    grandTotal: ret.refundTotal,
+
+    /* Nothing was taken here; money went the other way. The block renders as
+       nothing rather than as "Cash 340.00", which on a credit note reads as a
+       payment received. How the refund was made is said in words below. */
+    payments: [],
+    terms: [
+      ret.reason ? `Reason: ${ret.reason}` : null,
+      `Refunded by ${ret.refundMethod}`,
+    ].filter((line) => line !== null).join(' · '),
+
+    wording: CREDIT_NOTE_WORDING,
+  }
 }
 
 /**
@@ -66,6 +167,20 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
   const shop = await loadShopProfile(db)
   const format = await formatFor(db, { kind: doc.kind, channel: 'sheet' })
 
+  const items = doc.items.map((i): ReceiptItem => ({
+    name: i.productName,
+    qty: i.qty,
+    saleUnit: i.saleUnit,
+    rate: i.rate,
+    lineTotal: i.lineTotal,
+    hsnCode: i.hsnCode,
+    taxableValue: i.taxableValue,
+    taxRateBp: i.taxRateBp,
+    cgst: i.cgst,
+    sgst: i.sgst,
+    igst: i.igst,
+  }))
+
   const sheet: ReceiptDoc = {
     shop: {
       name: shop.name, address: shop.address, phone: shop.phone,
@@ -75,24 +190,16 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
     postingDate: doc.postingDate,
     cashier: doc.createdBy,
     customerName: doc.partyName,
-    items: doc.items.map((i): ReceiptItem => ({
-      name: i.productName,
-      qty: i.qty,
-      saleUnit: i.saleUnit,
-      rate: i.rate,
-      lineTotal: i.lineTotal,
-      hsnCode: i.hsnCode,
-      taxableValue: i.taxableValue,
-      cgst: i.cgst,
-      sgst: i.sgst,
-      igst: i.igst,
-    })),
+    items,
     subtotal: doc.subtotal,
     discount: doc.discount,
     taxableTotal: doc.taxableTotal,
     cgst: doc.items.reduce((t, i) => t + i.cgst, 0) as never,
     sgst: doc.items.reduce((t, i) => t + i.sgst, 0) as never,
     igst: doc.items.reduce((t, i) => t + i.igst, 0) as never,
+    // Printed on its own line when it is not zero, so the lines and the total
+    // add up on the sheet a customer is holding.
+    roundOff: doc.roundOff,
     grandTotal: doc.grandTotal,
     /* Nothing has been paid. The block is left in the format and renders as
        nothing, rather than the format needing a separate copy without it. */
@@ -100,7 +207,14 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
     validUntil: doc.validUntil,
     notes: doc.notes,
     terms: doc.terms ?? shop.terms,
-    placeOfSupply: shop.stateCode ? stateName(shop.stateCode) : null,
+    /* `documents.place_of_supply` holds the supply *type* and not a state — a
+       different column from the one on `bills` wearing the same name. It is
+       enough to pick the tax columns, which is what it is used for here.
+       No place-of-supply row: a quotation is not a tax invoice, it has no state
+       stored, and the shop's own state was what used to be printed there — on
+       every document, including one quoted to another state. */
+    ...(doc.supplyType ? { supplyType: doc.supplyType } : {}),
+    rateSummary: rateSummaryOf(items),
     wording: WORDING[doc.kind],
   }
 
@@ -123,8 +237,24 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
   if (!bill) return null
 
   const shop = await loadShopProfile(db)
+  // Tax Invoice, Bill of Supply or Invoice, and the Rule 49 sentence with it.
+  const scheme = await loadTaxScheme(db)
   const sum = (pick: (i: BillDetailItem) => number) =>
     bill.items.reduce((total, i) => total + pick(i), 0) as never
+
+  const items = bill.items.map((i): ReceiptItem => ({
+    name: i.productName,
+    qty: i.qty,
+    saleUnit: i.saleUnit,
+    rate: i.rate,
+    lineTotal: i.lineTotal,
+    hsnCode: i.hsnCode,
+    taxableValue: i.taxableValue,
+    taxRateBp: i.taxRateBp,
+    cgst: i.cgst,
+    sgst: i.sgst,
+    igst: i.igst,
+  }))
 
   return {
     shop: {
@@ -135,18 +265,7 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     postingDate: bill.postingDate,
     cashier: bill.createdBy,
     customerName: bill.customerName,
-    items: bill.items.map((i): ReceiptItem => ({
-      name: i.productName,
-      qty: i.qty,
-      saleUnit: i.saleUnit,
-      rate: i.rate,
-      lineTotal: i.lineTotal,
-      hsnCode: i.hsnCode,
-      taxableValue: i.taxableValue,
-      cgst: i.cgst,
-      sgst: i.sgst,
-      igst: i.igst,
-    })),
+    items,
     subtotal: bill.subtotal,
     discount: bill.discount,
     taxableTotal: bill.taxableTotal,
@@ -156,10 +275,38 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     roundOff: bill.roundOff,
     grandTotal: bill.grandTotal,
     payments: bill.payments.map((p) => ({ method: p.method, amount: p.amount })),
-    placeOfSupply: shop.stateCode ? stateName(shop.stateCode) : null,
+
+    /* Rule 46(e), (f), (m) and (p), every one of them off the bill's own
+       snapshot — migration 028 — and none of them off a live join or a guess.
+       This line used to read `stateName(shop.stateCode)`: the *shop's* state,
+       printed as the place of supply on every invoice it produced, including
+       the ones billed to a customer in another state and charged IGST. It was
+       a constant wearing the name of a fact.
+
+       A walk-in leaves it null, and the row does not print. The place of supply
+       for an unidentified counter sale is the shop's own state, but saying so
+       on the paper would be the software asserting something nobody recorded --
+       and it is the same reasoning that left the column unbackfilled. */
+    placeOfSupply: placeOf(bill.placeOfSupply),
+    customerState: placeOf(bill.customerStateCode),
+    customerAddress: bill.customerAddress,
+    customerGstin: bill.customerGstin,
+    ...(bill.supplyType ? { supplyType: bill.supplyType } : {}),
+    reverseCharge: bill.reverseCharge,
+    rateSummary: rateSummaryOf(items),
+
+    wording: billWording(scheme),
+    ...(schemeStatement(scheme) ? { schemeStatement: schemeStatement(scheme) } : {}),
+
     terms: shop.terms,
     footer: shop.receiptFooter,
   }
+}
+
+/** A state code as both halves of "27 — Maharashtra", or nothing at all. */
+function placeOf(code: string | null): PlaceOfSupply | null {
+  const name = code ? stateName(code) : null
+  return code && name ? { code, name } : null
 }
 
 /** Lays the page out in a hidden frame and opens the print dialog on it. */

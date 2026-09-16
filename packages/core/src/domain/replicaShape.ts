@@ -136,12 +136,10 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   product_stock: 'derived from stock_ledger; a merge recomputes it',
   doc_sequences: 'a number series. Taking either side would hand two tills the same invoice number',
   audit_log: 'this machine\'s own history. Worth showing one day, but it has no conflict to resolve',
-  activity_log: 'the same, and read by nothing yet',
   change_feed: 'what this machine still has to send',
   sync_state: 'whether a merge is running right now',
   sync_peers: 'who this machine has paired with, and how far each has read',
   sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
-  sync_queue: 'reserved on day one and never used. See docs/multi-device.md',
 }
 
 /** One record as it crosses between two tills. */

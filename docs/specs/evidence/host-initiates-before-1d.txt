@@ -1,0 +1,106 @@
+
+ RUN  v5.0.0 C:/Users/user/Downloads/shopos
+
+ ❯ |bench| tools/virtual-till/test/host-initiates.test.ts (5 tests | 5 failed) 866ms
+   ❯ a sync the host starts (3)
+     × fetches a bill the joiner wrote, without the joiner doing anything 216ms
+     × records the peer on both sides when they pair 144ms
+     × carries a change the host wrote to the joiner, host-initiated 184ms
+   ❯ what the host says when there is nothing to carry (2)
+     × reports a round that contacted the peer and found nothing 173ms
+     × distinguishes "no peers" from "a peer with nothing new" 147ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > a sync the host starts > fetches a bill the joiner wrote, without the joiner doing anything
+Error: Front counter has not paired with Back counter; pairWith() first
+ ❯ tools/virtual-till/src/till.ts:177:17
+    175|         const peer = (await pairedPeers(db)).find((p) => p.deviceId ==…
+    176|         if (!peer) {
+    177|           throw new Error(
+       |                 ^
+    178|             `${opts.label} has not paired with ${other.label}; pairWit…
+    179|           )
+ ❯ tools/virtual-till/test/host-initiates.test.ts:40:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/10]⎯
+
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > a sync the host starts > fetches a bill the joiner wrote, without the joiner doing anything
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > a sync the host starts > records the peer on both sides when they pair
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > a sync the host starts > carries a change the host wrote to the joiner, host-initiated
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > what the host says when there is nothing to carry > reports a round that contacted the peer and found nothing
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > what the host says when there is nothing to carry > distinguishes "no peers" from "a peer with nothing new"
+TypeError: forgetNonces is not a function
+ ❯ stopAll tools/virtual-till/test/bench.ts:64:3
+     62|   running = []
+     63|   removeTillContext()
+     64|   forgetNonces()
+       |   ^
+     65|   for (const dir of roots) rmSync(dir, { recursive: true, force: true …
+     66|   roots = []
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/10]⎯
+
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > a sync the host starts > records the peer on both sides when they pair
+AssertionError: expected [] to include '2222bbbb-2222-4222-8222-222222222222'
+ ❯ tools/virtual-till/test/host-initiates.test.ts:58:43
+     56|
+     57|     expect(onJoiner.map((p) => p.deviceId)).toContain(front.deviceId)
+     58|     expect(onHost.map((p) => p.deviceId)).toContain(back.deviceId)
+       |                                           ^
+     59|   })
+     60|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/10]⎯
+
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > a sync the host starts > carries a change the host wrote to the joiner, host-initiated
+Error: Front counter has not paired with Back counter; pairWith() first
+ ❯ tools/virtual-till/src/till.ts:177:17
+    175|         const peer = (await pairedPeers(db)).find((p) => p.deviceId ==…
+    176|         if (!peer) {
+    177|           throw new Error(
+       |                 ^
+    178|             `${opts.label} has not paired with ${other.label}; pairWit…
+    179|           )
+ ❯ tools/virtual-till/test/host-initiates.test.ts:73:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/10]⎯
+
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > what the host says when there is nothing to carry > reports a round that contacted the peer and found nothing
+Error: Front counter has not paired with Back counter; pairWith() first
+ ❯ tools/virtual-till/src/till.ts:177:17
+    175|         const peer = (await pairedPeers(db)).find((p) => p.deviceId ==…
+    176|         if (!peer) {
+    177|           throw new Error(
+       |                 ^
+    178|             `${opts.label} has not paired with ${other.label}; pairWit…
+    179|           )
+ ❯ tools/virtual-till/test/host-initiates.test.ts:89:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/10]⎯
+
+ FAIL  |bench| tools/virtual-till/test/host-initiates.test.ts > what the host says when there is nothing to carry > distinguishes "no peers" from "a peer with nothing new"
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ tools/virtual-till/test/host-initiates.test.ts:108:57
+    106|     await back.pairWith(front)
+    107|
+    108|     expect(await front.as(() => pairedPeers(front.db))).toHaveLength(1)
+       |                                                         ^
+    109|   })
+    110| })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/10]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed (5)
+   Start at  02:20:11
+   Duration  1.86s (tests 50%, transform 34%, import 15%)
+

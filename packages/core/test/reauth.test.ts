@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { reauthenticate, createUser, login } from '../src/services/auth.js'
+import { reauthenticate, createUser, login, setUserActive, listStaff } from '../src/services/auth.js'
 import { freshDb, type Fixture } from './helpers.js'
 
 /**
@@ -18,12 +18,13 @@ import { freshDb, type Fixture } from './helpers.js'
 let fx: Fixture
 let userId: string
 
+const USERNAME = 'ramesh'
 const PASSWORD = 'counter-9'
 
 beforeEach(async () => {
   fx = await freshDb()
   const created = await createUser(fx.db, {
-    username: 'ramesh', password: PASSWORD, roleId: fx.seed.roleIds['Admin']!,
+    username: USERNAME, password: PASSWORD, roleId: fx.seed.roleIds['Admin']!,
   })
   if (!created.ok) throw new Error('could not create the test user')
   userId = created.userId
@@ -138,13 +139,41 @@ describe('what the history says afterwards', () => {
   })
 })
 
-describe('a user who is no longer there', () => {
-  it('does not pretend a deleted user’s password was simply wrong for ever', async () => {
-    await fx.db.execute(
-      `UPDATE users SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), userId],
-    )
+describe('a user who is no longer staff', () => {
+  /**
+   * This test used to reach past the product and write `users.deleted_at` in
+   * raw SQL, because nothing in ShopOS could set it -- which is exactly what
+   * made the column look alive. Migration 032 drops it, and the check it was
+   * standing in for turns out to be one that matters.
+   */
+  it('cannot re-enter a guarded screen after being switched off', async () => {
+    await setUserActive(fx.db, { userId, isActive: false, actorId: userId })
 
+    /* They may still be holding a signed-in window: disabling somebody does
+       not reach across and close it. Re-authentication is the gate in front of
+       Settings, the drawer and anything else that asks for the password again,
+       and it is the last place that can stop them. Before this it asked
+       whether they had been deleted -- a thing no code could make true -- and
+       waved through everyone it had ever signed in. */
     expect(await reauthenticate(fx.db, { userId, password: PASSWORD, scope: 'settings' }))
       .toEqual({ ok: false, code: 'WRONG_PASSWORD' })
+  })
+
+  it('cannot sign in again either, and is told why', async () => {
+    await setUserActive(fx.db, { userId, isActive: false, actorId: userId })
+
+    /* The front door says which thing went wrong, because an owner who
+       disabled somebody last week should not be left debugging a password. */
+    expect(await login(fx.db, { username: USERNAME, password: PASSWORD }))
+      .toEqual({ ok: false, code: 'ACCOUNT_DISABLED' })
+  })
+
+  it('keeps their name on the staff list, switched off', async () => {
+    await setUserActive(fx.db, { userId, isActive: false, actorId: userId })
+
+    /* Off the till, not out of the record. They wrote bills, those bills name
+       them, and hiding the row would leave a shop with sales by nobody. */
+    const them = (await listStaff(fx.db)).find((u) => u.id === userId)
+    expect(them?.isActive).toBe(false)
   })
 })

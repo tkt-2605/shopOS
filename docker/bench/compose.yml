@@ -1,0 +1,62 @@
+# Two shops on one host, so that "a till finds the other till in *its* shop and
+# not the one next door" is a claim about real network namespaces rather than
+# about loopback. That is the whole reason Layer 2 exists: a broadcast on one
+# machine reaches everything on that machine, so a single-host test cannot tell
+# a working filter from a missing one.
+
+name: shopos-bench
+
+services:
+  till-a1:
+    build:
+      context: ../..
+      dockerfile: docker/bench/Dockerfile
+    networks: [shop-a]
+    volumes: [a1:/data]
+    environment:
+      TILL_DEVICE: 1111aaaa-1111-4111-8111-111111111111
+      TILL_LABEL: Front counter
+      TILL_REGISTER: FR
+      TILL_SEED: shop
+      TILL_SHOP: Shop A
+      TILL_SHOP_ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  till-a2:
+    build:
+      context: ../..
+      dockerfile: docker/bench/Dockerfile
+    networks: [shop-a]
+    volumes: [a2:/data]
+    environment:
+      TILL_DEVICE: 2222bbbb-2222-4222-8222-222222222222
+      TILL_LABEL: Back counter
+      TILL_REGISTER: BC
+      TILL_SEED: empty
+      TILL_SHOP: Shop A
+      TILL_SHOP_ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  # A different shop on a different wire. It must never appear in till-a1's
+  # look-around, and if it ever does, two shops on one industrial estate's wifi
+  # would be offered each other's tills.
+  till-b1:
+    build:
+      context: ../..
+      dockerfile: docker/bench/Dockerfile
+    networks: [shop-b]
+    volumes: [b1:/data]
+    environment:
+      TILL_DEVICE: 3333cccc-3333-4333-8333-333333333333
+      TILL_LABEL: Other shop
+      TILL_REGISTER: OS
+      TILL_SEED: shop
+      TILL_SHOP: Shop B
+      TILL_SHOP_ID: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+networks:
+  shop-a:
+  shop-b:
+
+volumes:
+  a1:
+  a2:
+  b1:

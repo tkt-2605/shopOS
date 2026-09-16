@@ -3,12 +3,15 @@ import {
   Money, Quantity, Tax, Permissions,
   searchProducts, productValuation, recomputeStock, newId,
   listBarcodes, setBarcodes, listUnits, setUnits,
-  listCategories, createCategory, setProductCategory, setVariantOf,
-  setLadder, laddersFor, defaultPriceListId, Ladder,
+  listCategories, createCategory, renameCategory, removeCategory,
+  setProductCategory, setVariantOf,
+  setLadder, laddersFor, defaultPriceListId, Ladder, setProductActive,
+  hsnProblem, HSN_SHAPE_MESSAGE,
   type Category,
   type ProductListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { recordStockCheck } from '../core/maintenance'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 import { usePickList, Results } from '../ui/PickList'
@@ -266,6 +269,57 @@ export default function Inventory() {
     setDraft({ ...draft, categoryId: made.categoryId })
   }
 
+  /**
+   * Renaming a group, and getting rid of one.
+   *
+   * Both services have been in `grouping.ts` since groups existed and neither
+   * had a caller: a group typed with a spelling mistake was a spelling mistake
+   * for ever, and one made by accident could not be got rid of. `removeCategory`
+   * is careful -- it moves the products to no group rather than deleting them,
+   * and unparents its children -- which is worth having reachable.
+   */
+  async function renameGroup() {
+    const group = categories.find((c) => c.id === browsing)
+    if (!group) return
+
+    const name = window.prompt(`Rename “${group.name}” to what?`, group.name)
+    if (name === null || name.trim() === '' || name.trim() === group.name) return
+
+    const result = await renameCategory(db, { actorId: user.id }, {
+      categoryId: group.id, name: name.trim(),
+    })
+    if (!result.ok) {
+      setNotice(result.code === 'NAME_TAKEN'
+        ? 'There is already a group with that name.'
+        : 'Give the group a name.')
+      return
+    }
+    await refreshCategories()
+    setNotice(`Renamed to ${name.trim()}.`)
+  }
+
+  async function removeGroup() {
+    const group = categories.find((c) => c.id === browsing)
+    if (!group) return
+
+    /* Said in full, because "delete" beside a group holding two hundred items
+       reads like it takes the items with it, and it does not. */
+    const many = group.productCount === 1 ? '1 product' : `${group.productCount} products`
+    if (!window.confirm(
+      `Remove the group “${group.name}”?
+
+`
+      + `Nothing is deleted: ${many} stay exactly as they are and simply stop `
+      + 'being in a group. Any groups inside this one move to the top level.',
+    )) return
+
+    await removeCategory(db, { actorId: user.id }, group.id)
+    setBrowsing('')
+    await refreshCategories()
+    await refresh()
+    setNotice(`“${group.name}” is gone. Its products are still here, in no group.`)
+  }
+
   async function edit(p: ProductListItem) {
     const [codes, units] = await Promise.all([listBarcodes(db, p.id), listUnits(db, p.id)])
     setDraft({
@@ -288,19 +342,58 @@ export default function Inventory() {
     })
   }
 
+  /**
+   * Taking a product out of use, and putting it back.
+   *
+   * `is_active` has been read by the counter's search, the reorder list and
+   * this screen since the catalogue was written, and nothing could ever set it.
+   * What a shop did instead was rename the thing to "OLD - do not use".
+   *
+   * Nothing is deleted and nothing is hidden from history: the stock stays
+   * counted, old bills still reprint and the reports still name it. It stops
+   * appearing where a live product belongs.
+   */
+  async function retire(p: ProductListItem) {
+    if (p.isActive && !window.confirm(
+      `Retire “${p.name}”?
+
+`
+      + 'It stops appearing at the counter and on the reorder list. Nothing is '
+      + 'deleted: the stock on hand stays counted, old bills still show it, and '
+      + 'it can be brought back from this screen at any time.',
+    )) return
+
+    await setProductActive(db, { actorId: user.id }, p.id, !p.isActive)
+    await refresh()
+    setNotice(p.isActive
+      ? `“${p.name}” is retired. The counter will not find it.`
+      : `“${p.name}” is back on sale.`)
+  }
+
   async function showValuation(p: ProductListItem) {
     const v = await productValuation(db, p.id)
     setValuation({ name: p.name, qty: v.qtyOnHand, value: v.totalValue, avg: v.averageCost })
   }
 
+  /**
+   * The full replay, on purpose and by hand.
+   *
+   * One pass, not two. This used to replay the ledger to count the drift and
+   * then replay it again to fix it — twice the longest table in the shop, for
+   * one button. `repair` reports what it changed as it changes it.
+   *
+   * The result is written down where the Dashboard reads it, so the warning
+   * there clears the moment this is dealt with instead of at the next weekly
+   * run. Nothing else on either screen connects the two.
+   */
   async function checkStock() {
-    const drift = await recomputeStock(db)
+    const drift = await recomputeStock(db, { repair: true })
     setNotice(
       drift.length === 0
         ? 'Stock matches the ledger exactly — no drift.'
         : `${drift.length} product(s) drifted from the ledger. Repaired.`,
     )
-    if (drift.length > 0) await recomputeStock(db, { repair: true })
+    await recordStockCheck({ at: new Date().toISOString(), drift: 0 })
     await refresh()
   }
 
@@ -320,6 +413,12 @@ export default function Inventory() {
             </option>
           ))}
         </select>
+        {canWrite && browsing !== '' && (
+          <>
+            <button className="btn sm" onClick={() => void renameGroup()}>Rename group</button>
+            <button className="btn sm" onClick={() => void removeGroup()}>Remove group</button>
+          </>
+        )}
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{rows.length} items</span>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>
@@ -341,6 +440,10 @@ export default function Inventory() {
                   <div>
                     {p.name}
                     {p.variantLabel && <span className="badge" style={{ marginLeft: 6 }}>{p.variantLabel}</span>}
+                    {/* Said on the row, because a retired product that looks
+                        exactly like a live one is a product somebody will try
+                        to sell and then wonder why the counter cannot find. */}
+                    {!p.isActive && <span className="badge" style={{ marginLeft: 6 }}>retired</span>}
                   </div>
                   <div className="src">
                     {[p.parentName ? `version of ${p.parentName}` : null, p.categoryName, p.brand]
@@ -363,6 +466,11 @@ export default function Inventory() {
                   <button className="btn ghost sm" onClick={() => void showValuation(p)}>Cost</button>
                   {canWrite && (
                     <button className="btn ghost sm" onClick={() => void edit(p)}>Edit</button>
+                  )}
+                  {canWrite && (
+                    <button className="btn ghost sm" onClick={() => void retire(p)}>
+                      {p.isActive ? 'Retire' : 'Bring back'}
+                    </button>
                   )}
                 </td>
               </tr>
@@ -390,7 +498,14 @@ export default function Inventory() {
               <input className="input" id="p-brand" value={draft.brand}
                 onChange={(e) => setDraft({ ...draft, brand: e.target.value })} />
             </Field>
-            <Field label="HSN code">
+            {/* Warned, never blocked. Somebody entering three hundred items off
+                a supplier's list is the person most likely to mistype one and
+                least able to stop and look it up — and an item that cannot be
+                saved is an item that cannot be sold. */}
+            <Field
+              label="HSN code"
+              {...(hsnProblem(draft.hsnCode) ? { hint: HSN_SHAPE_MESSAGE } : {})}
+            >
               <input className="input num" id="p-hsn" value={draft.hsnCode}
                 onChange={(e) => setDraft({ ...draft, hsnCode: e.target.value })} />
             </Field>

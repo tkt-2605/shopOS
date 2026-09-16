@@ -58,26 +58,6 @@ export async function writeAudit(tx: SqlDriver, ctx: AuditContext, record: Audit
   )
 }
 
-export async function writeActivity(
-  tx: SqlDriver,
-  ctx: AuditContext,
-  entry: { action: string; entity?: string | null; entityId?: string | null; summary: string },
-): Promise<void> {
-  await tx.execute(
-    `INSERT INTO activity_log (id, actor_id, action, entity, entity_id, summary, at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      newId(),
-      ctx.actorId,
-      entry.action,
-      entry.entity ?? null,
-      entry.entityId ?? null,
-      entry.summary,
-      (ctx.now ?? defaultNow)(),
-    ],
-  )
-}
-
 const NEVER_AUDITED = new Set(['rev', 'updated_at', 'created_at'])
 
 export function diffFields(

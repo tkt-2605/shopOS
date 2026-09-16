@@ -1,9 +1,13 @@
 export * as Money from './money.js'
 export * as Quantity from './quantity.js'
 export { newId, timestampOf } from './ids.js'
-export { setDeviceId, deviceId } from './device.js'
+export { setDeviceId, setDeviceIdSource, deviceId } from './device.js'
+export { isStateCode } from './domain/states.js'
+export { GSTIN_SHAPE, isGstin, stateFromGstin, resolveCustomerState } from './domain/gstin.js'
+export { clock, setClock } from './clock.js'
 
-export type { SqlDriver, Row, SqlValue, ExecResult } from './db/driver.js'
+export type { SqlDriver, Row, SqlValue, ExecResult, TxOptions } from './db/driver.js'
+export { MERGE_BUDGET_MS } from './db/driver.js'
 export { SqlError } from './db/driver.js'
 export { migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type Migration } from './db/migrate.js'
 export { EXPECTED_SCHEMA_VERSION } from './db/schemaVersion.js'
@@ -16,8 +20,10 @@ export * as Credit from './domain/credit.js'
 export * as Returns from './domain/returns.js'
 export * as DocFormat from './domain/docFormat.js'
 export { REPLICATED, NOT_REPLICATED, shapeOf, type RecordShape, type ChangeRecord, type ChangeBatch } from './domain/replicaShape.js'
-export { handleSyncRequest, serveAs, offerPairing, withdrawPairing, pairingOnOffer, PAIRING_WINDOW_MS, type SyncRequest, type SyncResponse } from './services/syncServer.js'
-export { httpTransport, pairWith, pairedPeers, rememberAddress, SyncHttpError, type PeerAddress, type PairOutcome } from './services/syncClient.js'
+export { handleSyncRequest, serveAs, setServingRegisterSource, LISTEN_PORT_HEADER, peerAddressFrom, offerPairing, withdrawPairing, pairingOnOffer, PAIRING_WINDOW_MS, type SyncRequest, type SyncResponse } from './services/syncServer.js'
+export { forgetNonces, CLOCK_TOLERANCE_MS } from './services/syncAuth.js'
+export { nextBackoff, BACKOFF_START_MS, BACKOFF_MAX_MS } from './services/syncBackoff.js'
+export { httpTransport, pairWith, pairedPeers, rememberAddress, SyncHttpError, type PeerAddress, type PairOutcome, type SelfAddress } from './services/syncClient.js'
 export { recentConflicts, acknowledgeConflicts, unreadConflictCount, recordAttempt, type RecordedConflict, type PeerHealth } from './services/sync.js'
 export { syncWith, syncUntilDone, collectChanges, applyBatch, changedHere, listPeers, pruneAcknowledged, REPLICATED_TABLES, type SyncTransport, type PeerHello, type SyncResult, type ContestedChange } from './services/sync.js'
 export { decideRow, decideDeletion, type MergeInput, type MergeDecision, type MergeReason, type Versioned, type Side } from './domain/merge.js'
@@ -28,7 +34,7 @@ export type { Block, BlockKind, DocFormat as DocFormatDef, PaperSize, FormatProb
 export * as DocStatus from './integrity/docstatus.js'
 export * as Permissions from './integrity/permissions.js'
 export { checkLinks, assertDeletable, LinkedRecordError, LINK_RULES } from './integrity/links.js'
-export { writeAudit, writeActivity, diffFields } from './integrity/audit.js'
+export { writeAudit, diffFields } from './integrity/audit.js'
 export type { AuditAction, AuditContext, AuditRecord, FieldDiff } from './integrity/audit.js'
 
 export { bootstrap, setSetting, getSetting, forgetSetting } from './services/bootstrap.js'
@@ -41,6 +47,7 @@ export type { BootstrapOptions, BootstrapResult } from './services/bootstrap.js'
 
 export {
   createBill, submitBill, cancelBill, amendBill, loadLoyaltyProgram, billSummary,
+  RULE_46F_THRESHOLD,
 } from './services/billing.js'
 export type {
   BillLineInput, CreateBillInput, CreateBillResult,
@@ -59,30 +66,37 @@ export type { DocType } from './services/numbering.js'
 export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from './repos/pricing.js'
 
 export {
-  createReturn, submitReturn, cancelReturn, processReturn, previewReturn, listReturns, returnableQty,
+  createReturn, submitReturn, cancelReturn, processReturn, previewReturn, listReturns,
+  loadReturnDetail, returnableQty,
 } from './services/returns.js'
 export type {
   ReturnLineInput, CreateReturnInput, CreateReturnResult, SubmitReturnResult, RefundMethod,
   ProcessReturnResult, PreviewReturnResult, ReturnPreview, ReturnListItem, ReturnOutcome,
+  ReturnDetail, ReturnDetailItem,
 } from './services/returns.js'
 
 export { loadFeatures, isOn, setFeature, FEATURES_OFF } from './services/features.js'
 export { loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT } from './services/features.js'
 export type { StockPolicy } from './services/features.js'
 export { loadRounding, setRounding, ROUNDING_DEFAULT } from './services/features.js'
+export { loadTaxScheme, setTaxScheme, taxSchemeAnswered } from './services/features.js'
 export type { Rounding } from './domain/billTotals.js'
 export type { Features, FeatureKey } from './services/features.js'
 
 export {
   recordPayment, cancelPayment, customerOutstanding, customerStatement, loadOpenBills,
+  totalOutstandingAll,
 } from './services/payments.js'
 export type {
   RecordPaymentInput, RecordPaymentResult, ReceiptMethod, CustomerStatementRow,
+  OutstandingTotal,
 } from './services/payments.js'
 
 export {
   getOrOpenSession, openSessionFor, closeSession, sessionSummary, postCashMovement, countDrawer,
+  listSessions,
 } from './services/cash.js'
+export type { ClosedSession } from './services/cash.js'
 export type {
   CashMovementInput, OpenSessionInput, SessionSummary, CloseSessionResult, CashDirection, TenderMethod,
 } from './services/cash.js'
@@ -113,11 +127,11 @@ export type {
 
 export {
   searchProducts, findByBarcode, productsByIds, saleUnitsFor, searchCustomers,
-  listBills, countBills, loadBillDetail,
+  countCustomers, listBills, countBills, loadBillDetail, loadCustomer,
 } from './repos/catalog.js'
 export type {
   BillFilter, BillStatusFilter,
-  ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem,
+  ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem, CustomerDetail,
   BillListItem, BillDetail, BillDetailItem,
 } from './repos/catalog.js'
 
@@ -132,8 +146,19 @@ export {
 export type { Register, RegisterResult } from './services/registers.js'
 
 export * as Receipt from './domain/receipt.js'
-export type { ReceiptDoc, ReceiptItem, ReceiptShop, PreviewLine, DocWording } from './domain/receipt.js'
-export { BILL_WORDING } from './domain/receipt.js'
+export type {
+  ReceiptDoc, ReceiptItem, ReceiptShop, PreviewLine, DocWording,
+  PlaceOfSupply, RateSummaryRow,
+} from './domain/receipt.js'
+export { BILL_WORDING, formatRate, rateSummaryOf } from './domain/receipt.js'
+export {
+  TAX_SCHEMES, isTaxScheme, chargesTax, documentTitle, schemeStatement, defaultScheme,
+  billWording, COMPOSITION_STATEMENT,
+} from './domain/taxScheme.js'
+export type { TaxScheme } from './domain/taxScheme.js'
+export { setProductActive } from './services/products.js'
+export { HSN_SHAPE, isHsn, hsnProblem, HSN_SHAPE_MESSAGE } from './domain/hsn.js'
+export type { HsnProblem } from './domain/hsn.js'
 export { buildInvoiceHtml } from './domain/invoiceHtml.js'
 export type { InvoiceHtmlOptions } from './domain/invoiceHtml.js'
 
@@ -156,7 +181,9 @@ export type { ReorderRow, ReorderOptions, SupplierGroup } from './repos/reorder.
 export { listShortfalls, countShortfalls } from './repos/shortfalls.js'
 export {
   createCustomer, updateCustomer, customerByPhone, nextCustomerCode, backfillCustomerCodes,
+  archiveCustomer, restoreCustomer,
 } from './services/customers.js'
+export type { ArchiveCustomerResult } from './services/customers.js'
 export type { CustomerInput, CustomerConflict, SaveCustomerResult } from './services/customers.js'
 export {
   listCustomerPayments, writeOff, recordOpeningBalance, customerAccount,
@@ -176,6 +203,7 @@ export { listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts } from './ser
 export type { OpenDraft, DraftDetail, DraftLine } from './services/drafts.js'
 export {
   listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
+  archivePriceList, restorePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
   listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList,
   setLadder, setCustomerLadder, ladderFor, customerLadderFor, laddersFor,
@@ -183,6 +211,7 @@ export {
 } from './services/pricing.js'
 export type {
   SaleUnit, SaleUnitInput, SetUnitsResult, PriceList, PriceListResult,
+  ArchivePriceListResult,
   ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice, SetLadderResult,
 } from './services/pricing.js'
 
@@ -220,7 +249,7 @@ export * as Backup from './services/backup.js'
 export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind } from './services/backup.js'
 
 export {
-  listSuppliers, supplierSummaries, createSupplier, updateSupplier, deleteSupplier,
+  listSuppliers, supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
   findOrCreateSupplier, supplierPurchases,
 } from './services/suppliers.js'
 export type { Supplier, SupplierSummary, SupplierResult, PurchaseLine } from './services/suppliers.js'

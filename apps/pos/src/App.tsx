@@ -1,12 +1,17 @@
 import { useEffect, useState } from 'react'
 import { login, Permissions, type Page } from '@shopos/core'
-import { useCore } from './core/CoreProvider'
+import { useCore, type FailureKind } from './core/CoreProvider'
+import { advice } from './core/startupAdvice'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
+import { PageErrorBoundary } from './ui/ErrorBoundary'
+import { BackupDot } from './ui/BackupDot'
+import { ChangePassword } from './ui/ChangePassword'
 import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
+import { appVersion, versionLine, type AppVersion } from './core/version'
 import { ICONS, BrandMark } from './ui/icons'
 import { AdminGate } from './ui/AdminGate'
 import { Formats } from './pages/Formats'
@@ -83,7 +88,7 @@ export default function App() {
   const { status, user } = useCore()
 
   if (status.phase === 'starting') return <Empty>Starting…</Empty>
-  if (status.phase === 'failed') return <CouldNotStart error={status.error} />
+  if (status.phase === 'failed') return <CouldNotStart error={status.error} kind={status.kind} />
   if (status.phase === 'setup') return <Setup />
   if (!user) return <Login />
   return <Shell />
@@ -96,18 +101,36 @@ export default function App() {
  * cannot read fails before sign-in — and a fix that sits behind the screen that
  * will not load is not a fix.
  */
-function CouldNotStart({ error }: { error: string }) {
+
+function CouldNotStart({ error, kind }: { error: string; kind: FailureKind }) {
   const [restoring, setRestoring] = useState(false)
+  const said = advice(kind)
+  // The one screen where the version matters most and was hardest to get: a
+  // shop that cannot start cannot open Settings to read it.
+  const [version, setVersion] = useState<AppVersion | null>(null)
+  useEffect(() => { void appVersion().then(setVersion) }, [])
 
   return (
     <div className="centre">
       <div className="panel" style={{ maxWidth: restoring ? 620 : undefined }}>
-        <div className="panel-head"><h1>Could not start</h1></div>
+        <div className="panel-head">
+          <h1>{said.title}</h1>
+        </div>
         <div className="panel-body">
           <Alert>{error}</Alert>
+          {said.says && (
+            <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+              {said.says}
+            </div>
+          )}
           {!restoring && (
             <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-              <button className="btn" onClick={() => setRestoring(true)}>Restore a backup…</button>
+              <button
+                className={said.restore === 'first' ? 'btn primary' : said.restore === 'last' ? 'btn ghost' : 'btn'}
+                onClick={() => setRestoring(true)}
+              >
+                Restore a backup…
+              </button>
               <button className="btn ghost" onClick={() => { void abandonRestore().then(() => window.location.reload()) }}>
                 Cancel a pending restore
               </button>
@@ -121,6 +144,9 @@ function CouldNotStart({ error }: { error: string }) {
               </button>
             </div>
           )}
+          <div style={{ marginTop: 16, fontSize: 12, color: 'var(--ink-3)' }}>
+            ShopOS {versionLine(version)}
+          </div>
         </div>
       </div>
     </div>
@@ -225,6 +251,7 @@ function Login() {
 function Shell() {
   const { user, setUser, shopName, registerName } = useCore()
   const pages = Permissions.visiblePages(user!.permissions)
+  const [changingPassword, setChangingPassword] = useState(false)
   const [current, setCurrent] = useState<Page>(
     NAV_GROUPS.flatMap((g) => g.pages).find((p) => pages.includes(p)) ?? pages[0] ?? 'dashboard',
   )
@@ -278,9 +305,17 @@ function Shell() {
             {/* The unlock belongs to a person, not to the machine, so it does
                 not outlive their session. */}
             <button className="link-btn" onClick={() => { lock(); setUser(null) }}>Sign out</button>
+            {/* Not on Settings, which is behind the owner's gate: this is the
+                one thing there that a cashier needs and an owner should not be
+                asked for. A password somebody else chose for you is not one. */}
+            <button className="link-btn" onClick={() => setChangingPassword(true)}>
+              Change my password
+            </button>
           </div>
         </div>
       </aside>
+
+      {changingPassword && <ChangePassword onClose={() => setChangingPassword(false)} />}
 
       <main className="main">
         <div className="topbar">
@@ -289,13 +324,22 @@ function Shell() {
             <span className="meta">Scan or type, then <span className="kbd">Enter</span> to add</span>
           )}
           <div className="spacer" />
+          {/* On every screen, because the backup that failed did so at 02:00
+              with nobody watching, and Settings is not a screen anyone opens
+              unprompted. It stays until a backup succeeds. */}
+          <BackupDot />
         </div>
         {/* On every screen, not on Settings alone: the till that cannot record
             who it is also stops running its backup and prints somewhere else,
             and nobody goes to Settings to find that out. */}
         <DeviceTroubleBanner />
         <div className={current === 'billing' ? 'content flush' : 'content'}>
-          <PageBody page={current} />
+          {/* Inside `main`, not around the shell: a page that throws must not
+              take the sidebar with it, or there is no way back to the counter
+              except closing the app mid-sale. */}
+          <PageErrorBoundary resetKey={current}>
+            <PageBody page={current} />
+          </PageErrorBoundary>
         </div>
       </main>
     </div>

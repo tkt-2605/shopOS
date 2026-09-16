@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Permissions,
-  supplierSummaries, createSupplier, updateSupplier, deleteSupplier, supplierPurchases,
+  supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
+  supplierPurchases,
   type SupplierSummary, type PurchaseLine,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -28,10 +29,11 @@ export default function Suppliers() {
   const [editing, setEditing] = useState<Draft | null>(null)
   const [viewing, setViewing] = useState<{ supplier: SupplierSummary; lines: PurchaseLine[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRows(await supplierSummaries(db))
-  }, [db])
+    setRows(await supplierSummaries(db, { includeArchived: showArchived }))
+  }, [db, showArchived])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -58,10 +60,32 @@ export default function Suppliers() {
     await refresh()
   }
 
-  async function remove(supplier: SupplierSummary) {
+  /**
+   * Off the list, and back onto it.
+   *
+   * This used to be Delete, and it was offered only when nothing had ever been
+   * bought from them -- because for any other supplier it refused with "Switch
+   * it off instead", pointing at a thing that did not exist. It archives now,
+   * for every supplier, and the row stays: it is what gives received stock its
+   * cost, and a shop with a stock entry from nobody cannot explain its own
+   * margins.
+   */
+  async function archive(supplier: SupplierSummary) {
     setError(null)
-    const result = await deleteSupplier(db, { supplierId: supplier.id, actorId: user.id })
-    if (!result.ok) { setError(result.message); return }
+
+    if (supplier.archived) {
+      await restoreSupplier(db, { supplierId: supplier.id, actorId: user.id })
+      await refresh()
+      return
+    }
+
+    if (!window.confirm(
+      `Take ${supplier.name} off the list?\n\n`
+      + 'Nothing is deleted: what was bought from them stays on every stock '
+      + 'entry and keeps its cost. They can be brought back from this screen.',
+    )) return
+
+    await archiveSupplier(db, { supplierId: supplier.id, actorId: user.id })
     await refresh()
   }
 
@@ -84,6 +108,17 @@ export default function Suppliers() {
           add up per vendor instead of scattering across three spellings of the same name.
         </div>
 
+        <label style={{
+          fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 5,
+          alignItems: 'center', marginBottom: 10,
+        }}>
+          <input
+            type="checkbox" checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Show the ones taken off the list
+        </label>
+
         <div className="card card-scroll">
           <table>
             <thead>
@@ -101,6 +136,10 @@ export default function Suppliers() {
                         the one thing in it the keyboard could not reach. */}
                     <button className="cell-btn" onClick={() => void open(s)}>{s.name}</button>
                     {!s.isActive && <span className="badge mute" style={{ marginLeft: 7 }}>off</span>}
+                    {/* Two different things, and the badges say which: "off" is
+                        not buying from them at the moment, "removed" is off the
+                        list entirely. */}
+                    {s.archived && <span className="badge" style={{ marginLeft: 7 }}>removed</span>}
                   </td>
                   <td className="num">{s.phone ?? <span style={{ color: 'var(--ink-3)' }}>—</span>}</td>
                   <td className="num">{s.gstin ?? <span style={{ color: 'var(--ink-3)' }}>—</span>}</td>
@@ -119,8 +158,10 @@ export default function Suppliers() {
                         Edit
                       </button>
                     )}
-                    {s.entryCount === 0 && canDelete && (
-                      <button className="btn ghost sm" onClick={() => void remove(s)}>Delete</button>
+                    {canDelete && (
+                      <button className="btn ghost sm" onClick={() => void archive(s)}>
+                        {s.archived ? 'Bring back' : 'Remove'}
+                      </button>
                     )}
                   </td>
                 </tr>

@@ -1,6 +1,9 @@
 import { format as fmtMoney, inWords } from '../money.js'
 import { formatQty } from '../quantity.js'
-import { BILL_WORDING, type DocWording, type ReceiptDoc, type ReceiptItem } from './receipt.js'
+import {
+  BILL_WORDING, formatRate,
+  type DocWording, type ReceiptDoc, type ReceiptItem,
+} from './receipt.js'
 import { fillTokens, PAPER, usesTemplate, type Block, type DocFormat, type Facts } from './docFormat.js'
 import { renderTemplate, templateData } from './htmlTemplate.js'
 
@@ -86,15 +89,26 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
       /* A document that knows what it is outranks the wording the shop chose,
          which was chosen for its bills. A bill carries no wording and keeps it. */
       const label = doc.wording?.title ?? block.opts?.label?.trim()
-      return label ? `<h1 class="title">${esc(label)}</h1>` : ''
+      if (!label) return ''
+      // Rule 49's statement belongs with the title it qualifies, not in the
+      // footer where a reader has stopped looking.
+      return `<h1 class="title">${esc(label)}</h1>${
+        doc.schemeStatement ? `<p class="scheme">${esc(doc.schemeStatement)}</p>` : ''}`
     }
 
     case 'meta':
       return `<table class="meta"><tbody>
         <tr><th>${esc(wordsFor(doc).docNo)}</th><td>${esc(doc.docNo)}</td></tr>
         <tr><th>Date</th><td>${esc(formatDate(doc.postingDate))}</td></tr>
+        ${doc.againstDocNo ? `<tr><th>Against invoice</th><td>${esc(doc.againstDocNo)}${
+          doc.againstDate ? esc(` dated ${formatDate(doc.againstDate)}`) : ''}</td></tr>` : ''}
         ${doc.validUntil ? `<tr><th>Valid until</th><td>${esc(formatDate(doc.validUntil))}</td></tr>` : ''}
-        ${doc.placeOfSupply ? `<tr><th>Place of supply</th><td>${esc(doc.placeOfSupply)}</td></tr>` : ''}
+        ${doc.placeOfSupply
+          ? `<tr><th>Place of supply</th><td>${esc(placeLabel(doc.placeOfSupply))}</td></tr>` : ''}
+        ${/* Rule 46(p). Always "No" in this product, and said rather than left
+              for the reader to assume. */ ''}
+        ${doc.reverseCharge === undefined
+          ? '' : `<tr><th>Reverse charge</th><td>${doc.reverseCharge ? 'Yes' : 'No'}</td></tr>`}
         ${doc.cashier ? `<tr><th>${esc(wordsFor(doc).by)}</th><td>${esc(doc.cashier)}</td></tr>` : ''}
       </tbody></table>`
 
@@ -104,32 +118,38 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
         <div class="party-label">${esc(wordsFor(doc).party)}</div>
         <div class="party-name">${esc(doc.customerName)}</div>
         ${line(doc.customerAddress)}
+        ${doc.customerState ? line(placeLabel(doc.customerState)) : ''}
         ${doc.customerGstin ? line(`GSTIN ${doc.customerGstin}`) : ''}
       </section>`
     }
 
     case 'items': {
-      // The tax columns earn their place only when the lines carry the numbers.
-      const taxed = doc.items.some((i) => i.taxableValue !== undefined)
-      const hsn = doc.items.some((i) => i.hsnCode)
+      const has = columnsFor(doc)
 
       return `<table class="items"><thead><tr>
         <th class="c-no">#</th>
         <th class="c-name">Item</th>
-        ${hsn ? '<th class="c-hsn">HSN</th>' : ''}
+        ${has.hsn ? '<th class="c-hsn">HSN</th>' : ''}
         <th class="c-num">Qty</th>
         <th class="c-num">Rate</th>
-        ${taxed ? '<th class="c-num">Taxable</th><th class="c-num">Tax</th>' : ''}
+        ${has.taxed ? '<th class="c-num">Taxable</th>' : ''}
+        ${has.rate ? '<th class="c-num">GST</th>' : ''}
+        ${has.halves ? '<th class="c-num">CGST</th><th class="c-num">SGST</th>' : ''}
+        ${has.igst ? '<th class="c-num">IGST</th>' : ''}
         <th class="c-num">Amount</th>
       </tr></thead><tbody>
-        ${doc.items.map((item, i) => itemRow(item, i, { hsn, taxed })).join('')}
+        ${doc.items.map((item, i) => itemRow(item, i, has)).join('')}
       </tbody></table>`
     }
 
     case 'totals': {
       const rows = [row('Subtotal', doc.subtotal)]
       if (doc.discount > 0) rows.push(row('Discount', doc.discount, '-'))
-      rows.push(row('Taxable value', doc.taxableTotal))
+      // Same reasoning as the roll: not on a document that charged no tax and
+      // took nothing off, where it is the subtotal again under a wrong heading.
+      if (columnsFor(doc).taxed || doc.taxableTotal !== doc.subtotal) {
+        rows.push(row('Taxable value', doc.taxableTotal))
+      }
       if (doc.cgst > 0) rows.push(row('CGST', doc.cgst))
       if (doc.sgst > 0) rows.push(row('SGST', doc.sgst))
       if (doc.igst > 0) rows.push(row('IGST', doc.igst))
@@ -145,17 +165,32 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
 
     case 'tax_summary': {
       if (doc.cgst === 0 && doc.sgst === 0 && doc.igst === 0) return ''
+
+      /* Rate by rate when the document carries its rates, which is the block a
+         CA reads first and the shape a GST return is filed in. One row without
+         a rate is what a document raised before the rates were stored gets —
+         the old single row, rather than a summary that invents a rate. */
+      const has = columnsFor(doc)
+      const rows = doc.rateSummary && doc.rateSummary.length > 0
+        ? doc.rateSummary
+        : [{ rateBp: -1, taxable: doc.taxableTotal, cgst: doc.cgst, sgst: doc.sgst, igst: doc.igst }]
+
+      const body = rows.map((r) => `<tr>
+          ${r.rateBp < 0 ? '<td>Total</td>' : `<td>${esc(formatRate(r.rateBp))}</td>`}
+          <td class="c-num">${esc(fmtMoney(r.taxable))}</td>
+          ${has.halves ? `<td class="c-num">${esc(fmtMoney(r.cgst))}</td>` : ''}
+          ${has.halves ? `<td class="c-num">${esc(fmtMoney(r.sgst))}</td>` : ''}
+          ${has.igst ? `<td class="c-num">${esc(fmtMoney(r.igst))}</td>` : ''}
+          <td class="c-num">${esc(fmtMoney((r.cgst + r.sgst + r.igst) as never))}</td>
+        </tr>`).join('')
+
       return `<table class="tax"><thead><tr>
-          <th>Taxable value</th>
-          ${doc.cgst > 0 ? '<th class="c-num">CGST</th>' : ''}
-          ${doc.sgst > 0 ? '<th class="c-num">SGST</th>' : ''}
-          ${doc.igst > 0 ? '<th class="c-num">IGST</th>' : ''}
-        </tr></thead><tbody><tr>
-          <td>${esc(fmtMoney(doc.taxableTotal))}</td>
-          ${doc.cgst > 0 ? `<td class="c-num">${esc(fmtMoney(doc.cgst))}</td>` : ''}
-          ${doc.sgst > 0 ? `<td class="c-num">${esc(fmtMoney(doc.sgst))}</td>` : ''}
-          ${doc.igst > 0 ? `<td class="c-num">${esc(fmtMoney(doc.igst))}</td>` : ''}
-        </tr></tbody></table>`
+          <th>GST</th>
+          <th class="c-num">Taxable value</th>
+          ${has.halves ? '<th class="c-num">CGST</th><th class="c-num">SGST</th>' : ''}
+          ${has.igst ? '<th class="c-num">IGST</th>' : ''}
+          <th class="c-num">Total tax</th>
+        </tr></thead><tbody>${body}</tbody></table>`
     }
 
     case 'payments': {
@@ -218,8 +253,50 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
  */
 const SAFE_DATA_URI = /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/]+=*$/
 
-function itemRow(item: ReceiptItem, index: number, has: { hsn: boolean; taxed: boolean }): string {
-  const tax = (item.cgst ?? 0) + (item.sgst ?? 0) + (item.igst ?? 0)
+interface Columns {
+  hsn: boolean
+  taxed: boolean
+  rate: boolean
+  halves: boolean
+  igst: boolean
+}
+
+/**
+ * Which tax columns the sheet prints.
+ *
+ * CGST and SGST together, or IGST alone — never all three, and never a column
+ * of zeroes. An invoice with an empty IGST column beside a filled CGST one asks
+ * the reader to work out which kind of supply it was; saying it once, in the
+ * columns and again as the place of supply, is the whole point of Rule 46(m).
+ *
+ * `supplyType` decides it where the bill recorded one, and the amounts decide
+ * it where it did not. The difference matters for a bill of entirely exempt
+ * goods: every figure is zero, so the amounts say nothing, and only the stored
+ * supply type can tell an exempt local sale from an exempt inter-state one.
+ */
+function columnsFor(doc: ReceiptDoc): Columns {
+  /* No tax anywhere means no tax columns, not columns of zeroes. On a bill of
+     supply that is the whole point: a composition dealer may not charge tax,
+     and a document of theirs showing a CGST column -- even an empty one -- is
+     making the claim Rule 49 exists to stop them making. The taxable column
+     goes with it, because with nothing taken out of it the taxable value is the
+     amount, printed twice under two headings, one of which is wrong. */
+  const charged = doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0
+  const taxed = charged && doc.items.some((i) => i.taxableValue !== undefined)
+  const inter = doc.supplyType !== undefined
+    ? doc.supplyType === 'inter_state'
+    : doc.igst > 0
+
+  return {
+    hsn: doc.items.some((i) => i.hsnCode),
+    taxed,
+    rate: taxed && doc.items.some((i) => i.taxRateBp !== undefined),
+    halves: taxed && !inter,
+    igst: taxed && inter,
+  }
+}
+
+function itemRow(item: ReceiptItem, index: number, has: Columns): string {
   return `<tr>
     <td class="c-no">${index + 1}</td>
     <td class="c-name">${esc(item.name)}</td>
@@ -227,9 +304,17 @@ function itemRow(item: ReceiptItem, index: number, has: { hsn: boolean; taxed: b
     <td class="c-num">${esc(`${formatQty(item.qty)} ${item.saleUnit}`)}</td>
     <td class="c-num">${esc(fmtMoney(item.rate))}</td>
     ${has.taxed ? `<td class="c-num">${esc(fmtMoney((item.taxableValue ?? 0) as never))}</td>` : ''}
-    ${has.taxed ? `<td class="c-num">${esc(fmtMoney(tax as never))}</td>` : ''}
+    ${has.rate ? `<td class="c-num">${esc(item.taxRateBp === undefined ? '' : formatRate(item.taxRateBp))}</td>` : ''}
+    ${has.halves ? `<td class="c-num">${esc(fmtMoney((item.cgst ?? 0) as never))}</td>` : ''}
+    ${has.halves ? `<td class="c-num">${esc(fmtMoney((item.sgst ?? 0) as never))}</td>` : ''}
+    ${has.igst ? `<td class="c-num">${esc(fmtMoney((item.igst ?? 0) as never))}</td>` : ''}
     <td class="c-num">${esc(fmtMoney(item.lineTotal))}</td>
   </tr>`
+}
+
+/** "27 — Maharashtra": the code a return is filed with, and the name a person reads. */
+function placeLabel(place: { code: string; name: string }): string {
+  return place.code && place.name ? `${place.code} — ${place.name}` : place.name || place.code
 }
 
 function row(label: string, amount: number, sign = ''): string {
@@ -329,6 +414,7 @@ function styles(pageSize: string, preview: boolean): string {
       border-top: 1px solid #111;
       border-bottom: 1px solid #111;
     }
+    .scheme { margin: -6px 0 10px; font-size: 9pt; text-align: center; color: #333; }
     table { width: 100%; border-collapse: collapse; }
     .meta { width: auto; margin-bottom: 12px; font-size: 10pt; }
     .meta th { padding: 1px 14px 1px 0; font-weight: 400; color: #555; text-align: left; }

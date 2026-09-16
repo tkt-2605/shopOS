@@ -20,6 +20,8 @@
  * sales.
  */
 
+import { clock } from '../clock.js'
+
 const ALGORITHM = { name: 'HMAC', hash: 'SHA-256' } as const
 
 /** How far apart two tills' clocks may be before a request is refused. */
@@ -78,7 +80,7 @@ export async function sign(
   deviceId: string,
   path: string,
   body: string,
-  now = Date.now(),
+  now = clock.now(),
 ): Promise<SignedRequest> {
   const nonce = hex(globalThis.crypto.getRandomValues(new Uint8Array(12)))
   const signature = await hmac(secret, subject(path, now, nonce, body))
@@ -128,7 +130,7 @@ export async function verify(
   path: string,
   body: string,
   secretFor: (deviceId: string) => Promise<string | null>,
-  now = Date.now(),
+  now = clock.now(),
 ): Promise<AuthResult> {
   const signed = decodeAuth(header)
   if (signed === null) return { ok: false, code: 'MALFORMED' }

@@ -3,8 +3,9 @@ import {
   listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
   listCustomerPrices, setCustomerPrice, setCustomerPriceList, perBaseUnit,
+  archivePriceList, restorePriceList,
 } from '../src/services/pricing.js'
-import { loadPriceCandidates } from '../src/repos/pricing.js'
+import { loadPriceCandidates, pricingContextFor, resolveLinePrice } from '../src/repos/pricing.js'
 import { resolvePrice } from '../src/domain/pricing.js'
 import { createBill, submitBill } from '../src/services/billing.js'
 import { rupees } from '../src/money.js'
@@ -117,6 +118,110 @@ describe('price lists', () => {
     const list = (await listPriceLists(fx.db)).find((l) => l.id === made.priceListId)
     expect(list?.name).toBe('Bulk')
     expect(list?.priceCount).toBe(1)
+  })
+})
+
+/**
+ * Taking a price list off the screen.
+ *
+ * `price_lists` had two retirement columns and neither of them worked.
+ * `is_active` was written on every create and update and read by nothing --
+ * not the resolver, not `listPriceLists`, not `defaultPriceListId` -- so a
+ * list marked inactive went on pricing every line it had ever priced.
+ * `deleted_at` was the opposite: filtered by every reader and set by nothing,
+ * so a list typed in by mistake stayed forever. Migration 031 drops the first
+ * and these tests are the writing half of the second.
+ */
+describe('a price list taken off the screen', () => {
+  async function list(name: string): Promise<string> {
+    const made = await createPriceList(fx.db, ctx(), { name })
+    if (!made.ok) throw new Error(made.code)
+    return made.priceListId
+  }
+
+  it('goes out of the list of lists, and comes back', async () => {
+    const id = await list('Festival')
+    expect(await archivePriceList(fx.db, ctx(), id)).toEqual({ ok: true })
+    expect((await listPriceLists(fx.db)).map((l) => l.id)).not.toContain(id)
+
+    const withArchived = await listPriceLists(fx.db, { includeArchived: true })
+    expect(withArchived.find((l) => l.id === id)?.archived).toBe(true)
+
+    await restorePriceList(fx.db, ctx(), id)
+    expect((await listPriceLists(fx.db)).map((l) => l.id)).toContain(id)
+  })
+
+  it('keeps every rate that was ever on it', async () => {
+    const id = await list('Festival')
+    const p = await makeProduct(fx.db)
+    await setItemPrice(fx.db, ctx(), { productId: p, priceListId: id, saleUnit: 'piece', rate: rupees(8) })
+
+    await archivePriceList(fx.db, ctx(), id)
+    await restorePriceList(fx.db, ctx(), id)
+
+    /* The rates were never touched, which is what makes the button safe to
+       press: a list that comes back comes back priced. A hard delete would
+       have taken `item_prices` with it, and with them the `price_source_id`
+       chain that answers "why was this one 8 rupees last March". */
+    const back = (await listPriceLists(fx.db)).find((l) => l.id === id)
+    expect(back?.priceCount).toBe(1)
+  })
+
+  it('refuses on the default list, which a walk-in customer needs', async () => {
+    const theDefault = (await listPriceLists(fx.db)).find((l) => l.isDefault)!
+
+    expect(await archivePriceList(fx.db, ctx(), theDefault.id)).toEqual({ ok: false, code: 'IS_DEFAULT' })
+    expect((await listPriceLists(fx.db)).some((l) => l.isDefault)).toBe(true)
+  })
+
+  it('refuses while customers are still buying on it', async () => {
+    const id = await list('Wholesale')
+    const customer = await makeCustomer(fx.db, 'Ramesh Stores')
+    await setCustomerPriceList(fx.db, ctx(), customer, id)
+
+    /* Hiding the list does not move them off it. It changes what they are
+       charged, quietly, at the counter, tomorrow morning. */
+    expect(await archivePriceList(fx.db, ctx(), id)).toEqual({ ok: false, code: 'IN_USE', customerCount: 1 })
+    expect((await listPriceLists(fx.db)).map((l) => l.id)).toContain(id)
+  })
+
+  it('stops pricing anything, for a customer left pointing at it', async () => {
+    /* The refusal above means the shop cannot get here by pressing buttons.
+       This is the second lock: a customer row keeps its `price_list_id` when a
+       list is archived -- that pointer is how restoring puts them back on
+       their old rates -- so the list has to be checked where the rate is
+       decided. Without it an archived list prices exactly as before, which is
+       what `is_active` did for this table's whole life. */
+    const id = await list('Wholesale')
+    const p = await makeProduct(fx.db, { baseRate: rupees(10) })
+    await setItemPrice(fx.db, ctx(), { productId: p, priceListId: id, saleUnit: 'piece', rate: rupees(8) })
+
+    const customer = await makeCustomer(fx.db, 'Ramesh Stores')
+    await setCustomerPriceList(fx.db, ctx(), customer, id)
+
+    const before = await pricingContextFor(fx.db, customer)
+    expect(before.customerPriceListId).toBe(id)
+
+    await fx.db.execute(
+      `UPDATE price_lists SET deleted_at = '2026-03-01T00:00:00Z' WHERE id = ?`, [id])
+
+    const after = await pricingContextFor(fx.db, customer)
+    expect(after.customerPriceListId).toBeNull()
+
+    const rate = await resolveLinePrice(fx.db, after, { productId: p, saleUnit: 'piece', qty: fromUnits(1) })
+    expect(rate.rate).toBe(rupees(10))
+  })
+
+  it('keeps its name spoken for, and says so', async () => {
+    const id = await list('Wholesale')
+    await archivePriceList(fx.db, ctx(), id)
+
+    /* `price_lists.name` is UNIQUE in the schema and the archived row is still
+       there, so letting this through would have handed the shop a raw SQLite
+       constraint error. It names the list instead, because the useful answer
+       is to bring that one back rather than invent a second spelling. */
+    const again = await createPriceList(fx.db, ctx(), { name: 'Wholesale' })
+    expect(again).toEqual({ ok: false, code: 'NAME_TAKEN_ARCHIVED', priceListId: id })
   })
 })
 

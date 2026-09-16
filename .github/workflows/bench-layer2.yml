@@ -1,0 +1,72 @@
+# Layer 2 of the test bench: three tills in containers on two Docker networks.
+#
+# **Never a required check.** It is nightly and on demand, and the first job is
+# a smoke test that decides whether the rest is even meaningful here. The reason
+# is written into the job itself: UDP broadcast across container network
+# namespaces is the one thing this layer exists to prove, and a hosted runner
+# may not permit it. A check that cannot tell "discovery is broken" from "this
+# runner does not do broadcast" is worse than no check, because it trains
+# everybody to ignore a red mark.
+#
+# Layer 1 — the six scenarios in `tools/virtual-till/test` — is the required
+# one, runs in `npm test`, and needs no Docker at all.
+
+name: bench layer 2
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 02:30 UTC, which is 08:00 IST: a failure is waiting when the day starts.
+    - cron: '30 2 * * *'
+
+jobs:
+  broadcast-smoke:
+    name: can this runner do UDP broadcast between containers?
+    runs-on: ubuntu-latest
+    outputs:
+      usable: ${{ steps.smoke.outputs.usable }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: smoke
+        name: two containers, one broadcast
+        run: |
+          set -u
+          docker network create bench-smoke >/dev/null
+
+          # Nothing from this repository: a plain listener and a plain sender,
+          # so a failure here is about the runner and cannot be about our code.
+          docker run -d --rm --name smoke-listen --network bench-smoke alpine \
+            sh -c 'apk add --no-cache socat >/dev/null 2>&1; socat -u UDP-RECVFROM:9999,fork - > /tmp/got; sleep 30'
+          sleep 8
+
+          docker run --rm --network bench-smoke alpine \
+            sh -c 'apk add --no-cache socat >/dev/null 2>&1; echo HELLO | socat - UDP-DATAGRAM:255.255.255.255:9999,broadcast' || true
+          sleep 3
+
+          if docker exec smoke-listen sh -c 'grep -q HELLO /tmp/got' 2>/dev/null; then
+            echo "usable=true" >> "$GITHUB_OUTPUT"
+            echo "### Layer 2: broadcast works on this runner" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            echo "### Layer 2: self-hosted only" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "This hosted runner did not deliver a UDP broadcast between two containers on one Docker network, so the discovery assertions cannot be trusted here. Run \`docker/bench/run.sh\` locally or on a self-hosted runner." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          docker rm -f smoke-listen >/dev/null 2>&1 || true
+          docker network rm bench-smoke >/dev/null 2>&1 || true
+          # Always green. The result is the output and the summary, not the mark:
+          # "this runner cannot host the test" is information, not a failure.
+          exit 0
+
+  layer2:
+    name: three tills on two networks
+    needs: broadcast-smoke
+    if: needs.broadcast-smoke.outputs.usable == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: run.sh
+        run: bash docker/bench/run.sh

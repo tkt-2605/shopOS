@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Money, Quantity, Pricing, Totals, Loyalty, Permissions,
   searchProducts, saleUnitsFor, searchCustomers, loadLoyaltyProgram,
-  submitBill, pricingContextFor, resolveLinePrice,
+  submitBill, pricingContextFor, resolveLinePrice, chargesTax, RULE_46F_THRESHOLD,
   type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -14,7 +14,7 @@ import { usePickList, Results } from '../ui/PickList'
 import { useConfirm } from '../ui/useConfirm'
 
 export default function Billing() {
-  const { db, registerId, stockPolicy, rounding } = useCore()
+  const { db, registerId, stockPolicy, rounding, taxScheme } = useCore()
   const [confirmUi, ask] = useConfirm()
   const user = useUser()
   const tabs = useBillTabs(db, registerId, user.id)
@@ -204,6 +204,13 @@ export default function Billing() {
 
   /* Walk-in is row zero, so the commonest answer is the one already highlighted
      when the dialog opens. */
+  /* Only where it is actually the rule: Rule 46(f) is about a tax invoice, and
+     a shop on the composition scheme or not registered at all is issuing
+     something else. `submitBill` draws the same line. */
+  const needsRecipient = chargesTax(taxScheme)
+    && !active.customer
+    && totals.grandTotal >= RULE_46F_THRESHOLD
+
   const chooseCustomer = useCallback((customer: CustomerListItem | null) => {
     tabs.patch((cart) => ({ ...cart, customer }))
     setPickingCustomer(false)
@@ -484,6 +491,16 @@ export default function Billing() {
               Outstanding <Rupees value={active.customer.outstanding} />
             </div>
           )}
+          {/* Said while the cart is being built rather than at the moment the
+              customer holds out the money. Rule 46(f) refuses this bill at
+              submit, and a refusal a cashier could have seen coming is a
+              refusal that should have been a warning. */}
+          {needsRecipient && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--warn)' }}>
+              Over {Money.formatWithSymbol(RULE_46F_THRESHOLD)}, so this bill needs a
+              customer with a name and address before it can be taken.
+            </div>
+          )}
           {/* Which order this tab is settling, said plainly and permanently:
               the notice that announced it is gone by the time the customer
               finishes at the shelf, and a counter restarted after a power cut
@@ -671,14 +688,6 @@ export default function Billing() {
   )
 }
 
-/** What is short, in the order a person would say it. */
-function describeShort(short: Map<string, { name: string; unit: string; want: number; have: number }>): string {
-  const parts = [...short.values()].map(
-    (w) => `${w.name} — ${w.have} ${w.unit} in stock, selling ${w.want}`,
-  )
-  return parts.length === 1 ? `${parts[0]}.` : `${parts.join('; ')}.`
-}
-
 /** The one mapping from cart lines to what the totals engine wants. */
 function totalsLinesOf(lines: CartLine[]): Totals.TotalsLine[] {
   return lines.map((l) => ({
@@ -709,6 +718,17 @@ function submitMessage(result: Extract<Awaited<ReturnType<typeof submitBill>>, {
       return 'Choose a customer before billing to credit.'
     case 'LOYALTY_REJECTED':
       return `Points could not be redeemed: ${result.reason}.`
+    case 'SHOP_STATE_UNSET':
+      /* The setting decides CGST+SGST against IGST on every bill, and with it
+         unset every sale is taxed as a local one — including one to another
+         state. Said as a thing to go and do, with where. */
+      return 'This shop has not said which state it is in, and that decides the tax on every bill. '
+        + 'Settings → Shop → State.'
+    case 'NEEDS_RECIPIENT':
+      // Rule 46(f). A required field, not a stopped till: put a name on it.
+      return `A bill of ${Money.formatWithSymbol(result.threshold)} or more has to carry the customer’s `
+        + `name and address — this one is ${Money.formatWithSymbol(result.grandTotal)}. `
+        + 'Choose a customer, or add them, and take the payment again.'
     default:
       return 'The bill could not be completed.'
   }

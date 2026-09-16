@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { handleSyncRequest, type SqlDriver } from '@shopos/core'
+import { logEvent, describe } from './log'
 
 /**
  * Answering the other till.
@@ -27,6 +28,10 @@ interface Forwarded {
   path: string
   body: string
   auth: string | null
+  /** The caller's IP, from the socket rather than any header it sent. */
+  remoteAddress: string | null
+  /** The port the caller says it listens on, from `x-shopos-port`. */
+  listenPort: number | null
 }
 
 let listening: UnlistenFn | null = null
@@ -124,19 +129,50 @@ export async function servingOn(): Promise<ServeInfo | null> {
   return (await invoke<ServeInfo | null>('sync_serve_status')) ?? null
 }
 
+/** The refusal code out of a reply body, without trusting it to be JSON. */
+function codeIn(body: string): string {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (parsed !== null && typeof parsed === 'object' && 'code' in parsed) {
+      return String((parsed as { code: unknown }).code)
+    }
+  } catch {
+    // Not JSON. The status on its own is still worth the line.
+  }
+  return 'no code'
+}
+
 async function answer(db: SqlDriver, request: Forwarded): Promise<void> {
   try {
     const reply = await handleSyncRequest(db, {
       path: request.path,
       body: request.body,
       auth: request.auth,
+      /* Where the caller is, as Rust's socket saw it, and the port it says it
+         answers on. Without these the peer row for a till that joined us has a
+         secret and no address — and `pairedPeers` filters those out, so this
+         till could receive a sync for ever and never start one. */
+      remoteAddress: request.remoteAddress ?? null,
+      listenPort: request.listenPort ?? null,
     })
+    /* Refusals, from the side that did the refusing.
+
+       This is the half that was invisible. A till that turns its partner away —
+       wrong schema, wrong shop, same counter, a secret that does not match —
+       said so over HTTP and wrote nothing down, so the machine that knew the
+       reason kept it and the machine that got the sentence could not always
+       show it. Two tills that will not talk is a support call, and it used to
+       arrive with evidence on neither end. */
+    if (reply.status >= 400) {
+      logEvent('warn', 'sync', `refused ${request.path}: ${reply.status} ${codeIn(reply.body)}`)
+    }
     await invoke('sync_reply', { id: request.id, status: reply.status, body: reply.body })
   } catch (err) {
     /* Every expected refusal is already a status from `handleSyncRequest`, so
        reaching here means something genuinely broke — a database that will not
        open, a disk that is full. The other till is told plainly rather than left
        holding a connection until it times out. */
+    logEvent('error', 'sync', `could not answer ${request.path}: ${describe(err)}`)
     console.error('Could not answer the other till:', err)
     await invoke('sync_reply', {
       id: request.id,

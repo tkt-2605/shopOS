@@ -22,6 +22,9 @@ export interface RestoreCheck {
   problem: string | null
   warning: string | null
   taken_at: string | null
+  /** Submitted bills in the backup, and the date of the last one. */
+  bills: number
+  last_bill: string | null
 }
 
 export interface RestoreMarker {

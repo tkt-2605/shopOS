@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Money, searchCustomers, customerStatement, customerAccount, recordPayment,
-  Permissions,
+  Money, searchCustomers, countCustomers, customerStatement, customerAccount, recordPayment,
+  Permissions, totalOutstandingAll,
   listCustomerPayments, cancelPayment, writeOff, recordOpeningBalance, businessDate, addDays,
   type CustomerListItem, type CustomerStatementRow, type CustomerPayment, type CustomerAccount,
+  type OutstandingTotal,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees, Stat } from '../ui/components'
@@ -38,6 +39,15 @@ interface Account {
 /** How the money is coming in, or that it is not coming in at all. */
 type Settle = 'cash' | 'upi' | 'card' | 'writeoff'
 
+/**
+ * How many names the list holds before it stops.
+ *
+ * It has always stopped here; what changed is that the page no longer pretends
+ * otherwise. The three figures above the table are the whole shop's, from one
+ * query, and the line under the table says when the table is short of it.
+ */
+const PAGE = 500
+
 export default function Credit() {
   const { db, registerId } = useCore()
   const user = useUser()
@@ -56,11 +66,28 @@ export default function Credit() {
   const [notice, setNotice] = useState<string | null>(null)
 
   const [everyone, setEveryone] = useState<CustomerListItem[]>([])
+  /**
+   * The whole shop, not the page of it below.
+   *
+   * The three stats used to be `shown.reduce(...)` over the five hundred rows
+   * that happened to be loaded — so a shop with six hundred customers was told
+   * what the first five hundred *by name* owed it, and told it in the words
+   * "Total outstanding". Wrong in the direction that never looks alarming
+   * enough to question. Two grouped passes now, over every customer there is.
+   */
+  const [book, setBook] = useState<OutstandingTotal | null>(null)
+  const [known, setKnown] = useState(0)
 
   const refresh = useCallback(async () => {
-    const all = await searchCustomers(db, '', 500)
+    const [all, shopWide, howMany] = await Promise.all([
+      searchCustomers(db, '', PAGE),
+      totalOutstandingAll(db),
+      countCustomers(db),
+    ])
     setEveryone(all)
     setCustomers(all.filter((c) => c.outstanding > 0))
+    setBook(shopWide)
+    setKnown(howMany)
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -103,13 +130,20 @@ export default function Credit() {
     onPick: (i) => { const c = shown[i]; if (c) void load(c) },
   })
 
-  /* Simple analytics: the three numbers that decide whether today is a
-     collection day, and the one customer to start with. */
-  const total = shown.reduce((s, c) => s + c.outstanding, 0)
-  const worst = shown.reduce<CustomerListItem | null>(
-    (w, c) => (w === null || c.outstanding > w.outstanding ? c : w), null,
-  )
-  const overLimit = shown.filter((c) => c.creditLimit > 0 && c.outstanding > c.creditLimit).length
+  /* The three numbers that decide whether today is a collection day, and the
+     one customer to start with. All of them about the shop, none of them about
+     this page of it. */
+  const total = book?.total ?? Money.ZERO
+  const worst = book?.worst ?? null
+  const overLimit = book?.overLimit ?? 0
+  const owing = book?.customers ?? 0
+
+  /* Whether the table is showing everything it is summarising. Searching
+     narrows the table and not the figures above it, which is the honest way
+     round — "Total outstanding" is a fact about the shop, not about what has
+     been typed into a box. */
+  const listed = who === 'owing' ? customers.length : everyone.length
+  const short = term.trim() === '' && (who === 'owing' ? owing > listed : known > listed)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -118,8 +152,10 @@ export default function Credit() {
       <div className="stat-row">
         <Stat
           label="Total outstanding"
-          value={<span className="num">{Money.formatWithSymbol(total as never)}</span>}
-          sub={`${shown.length} ${shown.length === 1 ? 'customer owes' : 'customers owe'} money`}
+          value={<span className="num">{Money.formatWithSymbol(total)}</span>}
+          sub={owing === 0
+            ? 'Nobody owes anything'
+            : `${owing} ${owing === 1 ? 'customer owes' : 'customers owe'} money`}
         />
         <Stat
           label="Owes the most"
@@ -136,10 +172,10 @@ export default function Credit() {
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <div className="segment">
           <button className={who === 'owing' ? 'on' : ''} onClick={() => setWho('owing')}>
-            Owing ({customers.length})
+            Owing ({owing})
           </button>
           <button className={who === 'everyone' ? 'on' : ''} onClick={() => setWho('everyone')}>
-            Everyone ({everyone.length})
+            Everyone ({known})
           </button>
         </div>
         <input className="input" style={{ maxWidth: 340 }}
@@ -196,6 +232,17 @@ export default function Credit() {
           </tbody>
         </table>
       </div>
+
+      {short && (
+        /* The figures above are the whole shop's and this table is not, so it
+           has to say so. Without this line the page contradicts itself in
+           public: a total of one amount over a list that visibly adds to less,
+           and no explanation anywhere on the screen. */
+        <div style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
+          Showing {listed} of {who === 'owing' ? owing : known}. Search by name, phone
+          or code to reach anyone not on the list.
+        </div>
+      )}
 
       {open && (
         <AccountPanel

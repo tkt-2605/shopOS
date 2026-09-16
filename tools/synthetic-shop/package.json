@@ -1,0 +1,10 @@
+{
+  "name": "@shopos/synthetic-shop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A shop with a year behind it, generated. For the questions only size can answer.",
+  "dependencies": {
+    "@shopos/core": "*"
+  }
+}
