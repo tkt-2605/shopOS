@@ -1,6 +1,10 @@
+import { eq, and, desc, asc, between, isNotNull, sql, type SQL } from 'drizzle-orm'
+import { unionAll } from 'drizzle-orm/sqlite-core'
 import type { SqlDriver, SqlValue } from '../db/driver.js'
-import type { Money } from '../money.js'
+import { q, schema } from '../db/q.js'
+import { type Money, ZERO } from '../money.js'
 import { QTY_SCALE, type Qty } from '../quantity.js'
+import { SUBMITTED } from '../integrity/docstatus.js'
 
 /**
  * Every figure here is read from submitted documents (docstatus = 1) and nothing
@@ -14,10 +18,45 @@ export interface DateRange {
   registerId?: string | null
 }
 
+/**
+ * The register filter as a fragment of SQL, for the one query still written by
+ * hand. Everything else on this page uses `onRegister` below.
+ */
 function scope(range: DateRange): { clause: string; params: SqlValue[] } {
   return range.registerId
     ? { clause: `AND b.register_id = ?`, params: [range.from, range.to, range.registerId] }
     : { clause: ``, params: [range.from, range.to] }
+}
+
+/**
+ * The register filter, as a condition rather than a fragment of a string.
+ *
+ * Every report is scoped to one till or to all of them, and the answer is
+ * always a condition on `bills` -- including for returns and for stock
+ * movements, which reach it through a join. A report scoped to the wrong till
+ * is not an error; it is a smaller number that looks like a quiet week.
+ */
+function onRegister(range: DateRange): SQL[] {
+  return range.registerId ? [eq(schema.bills.registerId, range.registerId)] : []
+}
+
+/** Submitted sales only: a draft is not a sale and a cancelled bill is not one. */
+function soldIn(range: DateRange): SQL[] {
+  return [
+    eq(schema.bills.docstatus, SUBMITTED),
+    eq(schema.bills.kind, 'sale'),
+    between(schema.bills.postingDate, range.from, range.to),
+    ...onRegister(range),
+  ]
+}
+
+/** The same window, dated by the return rather than by the bill it reverses. */
+function returnedIn(range: DateRange): SQL[] {
+  return [
+    eq(schema.salesReturns.docstatus, SUBMITTED),
+    between(schema.salesReturns.postingDate, range.from, range.to),
+    ...onRegister(range),
+  ]
 }
 
 export interface SalesSummary {
@@ -36,51 +75,51 @@ export interface SalesSummary {
 }
 
 export async function salesSummary(db: SqlDriver, range: DateRange): Promise<SalesSummary> {
-  const s = scope(range)
 
-  const row = await db.get<{
-    n: number; gross: number; discount: number; taxable: number
-    tax: number; round_off: number; total: number; paid: number; credit: number
-  }>(
-    `SELECT COUNT(*) AS n,
-            COALESCE(SUM(b.subtotal), 0)      AS gross,
-            COALESCE(SUM(b.discount), 0)      AS discount,
-            COALESCE(SUM(b.taxable_total), 0) AS taxable,
-            COALESCE(SUM(b.tax_total), 0)     AS tax,
-            COALESCE(SUM(b.round_off), 0)     AS round_off,
-            COALESCE(SUM(b.grand_total), 0)   AS total,
-            COALESCE(SUM(b.paid_total), 0)    AS paid,
-            COALESCE(SUM(b.credit_total), 0)  AS credit
-       FROM bills b
-      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}`,
-    s.params,
-  )
+  const [row] = await q(db)
+    .select({
+      n: sql<number>`COUNT(*)`,
+      gross: money(schema.bills.subtotal),
+      discount: money(schema.bills.discount),
+      taxable: money(schema.bills.taxableTotal),
+      tax: money(schema.bills.taxTotal),
+      roundOff: money(schema.bills.roundOff),
+      total: money(schema.bills.grandTotal),
+      paid: money(schema.bills.paidTotal),
+      credit: money(schema.bills.creditTotal),
+    })
+    .from(schema.bills)
+    .where(and(...soldIn(range)))
 
-  const ret = await db.get<{ total: number }>(
-    `SELECT COALESCE(SUM(r.refund_total), 0) AS total
-       FROM sales_returns r JOIN bills b ON b.id = r.bill_id
-      WHERE r.docstatus = 1 AND r.posting_date BETWEEN ? AND ? ${s.clause}`,
-    s.params,
-  )
+  const [ret] = await q(db)
+    .select({ total: money(schema.salesReturns.refundTotal) })
+    .from(schema.salesReturns)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.salesReturns.billId))
+    .where(and(...returnedIn(range)))
 
   const bills = row?.n ?? 0
-  const total = row?.total ?? 0
-  const returns = ret?.total ?? 0
+  const total = row?.total ?? ZERO
+  const returns = ret?.total ?? ZERO
 
   return {
     bills,
-    gross: (row?.gross ?? 0) as Money,
-    discount: (row?.discount ?? 0) as Money,
-    taxable: (row?.taxable ?? 0) as Money,
-    tax: (row?.tax ?? 0) as Money,
-    roundOff: (row?.round_off ?? 0) as Money,
-    total: total as Money,
-    returns: returns as Money,
+    gross: row?.gross ?? ZERO,
+    discount: row?.discount ?? ZERO,
+    taxable: row?.taxable ?? ZERO,
+    tax: row?.tax ?? ZERO,
+    roundOff: row?.roundOff ?? ZERO,
+    total,
+    returns,
     net: (total - returns) as Money,
-    paid: (row?.paid ?? 0) as Money,
-    credit: (row?.credit ?? 0) as Money,
+    paid: row?.paid ?? ZERO,
+    credit: row?.credit ?? ZERO,
     averageBill: (bills === 0 ? 0 : Math.round(total / bills)) as Money,
   }
+}
+
+/** `COALESCE(SUM(col), 0)`, which is what every figure on this page is. */
+function money(column: SQL | Parameters<typeof sql.raw>[0] | object): SQL<Money> {
+  return sql<Money>`COALESCE(SUM(${column}), 0)`
 }
 
 export interface DayRow {
@@ -94,39 +133,38 @@ export interface DayRow {
 }
 
 export async function salesByDay(db: SqlDriver, range: DateRange): Promise<DayRow[]> {
-  const s = scope(range)
 
-  const sales = await db.query<{ d: string; n: number; discount: number; tax: number; total: number }>(
-    `SELECT b.posting_date AS d, COUNT(*) AS n,
-            COALESCE(SUM(b.discount), 0) AS discount,
-            COALESCE(SUM(b.tax_total), 0) AS tax,
-            COALESCE(SUM(b.grand_total), 0) AS total
-       FROM bills b
-      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
-      GROUP BY b.posting_date ORDER BY b.posting_date`,
-    s.params,
-  )
+  const sales = await q(db)
+    .select({
+      date: schema.bills.postingDate,
+      bills: sql<number>`COUNT(*)`,
+      discount: money(schema.bills.discount),
+      tax: money(schema.bills.taxTotal),
+      total: money(schema.bills.grandTotal),
+    })
+    .from(schema.bills)
+    .where(and(...soldIn(range)))
+    .groupBy(schema.bills.postingDate)
+    .orderBy(asc(schema.bills.postingDate))
 
-  const returns = await db.query<{ d: string; total: number }>(
-    `SELECT r.posting_date AS d, COALESCE(SUM(r.refund_total), 0) AS total
-       FROM sales_returns r JOIN bills b ON b.id = r.bill_id
-      WHERE r.docstatus = 1 AND r.posting_date BETWEEN ? AND ? ${s.clause}
-      GROUP BY r.posting_date`,
-    s.params,
-  )
-  const refundByDay = new Map(returns.map((r) => [r.d, r.total]))
+  const returns = await q(db)
+    .select({
+      date: schema.salesReturns.postingDate,
+      total: money(schema.salesReturns.refundTotal),
+    })
+    .from(schema.salesReturns)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.salesReturns.billId))
+    .where(and(...returnedIn(range)))
+    .groupBy(schema.salesReturns.postingDate)
+
+  /* Joined here rather than in SQL: a day with returns and no sales is not a
+     row on this report, and a full outer join to get that would be answering a
+     different question. */
+  const refundByDay = new Map(returns.map((r) => [r.date, r.total]))
 
   return sales.map((r) => {
-    const refund = refundByDay.get(r.d) ?? 0
-    return {
-      date: r.d,
-      bills: r.n,
-      discount: r.discount as Money,
-      tax: r.tax as Money,
-      total: r.total as Money,
-      returns: refund as Money,
-      net: (r.total - refund) as Money,
-    }
+    const refund = refundByDay.get(r.date) ?? ZERO
+    return { ...r, returns: refund, net: (r.total - refund) as Money }
   })
 }
 
@@ -140,37 +178,32 @@ export interface ProductRow {
 }
 
 export async function topProducts(db: SqlDriver, range: DateRange, limit = 20): Promise<ProductRow[]> {
-  const s = scope(range)
 
   // base_qty, not qty — otherwise 2 boxes and 24 pieces of the same pen rank as
   // if the box were a single unit.
-  const rows = await db.query<{
-    product_id: string; name: string; base_qty: number; unit: string; revenue: number; bills: number
-  }>(
-    `SELECT bi.product_id,
-            MAX(bi.product_name) AS name,
-            SUM(bi.base_qty) AS base_qty,
-            COALESCE(MAX(p.base_unit), '') AS unit,
-            SUM(bi.line_total) AS revenue,
-            COUNT(DISTINCT bi.bill_id) AS bills
-       FROM bill_items bi
-       JOIN bills b ON b.id = bi.bill_id
-       LEFT JOIN products p ON p.id = bi.product_id
-      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
-      GROUP BY bi.product_id
-      ORDER BY revenue DESC
-      LIMIT ?`,
-    [...s.params, limit],
-  )
+  const revenue = money(schema.billItems.lineTotal)
 
-  return rows.map((r) => ({
-    productId: r.product_id,
-    name: r.name,
-    qty: r.base_qty as Qty,
-    unit: r.unit,
-    revenue: r.revenue as Money,
-    bills: r.bills,
-  }))
+  return q(db)
+    .select({
+      productId: schema.billItems.productId,
+      /* `MAX` of a name that is the same on every row of the group: the column
+         is not in the GROUP BY and SQLite would otherwise pick one arbitrarily,
+         which is a different answer on a different day. */
+      name: sql<string>`MAX(${schema.billItems.productName})`,
+      qty: sql<Qty>`COALESCE(SUM(${schema.billItems.baseQty}), 0)`,
+      unit: sql<string>`COALESCE(MAX(${schema.products.baseUnit}), '')`,
+      revenue,
+      bills: sql<number>`COUNT(DISTINCT ${schema.billItems.billId})`,
+    })
+    .from(schema.billItems)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.billItems.billId))
+    /* Left, so a product deleted since it was sold keeps its sales on the
+       report. Its unit comes back empty rather than the row disappearing. */
+    .leftJoin(schema.products, eq(schema.products.id, schema.billItems.productId))
+    .where(and(...soldIn(range)))
+    .groupBy(schema.billItems.productId)
+    .orderBy(desc(revenue))
+    .limit(limit)
 }
 
 export interface TenderRow {
@@ -180,15 +213,15 @@ export interface TenderRow {
 }
 
 export async function paymentMix(db: SqlDriver, range: DateRange): Promise<TenderRow[]> {
-  const s = scope(range)
-  const rows = await db.query<{ method: string; amount: number; n: number }>(
-    `SELECT bp.method, SUM(bp.amount) AS amount, COUNT(*) AS n
-       FROM bill_payments bp JOIN bills b ON b.id = bp.bill_id
-      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
-      GROUP BY bp.method ORDER BY amount DESC`,
-    s.params,
-  )
-  return rows.map((r) => ({ method: r.method, amount: r.amount as Money, count: r.n }))
+  const amount = money(schema.billPayments.amount)
+
+  return q(db)
+    .select({ method: schema.billPayments.method, amount, count: sql<number>`COUNT(*)` })
+    .from(schema.billPayments)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.billPayments.billId))
+    .where(and(...soldIn(range)))
+    .groupBy(schema.billPayments.method)
+    .orderBy(desc(amount))
 }
 
 export interface TaxRateRow {
@@ -216,46 +249,54 @@ export interface TaxRateRow {
  * follows the original bill, because that is the till the sale was rung up on.
  */
 export async function taxByRate(db: SqlDriver, range: DateRange): Promise<TaxRateRow[]> {
-  const s = scope(range)
-  const rows = await db.query<{
-    rate: number; taxable: number; cgst: number; sgst: number; igst: number
-  }>(
-    `SELECT rate,
-            SUM(taxable) AS taxable,
-            SUM(cgst) AS cgst,
-            SUM(sgst) AS sgst,
-            SUM(igst) AS igst
-       FROM (
-         SELECT bi.tax_rate_bp AS rate,
-                bi.taxable_value AS taxable,
-                bi.cgst_amount AS cgst,
-                bi.sgst_amount AS sgst,
-                bi.igst_amount AS igst
-           FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
-          WHERE b.docstatus = 1 AND b.kind = 'sale'
-            AND b.posting_date BETWEEN ? AND ? ${s.clause}
-         UNION ALL
-         SELECT ri.tax_rate_bp,
-                -ri.taxable_value,
-                -ri.cgst_amount,
-                -ri.sgst_amount,
-                -ri.igst_amount
-           FROM sales_return_items ri
-           JOIN sales_returns r ON r.id = ri.return_id
-           JOIN bills b ON b.id = r.bill_id
-          WHERE r.docstatus = 1
-            AND r.posting_date BETWEEN ? AND ? ${s.clause}
-       )
-      GROUP BY rate ORDER BY rate`,
-    [...s.params, ...s.params],
-  )
-  return rows.map((r) => ({
-    rateBp: r.rate,
-    taxable: r.taxable as Money,
-    cgst: r.cgst as Money,
-    sgst: r.sgst as Money,
-    igst: r.igst as Money,
-  }))
+  /* Sales and credit notes as one set of rows, the returns negated, then
+     grouped. Two queries added up in TypeScript would be the same arithmetic
+     and a worse shape: a rate that appears only in the returns has to produce a
+     row here, and merging two lists by key in the caller is how a rate goes
+     missing from a return. */
+  const sold = q(db)
+    .select({
+      rate: schema.billItems.taxRateBp,
+      taxable: schema.billItems.taxableValue,
+      cgst: schema.billItems.cgstAmount,
+      sgst: schema.billItems.sgstAmount,
+      igst: schema.billItems.igstAmount,
+    })
+    .from(schema.billItems)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.billItems.billId))
+    .where(and(...soldIn(range)))
+
+  const credited = q(db)
+    .select({
+      rate: schema.salesReturnItems.taxRateBp,
+      taxable: negated(schema.salesReturnItems.taxableValue),
+      cgst: negated(schema.salesReturnItems.cgstAmount),
+      sgst: negated(schema.salesReturnItems.sgstAmount),
+      igst: negated(schema.salesReturnItems.igstAmount),
+    })
+    .from(schema.salesReturnItems)
+    .innerJoin(schema.salesReturns, eq(schema.salesReturns.id, schema.salesReturnItems.returnId))
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.salesReturns.billId))
+    .where(and(...returnedIn(range)))
+
+  const lines = unionAll(sold, credited).as('lines')
+
+  return q(db)
+    .select({
+      rateBp: lines.rate,
+      taxable: money(lines.taxable),
+      cgst: money(lines.cgst),
+      sgst: money(lines.sgst),
+      igst: money(lines.igst),
+    })
+    .from(lines)
+    .groupBy(lines.rate)
+    .orderBy(asc(lines.rate))
+}
+
+/** A credited line, which is the same figure pointing the other way. */
+function negated(column: object): SQL<Money> {
+  return sql<Money>`-${column}`
 }
 
 export interface StaffRow {
@@ -266,15 +307,20 @@ export interface StaffRow {
 }
 
 export async function salesByStaff(db: SqlDriver, range: DateRange): Promise<StaffRow[]> {
-  const s = scope(range)
-  const rows = await db.query<{ id: string; username: string; n: number; total: number }>(
-    `SELECT u.id, u.username, COUNT(*) AS n, COALESCE(SUM(b.grand_total), 0) AS total
-       FROM bills b JOIN users u ON u.id = b.created_by
-      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
-      GROUP BY u.id ORDER BY total DESC`,
-    s.params,
-  )
-  return rows.map((r) => ({ userId: r.id, username: r.username, bills: r.n, total: r.total as Money }))
+  const total = money(schema.bills.grandTotal)
+
+  return q(db)
+    .select({
+      userId: schema.users.id,
+      username: schema.users.username,
+      bills: sql<number>`COUNT(*)`,
+      total,
+    })
+    .from(schema.bills)
+    .innerJoin(schema.users, eq(schema.users.id, schema.bills.createdBy))
+    .where(and(...soldIn(range)))
+    .groupBy(schema.users.id)
+    .orderBy(desc(total))
 }
 
 export interface GstLine {
@@ -318,6 +364,18 @@ export interface GstLine {
  * nothing.
  */
 export async function gstLines(db: SqlDriver, range: DateRange): Promise<GstLine[]> {
+  /* raw: the one query on this page still written out, and deliberately.
+     It is two grouped selects unioned, ordered across the union, and then read
+     in order by the loop below -- which finds the last rate row of each
+     document by looking at whether the next row is a different document. That
+     adjacency is a property of this statement's own ORDER BY, so the statement
+     and the loop are one piece of logic, and splitting the half that a builder
+     can express away from the half it cannot would put the two out of sight of
+     each other. The rounding this decides lands on exactly one row per bill,
+     and a CA adding the export up against the invoices notices if it does not.
+
+     `taxByRate` above is the same union through the builder, so the shape is
+     not beyond it; here the SQL is the clearer statement of what must be true. */
   const s = scope(range)
   const rows = await db.query<{
     kind: string; doc_no: string; against_doc_no: string | null; posting_date: string
@@ -418,32 +476,30 @@ export interface GstException {
  * sheet that listed every one of those would bury the fourteen that matter.
  */
 export async function gstExceptions(db: SqlDriver, range: DateRange): Promise<GstException[]> {
-  const s = scope(range)
-  const rows = await db.query<{
-    doc_no: string; posting_date: string; customer_name: string | null
-    gstin: string; product_name: string; taxable: number
-  }>(
-    `SELECT b.doc_no, b.posting_date,
-            COALESCE(b.customer_name, 'Walk-in') AS customer_name,
-            b.customer_gstin AS gstin,
-            bi.product_name, bi.taxable_value AS taxable
-       FROM bill_items bi
-       JOIN bills b ON b.id = bi.bill_id
-      WHERE b.docstatus = 1 AND b.kind = 'sale'
-        AND b.customer_gstin IS NOT NULL AND b.customer_gstin <> ''
-        AND (bi.hsn_code IS NULL OR TRIM(bi.hsn_code) = '')
-        AND b.posting_date BETWEEN ? AND ? ${s.clause}
-      ORDER BY b.posting_date, b.doc_no`,
-    s.params,
-  )
+  const rows = await q(db)
+    .select({
+      docNo: schema.bills.docNo,
+      postingDate: schema.bills.postingDate,
+      customerName: sql<string>`COALESCE(${schema.bills.customerName}, 'Walk-in')`,
+      gstin: schema.bills.customerGstin,
+      productName: schema.billItems.productName,
+      taxable: schema.billItems.taxableValue,
+    })
+    .from(schema.billItems)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.billItems.billId))
+    .where(and(
+      ...soldIn(range),
+      /* B2B only. A walk-in's line without an HSN is untidy and harms nobody,
+         and a sheet listing every one of those would bury the ones that
+         matter. */
+      sql`${schema.bills.customerGstin} IS NOT NULL AND ${schema.bills.customerGstin} <> ''`,
+      sql`(${schema.billItems.hsnCode} IS NULL OR TRIM(${schema.billItems.hsnCode}) = '')`,
+    ))
+    .orderBy(asc(schema.bills.postingDate), asc(schema.bills.docNo))
 
   return rows.map((r) => ({
-    docNo: r.doc_no,
-    postingDate: r.posting_date,
-    customerName: r.customer_name ?? 'Walk-in',
-    gstin: r.gstin,
-    productName: r.product_name,
-    taxable: r.taxable as Money,
+    ...r,
+    gstin: r.gstin ?? '',
     problem: 'No HSN code on a line billed to a registered buyer',
   }))
 }
@@ -477,49 +533,71 @@ export interface Margin {
   uncostedLines: number
 }
 
-const COST = `CAST(ROUND(-sl.qty_change * sl.unit_cost / ${QTY_SCALE}.0) AS INTEGER)`
+/* The divisor written into the statement rather than bound to it. An
+   interpolated value becomes a `?`, and `? .0` is a syntax error -- which is
+   the good outcome, because the alternative was integer division quietly
+   halving nothing and reporting a margin that is wrong by a rounding. */
+const SCALE_AS_REAL = sql.raw(`${QTY_SCALE}.0`)
+
+/**
+ * What the goods on a ledger row were worth as they left.
+ *
+ * `qty_change` is negative for an issue, so the sign flips back here. Rounded
+ * to whole paise at the row, not at the total: money is integer paise and a sum
+ * of fractions is not.
+ */
+const COST = sql<Money>`CAST(ROUND(
+  -${schema.stockLedger.qtyChange} * ${schema.stockLedger.unitCost} / ${SCALE_AS_REAL}
+) AS INTEGER)`
 
 export async function grossMargin(db: SqlDriver, range: DateRange): Promise<Margin> {
-  const s = scope(range)
 
-  const sold = await db.get<{ revenue: number; uncosted: number }>(
-    `SELECT COALESCE(SUM(bi.taxable_value), 0) AS revenue,
-            COALESCE(SUM(CASE WHEN NOT EXISTS (
-              SELECT 1 FROM stock_ledger sl
-               WHERE sl.voucher_type = 'bill' AND sl.voucher_id = b.id
-                 AND sl.product_id = bi.product_id AND sl.unit_cost IS NOT NULL
-            ) THEN 1 ELSE 0 END), 0) AS uncosted
-       FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
-      WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}`,
-    s.params,
-  )
+  const [sold] = await q(db)
+    .select({
+      revenue: money(schema.billItems.taxableValue),
+      /* A line whose issue was never stamped with a cost. Counted rather than
+         guessed at: the margin understates the cost by however many of these
+         there are, and a figure that quietly excludes them is worse than one
+         that says how much of itself is missing. */
+      uncosted: sql<number>`COALESCE(SUM(CASE WHEN NOT EXISTS (
+        SELECT 1 FROM stock_ledger sl
+         WHERE sl.voucher_type = 'bill' AND sl.voucher_id = ${schema.bills.id}
+           AND sl.product_id = ${schema.billItems.productId} AND sl.unit_cost IS NOT NULL
+      ) THEN 1 ELSE 0 END), 0)`,
+    })
+    .from(schema.billItems)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.billItems.billId))
+    .where(and(...soldIn(range)))
 
-  const soldCost = await db.get<{ cost: number }>(
-    `SELECT COALESCE(SUM(${COST}), 0) AS cost
-       FROM stock_ledger sl JOIN bills b ON b.id = sl.voucher_id
-      WHERE sl.voucher_type = 'bill' AND sl.unit_cost IS NOT NULL
-        AND b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}`,
-    s.params,
-  )
+  const [soldCost] = await q(db)
+    .select({ cost: money(COST) })
+    .from(schema.stockLedger)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.stockLedger.voucherId))
+    .where(and(
+      eq(schema.stockLedger.voucherType, 'bill'),
+      isNotNull(schema.stockLedger.unitCost),
+      eq(schema.bills.docstatus, SUBMITTED),
+      between(schema.bills.postingDate, range.from, range.to),
+      ...onRegister(range),
+    ))
 
-  const returned = await db.get<{ revenue: number }>(
-    `SELECT COALESCE(SUM(ri.taxable_value), 0) AS revenue
-       FROM sales_return_items ri
-       JOIN sales_returns r ON r.id = ri.return_id
-       JOIN bills b ON b.id = r.bill_id
-      WHERE r.docstatus = 1 AND r.posting_date BETWEEN ? AND ? ${s.clause}`,
-    s.params,
-  )
+  const [returned] = await q(db)
+    .select({ revenue: money(schema.salesReturnItems.taxableValue) })
+    .from(schema.salesReturnItems)
+    .innerJoin(schema.salesReturns, eq(schema.salesReturns.id, schema.salesReturnItems.returnId))
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.salesReturns.billId))
+    .where(and(...returnedIn(range)))
 
-  const returnedCost = await db.get<{ cost: number }>(
-    `SELECT COALESCE(SUM(${COST}), 0) AS cost
-       FROM stock_ledger sl
-       JOIN sales_returns r ON r.id = sl.voucher_id
-       JOIN bills b ON b.id = r.bill_id
-      WHERE sl.voucher_type = 'sales_return' AND sl.unit_cost IS NOT NULL
-        AND r.docstatus = 1 AND r.posting_date BETWEEN ? AND ? ${s.clause}`,
-    s.params,
-  )
+  const [returnedCost] = await q(db)
+    .select({ cost: money(COST) })
+    .from(schema.stockLedger)
+    .innerJoin(schema.salesReturns, eq(schema.salesReturns.id, schema.stockLedger.voucherId))
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.salesReturns.billId))
+    .where(and(
+      eq(schema.stockLedger.voucherType, 'sales_return'),
+      isNotNull(schema.stockLedger.unitCost),
+      ...returnedIn(range),
+    ))
 
   // A return's movement is positive, so its COST comes out negative — which is
   // exactly right: goods coming back reduce the cost of what was sold.
@@ -547,45 +625,68 @@ export interface ProductMargin {
 }
 
 export async function marginByProduct(db: SqlDriver, range: DateRange, limit = 25): Promise<ProductMargin[]> {
-  const s = scope(range)
 
-  const rows = await db.query<{
-    product_id: string; name: string; base_qty: number; unit: string; revenue: number; cost: number
-  }>(
-    `WITH sold AS (
-       SELECT bi.product_id,
-              MAX(bi.product_name) AS name,
-              SUM(bi.base_qty) AS base_qty,
-              SUM(bi.taxable_value) AS revenue
-         FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
-        WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
-        GROUP BY bi.product_id
-     ), cost AS (
-       SELECT sl.product_id, SUM(${COST}) AS cost
-         FROM stock_ledger sl JOIN bills b ON b.id = sl.voucher_id
-        WHERE sl.voucher_type = 'bill' AND sl.unit_cost IS NOT NULL
-          AND b.docstatus = 1 AND b.posting_date BETWEEN ? AND ? ${s.clause}
-        GROUP BY sl.product_id
-     )
-     SELECT sold.product_id, sold.name, sold.base_qty,
-            COALESCE(p.base_unit, '') AS unit,
-            sold.revenue,
-            COALESCE(cost.cost, 0) AS cost
-       FROM sold
-       LEFT JOIN cost ON cost.product_id = sold.product_id
-       LEFT JOIN products p ON p.id = sold.product_id
-      ORDER BY (sold.revenue - COALESCE(cost.cost, 0)) DESC
-      LIMIT ?`,
-    [...s.params, ...s.params, limit],
+  /* What was sold and what it cost are grouped separately and joined once,
+     rather than joined and then grouped: the ledger has a row per issue and the
+     bill has a row per line, so joining first multiplies one by the other and
+     every figure comes out too large by the number of rows on the other side. */
+  const sold = q(db).$with('sold').as(
+    q(db)
+      .select({
+        productId: schema.billItems.productId,
+        /* Aliased `product_name` and not `name`: the final select also joins
+           `products`, which has a `name` of its own, and a bare `name` in the
+           select list is ambiguous. SQLite refuses rather than picking one,
+           which is the good outcome of the two available. */
+        name: sql<string>`MAX(${schema.billItems.productName})`.as('product_name'),
+        baseQty: sql<Qty>`SUM(${schema.billItems.baseQty})`.as('base_qty'),
+        revenue: sql<Money>`SUM(${schema.billItems.taxableValue})`.as('revenue'),
+      })
+      .from(schema.billItems)
+      .innerJoin(schema.bills, eq(schema.bills.id, schema.billItems.billId))
+      .where(and(...soldIn(range)))
+      .groupBy(schema.billItems.productId),
   )
 
+  const cost = q(db).$with('cost').as(
+    q(db)
+      .select({
+        productId: schema.stockLedger.productId,
+        cost: sql<Money>`SUM(${COST})`.as('cost'),
+      })
+      .from(schema.stockLedger)
+      .innerJoin(schema.bills, eq(schema.bills.id, schema.stockLedger.voucherId))
+      .where(and(
+        eq(schema.stockLedger.voucherType, 'bill'),
+        isNotNull(schema.stockLedger.unitCost),
+        eq(schema.bills.docstatus, SUBMITTED),
+        between(schema.bills.postingDate, range.from, range.to),
+        ...onRegister(range),
+      ))
+      .groupBy(schema.stockLedger.productId),
+  )
+
+  const margin = sql<Money>`${sold.revenue} - COALESCE(${cost.cost}, 0)`
+
+  const rows = await q(db)
+    .with(sold, cost)
+    .select({
+      productId: sold.productId,
+      name: sold.name,
+      qty: sold.baseQty,
+      unit: sql<string>`COALESCE(${schema.products.baseUnit}, '')`,
+      revenue: sold.revenue,
+      cost: sql<Money>`COALESCE(${cost.cost}, 0)`,
+    })
+    .from(sold)
+    .leftJoin(cost, eq(cost.productId, sold.productId))
+    // Left, so a product deleted since it was sold keeps its margin on the report.
+    .leftJoin(schema.products, eq(schema.products.id, sold.productId))
+    .orderBy(desc(margin))
+    .limit(limit)
+
   return rows.map((r) => ({
-    productId: r.product_id,
-    name: r.name,
-    qty: r.base_qty as Qty,
-    unit: r.unit,
-    revenue: r.revenue as Money,
-    cost: r.cost as Money,
+    ...r,
     margin: (r.revenue - r.cost) as Money,
     marginBp: r.revenue === 0 ? 0 : Math.round(((r.revenue - r.cost) / r.revenue) * 10_000),
   }))
