@@ -1,4 +1,6 @@
+import { eq, and, or, isNull, gte, lte, asc, desc, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { businessDate } from '../dates.js'
 import { ZERO, type Money } from '../money.js'
@@ -77,26 +79,36 @@ export async function createDocument(
   const nowIso = now.toISOString()
   const postingDate = input.postingDate ?? businessDate(now)
 
-  const party = forSupplier
-    ? await db.get<{ name: string }>(`SELECT name FROM suppliers WHERE id = ?`, [input.supplierId ?? null])
-    : await db.get<{ name: string; state_code: string | null }>(
-      `SELECT name, state_code FROM customers WHERE id = ?`, [input.customerId ?? null],
-    )
+  /* One shape for both, so the caller below does not have to know which table
+     the name came out of. A supplier has no state code here: a purchase order
+     is not a supply by this shop and carries no place of supply. */
+  const [party] = forSupplier
+    ? await q(db)
+        .select({ name: schema.suppliers.name, stateCode: sql<string | null>`NULL` })
+        .from(schema.suppliers)
+        .where(eq(schema.suppliers.id, input.supplierId ?? ''))
+    : await q(db)
+        .select({ name: schema.customers.name, stateCode: schema.customers.stateCode })
+        .from(schema.customers)
+        .where(eq(schema.customers.id, input.customerId ?? ''))
 
-  const supply = await supplyFor(db, (party as { state_code?: string | null })?.state_code ?? null)
+  const supply = await supplyFor(db, party?.stateCode ?? null)
   const pricing = await pricingContextFor(db, input.customerId ?? null)
 
   const priced: PricedLine[] = []
   for (const line of input.lines) {
     if (line.qty <= 0) return { ok: false, code: 'INVALID_QTY', productId: line.productId }
 
-    const product = await db.get<{
-      id: string; name: string; hsn_code: string | null; tax_rate_bp: number; discount_blocked: number
-    }>(
-      `SELECT id, name, hsn_code, tax_rate_bp, discount_blocked
-         FROM products WHERE id = ? AND deleted_at IS NULL`,
-      [line.productId],
-    )
+    const [product] = await q(db)
+      .select({
+        id: schema.products.id,
+        name: schema.products.name,
+        hsnCode: schema.products.hsnCode,
+        taxRateBp: schema.products.taxRateBp,
+        discountBlocked: schema.products.discountBlocked,
+      })
+      .from(schema.products)
+      .where(and(eq(schema.products.id, line.productId), isNull(schema.products.deletedAt)))
     if (!product) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
 
     const unit = await resolveSaleUnit(db, line.productId, line.saleUnit ?? null)
@@ -109,14 +121,14 @@ export async function createDocument(
     priced.push({
       productId: product.id,
       productName: product.name,
-      hsnCode: product.hsn_code,
+      hsnCode: product.hsnCode,
       saleUnit: unit.saleUnit,
       qty: line.qty,
       baseQty: asQty(Math.round((line.qty * unit.baseUnits) / QTY_SCALE)),
       rate,
       discount: line.discount ?? ZERO,
-      taxRateBp: product.tax_rate_bp,
-      discountBlocked: product.discount_blocked === 1,
+      taxRateBp: product.taxRateBp,
+      discountBlocked: product.discountBlocked === 1,
     })
   }
 
@@ -128,50 +140,60 @@ export async function createDocument(
   let docNo = ''
 
   await db.transaction(async (tx) => {
-    const register = await tx.get<{ prefix: string }>(
-      `SELECT prefix FROM registers WHERE id = ?`, [input.registerId],
-    )
+    const [register] = await q(tx)
+      .select({ prefix: schema.registers.prefix })
+      .from(schema.registers)
+      .where(eq(schema.registers.id, input.registerId))
     docNo = await nextDocNo(tx, input.kind, register?.prefix ?? 'MR', now)
 
-    await tx.execute(
-      `INSERT INTO documents (
-         id, doc_no, kind, docstatus, register_id,
-         customer_id, customer_name, supplier_id, supplier_name,
-         posting_date, valid_until,
-         subtotal, discount, taxable_total, tax_total, round_off, grand_total,
-         place_of_supply, notes, terms, converted_from,
-         created_by, created_at, updated_at
-       ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        documentId, docNo, input.kind, input.registerId,
-        forSupplier ? null : input.customerId ?? null,
-        forSupplier ? null : party?.name ?? null,
-        forSupplier ? input.supplierId ?? null : null,
-        forSupplier ? party?.name ?? null : null,
-        postingDate, input.validUntil ?? null,
-        totals.subtotal, totals.discount, totals.taxableTotal, totals.taxTotal,
-        totals.roundOff, totals.grandTotal,
-        supply === 'inter_state' ? 'inter_state' : 'intra_state',
-        input.notes ?? null, input.terms ?? null, input.convertedFrom ?? null,
-        input.actorId, nowIso, nowIso,
-      ],
-    )
+    await q(tx).insert(schema.documents).values({
+      id: documentId,
+      docNo,
+      kind: input.kind,
+      docstatus: 0,
+      registerId: input.registerId,
+      customerId: forSupplier ? null : input.customerId ?? null,
+      customerName: forSupplier ? null : party?.name ?? null,
+      supplierId: forSupplier ? input.supplierId ?? null : null,
+      supplierName: forSupplier ? party?.name ?? null : null,
+      postingDate,
+      validUntil: input.validUntil ?? null,
+      subtotal: totals.subtotal,
+      discount: totals.discount,
+      taxableTotal: totals.taxableTotal,
+      taxTotal: totals.taxTotal,
+      roundOff: totals.roundOff,
+      grandTotal: totals.grandTotal,
+      placeOfSupply: supply === 'inter_state' ? 'inter_state' : 'intra_state',
+      notes: input.notes ?? null,
+      terms: input.terms ?? null,
+      convertedFrom: input.convertedFrom ?? null,
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
 
     for (const [i, line] of priced.entries()) {
       const computed = totals.lines[i]!
-      await tx.execute(
-        `INSERT INTO document_items (
-           id, document_id, idx, product_id, product_name, hsn_code, sale_unit,
-           qty, base_qty, rate, discount, line_total,
-           taxable_value, tax_rate_bp, cgst_amount, sgst_amount, igst_amount, fulfilled_qty
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-        [
-          newId(), documentId, i, line.productId, line.productName, line.hsnCode, line.saleUnit,
-          line.qty, line.baseQty, line.rate, line.discount, computed.lineTotal,
-          computed.tax.taxableValue, line.taxRateBp,
-          computed.tax.cgst, computed.tax.sgst, computed.tax.igst,
-        ],
-      )
+      await q(tx).insert(schema.documentItems).values({
+        id: newId(),
+        documentId,
+        idx: i,
+        productId: line.productId,
+        productName: line.productName,
+        hsnCode: line.hsnCode,
+        saleUnit: line.saleUnit,
+        qty: line.qty,
+        baseQty: line.baseQty,
+        rate: line.rate,
+        discount: line.discount,
+        lineTotal: computed.lineTotal,
+        taxableValue: computed.tax.taxableValue,
+        taxRateBp: line.taxRateBp,
+        cgstAmount: computed.tax.cgst,
+        sgstAmount: computed.tax.sgst,
+        igstAmount: computed.tax.igst,
+      })
     }
 
     await writeAudit(tx, { actorId: input.actorId }, {
@@ -201,9 +223,10 @@ export async function submitDocument(
   db: SqlDriver,
   input: { documentId: string; actorId: string; now?: Date },
 ): Promise<SubmitDocumentResult> {
-  const doc = await db.get<{ docstatus: number }>(
-    `SELECT docstatus FROM documents WHERE id = ?`, [input.documentId],
-  )
+  const [doc] = await q(db)
+    .select({ docstatus: schema.documents.docstatus })
+    .from(schema.documents)
+    .where(eq(schema.documents.id, input.documentId))
   if (!doc) return { ok: false, code: 'NOT_FOUND' }
   if (doc.docstatus === 1) return { ok: false, code: 'ALREADY_SUBMITTED' }
   if (doc.docstatus === 2) return { ok: false, code: 'CANCELLED' }
@@ -211,10 +234,9 @@ export async function submitDocument(
   const nowIso = (input.now ?? new Date()).toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE documents SET docstatus = 1, updated_at = ? WHERE id = ?`,
-      [nowIso, input.documentId],
-    )
+    await q(tx).update(schema.documents)
+      .set({ docstatus: 1, updatedAt: nowIso })
+      .where(eq(schema.documents.id, input.documentId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'document',
       entityId: input.documentId,
@@ -245,9 +267,10 @@ export async function cancelDocument(
   db: SqlDriver,
   input: { documentId: string; reason: string; actorId: string; now?: Date },
 ): Promise<CancelDocumentResult> {
-  const doc = await db.get<{ docstatus: number }>(
-    `SELECT docstatus FROM documents WHERE id = ?`, [input.documentId],
-  )
+  const [doc] = await q(db)
+    .select({ docstatus: schema.documents.docstatus })
+    .from(schema.documents)
+    .where(eq(schema.documents.id, input.documentId))
   if (!doc) return { ok: false, code: 'NOT_FOUND' }
   if (doc.docstatus === 2) return { ok: false, code: 'ALREADY_CANCELLED' }
 
@@ -259,13 +282,14 @@ export async function cancelDocument(
      of which has been billed is not "partly" anything -- it is finished, and
      telling a shopkeeper that part of it has been delivered when all of it has
      sends them looking for the missing part. */
-  const done = await db.get<{ started: number; finished: number; lines: number }>(
-    `SELECT COUNT(*) AS lines,
-            SUM(CASE WHEN fulfilled_qty > 0 THEN 1 ELSE 0 END) AS started,
-            SUM(CASE WHEN fulfilled_qty >= qty THEN 1 ELSE 0 END) AS finished
-       FROM document_items WHERE document_id = ?`,
-    [input.documentId],
-  )
+  const [done] = await q(db)
+    .select({
+      lines: sql<number>`COUNT(*)`,
+      started: STARTED,
+      finished: FINISHED,
+    })
+    .from(schema.documentItems)
+    .where(eq(schema.documentItems.documentId, input.documentId))
   const lines = done?.lines ?? 0
   const started = done?.started ?? 0
   if (lines > 0 && (done?.finished ?? 0) === lines) {
@@ -276,12 +300,15 @@ export async function cancelDocument(
   const nowIso = (input.now ?? new Date()).toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE documents
-          SET docstatus = 2, cancelled_by = ?, cancelled_at = ?, cancel_reason = ?, updated_at = ?
-        WHERE id = ?`,
-      [input.actorId, nowIso, input.reason, nowIso, input.documentId],
-    )
+    await q(tx).update(schema.documents)
+      .set({
+        docstatus: 2,
+        cancelledBy: input.actorId,
+        cancelledAt: nowIso,
+        cancelReason: input.reason,
+        updatedAt: nowIso,
+      })
+      .where(eq(schema.documents.id, input.documentId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'document',
       entityId: input.documentId,
@@ -350,70 +377,76 @@ export async function listDocuments(
   db: SqlDriver,
   filter: DocumentFilter = {},
 ): Promise<DocumentListItem[]> {
-  // Seeded, because asking for everything with no other filter would otherwise
-  // leave a bare WHERE.
-  const where: string[] = ['1 = 1']
-  const params: (string | number)[] = []
-
   // Unasked, the list is what has been issued — not drafts, which are somebody
   // midway through a job, and not cancelled ones.
   const status = filter.status ?? 'issued'
-  if (status !== 'all') { where.push('d.docstatus = ?'); params.push(DOCSTATUS_OF[status]) }
+  const like = filter.search ? `%${filter.search}%` : null
+
+  const lines = sql<number>`COUNT(${schema.documentItems.id})`
 
   /* `open` and `completed` are the same docstatus told apart by their lines, so
      they filter after the grouping rather than before it. A document with no
      lines at all is neither: it cannot be finished, because there is nothing on
      it to finish. */
   const having =
-    status === 'completed' ? 'HAVING lines > 0 AND finished = lines'
-    : status === 'open' ? 'HAVING lines = 0 OR finished < lines'
-    : ''
+    status === 'completed' ? sql`${lines} > 0 AND ${FINISHED} = ${lines}`
+    : status === 'open' ? sql`${lines} = 0 OR ${FINISHED} < ${lines}`
+    : undefined
 
-  if (filter.kind) { where.push('d.kind = ?'); params.push(filter.kind) }
-  if (filter.from) { where.push('d.posting_date >= ?'); params.push(filter.from) }
-  if (filter.to) { where.push('d.posting_date <= ?'); params.push(filter.to) }
-  if (filter.search) {
-    where.push('(d.doc_no LIKE ? OR d.customer_name LIKE ? OR d.supplier_name LIKE ?)')
-    const like = `%${filter.search}%`
-    params.push(like, like, like)
-  }
-
-  params.push(filter.limit ?? 100, filter.offset ?? 0)
-
-  const rows = await db.query<{
-    id: string; doc_no: string; kind: DocumentKind; docstatus: number
-    posting_date: string; valid_until: string | null
-    party_name: string | null; grand_total: number
-    lines: number; started: number; finished: number
-  }>(
-    `SELECT d.id, d.doc_no, d.kind, d.docstatus, d.posting_date, d.valid_until,
-            COALESCE(d.customer_name, d.supplier_name) AS party_name,
-            d.grand_total,
-            COUNT(i.id) AS lines,
-            SUM(CASE WHEN i.fulfilled_qty > 0 THEN 1 ELSE 0 END) AS started,
-            SUM(CASE WHEN i.fulfilled_qty >= i.qty THEN 1 ELSE 0 END) AS finished
-       FROM documents d
-       LEFT JOIN document_items i ON i.document_id = d.id
-      WHERE ${where.join(' AND ')}
-      GROUP BY d.id
-      ${having}
-      ORDER BY d.posting_date DESC, d.created_at DESC
-      LIMIT ? OFFSET ?`,
-    params,
-  )
+  const rows = await q(db)
+    .select({
+      id: schema.documents.id,
+      docNo: schema.documents.docNo,
+      kind: schema.documents.kind,
+      docstatus: schema.documents.docstatus,
+      postingDate: schema.documents.postingDate,
+      validUntil: schema.documents.validUntil,
+      partyName: sql<string | null>`COALESCE(${schema.documents.customerName}, ${schema.documents.supplierName})`,
+      grandTotal: schema.documents.grandTotal,
+      lines,
+      started: STARTED,
+      finished: FINISHED,
+    })
+    .from(schema.documents)
+    .leftJoin(schema.documentItems, eq(schema.documentItems.documentId, schema.documents.id))
+    .where(and(
+      ...(status !== 'all' ? [eq(schema.documents.docstatus, DOCSTATUS_OF[status])] : []),
+      ...(filter.kind ? [eq(schema.documents.kind, filter.kind)] : []),
+      ...(filter.from ? [gte(schema.documents.postingDate, filter.from)] : []),
+      ...(filter.to ? [lte(schema.documents.postingDate, filter.to)] : []),
+      ...(like ? [or(
+        sql`${schema.documents.docNo} LIKE ${like}`,
+        sql`${schema.documents.customerName} LIKE ${like}`,
+        sql`${schema.documents.supplierName} LIKE ${like}`,
+      )!] : []),
+    ))
+    .groupBy(schema.documents.id)
+    .having(having)
+    .orderBy(desc(schema.documents.postingDate), desc(schema.documents.createdAt))
+    .limit(filter.limit ?? 100)
+    .offset(filter.offset ?? 0)
 
   return rows.map((r) => ({
     id: r.id,
-    docNo: r.doc_no,
-    kind: r.kind,
+    docNo: r.docNo,
+    kind: r.kind as DocumentKind,
     docstatus: r.docstatus,
-    postingDate: r.posting_date,
-    validUntil: r.valid_until,
-    partyName: r.party_name,
-    grandTotal: r.grand_total as Money,
+    postingDate: r.postingDate,
+    validUntil: r.validUntil,
+    partyName: r.partyName,
+    grandTotal: r.grandTotal,
     progress: r.finished === r.lines && r.lines > 0 ? 'done' : r.started > 0 ? 'part' : 'open',
   }))
 }
+
+/* How far along a document's lines are, counted two ways.
+ *
+ * Written once because three callers ask the same two questions and a document
+ * that is "partly done" on one screen and "done" on another is a support call.
+ * A line is started once anything has been billed against it and finished once
+ * everything has; a document is finished when every line is. */
+const STARTED = sql<number>`COALESCE(SUM(CASE WHEN ${schema.documentItems.fulfilledQty} > 0 THEN 1 ELSE 0 END), 0)`
+const FINISHED = sql<number>`COALESCE(SUM(CASE WHEN ${schema.documentItems.fulfilledQty} >= ${schema.documentItems.qty} THEN 1 ELSE 0 END), 0)`
 
 export interface DocumentItemRow {
   id: string
@@ -471,65 +504,85 @@ export interface DocumentDetail extends DocumentListItem {
 }
 
 export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentDetail | null> {
-  const row = await db.get<Record<string, never>>(
-    `SELECT d.*, COALESCE(d.customer_name, d.supplier_name) AS party_name,
-            u.full_name AS created_by_name
-       FROM documents d
-       LEFT JOIN users u ON u.id = d.created_by
-      WHERE d.id = ?`,
-    [id],
-  ) as Record<string, string | number | null> | undefined
+  /* Named columns rather than `SELECT *`.
+     The two reads here used to come back as `Record<string, string | number |
+     null>` and every field was pulled out with a cast -- thirty of them, each
+     one a place where a column could be renamed and nothing would say so until
+     a screen showed `undefined`. The query names what it wants and the driver
+     knows what those columns are. */
+  const [row] = await q(db)
+    .select({
+      id: schema.documents.id,
+      docNo: schema.documents.docNo,
+      kind: schema.documents.kind,
+      docstatus: schema.documents.docstatus,
+      postingDate: schema.documents.postingDate,
+      validUntil: schema.documents.validUntil,
+      partyName: sql<string | null>`COALESCE(${schema.documents.customerName}, ${schema.documents.supplierName})`,
+      placeOfSupply: schema.documents.placeOfSupply,
+      customerId: schema.documents.customerId,
+      supplierId: schema.documents.supplierId,
+      subtotal: schema.documents.subtotal,
+      discount: schema.documents.discount,
+      taxableTotal: schema.documents.taxableTotal,
+      taxTotal: schema.documents.taxTotal,
+      roundOff: schema.documents.roundOff,
+      grandTotal: schema.documents.grandTotal,
+      notes: schema.documents.notes,
+      terms: schema.documents.terms,
+      convertedFrom: schema.documents.convertedFrom,
+      cancelReason: schema.documents.cancelReason,
+      createdBy: schema.documents.createdBy,
+      createdByName: schema.users.fullName,
+    })
+    .from(schema.documents)
+    /* Left, because the person who raised the quotation may have left the shop
+       since, and a document that will not open for that reason is one the shop
+       cannot reprint. */
+    .leftJoin(schema.users, eq(schema.users.id, schema.documents.createdBy))
+    .where(eq(schema.documents.id, id))
   if (!row) return null
 
-  const items = await db.query<Record<string, string | number | null>>(
-    `SELECT * FROM document_items WHERE document_id = ? ORDER BY idx`, [id],
-  )
+  const items = await q(db)
+    .select({
+      id: schema.documentItems.id,
+      productId: schema.documentItems.productId,
+      productName: schema.documentItems.productName,
+      hsnCode: schema.documentItems.hsnCode,
+      taxRateBp: schema.documentItems.taxRateBp,
+      saleUnit: schema.documentItems.saleUnit,
+      qty: schema.documentItems.qty,
+      rate: schema.documentItems.rate,
+      discount: schema.documentItems.discount,
+      lineTotal: schema.documentItems.lineTotal,
+      taxableValue: schema.documentItems.taxableValue,
+      cgst: schema.documentItems.cgstAmount,
+      sgst: schema.documentItems.sgstAmount,
+      igst: schema.documentItems.igstAmount,
+      fulfilledQty: schema.documentItems.fulfilledQty,
+    })
+    .from(schema.documentItems)
+    .where(eq(schema.documentItems.documentId, id))
+    .orderBy(asc(schema.documentItems.idx))
 
   const lines = items.map((i) => ({
-    id: i['id'] as string,
-    productId: i['product_id'] as string,
-    productName: i['product_name'] as string,
-    hsnCode: i['hsn_code'] as string | null,
-    taxRateBp: i['tax_rate_bp'] as number,
-    saleUnit: i['sale_unit'] as string,
-    qty: i['qty'] as Qty,
-    rate: i['rate'] as Money,
-    discount: i['discount'] as Money,
-    lineTotal: i['line_total'] as Money,
-    taxableValue: i['taxable_value'] as Money,
-    cgst: i['cgst_amount'] as Money,
-    sgst: i['sgst_amount'] as Money,
-    igst: i['igst_amount'] as Money,
-    fulfilledQty: i['fulfilled_qty'] as Qty,
-    remainingQty: Math.max(0, (i['qty'] as number) - (i['fulfilled_qty'] as number)) as Qty,
+    ...i,
+    remainingQty: Math.max(0, i.qty - i.fulfilledQty) as Qty,
   }))
 
   const started = lines.filter((l) => l.fulfilledQty > 0).length
   const finished = lines.filter((l) => l.fulfilledQty >= l.qty).length
 
   return {
-    id: row['id'] as string,
-    docNo: row['doc_no'] as string,
-    kind: row['kind'] as DocumentKind,
-    docstatus: row['docstatus'] as number,
-    postingDate: row['posting_date'] as string,
-    validUntil: row['valid_until'] as string | null,
-    partyName: row['party_name'] as string | null,
-    supplyType: row['place_of_supply'] === 'inter_state' ? 'inter_state'
-      : row['place_of_supply'] === 'intra_state' ? 'intra_state' : null,
-    customerId: row['customer_id'] as string | null,
-    supplierId: row['supplier_id'] as string | null,
-    subtotal: row['subtotal'] as Money,
-    discount: row['discount'] as Money,
-    taxableTotal: row['taxable_total'] as Money,
-    taxTotal: row['tax_total'] as Money,
-    roundOff: (row['round_off'] ?? 0) as Money,
-    grandTotal: row['grand_total'] as Money,
-    notes: row['notes'] as string | null,
-    terms: row['terms'] as string | null,
-    convertedFrom: row['converted_from'] as string | null,
-    cancelReason: row['cancel_reason'] as string | null,
-    createdBy: (row['created_by_name'] ?? row['created_by']) as string,
+    ...row,
+    kind: row.kind as DocumentKind,
+    /* The column holds a supply type or nothing. Anything else in it is a row
+       this code did not write, and the document says nothing rather than
+       guessing. */
+    supplyType: row.placeOfSupply === 'inter_state' ? 'inter_state'
+      : row.placeOfSupply === 'intra_state' ? 'intra_state' : null,
+    // The name if the user is still on the books, the id if they are not.
+    createdBy: row.createdByName ?? row.createdBy,
     progress: finished === lines.length && lines.length > 0 ? 'done' : started > 0 ? 'part' : 'open',
     items: lines,
   }
@@ -560,54 +613,64 @@ export async function applyBillFulfilment(
   /* Summed per item: one order line can be billed across two lines of the same
      cart, and two cart lines competing for the same remainder would each see it
      as whole. */
-  const billed = await tx.query<{ product_id: string; base_qty: number }>(
-    `SELECT product_id, SUM(base_qty) AS base_qty
-       FROM bill_items WHERE bill_id = ? GROUP BY product_id`,
-    [input.billId],
-  )
+  const billed = await q(tx)
+    .select({
+      productId: schema.billItems.productId,
+      baseQty: sql<number>`SUM(${schema.billItems.baseQty})`,
+    })
+    .from(schema.billItems)
+    .where(eq(schema.billItems.billId, input.billId))
+    .groupBy(schema.billItems.productId)
   if (billed.length === 0) return
 
-  const lines = await tx.query<{
-    id: string; product_id: string; qty: number; base_qty: number; fulfilled_qty: number
-  }>(
-    `SELECT id, product_id, qty, base_qty, fulfilled_qty
-       FROM document_items WHERE document_id = ? ORDER BY idx`,
-    [input.documentId],
-  )
+  const lines = await q(tx)
+    .select({
+      id: schema.documentItems.id,
+      productId: schema.documentItems.productId,
+      qty: schema.documentItems.qty,
+      baseQty: schema.documentItems.baseQty,
+      fulfilledQty: schema.documentItems.fulfilledQty,
+    })
+    .from(schema.documentItems)
+    .where(eq(schema.documentItems.documentId, input.documentId))
+    .orderBy(asc(schema.documentItems.idx))
   if (lines.length === 0) return
 
   const nowIso = input.now.toISOString()
   let marked = 0
 
   for (const sold of billed) {
-    let leftInBase = sold.base_qty
+    let leftInBase = sold.baseQty
 
     for (const line of lines) {
       if (leftInBase <= 0) break
-      if (line.product_id !== sold.product_id) continue
+      if (line.productId !== sold.productId) continue
 
-      const remaining = line.qty - line.fulfilled_qty
+      const remaining = line.qty - line.fulfilledQty
       if (remaining <= 0) continue
 
-      const remainingInBase = Math.round((remaining * line.base_qty) / line.qty)
+      const remainingInBase = Math.round((remaining * line.baseQty) / line.qty)
       const takenInBase = Math.min(leftInBase, remainingInBase)
-      const taken = Math.min(remaining, Math.round((takenInBase * line.qty) / line.base_qty))
+      const taken = Math.min(remaining, Math.round((takenInBase * line.qty) / line.baseQty))
       /* A bill line smaller than one thousandth of an order line's unit rounds
          to nothing here. It is left alone rather than marked off as zero: an
          order that says it is short by an amount nobody can see is still true. */
       if (taken <= 0) continue
 
-      await tx.execute(
-        `UPDATE document_items SET fulfilled_qty = fulfilled_qty + ? WHERE id = ?`,
-        [taken, line.id],
-      )
-      await tx.execute(
-        `INSERT INTO bill_fulfilments (id, bill_id, document_id, document_item_id, qty, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [newId(), input.billId, input.documentId, line.id, taken, nowIso],
-      )
+      await q(tx).update(schema.documentItems)
+        .set({ fulfilledQty: sql`${schema.documentItems.fulfilledQty} + ${taken}` })
+        .where(eq(schema.documentItems.id, line.id))
 
-      line.fulfilled_qty += taken
+      await q(tx).insert(schema.billFulfilments).values({
+        id: newId(),
+        billId: input.billId,
+        documentId: input.documentId,
+        documentItemId: line.id,
+        qty: taken as Qty,
+        createdAt: nowIso,
+      })
+
+      line.fulfilledQty = (line.fulfilledQty + taken) as Qty
       leftInBase -= takenInBase
       marked += 1
     }
@@ -638,21 +701,28 @@ export async function reverseBillFulfilment(
   tx: SqlDriver,
   input: { billId: string; actorId: string },
 ): Promise<void> {
-  const taken = await tx.query<{ document_id: string; document_item_id: string; qty: number }>(
-    `SELECT document_id, document_item_id, qty FROM bill_fulfilments WHERE bill_id = ?`,
-    [input.billId],
-  )
+  const taken = await q(tx)
+    .select({
+      documentId: schema.billFulfilments.documentId,
+      documentItemId: schema.billFulfilments.documentItemId,
+      qty: schema.billFulfilments.qty,
+    })
+    .from(schema.billFulfilments)
+    .where(eq(schema.billFulfilments.billId, input.billId))
   if (taken.length === 0) return
 
   for (const row of taken) {
-    await tx.execute(
-      `UPDATE document_items SET fulfilled_qty = MAX(0, fulfilled_qty - ?) WHERE id = ?`,
-      [row.qty, row.document_item_id],
-    )
+    /* `MAX(0, ...)` and not a bare subtraction: two cancellations racing, or a
+       row put back by hand, must not leave an order claiming a negative
+       delivery. */
+    await q(tx).update(schema.documentItems)
+      .set({ fulfilledQty: sql`MAX(0, ${schema.documentItems.fulfilledQty} - ${row.qty})` })
+      .where(eq(schema.documentItems.id, row.documentItemId))
   }
-  await tx.execute(`DELETE FROM bill_fulfilments WHERE bill_id = ?`, [input.billId])
+  await q(tx).delete(schema.billFulfilments)
+    .where(eq(schema.billFulfilments.billId, input.billId))
 
-  for (const documentId of new Set(taken.map((t) => t.document_id))) {
+  for (const documentId of new Set(taken.map((t) => t.documentId))) {
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'document',
       entityId: documentId,
