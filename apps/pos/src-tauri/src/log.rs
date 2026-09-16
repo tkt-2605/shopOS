@@ -290,6 +290,26 @@ pub fn log_event(level: String, source: String, message: String) {
     write(level, &source, &message);
 }
 
+/// Every log file that exists, newest first.
+///
+/// Written with this module, deleted again in the same commit for having no
+/// caller, and back now that `diagnostics.rs` needs it. The order matters: the
+/// bundle should unpack with the events nearest the problem at the top of the
+/// folder listing.
+pub fn log_paths(data_dir: &Path) -> Vec<PathBuf> {
+    let dir = data_dir.join("logs");
+    (0..KEEP)
+        .map(|n| {
+            if n == 0 {
+                dir.join("shopos.log")
+            } else {
+                dir.join(format!("shopos.{n}.log"))
+            }
+        })
+        .filter(|p| p.exists())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

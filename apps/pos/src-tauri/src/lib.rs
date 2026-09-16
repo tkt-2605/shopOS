@@ -3,6 +3,7 @@ mod attachments;
 mod backup;
 mod db;
 mod device;
+mod diagnostics;
 mod discovery;
 mod exports;
 mod hook;
@@ -91,6 +92,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             log::log_event,
             db::startup_status,
+            diagnostics::diagnostics_bundle,
             db::sql_query,
             db::sql_execute,
             db::sql_tx_begin,

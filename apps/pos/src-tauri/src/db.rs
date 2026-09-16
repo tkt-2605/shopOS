@@ -186,6 +186,23 @@ impl Db {
             .map_err(|e| e.to_string())
     }
 
+    /// Read-only access to the connection, for the diagnostics bundle.
+    ///
+    /// Deliberately narrow and deliberately `pub(crate)`: the rest of the
+    /// program reaches the database through `sql_query`, which is the path that
+    /// binds parameters and cannot be handed a connection to hold. This exists
+    /// because the bundle asks the database a dozen fixed questions in one go
+    /// and doing that over IPC would be a dozen round trips for a file nobody
+    /// is waiting on.
+    ///
+    /// Reads are allowed while a transaction is open -- that is the phase
+    /// decision, so a screen keeps working during a long merge -- and this is a
+    /// read.
+    pub(crate) fn read_with<T>(&self, f: impl FnOnce(&Connection) -> T) -> Result<T, String> {
+        let inner = lock(self)?;
+        Ok(f(&inner.conn))
+    }
+
     pub fn has_open_transaction(&self) -> bool {
         lock(self).map(|inner| inner.active_tx.is_some()).unwrap_or(true)
     }

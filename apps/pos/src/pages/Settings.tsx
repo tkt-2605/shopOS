@@ -14,6 +14,7 @@ import {
   backupFolderProblem, HOOK_SETTING, type BackupEntry, type HookRun,
 } from '../core/backup'
 import { lastRestore, inspectBackup, type RestoreReport, type RestoreCheck } from '../core/restore'
+import { writeDiagnosticsBundle } from '../core/diagnostics'
 import { appVersion, versionLine, type AppVersion } from '../core/version'
 import { Card, Field, Alert } from '../ui/components'
 import { SyncCard } from '../ui/SyncCard'
@@ -760,6 +761,8 @@ export default function Settings() {
         <RestorePanel />
       </Card>
 
+      <SupportCard />
+
       {/* Last line on the page, deliberately plain. It exists to be read aloud
           down a phone: "which version are you on" has had no answer until now
           except asking the shopkeeper to find an installer they downloaded. */}
@@ -768,6 +771,72 @@ export default function Settings() {
       </div>
 
     </div>
+  )
+}
+
+/**
+ * One file to send when something has gone wrong.
+ *
+ * What it replaces: a phone call in which somebody at a counter is asked to
+ * find a folder they have never opened, read out a version number, and describe
+ * what their database is doing — while customers wait.
+ *
+ * The card says plainly that nothing is sent, because a button called
+ * "diagnostics" on software that is sold as offline-first invites exactly that
+ * suspicion, and the suspicion would be reasonable. ShopOS writes a file and
+ * stops; what happens to it afterwards is the shopkeeper's decision, made in
+ * whatever app they already use.
+ */
+function SupportCard() {
+  const [busy, setBusy] = useState(false)
+  const [written, setWritten] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function make() {
+    setBusy(true)
+    setError(null)
+    setWritten(null)
+    try {
+      const result = await writeDiagnosticsBundle()
+      // A closed folder picker is a decision, not a failure, and saying
+      // anything about it would be noise.
+      if (!result.ok && result.cancelled) return
+      if (!result.ok) setError(result.error)
+      else setWritten(result.path)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card
+      title="Report a problem"
+      actions={
+        <button className="btn sm" disabled={busy} onClick={() => void make()}>
+          {busy ? 'Writing…' : 'Save a report…'}
+        </button>
+      }
+    >
+      <div style={{ fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+        Saves one file describing this machine — which version it is running, what
+        its database looks like, what the last few hundred things done on it were,
+        and the records it keeps of its own errors. Send it to whoever is helping
+        you, by WhatsApp or email.
+        <br /><br />
+        <strong>ShopOS does not send it anywhere.</strong> It is written to a folder
+        you choose and stays on this machine until you attach it to something
+        yourself. Your passwords are not in it, and neither is the command you set
+        under “Run after each backup” — that one can hold a cloud password, so the
+        report says only that it is set and how long it is.
+      </div>
+
+      {error && <div style={{ marginTop: 11 }}><Alert>{error}</Alert></div>}
+      {written && (
+        <div style={{ marginTop: 11 }}>
+          <Alert kind="ok">Saved to {written}</Alert>
+        </div>
+      )}
+    </Card>
   )
 }
 
