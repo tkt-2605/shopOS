@@ -1,7 +1,10 @@
+import { eq, ne, and, isNull, isNotNull, desc, count, max, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import type { Money } from '../money.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { writeAudit } from '../integrity/audit.js'
+import { SUBMITTED } from '../integrity/docstatus.js'
 
 /**
  * Who the shop buys from.
@@ -29,16 +32,25 @@ export interface SupplierSummary extends Supplier {
   archived: boolean
 }
 
+/** The five columns both lists return. */
+const supplierShape = {
+  id: schema.suppliers.id,
+  name: schema.suppliers.name,
+  phone: schema.suppliers.phone,
+  gstin: schema.suppliers.gstin,
+  address: schema.suppliers.address,
+  isActive: schema.suppliers.isActive,
+}
+
 export async function listSuppliers(db: SqlDriver, includeInactive = false): Promise<Supplier[]> {
-  const rows = await db.query<{
-    id: string; name: string; phone: string | null; gstin: string | null
-    address: string | null; is_active: number
-  }>(
-    `SELECT id, name, phone, gstin, address, is_active
-       FROM suppliers
-      WHERE deleted_at IS NULL ${includeInactive ? '' : 'AND is_active = 1'}
-      ORDER BY name`,
-  )
+  const rows = await q(db)
+    .select(supplierShape)
+    .from(schema.suppliers)
+    .where(and(
+      isNull(schema.suppliers.deletedAt),
+      ...(includeInactive ? [] : [eq(schema.suppliers.isActive, 1)]),
+    ))
+    .orderBy(schema.suppliers.name)
   return rows.map(toSupplier)
 }
 
@@ -47,30 +59,37 @@ export async function supplierSummaries(
   db: SqlDriver,
   opts: { includeArchived?: boolean } = {},
 ): Promise<SupplierSummary[]> {
-  const rows = await db.query<{
-    id: string; name: string; phone: string | null; gstin: string | null
-    address: string | null; is_active: number; deleted_at: string | null
-    n: number; last_purchase: string | null; purchased: number
-  }>(
-    `SELECT s.id, s.name, s.phone, s.gstin, s.address, s.is_active, s.deleted_at,
-            COUNT(e.id) AS n,
-            MAX(e.posting_date) AS last_purchase,
-            COALESCE(SUM(
-              (SELECT COALESCE(SUM(CAST(ROUND(i.qty * i.unit_cost / 10000.0) AS INTEGER)), 0)
-                 FROM stock_entry_items i WHERE i.entry_id = e.id)
-            ), 0) AS purchased
-       FROM suppliers s
-       LEFT JOIN stock_entries e ON e.supplier_id = s.id AND e.docstatus = 1
-      ${opts.includeArchived ? '' : 'WHERE s.deleted_at IS NULL'}
-      GROUP BY s.id
-      ORDER BY s.name`,
-  )
+  const rows = await q(db)
+    .select({
+      ...supplierShape,
+      deletedAt: schema.suppliers.deletedAt,
+      entryCount: count(schema.stockEntries.id),
+      lastPurchase: max(schema.stockEntries.postingDate),
+      /* raw: what each entry came to, summed across the entries. It is a
+         subquery rather than a second join because the entries are already
+         joined and grouped -- joining the lines as well would multiply the
+         count of entries by the number of lines on each. `stock_entries.id` is
+         written out because inside the subquery a bare `id` would bind to
+         `stock_entry_items`. */
+      purchased: sql<Money>`COALESCE(SUM((
+        SELECT COALESCE(SUM(CAST(ROUND(i.qty * i.unit_cost / 10000.0) AS INTEGER)), 0)
+          FROM stock_entry_items i WHERE i.entry_id = stock_entries.id)), 0)`,
+    })
+    .from(schema.suppliers)
+    .leftJoin(schema.stockEntries, and(
+      eq(schema.stockEntries.supplierId, schema.suppliers.id),
+      eq(schema.stockEntries.docstatus, SUBMITTED),
+    ))
+    .where(and(...(opts.includeArchived ? [] : [isNull(schema.suppliers.deletedAt)])))
+    .groupBy(schema.suppliers.id)
+    .orderBy(schema.suppliers.name)
+
   return rows.map((r) => ({
     ...toSupplier(r),
-    entryCount: r.n,
-    lastPurchase: r.last_purchase,
-    purchased: r.purchased as Money,
-    archived: r.deleted_at !== null,
+    entryCount: r.entryCount,
+    lastPurchase: r.lastPurchase,
+    purchased: r.purchased,
+    archived: r.deletedAt !== null,
   }))
 }
 
@@ -91,11 +110,15 @@ export async function createSupplier(
   const now = new Date().toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO suppliers (id, name, phone, gstin, address, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, name, blank(input.phone), blank(input.gstin), blank(input.address), now, now],
-    )
+    await q(tx).insert(schema.suppliers).values({
+      id,
+      name,
+      phone: blank(input.phone),
+      gstin: blank(input.gstin),
+      address: blank(input.address),
+      createdAt: now,
+      updatedAt: now,
+    })
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'suppliers', entityId: id, action: 'create', after: { name },
     })
@@ -115,23 +138,33 @@ export async function updateSupplier(
   if (name === '') return { ok: false, code: 'NO_NAME' }
   if (await nameTaken(db, name, input.supplierId)) return { ok: false, code: 'NAME_TAKEN' }
 
-  const before = await db.get<{ name: string; phone: string | null; gstin: string | null; is_active: number }>(
-    `SELECT name, phone, gstin, is_active FROM suppliers WHERE id = ?`, [input.supplierId],
-  )
+  const [before] = await q(db)
+    .select({
+      name: schema.suppliers.name,
+      phone: schema.suppliers.phone,
+      gstin: schema.suppliers.gstin,
+      is_active: schema.suppliers.isActive,
+    })
+    .from(schema.suppliers)
+    .where(eq(schema.suppliers.id, input.supplierId))
+
+  const isActive = input.isActive === false ? 0 : 1
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE suppliers SET name = ?, phone = ?, gstin = ?, address = ?, is_active = ?, updated_at = ?
-         WHERE id = ?`,
-      [
-        name, blank(input.phone), blank(input.gstin), blank(input.address),
-        input.isActive === false ? 0 : 1, new Date().toISOString(), input.supplierId,
-      ],
-    )
+    await q(tx).update(schema.suppliers)
+      .set({
+        name,
+        phone: blank(input.phone),
+        gstin: blank(input.gstin),
+        address: blank(input.address),
+        isActive,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(schema.suppliers.id, input.supplierId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'suppliers', entityId: input.supplierId, action: 'update',
-      before: before ? { name: before.name, phone: before.phone, gstin: before.gstin, is_active: before.is_active } : null,
-      after: { name, phone: blank(input.phone), gstin: blank(input.gstin), is_active: input.isActive === false ? 0 : 1 },
+      before: before ?? null,
+      after: { name, phone: blank(input.phone), gstin: blank(input.gstin), is_active: isActive },
     })
   })
 
@@ -166,10 +199,12 @@ export async function archiveSupplier(
 ): Promise<ArchiveSupplierResult> {
   const now = new Date().toISOString()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE suppliers SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
-      [now, now, input.supplierId],
-    )
+    await q(tx).update(schema.suppliers)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(and(
+        eq(schema.suppliers.id, input.supplierId),
+        isNull(schema.suppliers.deletedAt),
+      ))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'suppliers', entityId: input.supplierId, action: 'delete',
     })
@@ -184,10 +219,12 @@ export async function restoreSupplier(
 ): Promise<void> {
   const now = new Date().toISOString()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE suppliers SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL`,
-      [now, input.supplierId],
-    )
+    await q(tx).update(schema.suppliers)
+      .set({ deletedAt: null, updatedAt: now })
+      .where(and(
+        eq(schema.suppliers.id, input.supplierId),
+        isNotNull(schema.suppliers.deletedAt),
+      ))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'suppliers', entityId: input.supplierId, action: 'update',
       after: { Archived: 'no' },
@@ -202,9 +239,15 @@ export async function findOrCreateSupplier(
   const name = input.name.trim()
   if (name === '') return null
 
-  const existing = await db.get<{ id: string }>(
-    `SELECT id FROM suppliers WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL`, [name],
-  )
+  const [existing] = await q(db)
+    .select({ id: schema.suppliers.id })
+    .from(schema.suppliers)
+    // raw: `COLLATE NOCASE`. "Sakthi Agencies" and "sakthi agencies" are the
+    // one supplier this function exists to stop becoming two.
+    .where(and(
+      sql`${schema.suppliers.name} = ${name} COLLATE NOCASE`,
+      isNull(schema.suppliers.deletedAt),
+    ))
   if (existing) return existing.id
 
   const created = await createSupplier(db, { name, actorId: input.actorId })
@@ -226,52 +269,46 @@ export async function supplierPurchases(
   supplierId: string,
   limit = 100,
 ): Promise<PurchaseLine[]> {
-  const rows = await db.query<{
-    posting_date: string; doc_no: string; name: string
-    qty: number; unit_cost: number | null; amount: number
-  }>(
-    `SELECT e.posting_date, e.doc_no, p.name,
-            i.qty, i.unit_cost,
-            CAST(ROUND(i.qty * COALESCE(i.unit_cost, 0) / 10000.0) AS INTEGER) AS amount
-       FROM stock_entry_items i
-       JOIN stock_entries e ON e.id = i.entry_id
-       JOIN products p ON p.id = i.product_id
-      WHERE e.supplier_id = ? AND e.docstatus = 1
-      ORDER BY e.posting_date DESC, e.doc_no DESC
-      LIMIT ?`,
-    [supplierId, limit],
-  )
+  const rows = await q(db)
+    .select({
+      postingDate: schema.stockEntries.postingDate,
+      docNo: schema.stockEntries.docNo,
+      productName: schema.products.name,
+      qty: schema.stockEntryItems.qty,
+      unitCost: schema.stockEntryItems.unitCost,
+      /* The line's own money, which is a quantity scaled by ten thousand times
+         a rate in paise. Rounded in SQLite rather than in JavaScript because
+         that is where the multiplication happens. */
+      amount: sql<Money>`CAST(ROUND(${schema.stockEntryItems.qty} *
+        COALESCE(${schema.stockEntryItems.unitCost}, 0) / 10000.0) AS INTEGER)`,
+    })
+    .from(schema.stockEntryItems)
+    .innerJoin(schema.stockEntries, eq(schema.stockEntries.id, schema.stockEntryItems.entryId))
+    .innerJoin(schema.products, eq(schema.products.id, schema.stockEntryItems.productId))
+    .where(and(
+      eq(schema.stockEntries.supplierId, supplierId),
+      eq(schema.stockEntries.docstatus, SUBMITTED),
+    ))
+    .orderBy(desc(schema.stockEntries.postingDate), desc(schema.stockEntries.docNo))
+    .limit(limit)
 
-  return rows.map((r) => ({
-    postingDate: r.posting_date,
-    docNo: r.doc_no,
-    productName: r.name,
-    qty: r.qty,
-    unitCost: (r.unit_cost ?? 0) as Money,
-    amount: r.amount as Money,
-  }))
+  return rows
 }
 
-function toSupplier(r: {
-  id: string; name: string; phone: string | null
-  gstin: string | null; address: string | null; is_active: number
-}): Supplier {
-  return {
-    id: r.id,
-    name: r.name,
-    phone: r.phone,
-    gstin: r.gstin,
-    address: r.address,
-    isActive: r.is_active === 1,
-  }
+function toSupplier(r: Omit<Supplier, 'isActive'> & { isActive: number }): Supplier {
+  return { ...r, isActive: r.isActive === 1 }
 }
 
 async function nameTaken(db: SqlDriver, name: string, exceptId?: string): Promise<boolean> {
-  const row = await db.get<{ id: string }>(
-    `SELECT id FROM suppliers
-      WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL AND (? IS NULL OR id <> ?)`,
-    [name, exceptId ?? null, exceptId ?? ''],
-  )
+  const [row] = await q(db)
+    .select({ id: schema.suppliers.id })
+    .from(schema.suppliers)
+    // raw: `COLLATE NOCASE`, as in `findOrCreateSupplier`.
+    .where(and(
+      sql`${schema.suppliers.name} = ${name} COLLATE NOCASE`,
+      isNull(schema.suppliers.deletedAt),
+      ...(exceptId === undefined ? [] : [ne(schema.suppliers.id, exceptId)]),
+    ))
   return row !== undefined
 }
 
