@@ -1,4 +1,7 @@
+import { eq, and, isNull, isNotNull, desc, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/sqlite-core'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { type Money, ZERO, add, sub, paise } from '../money.js'
 import { DRAFT, SUBMITTED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
@@ -26,23 +29,28 @@ export interface CashMovementInput {
 export async function postCashMovement(tx: SqlDriver, input: CashMovementInput): Promise<void> {
   if (input.amount <= 0) return
 
-  await tx.execute(
-    `INSERT INTO cash_movements
-       (id, session_id, direction, amount, method, source_type, source_id, reference, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      newId(), input.sessionId, input.direction, input.amount, input.method ?? 'cash',
-      input.sourceType, input.sourceId ?? null, input.reference ?? null,
-      input.userId ?? null, (input.now ?? new Date()).toISOString(),
-    ],
-  )
+  await q(tx).insert(schema.cashMovements).values({
+    id: newId(),
+    sessionId: input.sessionId,
+    direction: input.direction,
+    amount: input.amount,
+    method: input.method ?? 'cash',
+    sourceType: input.sourceType,
+    sourceId: input.sourceId ?? null,
+    reference: input.reference ?? null,
+    createdBy: input.userId ?? null,
+    createdAt: (input.now ?? new Date()).toISOString(),
+  })
 }
 
 export async function openSessionFor(db: SqlDriver, registerId: string): Promise<string | null> {
-  const row = await db.get<{ id: string }>(
-    `SELECT id FROM cash_sessions WHERE register_id = ? AND closed_at IS NULL`,
-    [registerId],
-  )
+  const [row] = await q(db)
+    .select({ id: schema.cashSessions.id })
+    .from(schema.cashSessions)
+    .where(and(
+      eq(schema.cashSessions.registerId, registerId),
+      isNull(schema.cashSessions.closedAt),
+    ))
   return row?.id ?? null
 }
 
@@ -64,11 +72,16 @@ export async function getOrOpenSession(
   const now = (input.now ?? new Date()).toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO cash_sessions (id, register_id, docstatus, opened_by, opened_at, opening_cash, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?)`,
-      [sessionId, input.registerId, input.userId, now, input.openingCash ?? ZERO, now, now],
-    )
+    await q(tx).insert(schema.cashSessions).values({
+      id: sessionId,
+      registerId: input.registerId,
+      docstatus: DRAFT,
+      openedBy: input.userId,
+      openedAt: now,
+      openingCash: input.openingCash ?? ZERO,
+      createdAt: now,
+      updatedAt: now,
+    })
     await writeAudit(tx, { actorId: input.userId }, {
       entity: 'cash_sessions', entityId: sessionId, action: 'create', docstatusTo: DRAFT,
       after: { opening_cash: input.openingCash ?? ZERO },
@@ -89,25 +102,32 @@ export interface SessionSummary {
 }
 
 export async function sessionSummary(db: SqlDriver, sessionId: string): Promise<SessionSummary> {
-  const session = await db.get<{ opening_cash: number }>(
-    `SELECT opening_cash FROM cash_sessions WHERE id = ?`,
-    [sessionId],
-  )
+  const [session] = await q(db)
+    .select({ openingCash: schema.cashSessions.openingCash })
+    .from(schema.cashSessions)
+    .where(eq(schema.cashSessions.id, sessionId))
   if (!session) throw new Error(`unknown cash session: ${sessionId}`)
 
-  const totals = await db.get<{ cash_in: number; cash_out: number; non_cash_in: number; n: number }>(
-    `SELECT
-       COALESCE(SUM(CASE WHEN method = 'cash' AND direction = 'in'  THEN amount END), 0) AS cash_in,
-       COALESCE(SUM(CASE WHEN method = 'cash' AND direction = 'out' THEN amount END), 0) AS cash_out,
-       COALESCE(SUM(CASE WHEN method <> 'cash' AND direction = 'in' THEN amount END), 0) AS non_cash_in,
-       COUNT(*) AS n
-     FROM cash_movements WHERE session_id = ?`,
-    [sessionId],
-  )
+  /* One pass over the movements, split by what each one was. Every tender is
+     recorded and only cash moves the drawer, so the three sums are different
+     questions and the drawer is the first two. */
+  const amount = schema.cashMovements.amount
+  const method = schema.cashMovements.method
+  const direction = schema.cashMovements.direction
 
-  const openingCash = session.opening_cash as Money
-  const cashIn = (totals?.cash_in ?? 0) as Money
-  const cashOut = (totals?.cash_out ?? 0) as Money
+  const [totals] = await q(db)
+    .select({
+      cashIn: sql<Money>`COALESCE(SUM(CASE WHEN ${method} = 'cash' AND ${direction} = 'in' THEN ${amount} END), 0)`,
+      cashOut: sql<Money>`COALESCE(SUM(CASE WHEN ${method} = 'cash' AND ${direction} = 'out' THEN ${amount} END), 0)`,
+      nonCashIn: sql<Money>`COALESCE(SUM(CASE WHEN ${method} <> 'cash' AND ${direction} = 'in' THEN ${amount} END), 0)`,
+      n: sql<number>`COUNT(*)`,
+    })
+    .from(schema.cashMovements)
+    .where(eq(schema.cashMovements.sessionId, sessionId))
+
+  const openingCash = session.openingCash
+  const cashIn = totals?.cashIn ?? ZERO
+  const cashOut = totals?.cashOut ?? ZERO
 
   return {
     sessionId,
@@ -115,7 +135,7 @@ export async function sessionSummary(db: SqlDriver, sessionId: string): Promise<
     cashIn,
     cashOut,
     expectedCash: sub(add(openingCash, cashIn), cashOut),
-    nonCashIn: (totals?.non_cash_in ?? 0) as Money,
+    nonCashIn: totals?.nonCashIn ?? ZERO,
     movementCount: totals?.n ?? 0,
   }
 }
@@ -131,10 +151,10 @@ export async function closeSession(
   db: SqlDriver,
   input: { sessionId: string; actualCash: Money; userId: string; notes?: string; now?: Date },
 ): Promise<CloseSessionResult> {
-  const session = await db.get<{ docstatus: number }>(
-    `SELECT docstatus FROM cash_sessions WHERE id = ?`,
-    [input.sessionId],
-  )
+  const [session] = await q(db)
+    .select({ docstatus: schema.cashSessions.docstatus })
+    .from(schema.cashSessions)
+    .where(eq(schema.cashSessions.id, input.sessionId))
   if (!session) throw new Error(`unknown cash session: ${input.sessionId}`)
   assertCanApply('cash session', parseDocStatus(session.docstatus), 'submit')
 
@@ -143,13 +163,18 @@ export async function closeSession(
   const now = (input.now ?? new Date()).toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE cash_sessions
-          SET docstatus = 1, closed_by = ?, closed_at = ?, expected_cash = ?, actual_cash = ?,
-              variance = ?, notes = ?, updated_at = ?
-        WHERE id = ?`,
-      [input.userId, now, summary.expectedCash, input.actualCash, variance, input.notes ?? null, now, input.sessionId],
-    )
+    await q(tx).update(schema.cashSessions)
+      .set({
+        docstatus: SUBMITTED,
+        closedBy: input.userId,
+        closedAt: now,
+        expectedCash: summary.expectedCash,
+        actualCash: input.actualCash,
+        variance,
+        notes: input.notes ?? null,
+        updatedAt: now,
+      })
+      .where(eq(schema.cashSessions.id, input.sessionId))
     await writeAudit(tx, { actorId: input.userId }, {
       entity: 'cash_sessions', entityId: input.sessionId, action: 'submit',
       docstatusFrom: DRAFT, docstatusTo: SUBMITTED,
@@ -209,43 +234,53 @@ export async function listSessions(
   db: SqlDriver,
   range: { from: string; to: string; registerId?: string | null },
 ): Promise<ClosedSession[]> {
-  const scoped = range.registerId
-    ? { clause: 'AND s.register_id = ?', params: [range.from, range.to, range.registerId] }
-    : { clause: '', params: [range.from, range.to] }
+  /* `users` twice, under two names: whoever opened the drawer and whoever
+     counted it are different questions and often different people, and the
+     answer to "is it short on the same person's shift" needs both. */
+  const openedBy = alias(schema.users, 'opened_by_user')
+  const closedBy = alias(schema.users, 'closed_by_user')
 
-  const rows = await db.query<{
-    id: string; register_id: string; register_name: string | null
-    opened_at: string; opened_by: string | null; closed_at: string; closed_by: string | null
-    opening_cash: number; expected_cash: number | null; actual_cash: number | null
-    variance: number | null; notes: string | null
-  }>(
-    `SELECT s.id, s.register_id, r.name AS register_name,
-            s.opened_at, o.username AS opened_by,
-            s.closed_at, c.username AS closed_by,
-            s.opening_cash, s.expected_cash, s.actual_cash, s.variance, s.notes
-       FROM cash_sessions s
-       LEFT JOIN registers r ON r.id = s.register_id
-       LEFT JOIN users o ON o.id = s.opened_by
-       LEFT JOIN users c ON c.id = s.closed_by
-      WHERE s.docstatus = 1 AND s.closed_at IS NOT NULL
-        AND substr(s.closed_at, 1, 10) BETWEEN ? AND ? ${scoped.clause}
-      ORDER BY s.closed_at DESC`,
-    scoped.params,
-  )
+  const rows = await q(db)
+    .select({
+      id: schema.cashSessions.id,
+      registerId: schema.cashSessions.registerId,
+      registerName: schema.registers.name,
+      openedAt: schema.cashSessions.openedAt,
+      openedBy: openedBy.username,
+      closedAt: schema.cashSessions.closedAt,
+      closedBy: closedBy.username,
+      openingCash: schema.cashSessions.openingCash,
+      expectedCash: schema.cashSessions.expectedCash,
+      actualCash: schema.cashSessions.actualCash,
+      variance: schema.cashSessions.variance,
+      notes: schema.cashSessions.notes,
+    })
+    .from(schema.cashSessions)
+    /* All three joins are left joins, and stay so: a register renamed out of
+       existence or a cashier removed from the shop must not take the evening's
+       count off the report with them. */
+    .leftJoin(schema.registers, eq(schema.registers.id, schema.cashSessions.registerId))
+    .leftJoin(openedBy, eq(openedBy.id, schema.cashSessions.openedBy))
+    .leftJoin(closedBy, eq(closedBy.id, schema.cashSessions.closedBy))
+    .where(and(
+      eq(schema.cashSessions.docstatus, SUBMITTED),
+      isNotNull(schema.cashSessions.closedAt),
+      /* raw: the business day is the first ten characters of the close, and
+         `substr` on the stored text is what the index-free comparison has
+         always done. Storing a separate date column is the alternative and it
+         is a migration, not a rewrite. */
+      sql`substr(${schema.cashSessions.closedAt}, 1, 10) BETWEEN ${range.from} AND ${range.to}`,
+      ...(range.registerId ? [eq(schema.cashSessions.registerId, range.registerId)] : []),
+    ))
+    .orderBy(desc(schema.cashSessions.closedAt))
 
   return rows.map((r) => ({
-    id: r.id,
-    registerId: r.register_id,
-    registerName: r.register_name ?? 'this counter',
-    openedAt: r.opened_at,
-    openedBy: r.opened_by,
-    closedAt: r.closed_at,
-    closedBy: r.closed_by,
-    openingCash: r.opening_cash as Money,
-    expectedCash: (r.expected_cash ?? 0) as Money,
-    actualCash: (r.actual_cash ?? 0) as Money,
-    variance: (r.variance ?? 0) as Money,
-    notes: r.notes,
-    postingDate: r.closed_at.slice(0, 10),
+    ...r,
+    registerName: r.registerName ?? 'this counter',
+    closedAt: r.closedAt!,
+    expectedCash: r.expectedCash ?? ZERO,
+    actualCash: r.actualCash ?? ZERO,
+    variance: r.variance ?? ZERO,
+    postingDate: r.closedAt!.slice(0, 10),
   }))
 }
