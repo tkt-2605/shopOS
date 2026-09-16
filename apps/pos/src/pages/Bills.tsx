@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Permissions,
-  listBills, countBills, loadBillDetail, cancelBill, listReturns, cancelReturn,
+  listBills, countBills, loadBillDetail, cancelBill, amendBill, listReturns, cancelReturn,
   type BillListItem, type BillDetail, type ReturnListItem, type BillStatusFilter,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { goTo } from '../core/nav'
 import {
   Modal, Empty, Alert, Rupees, DocStatusBadge, DateRangePicker, rangePreset, type Range,
 } from '../ui/components'
@@ -110,6 +111,41 @@ export default function Bills() {
       })),
     })
     setOpen(null)
+  }
+
+  /**
+   * A corrected bill, from a cancelled one.
+   *
+   * `amendBill` has been in the service since v1 with no caller, so a shop that
+   * cancelled a bill to fix one line had to ring the whole thing up again from
+   * the cancelled copy -- and lose the discount, which the old `amendBill`
+   * dropped anyway until Phase 1a.
+   *
+   * Worded as what it is. Under GST there is no such thing as an amended
+   * invoice: the cancelled one keeps its number and stays cancelled, and this
+   * is a new document with today's date and the next number in the series. The
+   * button says "Raise a corrected bill" and the confirmation says the rest,
+   * because a shopkeeper who thinks they are editing a bill is a shopkeeper
+   * about to be surprised by their own return.
+   */
+  async function amend(bill: BillDetail) {
+    if (!(await ask(
+      `Raise a corrected bill from ${bill.docNo}? `
+      + `${bill.docNo} stays cancelled and keeps its number — under GST a bill cannot be edited. `
+      + 'A new draft opens at the counter with the same items, prices and discount, '
+      + 'and takes its own number when it is paid.',
+    ))) return
+
+    const result = await amendBill(db, { billId: bill.id, actorId: user.id })
+    if (!result.ok) {
+      setError(`That bill could not be corrected: ${result.code}.`)
+      return
+    }
+
+    /* The draft is on this counter now, and the counter picks up its open
+       drafts when it mounts. Nothing else to hand over. */
+    setOpen(null)
+    goTo('billing')
   }
 
   async function undoReturn(returnId: string, docNo: string) {
@@ -314,6 +350,9 @@ export default function Bills() {
               <button className="btn" onClick={() => void printSheet(open.id)}>Print A4</button>
               {canSell && open.docstatus === 1 && (
                 <button className="btn" onClick={() => sellAgain(open)}>Sell these again</button>
+              )}
+              {canSell && open.docstatus === 2 && (
+                <button className="btn" onClick={() => void amend(open)}>Raise a corrected bill</button>
               )}
               {open.docstatus === 1 && anythingLeft(open) && (
                 canReturn

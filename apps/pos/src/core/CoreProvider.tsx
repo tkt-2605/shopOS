@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { createTauriDriver, migrate, type SqlDriver } from '@shopos/core'
+import {
+  createTauriDriver, migrate, SchemaTooNewError, SchemaUnversionedError, type SqlDriver,
+} from '@shopos/core'
 import {
   DEVICE_LOCAL_KEYS, chooseRegister, chosenRegister, deviceSetting,
   establishDevice, recordStranded, setDeviceSetting,
@@ -34,7 +36,19 @@ type Status =
   | { phase: 'starting' }
   | { phase: 'setup' }
   | { phase: 'ready' }
-  | { phase: 'failed'; error: string }
+  /**
+   * `kind` so the screen can offer the right way out, not only the right words.
+   *
+   * A database written by a newer build and a database that is damaged both
+   * stop the till, and the two want opposite advice: one wants this machine
+   * updated, and the other wants a backup restored. Offering "Restore a
+   * backup…" first to a shop whose till is merely behind invites them to
+   * overwrite a newer database with an older copy, which is how a day's billing
+   * is lost while following the instructions on the screen.
+   */
+  | { phase: 'failed'; error: string; kind: FailureKind }
+
+export type FailureKind = 'schema_too_new' | 'schema_unversioned' | 'other'
 
 interface CoreValue {
   db: SqlDriver
@@ -252,7 +266,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
           if (!cancelled) setBackup(result)
         })
       } catch (err) {
-        if (!cancelled) setStatus({ phase: 'failed', error: describe(err) })
+        if (!cancelled) setStatus({ phase: 'failed', error: describe(err), kind: kindOf(err) })
       }
     })()
 
@@ -378,4 +392,16 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 function describe(err: unknown): string {
   if (err instanceof Error) return err.message
   return String(err)
+}
+
+/**
+ * What kind of not-starting this is.
+ *
+ * By class rather than by reading the message, so a reworded error does not
+ * silently turn into "other" and start offering the wrong advice again.
+ */
+function kindOf(err: unknown): FailureKind {
+  if (err instanceof SchemaTooNewError) return 'schema_too_new'
+  if (err instanceof SchemaUnversionedError) return 'schema_unversioned'
+  return 'other'
 }

@@ -3,7 +3,8 @@ import {
   Money, Quantity, Tax, Permissions,
   searchProducts, productValuation, recomputeStock, newId,
   listBarcodes, setBarcodes, listUnits, setUnits,
-  listCategories, createCategory, setProductCategory, setVariantOf,
+  listCategories, createCategory, renameCategory, removeCategory,
+  setProductCategory, setVariantOf,
   setLadder, laddersFor, defaultPriceListId, Ladder,
   hsnProblem, HSN_SHAPE_MESSAGE,
   type Category,
@@ -267,6 +268,57 @@ export default function Inventory() {
     setDraft({ ...draft, categoryId: made.categoryId })
   }
 
+  /**
+   * Renaming a group, and getting rid of one.
+   *
+   * Both services have been in `grouping.ts` since groups existed and neither
+   * had a caller: a group typed with a spelling mistake was a spelling mistake
+   * for ever, and one made by accident could not be got rid of. `removeCategory`
+   * is careful -- it moves the products to no group rather than deleting them,
+   * and unparents its children -- which is worth having reachable.
+   */
+  async function renameGroup() {
+    const group = categories.find((c) => c.id === browsing)
+    if (!group) return
+
+    const name = window.prompt(`Rename “${group.name}” to what?`, group.name)
+    if (name === null || name.trim() === '' || name.trim() === group.name) return
+
+    const result = await renameCategory(db, { actorId: user.id }, {
+      categoryId: group.id, name: name.trim(),
+    })
+    if (!result.ok) {
+      setNotice(result.code === 'NAME_TAKEN'
+        ? 'There is already a group with that name.'
+        : 'Give the group a name.')
+      return
+    }
+    await refreshCategories()
+    setNotice(`Renamed to ${name.trim()}.`)
+  }
+
+  async function removeGroup() {
+    const group = categories.find((c) => c.id === browsing)
+    if (!group) return
+
+    /* Said in full, because "delete" beside a group holding two hundred items
+       reads like it takes the items with it, and it does not. */
+    const many = group.productCount === 1 ? '1 product' : `${group.productCount} products`
+    if (!window.confirm(
+      `Remove the group “${group.name}”?
+
+`
+      + `Nothing is deleted: ${many} stay exactly as they are and simply stop `
+      + 'being in a group. Any groups inside this one move to the top level.',
+    )) return
+
+    await removeCategory(db, { actorId: user.id }, group.id)
+    setBrowsing('')
+    await refreshCategories()
+    await refresh()
+    setNotice(`“${group.name}” is gone. Its products are still here, in no group.`)
+  }
+
   async function edit(p: ProductListItem) {
     const [codes, units] = await Promise.all([listBarcodes(db, p.id), listUnits(db, p.id)])
     setDraft({
@@ -321,6 +373,12 @@ export default function Inventory() {
             </option>
           ))}
         </select>
+        {canWrite && browsing !== '' && (
+          <>
+            <button className="btn sm" onClick={() => void renameGroup()}>Rename group</button>
+            <button className="btn sm" onClick={() => void removeGroup()}>Remove group</button>
+          </>
+        )}
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{rows.length} items</span>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>

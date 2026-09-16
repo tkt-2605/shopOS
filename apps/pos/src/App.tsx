@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { login, Permissions, type Page } from '@shopos/core'
-import { useCore } from './core/CoreProvider'
+import { useCore, type FailureKind } from './core/CoreProvider'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
 import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
+import { ChangePassword } from './ui/ChangePassword'
 import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
@@ -86,7 +87,7 @@ export default function App() {
   const { status, user } = useCore()
 
   if (status.phase === 'starting') return <Empty>Starting…</Empty>
-  if (status.phase === 'failed') return <CouldNotStart error={status.error} />
+  if (status.phase === 'failed') return <CouldNotStart error={status.error} kind={status.kind} />
   if (status.phase === 'setup') return <Setup />
   if (!user) return <Login />
   return <Shell />
@@ -99,8 +100,13 @@ export default function App() {
  * cannot read fails before sign-in — and a fix that sits behind the screen that
  * will not load is not a fix.
  */
-function CouldNotStart({ error }: { error: string }) {
+function CouldNotStart({ error, kind }: { error: string; kind: FailureKind }) {
   const [restoring, setRestoring] = useState(false)
+  /* A till that is merely behind and a database that is damaged both land here
+     and want opposite advice. Offering "Restore a backup…" first to the former
+     invites somebody to overwrite a newer database with an older copy — a day's
+     billing lost while following the instructions on the screen. */
+  const behind = kind === 'schema_too_new'
   // The one screen where the version matters most and was hardest to get: a
   // shop that cannot start cannot open Settings to read it.
   const [version, setVersion] = useState<AppVersion | null>(null)
@@ -109,12 +115,30 @@ function CouldNotStart({ error }: { error: string }) {
   return (
     <div className="centre">
       <div className="panel" style={{ maxWidth: restoring ? 620 : undefined }}>
-        <div className="panel-head"><h1>Could not start</h1></div>
+        <div className="panel-head">
+          <h1>{behind ? 'This till needs updating' : 'Could not start'}</h1>
+        </div>
         <div className="panel-body">
           <Alert>{error}</Alert>
+          {behind && (
+            <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+              Nothing is wrong with the database — it was written by a newer
+              ShopOS than this machine has. Update this till and it will open as
+              it was.
+              <br />
+              <strong>Do not restore an older backup to get past this.</strong>{' '}
+              It would replace what the newer version has written, and whatever
+              was billed on it would be gone.
+            </div>
+          )}
           {!restoring && (
             <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-              <button className="btn" onClick={() => setRestoring(true)}>Restore a backup…</button>
+              <button
+                className={behind ? 'btn ghost' : 'btn'}
+                onClick={() => setRestoring(true)}
+              >
+                Restore a backup…
+              </button>
               <button className="btn ghost" onClick={() => { void abandonRestore().then(() => window.location.reload()) }}>
                 Cancel a pending restore
               </button>
@@ -235,6 +259,7 @@ function Login() {
 function Shell() {
   const { user, setUser, shopName, registerName } = useCore()
   const pages = Permissions.visiblePages(user!.permissions)
+  const [changingPassword, setChangingPassword] = useState(false)
   const [current, setCurrent] = useState<Page>(
     NAV_GROUPS.flatMap((g) => g.pages).find((p) => pages.includes(p)) ?? pages[0] ?? 'dashboard',
   )
@@ -288,9 +313,17 @@ function Shell() {
             {/* The unlock belongs to a person, not to the machine, so it does
                 not outlive their session. */}
             <button className="link-btn" onClick={() => { lock(); setUser(null) }}>Sign out</button>
+            {/* Not on Settings, which is behind the owner's gate: this is the
+                one thing there that a cashier needs and an owner should not be
+                asked for. A password somebody else chose for you is not one. */}
+            <button className="link-btn" onClick={() => setChangingPassword(true)}>
+              Change my password
+            </button>
           </div>
         </div>
       </aside>
+
+      {changingPassword && <ChangePassword onClose={() => setChangingPassword(false)} />}
 
       <main className="main">
         <div className="topbar">
