@@ -1,8 +1,38 @@
-# What the real shop's database says
+# What the fixture database says
 
-Findings from `tools/fixtures/real-shop.db`, pulled from this machine's ShopOS
-on 2026-09-16. TRT Stationery, schema 26, 29 submitted bills, 51 bill lines,
-20 products, 6 customers, 2 returns.
+> **Correction, 16 September 2026.** This file is titled "the real shop's
+> database" and is written throughout as though `tools/fixtures/real-shop.db`
+> held a live business's books. **It does not. The data is fabricated**, and the
+> owner has confirmed the file can be erased or reshaped freely.
+>
+> The findings are not withdrawn, because almost none of them depended on the
+> data being real. Each one is a true statement about a database *this software
+> produced*, and each named a bug or a gap in the code — CGST not equalling
+> SGST is an arithmetic error whoever typed the bill; a B2B line with no HSN is
+> a missing guard whoever the customer was.
+>
+> Three things in here should be read with the correction in mind:
+>
+> - **Every sentence arguing from intent.** "Entered by a person who meant to",
+>   "what the shop has been doing", "a fact about the shop" — nobody meant
+>   anything by these rows. Finding 11 leans on this hardest. The conclusion it
+>   reaches is still right, for a reason that does not need the data: an upgrade
+>   must not silently change what a till charges, so `loadTaxScheme` preserves
+>   the existing behaviour and Settings asks. That argument holds for a real
+>   shop precisely because it never inspects one.
+> - **Finding 3**, that the inter-state path cannot be exercised. True of this
+>   file and no longer a constraint — the fix is a test that builds the
+>   two-state case, which runs in CI as the fixture never could.
+> - **The figures.** 29 bills, ₹27,328, one credit note. Real numbers in a real
+>   file, and not a real shop's turnover. They are still the right regression
+>   baseline, which is all they were ever used for.
+>
+> The rest stands. Left in place rather than rewritten, because a record that
+> quietly edits what it once believed is worth less than one that says where it
+> was wrong.
+
+Findings from `tools/fixtures/real-shop.db`, read on 2026-09-16: schema 26,
+29 submitted bills, 51 bill lines, 20 products, 6 customers, 2 returns.
 
 Kept because the architect pass asked for exactly this: places the plan treats
 as settled that the data says otherwise about. Each finding names the phase it
