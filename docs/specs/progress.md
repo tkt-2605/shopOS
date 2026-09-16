@@ -9,8 +9,8 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,380 TypeScript tests** passing and 3 skipped (Phase 2c
-placeholders that fail loudly if un-skipped early) across 100 files, **108 Rust
+State of the tree: **1,385 TypeScript tests** passing and 3 skipped (Phase 2c
+placeholders that fail loudly if un-skipped early) across 101 files, **108 Rust
 tests** passing with a clean build, typecheck clean across core, app and both
 bench packages, and Layer 2 of the test bench green in Docker. Schema at 34.
 
@@ -298,8 +298,7 @@ bills through `createBill`/`submitBill` rather than asserting about rows.
 
 ### Phase 1 — the bills have to be right (code complete)
 
-028 through 033, 1a, 1b, 1c and 1d are all done. 1,277 tests pass, 3 skipped,
-91 files, typecheck clean.
+028 through 033, 1a, 1b, 1c and 1d are all done.
 
 Two items in 1d's list came out differently from the spec, both after reading
 the code:
@@ -314,23 +313,50 @@ the code:
   not buying from them just now, "removed" is off the list — and collapsing
   them would have lost one.
 
-**What is left of Phase 1 is verification a person has to do.** Five of its
-eight checks need the owner's database with things staged by hand, because that
-database cannot exercise the inter-state path on its own (finding 3): the shop
-and every customer are `'33'`. Specifically, still to do by hand:
+#### The five hand-checks, audited
 
-- [ ] shop state set to `27` on a copy; a bill to a `27` customer stores
-      CGST+SGST and one to a `33` customer stores IGST, both read off
-      `bill_items`
-- [ ] amend a cancelled ₹900 bill; the draft is ₹900 with tax on ₹900
-- [ ] the A4 print of a real bill read against Rule 46's list, on paper
-- [ ] composition scheme on a copy: zero tax stored, *Bill of Supply* printed
-      with the Rule 49 statement, GST tab hidden
-- [ ] on a real LAN with the joiner idle, the host never says "Both tills
-      agree" before contacting it — the logic is now a tested pure function
-      (`syncNotice`), but the LAN half is still a LAN
+> **Correction, 16 September 2026.** This list used to say that five of Phase
+> 1's eight checks had to be staged by hand on a copy of the owner's database,
+> "because that database cannot exercise the inter-state path on its own — the
+> shop and every customer are `33`".
+>
+> That reason had already been retired two sections up, when the fixture turned
+> out to be dummy data and the note there says the right fix is "a test that
+> builds the two-state case rather than a hand-staged copy". The list was not
+> updated to match. Audited line by line below; **two are genuinely manual, two
+> are tests, and one is half a test.**
 
-Everything a terminal can check is checked.
+| # | The check | Where it stands |
+|---|---|---|
+| 1 | shop in `27`; a `27` customer stores CGST+SGST, a `33` customer stores IGST, read off `bill_items` | **A test**, written during this audit: `shopElsewhere.test.ts` |
+| 2 | amend a cancelled ₹900 bill; the draft is ₹900 with tax on ₹900 | **Already a test** — `amendCarries.test.ts:39`, that exact bill, to the paisa |
+| 3 | the A4 print read against Rule 46's list, on paper | **Manual.** Paper |
+| 4 | composition: zero tax stored, *Bill of Supply* with the Rule 49 statement, GST tab hidden | **Two thirds.** See below |
+| 5 | on a real LAN with the joiner idle, the host never says "Both tills agree" first | **Manual.** A LAN |
+
+**Item 1 needed a test nobody had written.** Every test that bills runs from
+state `33`, and so did every row in the only database anybody had — which is a
+trap and not a coincidence. `customers.ts` used to write the literal `'33'`, and
+because the shop was *also* in `33` the fabrication and the truth coincided:
+every bill came out intra-state and every bill was right by accident. The
+customer half of that is disproved by a `27` customer getting IGST
+(`returnsInGst.test.ts:198`). **The shop half was disproved by nothing** — until
+now, no test had ever billed from anywhere but Tamil Nadu. `shopElsewhere.test.ts`
+moves the shop to Maharashtra, where `33` is the *foreign* state; three of its
+five assertions fail if `shopState` is pinned to `'33'`, which is how it was
+checked.
+
+**Item 4 is two thirds tested and the last third is named.** Zero tax stored
+under composition is `taxScheme.test.ts:198`; *Bill of Supply* and the Rule 49
+sentence are `rule46.test.ts:272` and `taxScheme.test.ts:46`. The **GST tab
+being hidden is not tested.** `chargesTax()` — the rule it turns on — is;
+`Reports.tsx` reading it is not, and neither is the effect at `Reports.tsx:88`
+that moves a shopkeeper off the tax tab if they switch to composition while
+standing on it. That is a screen-wiring gap of exactly the shape the log's
+missing callers were, and closing it means the first render test of a page that
+size. Left open deliberately, and written down rather than counted as done.
+
+Everything else a terminal can check is checked.
 
 ### Phase 3 — a shop must not be able to lose data
 
@@ -412,12 +438,19 @@ the app:
 - [ ] the app still pairs over Wi-Fi with two real machines
 - [ ] Layer 3's four checks, before any build goes to a shop
 
-From Phase 1, which is otherwise code complete:
+From Phase 1, which is otherwise code complete. Audited on 16 September: the
+other three on this list became tests, and the audit is in the Phase 1 section
+above.
 
 - [ ] the A4 print of a real bill read against Rule 46's list, on paper
 - [ ] on a real LAN with the joiner idle, the host never says "Both tills agree"
       before contacting it (the logic is a tested pure function now; the LAN
       half is still a LAN)
+
+And one gap the audit turned up, which is code rather than a check:
+
+- [ ] a test that the GST tab is hidden under composition — `chargesTax()` is
+      tested, `Reports.tsx` reading it is not
 
 From Phase 3, which is code complete. These are the four that a terminal
 genuinely cannot do — each needs a machine broken in a particular way:
