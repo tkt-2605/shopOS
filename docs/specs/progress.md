@@ -1,6 +1,6 @@
 # Progress
 
-Branch `phase-0-and-the-test-bench`, 18 commits, pushed to
+Branch `phase-0-and-the-test-bench`, 20 commits, pushed to
 `origin/phase-0-and-the-test-bench`. Not merged to `main`, and nothing is
 released: no installer, no tag, no update anybody's till will fetch.
 
@@ -9,7 +9,7 @@ The owner's own database is **not** in the repository and never has been --
 `findings-real-shop.md` and `evidence/returns-in-gst-real-shop.txt` are the
 aggregates this work was checked against, and they are in the shop's own repo.
 
-State of the tree: **1217 TypeScript tests** passing and 3 skipped (Phase 2c
+State of the tree: **1239 TypeScript tests** passing and 3 skipped (Phase 2c
 placeholders that fail loudly if un-skipped early), **73 Rust tests** passing
 with zero warnings, typecheck clean across core, app and bench, and Layer 2 of
 the test bench green in Docker.
@@ -94,6 +94,20 @@ Every item on the 1a list, and the migration under it.
 - **Migration 029**, turning the roll's title on — and taught to be silent to
   sync, which took two tries and a failing `sync.test.ts` to get right.
 
+### Row 5 — Phase 1c, the guards
+
+`SHOP_STATE_UNSET` and `NEEDS_RECIPIENT` at submit, `GSTIN_REQUIRED` on the
+shop form, `HSN_SHAPE` as a warning on the product form, and an exceptions
+sheet of B2B lines missing HSN beside the GST export.
+
+Every one of them was checked against the owner's database before it was
+written, and the check is a test: none fires on that shop today. `rule46.test.ts`
+landed with 1b and covers all four documents the spec asks for.
+
+`GSTIN_REQUIRED` bites only once a person has *answered* the scheme question,
+never on the till's own guess — otherwise it would refuse the one form that
+lets the owner answer it. Agreed with the owner before it was written.
+
 ### Pulled forward out of order
 
 - **Phase 1d's host-sync fix.** The bench demanded it: `host-initiates.test.ts`
@@ -126,20 +140,19 @@ Every item on the 1a list, and the migration under it.
 
 ## Left
 
-### Phase 1 — the bills have to be right (in progress, ~4 days left)
+### Phase 1 — the bills have to be right (in progress, ~2 days left)
 
-028, 029, 1a and 1b are done, and the tax scheme out of 1c with them.
+028, 029, 1a, 1b and 1c are done.
 
-**1c next**, and it is all guards: `SHOP_STATE_UNSET` when a registered shop
-has no state; `NEEDS_RECIPIENT` for Rule 46(f), a bill of ₹50,000 or more with
-nobody named on it; `GSTIN_REQUIRED` on the shop form under the regular scheme;
-the HSN shape warning. Guards that can stop a shop billing, so each one wants a
-slower decision than the work before it — and one of them (`GSTIN_REQUIRED`)
-would refuse to save the owner's own shop details as they stand today.
+1c is done too. **What is left of Phase 1 is 1d**, which is the switches that
+are on and do nothing: the amend button on a cancelled bill, retire against
+soft delete per table (one commit each), cash-close history under Reports,
+`changePassword` in the user menu, the schema-too-new message at startup, and
+the tables that are dead — `activity_log` and `sync_queue`, both dropped in a
+migration. The sync fix out of 1d is long since done.
 
-Then the rest of **1d**: the amend button, retire against soft delete per
-table, cash-close history, `changePassword`, the schema-too-new message, and
-the tables that are dead (`activity_log`, `sync_queue`).
+None of it is tax. It is the smallest and least risky work in the phase, and
+every item wants a screenshot or a test showing the switch doing something.
 
 **Blocked on nothing.** Its verification is not: five of its eight checks need
 the owner's database with things staged by hand.
