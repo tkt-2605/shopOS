@@ -9,7 +9,7 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,294 TypeScript tests** passing and 3 skipped (Phase 2c
+State of the tree: **1,300 TypeScript tests** passing and 3 skipped (Phase 2c
 placeholders that fail loudly if un-skipped early) across 93 files, **92 Rust
 tests** passing with zero warnings, typecheck clean across core, app and bench,
 and Layer 2 of the test bench green in Docker. Schema at 33.
@@ -303,12 +303,12 @@ Six of the spec's eleven file-level items are done (Row 7). What is left:
    JavaScript while a stuck bill is still cleared in 15. `sql_execute` refused
    while a transaction is open; `sql_query` still allowed, so the screen keeps
    working during a long merge.
-6. **The log's remaining callers.** The spec asks for migrations, the backup
-   outcome and every sync refusal to go through `log_event`, and commit
-   `481ecc0` wired only `setup()`, the restore result, panics, `window.onerror`,
-   `unhandledrejection` and the error boundary. The three named above are not
-   yet logged — which matters most for sync refusals, since a schema mismatch
-   between two tills currently leaves nothing on disk to read afterwards.
+6. ~~**The log's remaining callers.**~~ **Done** — `8bd13ef`. Migrations (via
+   an `onApplied` callback on `migrate`, guarded so a throwing logger cannot
+   abandon a run), the backup outcome both ways, and sync refusals from both
+   ends. An unreachable peer is logged on the first failure only: it retries
+   every 45 seconds, and a night of "cannot reach the back counter" would push
+   everything worth reading out of a five-megabyte file.
 7. **A synthetic 20,000-bill shop.** Items 2, 3 and 5 all have verification
    steps that need one (`EXPLAIN QUERY PLAN` showing no full scan on a Dashboard
    mount; a 500-change merge completing without the watchdog firing; 600
