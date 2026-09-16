@@ -64,11 +64,13 @@ export type { DocType } from './services/numbering.js'
 export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from './repos/pricing.js'
 
 export {
-  createReturn, submitReturn, cancelReturn, processReturn, previewReturn, listReturns, returnableQty,
+  createReturn, submitReturn, cancelReturn, processReturn, previewReturn, listReturns,
+  loadReturnDetail, returnableQty,
 } from './services/returns.js'
 export type {
   ReturnLineInput, CreateReturnInput, CreateReturnResult, SubmitReturnResult, RefundMethod,
   ProcessReturnResult, PreviewReturnResult, ReturnPreview, ReturnListItem, ReturnOutcome,
+  ReturnDetail, ReturnDetailItem,
 } from './services/returns.js'
 
 export { loadFeatures, isOn, setFeature, FEATURES_OFF } from './services/features.js'

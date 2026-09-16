@@ -9,7 +9,7 @@ import {
   Modal, Empty, Alert, Rupees, DocStatusBadge, DateRangePicker, rangePreset, type Range,
 } from '../ui/components'
 import { printBill } from '../core/print'
-import { printBillSheet } from '../core/printHtml'
+import { printBillSheet, printCreditNoteSheet } from '../core/printHtml'
 import { Attachments } from '../ui/Attachments'
 import { ReturnSheet } from '../ui/ReturnSheet'
 import { usePickList } from '../ui/PickList'
@@ -56,6 +56,10 @@ export default function Bills() {
   const [returning, setReturning] = useState(false)
   const [returns, setReturns] = useState<ReturnListItem[]>([])
   const [note, setNote] = useState<string | null>(null)
+  /* The return just taken, so the credit note can be offered where the person
+     already is rather than left to be found again in a list. Cleared with the
+     notice it sits beside. */
+  const [creditNoteFor, setCreditNoteFor] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setError(null)
@@ -122,6 +126,7 @@ export default function Bills() {
     const result = await printBill(db, billId)
     if (result.ok) {
       setNote('Sent to the printer.')
+      setCreditNoteFor(null)
       setTimeout(() => setNote(null), 5000)
       return
     }
@@ -135,6 +140,22 @@ export default function Bills() {
     const result = await printBillSheet(db, billId)
     if (result.ok) {
       setNote('Opening the print dialog.')
+      setCreditNoteFor(null)
+      setTimeout(() => setNote(null), 5000)
+      return
+    }
+    setError(result.message)
+  }
+
+  /* A return has been a row in this table and nothing else: the customer walked
+     out with the money and no paper. Under GST the credit note is the document,
+     and a registered buyer cannot reverse the purchase at their end without
+     one. */
+  async function printCreditNote(returnId: string) {
+    const result = await printCreditNoteSheet(db, returnId)
+    if (result.ok) {
+      setNote('Opening the print dialog.')
+      setCreditNoteFor(null)
       setTimeout(() => setNote(null), 5000)
       return
     }
@@ -176,7 +197,17 @@ export default function Bills() {
       {error && <div style={{ marginBottom: 14 }}><Alert>{error}</Alert></div>}
       {note && (
         <div style={{ marginBottom: 14 }}>
-          <Alert kind="ok">{note}</Alert>
+          <Alert kind="ok">
+            {note}
+            {creditNoteFor && (
+              <button
+                className="btn ghost sm" style={{ marginLeft: 10 }}
+                onClick={() => void printCreditNote(creditNoteFor)}
+              >
+                Print credit note
+              </button>
+            )}
+          </Alert>
         </div>
       )}
 
@@ -376,8 +407,16 @@ export default function Bills() {
                         {r.pointsRestored > 0 && <div className="src">+ {r.pointsRestored} points</div>}
                       </td>
                       <td className="r">
+                        {r.docstatus === 1 && (
+                          <button className="btn ghost sm" onClick={() => void printCreditNote(r.id)}>
+                            Credit note
+                          </button>
+                        )}
                         {canUnreturn && r.docstatus === 1 && (
-                          <button className="btn ghost sm" onClick={() => void undoReturn(r.id, r.docNo)}>
+                          <button
+                            className="btn ghost sm" style={{ marginLeft: 6 }}
+                            onClick={() => void undoReturn(r.id, r.docNo)}
+                          >
                             Cancel
                           </button>
                         )}
@@ -397,10 +436,11 @@ export default function Bills() {
         <ReturnSheet
           bill={open}
           onClose={() => setReturning(false)}
-          onDone={async (message) => {
+          onDone={async (message, returnId) => {
             setReturning(false)
             setNote(message)
-            setTimeout(() => setNote(null), 8000)
+            setCreditNoteFor(returnId)
+            setTimeout(() => { setNote(null); setCreditNoteFor(null) }, 8000)
             setOpen(await loadBillDetail(db, open.id))
             await refresh()
           }}

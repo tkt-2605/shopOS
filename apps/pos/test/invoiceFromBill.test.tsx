@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   migrate, bootstrap, newId,
-  createBill, submitBill, setSetting,
+  createBill, submitBill, processReturn, setSetting, buildInvoiceHtml, DocFormat,
   type SqlDriver, type BootstrapResult,
 } from '@shopos/core'
 /* Not through `@shopos/core`, which deliberately does not export it: the node
@@ -11,7 +11,7 @@ import {
    that is allowed to reach around it. */
 import { openMemoryDatabase } from '../../../packages/core/src/db/node-driver'
 import { MIGRATIONS } from '../../../packages/core/src/db/migrations'
-import { sheetDocFor } from '../src/core/printHtml'
+import { sheetDocFor, creditNoteDocFor } from '../src/core/printHtml'
 
 /**
  * The invoice a real bill produces, not the one a hand-built fixture does.
@@ -173,5 +173,124 @@ describe('the sheet built from a bill that was actually rung up', () => {
     const doc = await sheetDocFor(db, await billed(null, await product('Paper', 34_000)))
     // Rule 46(p). False, always, in this product — and said.
     expect(doc?.reverseCharge).toBe(false)
+  })
+})
+
+describe('the credit note for a return', () => {
+  it('names the invoice it reverses and that invoice_s date — Rule 53(1)(e)', async () => {
+    const buyer = await customer('Sri Vidya School', '33', '33AAACS1234F1Z5')
+    const billId = await billed(buyer, await product('Paper', 34_000))
+
+    const line = await db.get<{ id: string }>(
+      `SELECT id FROM bill_items WHERE bill_id = ?`, [billId])
+    const bill = await db.get<{ doc_no: string; posting_date: string }>(
+      `SELECT doc_no, posting_date FROM bills WHERE id = ?`, [billId])
+
+    const done = await processReturn(db, {
+      billId,
+      lines: [{ billItemId: line!.id, qty: 10_000 as never }],
+      refundMethod: 'cash',
+      reason: 'Wrong size',
+      actorId: adminId,
+    })
+    if (!done.ok) throw new Error(`return failed: ${done.code}`)
+
+    const note = await creditNoteDocFor(db, done.returnId)
+
+    expect(note?.wording?.title).toBe('Credit Note')
+    expect(note?.docNo).toBe(done.docNo)
+    expect(note?.againstDocNo).toBe(bill!.doc_no)
+    expect(note?.againstDate).toBe(bill!.posting_date)
+
+    // The recipient, off the bill's snapshot — a credit note is issued to
+    // whoever the invoice was.
+    expect(note?.customerName).toBe('Sri Vidya School')
+    expect(note?.customerGstin).toBe('33AAACS1234F1Z5')
+    expect(note?.placeOfSupply).toEqual({ code: '33', name: 'Tamil Nadu' })
+
+    // Positive figures under a heading that says what they are.
+    expect(note?.grandTotal).toBe(done.refundTotal)
+    expect((note?.cgst ?? 0) + (note?.sgst ?? 0)).toBeGreaterThan(0)
+    expect(note?.items[0]?.hsnCode).toBe('4802')
+    expect(note?.items[0]?.taxRateBp).toBe(1800)
+  })
+
+  it('says why the goods came back and how the money went', async () => {
+    const billId = await billed(null, await product('Paper', 34_000))
+    const line = await db.get<{ id: string }>(
+      `SELECT id FROM bill_items WHERE bill_id = ?`, [billId])
+
+    const done = await processReturn(db, {
+      billId,
+      lines: [{ billItemId: line!.id, qty: 10_000 as never }],
+      refundMethod: 'cash',
+      reason: 'Damaged in the bag',
+      actorId: adminId,
+    })
+    if (!done.ok) throw new Error(`return failed: ${done.code}`)
+
+    const note = await creditNoteDocFor(db, done.returnId)
+    expect(note?.terms).toContain('Damaged in the bag')
+    expect(note?.terms).toContain('cash')
+
+    // Money went the other way; a payments row here would read as one received.
+    expect(note?.payments).toEqual([])
+  })
+
+  it('reverses IGST on a credit note against an inter-state bill', async () => {
+    const buyer = await customer('Ramesh Traders', '27', '27AABCR5678G1Z2')
+    const billId = await billed(buyer, await product('Paper', 59_000))
+    const line = await db.get<{ id: string }>(
+      `SELECT id FROM bill_items WHERE bill_id = ?`, [billId])
+
+    const done = await processReturn(db, {
+      billId,
+      lines: [{ billItemId: line!.id, qty: 10_000 as never }],
+      refundMethod: 'cash',
+      actorId: adminId,
+    })
+    if (!done.ok) throw new Error(`return failed: ${done.code}`)
+
+    const note = await creditNoteDocFor(db, done.returnId)
+    expect(note?.supplyType).toBe('inter_state')
+    expect(note?.igst).toBeGreaterThan(0)
+    expect(note?.cgst).toBe(0)
+    expect(note?.placeOfSupply).toEqual({ code: '27', name: 'Maharashtra' })
+  })
+
+  it('renders every Rule 53 field onto the sheet, by text', async () => {
+    const buyer = await customer('Sri Vidya School', '33', '33AAACS1234F1Z5')
+    const billId = await billed(buyer, await product('Paper', 34_000))
+    const line = await db.get<{ id: string }>(
+      `SELECT id FROM bill_items WHERE bill_id = ?`, [billId])
+    const bill = await db.get<{ doc_no: string }>(
+      `SELECT doc_no FROM bills WHERE id = ?`, [billId])
+
+    const done = await processReturn(db, {
+      billId,
+      lines: [{ billItemId: line!.id, qty: 10_000 as never }],
+      refundMethod: 'cash',
+      reason: 'Wrong size',
+      actorId: adminId,
+    })
+    if (!done.ok) throw new Error(`return failed: ${done.code}`)
+
+    const note = (await creditNoteDocFor(db, done.returnId))!
+    const page = buildInvoiceHtml(note, DocFormat.STANDARD_INVOICE)
+      .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+
+    expect(page).toContain('Credit Note')
+    expect(page).toContain('Credit note no.')
+    expect(page).toContain(done.docNo)
+    expect(page).toContain('Against invoice')
+    expect(page).toContain(bill!.doc_no)
+    expect(page).toContain('Credited to')
+    expect(page).toContain('Sri Vidya School')
+    expect(page).toContain('33AAACS1234F1Z5')
+    expect(page).toContain('33 — Tamil Nadu')
+    expect(page).toContain('4802')
+    expect(page).toContain('18%')
+    expect(page).toContain('Authorised signatory')
+    expect(page).toContain('Wrong size')
   })
 })

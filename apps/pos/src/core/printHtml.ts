@@ -1,8 +1,8 @@
 import {
-  buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadShopProfile,
+  buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadReturnDetail, loadShopProfile,
   rateSummaryOf, stateName,
   type SqlDriver, type ReceiptDoc, type ReceiptItem, type BillDetailItem,
-  type DocWording, type DocumentKind, type PlaceOfSupply,
+  type DocWording, type DocumentKind, type PlaceOfSupply, type ReturnDetailItem,
 } from '@shopos/core'
 import type { PrintResult } from './print'
 
@@ -31,6 +31,106 @@ export async function printBillSheet(db: SqlDriver, billId: string): Promise<Pri
   // The sheet the shop chose, which carries its own paper size with it.
   const format = await formatFor(db, { kind: 'bill', channel: 'sheet' })
   return printHtml(buildInvoiceHtml(doc, format, { autoPrint: true }))
+}
+
+/**
+ * The credit note for a return.
+ *
+ * A return has been a movement in the database and a line in a list, and the
+ * customer has walked out with the money and no paper. Under GST the credit
+ * note *is* the document — Section 34 and Rule 53 — and it is what the
+ * customer's own accounts need to reverse the purchase at their end. A
+ * registered buyer cannot do anything with a refund they have no note for.
+ *
+ * The same A4 renderer as the invoice, deliberately. The two documents carry
+ * the same fields and differ in what they say about themselves, and a second
+ * renderer would be a second place for the place of supply to go wrong.
+ */
+export async function printCreditNoteSheet(db: SqlDriver, returnId: string): Promise<PrintResult> {
+  const doc = await creditNoteDocFor(db, returnId)
+  if (!doc) return { ok: false, message: 'That return could not be found.' }
+
+  /* No shipped format declares `credit_note`, so this falls through to the
+     standard sheet — which is the right answer and leaves the door open for a
+     shop that wants its own. */
+  const format = await formatFor(db, { kind: 'credit_note', channel: 'sheet' })
+  return printHtml(buildInvoiceHtml(doc, format, { autoPrint: true }))
+}
+
+const CREDIT_NOTE_WORDING: DocWording = {
+  title: 'Credit Note', docNo: 'Credit note no.', party: 'Credited to', by: 'Raised by',
+}
+
+/** The return as the sheet renderer wants it. Exported for the same reason as `sheetDocFor`. */
+export async function creditNoteDocFor(db: SqlDriver, returnId: string): Promise<ReceiptDoc | null> {
+  const ret = await loadReturnDetail(db, returnId)
+  if (!ret) return null
+
+  const shop = await loadShopProfile(db)
+  const items = ret.items.map((i): ReceiptItem => ({
+    name: i.productName,
+    qty: i.qty,
+    saleUnit: i.saleUnit,
+    rate: i.rate,
+    lineTotal: i.refund,
+    hsnCode: i.hsnCode,
+    taxableValue: i.taxableValue,
+    taxRateBp: i.taxRateBp,
+    cgst: i.cgst,
+    sgst: i.sgst,
+    igst: i.igst,
+  }))
+
+  const sum = (pick: (i: ReturnDetailItem) => number) =>
+    ret.items.reduce((total, i) => total + pick(i), 0) as never
+
+  /* Positive figures under a heading that says what they are, which is how a
+     credit note is written: the document's own title carries the direction, and
+     a sheet of negative numbers is read as a mistake. The GST export is where
+     the sign belongs, and it has one. */
+  return {
+    shop: {
+      name: shop.name, address: shop.address, phone: shop.phone,
+      email: shop.email, gstin: shop.gstin, logo: shop.logo,
+    },
+    docNo: ret.docNo,
+    postingDate: ret.postingDate,
+    cashier: ret.createdBy,
+
+    // Rule 53(1)(e). Without these two it is a piece of paper saying money was
+    // returned, attached to nothing.
+    againstDocNo: ret.againstDocNo,
+    againstDate: ret.againstDate,
+
+    customerName: ret.customerName,
+    customerAddress: ret.customerAddress,
+    customerGstin: ret.customerGstin,
+    customerState: placeOf(ret.customerStateCode),
+    placeOfSupply: placeOf(ret.placeOfSupply),
+    ...(ret.supplyType ? { supplyType: ret.supplyType } : {}),
+    reverseCharge: false,
+
+    items,
+    rateSummary: rateSummaryOf(items),
+    subtotal: ret.refundTotal,
+    discount: 0 as never,
+    taxableTotal: sum((i) => i.taxableValue),
+    cgst: sum((i) => i.cgst),
+    sgst: sum((i) => i.sgst),
+    igst: sum((i) => i.igst),
+    grandTotal: ret.refundTotal,
+
+    /* Nothing was taken here; money went the other way. The block renders as
+       nothing rather than as "Cash 340.00", which on a credit note reads as a
+       payment received. How the refund was made is said in words below. */
+    payments: [],
+    terms: [
+      ret.reason ? `Reason: ${ret.reason}` : null,
+      `Refunded by ${ret.refundMethod}`,
+    ].filter((line) => line !== null).join(' · '),
+
+    wording: CREDIT_NOTE_WORDING,
+  }
 }
 
 /**

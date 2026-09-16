@@ -31,7 +31,10 @@ export function ReturnSheet({
 }: {
   bill: BillDetail
   onClose: () => void
-  onDone: (message: string) => void
+  /* The return's id as well as the sentence, so the caller can offer the credit
+     note for the return that was just taken rather than making somebody find it
+     again in a list. */
+  onDone: (message: string, returnId: string) => void
 }) {
   const { db } = useCore()
   const user = useUser()
@@ -92,7 +95,7 @@ export function ReturnSheet({
     }
     if (result.pointsRestored > 0) parts.push(`${result.pointsRestored} points returned`)
     if (result.pointsClawedBack > 0) parts.push(`${result.pointsClawedBack} points taken off`)
-    onDone(`${result.docNo} — ${parts.join(', ') || 'nothing to pay back'}.`)
+    onDone(`${result.docNo} — ${parts.join(', ') || 'nothing to pay back'}.`, result.returnId)
   }
 
   const takeAll = () => setQtys(Object.fromEntries(
