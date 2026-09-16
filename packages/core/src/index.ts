@@ -91,7 +91,9 @@ export type {
 
 export {
   getOrOpenSession, openSessionFor, closeSession, sessionSummary, postCashMovement, countDrawer,
+  listSessions,
 } from './services/cash.js'
+export type { ClosedSession } from './services/cash.js'
 export type {
   CashMovementInput, OpenSessionInput, SessionSummary, CloseSessionResult, CashDirection, TenderMethod,
 } from './services/cash.js'

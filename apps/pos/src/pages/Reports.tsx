@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Reports as R, Money, Quantity, listRegisters, chargesTax,
-  type DateRange, type Register,
+  Reports as R, Money, Quantity, listRegisters, chargesTax, listSessions,
+  type DateRange, type Register, type ClosedSession,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'
 import { saveFile } from '../core/exportFile'
 import { reportPdf } from '../core/pdf'
 
-type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff'
+type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'days', label: 'By day' },
@@ -17,6 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'tax', label: 'GST' },
   { id: 'tenders', label: 'Payments' },
   { id: 'staff', label: 'Staff' },
+  { id: 'drawer', label: 'Drawer' },
 ]
 
 interface Data {
@@ -28,6 +29,7 @@ interface Data {
   tax: R.TaxRateRow[]
   tenders: R.TenderRow[]
   staff: R.StaffRow[]
+  sessions: ClosedSession[]
 }
 
 export default function Reports() {
@@ -58,7 +60,7 @@ export default function Reports() {
     setBusy(true)
     setError(null)
     try {
-      const [summary, days, products, margin, marginRows, tax, tenders, staff] = await Promise.all([
+      const [summary, days, products, margin, marginRows, tax, tenders, staff, sessions] = await Promise.all([
         R.salesSummary(db, range),
         R.salesByDay(db, range),
         R.topProducts(db, range, 25),
@@ -67,8 +69,9 @@ export default function Reports() {
         R.taxByRate(db, range),
         R.paymentMix(db, range),
         R.salesByStaff(db, range),
+        listSessions(db, range),
       ])
-      setData({ summary, days, products, margin, marginRows, tax, tenders, staff })
+      setData({ summary, days, products, margin, marginRows, tax, tenders, staff, sessions })
     } catch (err) {
       setData(null)
       setError(`The reports could not be built: ${err instanceof Error ? err.message : String(err)}`)
@@ -261,6 +264,7 @@ export default function Reports() {
             {tab === 'tax' && <TaxTable rows={data.tax} total={s.tax} />}
             {tab === 'tenders' && <TendersTable rows={data.tenders} />}
             {tab === 'staff' && <StaffTable rows={data.staff} />}
+            {tab === 'drawer' && <DrawerTable rows={data.sessions} />}
           </Card>
 
           {s.discount > 0 && (
@@ -411,6 +415,61 @@ function TendersTable({ rows }: { rows: R.TenderRow[] }) {
   )
 }
 
+/**
+ * Every drawer that has been counted, and by how much it was out.
+ *
+ * `closeSession` has written `expected_cash`, `actual_cash` and `variance`
+ * since v1 and nothing read them back. A shop could see tonight's figure on the
+ * screen it counted on and never again — so "is it short on the same person's
+ * shift every week" had no answer anywhere in the product. It is one query and
+ * a table, and it is the whole reason the column exists.
+ */
+function DrawerTable({ rows }: { rows: ClosedSession[] }) {
+  if (rows.length === 0) return <Empty>No drawer has been counted in this range</Empty>
+
+  const over = rows.reduce((sum, r) => sum + Math.max(0, r.variance), 0)
+  const short = rows.reduce((sum, r) => sum + Math.min(0, r.variance), 0)
+
+  return (
+    <>
+      <table>
+        <thead>
+          <tr>
+            <th>Closed</th><th>Counter</th><th>Counted by</th>
+            <th className="r">Expected</th><th className="r">Counted</th><th className="r">Out by</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td className="num">{r.postingDate}</td>
+              <td>{r.registerName}</td>
+              <td>{r.closedBy ?? '—'}</td>
+              <td className="r"><Rupees value={r.expectedCash} /></td>
+              <td className="r"><Rupees value={r.actualCash} /></td>
+              {/* Red either way. Money over is not good news — it is the same
+                  evidence that something was rung up wrong, and a shop that
+                  only ever looks at the shortfalls finds half the mistakes. */}
+              <td className="r" style={r.variance === 0 ? undefined : { color: 'var(--danger)' }}>
+                {r.variance === 0 ? '—' : Money.formatWithSymbol(r.variance)}
+              </td>
+              <td style={{ color: 'var(--ink-3)' }}>{r.notes ?? ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--ink-3)' }}>
+        {rows.length} {rows.length === 1 ? 'close' : 'closes'} in this range
+        {short !== 0 && <>, {Money.formatWithSymbol(Math.abs(short) as never)} short in total</>}
+        {over !== 0 && <>, {Money.formatWithSymbol(over as never)} over</>}
+        {short === 0 && over === 0 && ', every one of them exact'}.
+      </div>
+    </>
+  )
+}
+
 function StaffTable({ rows }: { rows: R.StaffRow[] }) {
   if (rows.length === 0) return <Empty>Nobody billed in this range</Empty>
   return (
@@ -549,6 +608,25 @@ function tableFor(tab: Tab, data: Data | null): Table | null {
           { label: 'Total', width: 1.4, right: true },
         ],
         rows: data.staff.map((r) => [r.username, String(r.bills), rupeeCell(r.total)]),
+      }
+    case 'drawer':
+      return {
+        name: 'drawer-closes',
+        title: 'Drawer closes',
+        columns: [
+          { label: 'Closed', width: 1.2 },
+          { label: 'Counter', width: 1.4 },
+          { label: 'Counted by', width: 1.4 },
+          { label: 'Expected', width: 1.2, right: true },
+          { label: 'Counted', width: 1.2, right: true },
+          { label: 'Out by', width: 1.1, right: true },
+          { label: 'Note', width: 2 },
+        ],
+        rows: data.sessions.map((r) => [
+          r.postingDate, r.registerName, r.closedBy ?? '',
+          rupeeCell(r.expectedCash), rupeeCell(r.actualCash), rupeeCell(r.variance),
+          r.notes ?? '',
+        ]),
       }
   }
 }
