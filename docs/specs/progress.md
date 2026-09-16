@@ -9,8 +9,8 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,300 TypeScript tests** passing and 3 skipped (Phase 2c
-placeholders that fail loudly if un-skipped early) across 93 files, **92 Rust
+State of the tree: **1,306 TypeScript tests** passing and 3 skipped (Phase 2c
+placeholders that fail loudly if un-skipped early) across 94 files, **101 Rust
 tests** passing with zero warnings, typecheck clean across core, app and bench,
 and Layer 2 of the test bench green in Docker. Schema at 33.
 
@@ -281,12 +281,11 @@ Everything a terminal can check is checked.
 
 Six of the spec's eleven file-level items are done (Row 7). What is left:
 
-1. **`diagnostics_bundle()`** — a zip of the logs, `app_version`, the schema
-   version, `device.json` **with `backup_hook` redacted** (it can hold an rclone
-   token), `PRAGMA journal_mode/synchronous/page_count/freelist_count`, and the
-   last 200 audit rows. Button on Settings → Support. This is where
-   `log_paths()` comes back: it was written with the log and deleted again in
-   the same commit for having no caller.
+1. ~~**`diagnostics_bundle()`**~~ **Done** — `494c19e`. Redaction is an
+   allowlist rather than a denylist, so a setting nobody has considered is
+   withheld by default; `users.password_hash` and `sync_peers.secret` are never
+   read at all. The phase's "open the bundle by hand" check is a test that
+   seeds three secrets and asserts none reach the zip.
 2. **`recomputeStock(db, productIds?)`** — replays only the products given.
    `sync.ts:328` passes the ids in the batch; the Dashboard stops calling it on
    mount and reads `product_stock` instead. The unbounded replay is also what
