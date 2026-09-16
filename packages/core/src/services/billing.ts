@@ -1,4 +1,6 @@
+import { eq, and, ne, gt, isNull, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { businessDate } from '../dates.js'
 import { newId } from '../ids.js'
 import { type Money, ZERO, add, sub, formatWithSymbol as formatMoney } from '../money.js'
@@ -214,18 +216,22 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
   for (const line of input.lines) {
     if (line.qty <= 0) return { ok: false, code: 'INVALID_QTY', productId: line.productId }
 
-    const product = await db.get<{
-      id: string; name: string; hsn_code: string | null; tax_rate_bp: number; mrp: number | null
-      discount_blocked: number; loyalty_blocked: number
-    }>(
-      `SELECT id, name, hsn_code, tax_rate_bp, mrp, discount_blocked, loyalty_blocked
-         FROM products WHERE id = ? AND deleted_at IS NULL`,
-      [line.productId],
-    )
+    const [product] = await q(db)
+      .select({
+        id: schema.products.id,
+        name: schema.products.name,
+        hsnCode: schema.products.hsnCode,
+        taxRateBp: schema.products.taxRateBp,
+        mrp: schema.products.mrp,
+        discountBlocked: schema.products.discountBlocked,
+        loyaltyBlocked: schema.products.loyaltyBlocked,
+      })
+      .from(schema.products)
+      .where(and(eq(schema.products.id, line.productId), isNull(schema.products.deletedAt)))
     if (!product) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
 
-    const discountBlocked = product.discount_blocked === 1
-    const loyaltyBlocked = product.loyalty_blocked === 1
+    const discountBlocked = product.discountBlocked === 1
+    const loyaltyBlocked = product.loyaltyBlocked === 1
 
     const unit = await resolveSaleUnit(db, line.productId, line.saleUnit ?? null)
 
@@ -251,14 +257,14 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
     computed.push({
       productId: product.id,
       productName: product.name,
-      hsnCode: product.hsn_code,
+      hsnCode: product.hsnCode,
       saleUnit: unit.saleUnit,
       qty: line.qty,
       baseQty: qty(Math.round((line.qty * unit.baseUnits) / QTY_SCALE)),
       rate: priced.rate,
-      mrp: (product.mrp ?? null) as Money | null,
+      mrp: product.mrp ?? null,
       discount,
-      taxRateBp: taxed ? product.tax_rate_bp : 0,
+      taxRateBp: taxed ? product.taxRateBp : 0,
       priceSource: priced.source,
       priceSourceId: priced.sourceId,
       discountBlocked,
@@ -318,21 +324,30 @@ async function writeLines(
   for (const [i, line] of computed.entries()) {
     const t = totals.lines[i]!
 
-    await tx.execute(
-      `INSERT INTO bill_items
-         (id, bill_id, idx, product_id, product_name, hsn_code, sale_unit, qty, base_qty, rate, mrp,
-          discount, line_total, taxable_value, tax_rate_bp, cgst_amount, sgst_amount, igst_amount,
-          price_source, price_source_id, discount_blocked, loyalty_blocked)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        newId(), billId, i + 1, line.productId, line.productName, line.hsnCode, line.saleUnit,
-        line.qty, line.baseQty, line.rate, line.mrp,
-        add(line.discount, t.billDiscountShare), t.net,
-        t.tax.taxableValue, line.taxRateBp, t.tax.cgst, t.tax.sgst, t.tax.igst,
-        line.priceSource, line.priceSourceId,
-        line.discountBlocked ? 1 : 0, line.loyaltyBlocked ? 1 : 0,
-      ],
-    )
+    await q(tx).insert(schema.billItems).values({
+      id: newId(),
+      billId,
+      idx: i + 1,
+      productId: line.productId,
+      productName: line.productName,
+      hsnCode: line.hsnCode,
+      saleUnit: line.saleUnit,
+      qty: line.qty,
+      baseQty: line.baseQty,
+      rate: line.rate,
+      mrp: line.mrp,
+      discount: add(line.discount, t.billDiscountShare),
+      lineTotal: t.net,
+      taxableValue: t.tax.taxableValue,
+      taxRateBp: line.taxRateBp,
+      cgstAmount: t.tax.cgst,
+      sgstAmount: t.tax.sgst,
+      igstAmount: t.tax.igst,
+      priceSource: line.priceSource,
+      priceSourceId: line.priceSourceId,
+      discountBlocked: line.discountBlocked ? 1 : 0,
+      loyaltyBlocked: line.loyaltyBlocked ? 1 : 0,
+    })
   }
 }
 
@@ -345,27 +360,40 @@ export async function createBill(db: SqlDriver, input: CreateBillInput): Promise
   const nowIso = meta.now.toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO bills
-         (id, doc_no, docstatus, register_id, session_id, customer_id, customer_name, posting_date,
-          subtotal, discount, taxable_total, tax_total, round_off, grand_total, place_of_supply, notes,
-          converted_from, created_by, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?)`,
-      [
-        billId, `DRAFT-${billId}`, input.registerId, meta.sessionId,
-        meta.customerId, meta.customerName, meta.postingDate,
-        meta.billDiscount, meta.placeOfSupply, meta.notes,
-        input.convertedFrom ?? null, input.actorId, nowIso, nowIso,
-      ],
-    )
+    /* The row goes in with its money at zero and is filled in below, after the
+       lines have been written. That order is older than this rewrite and worth
+       keeping: the lines are what the totals are *of*, and a bill row carrying
+       a grand total with nothing under it is a state no reader should ever be
+       able to see, even inside a transaction. */
+    await q(tx).insert(schema.bills).values({
+      id: billId,
+      docNo: `DRAFT-${billId}`,
+      docstatus: DRAFT,
+      registerId: input.registerId,
+      sessionId: meta.sessionId,
+      customerId: meta.customerId,
+      customerName: meta.customerName,
+      postingDate: meta.postingDate,
+      discount: meta.billDiscount,
+      placeOfSupply: meta.placeOfSupply,
+      notes: meta.notes,
+      convertedFrom: input.convertedFrom ?? null,
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
 
     await writeLines(tx, billId, computed, totals)
 
-    await tx.execute(
-      `UPDATE bills SET subtotal = ?, taxable_total = ?, tax_total = ?, round_off = ?, grand_total = ?
-         WHERE id = ?`,
-      [subtotal, totals.taxableTotal, totals.taxTotal, totals.roundOff, totals.grandTotal, billId],
-    )
+    await q(tx).update(schema.bills)
+      .set({
+        subtotal,
+        taxableTotal: totals.taxableTotal,
+        taxTotal: totals.taxTotal,
+        roundOff: totals.roundOff,
+        grandTotal: totals.grandTotal,
+      })
+      .where(eq(schema.bills.id, billId))
 
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'bills', entityId: billId, action: 'create', docstatusTo: DRAFT,
@@ -399,9 +427,10 @@ export async function saveDraft(
   db: SqlDriver,
   input: CreateBillInput & { billId: string },
 ): Promise<SaveDraftResult> {
-  const existing = await db.get<{ docstatus: number }>(
-    `SELECT docstatus FROM bills WHERE id = ?`, [input.billId],
-  )
+  const [existing] = await q(db)
+    .select({ docstatus: schema.bills.docstatus })
+    .from(schema.bills)
+    .where(eq(schema.bills.id, input.billId))
   if (!existing || existing.docstatus !== DRAFT) return { ok: false, code: 'NOT_A_DRAFT' }
 
   const priced = await priceBill(db, input)
@@ -410,26 +439,33 @@ export async function saveDraft(
   const { computed, totals, meta, subtotal } = priced
 
   await db.transaction(async (tx) => {
-    await tx.execute(`DELETE FROM bill_items WHERE bill_id = ?`, [input.billId])
+    await q(tx).delete(schema.billItems).where(eq(schema.billItems.billId, input.billId))
     await writeLines(tx, input.billId, computed, totals)
 
-    await tx.execute(
-      `UPDATE bills SET session_id = ?, customer_id = ?, customer_name = ?, posting_date = ?,
-              subtotal = ?, discount = ?, taxable_total = ?, tax_total = ?,
-              round_off = ?, grand_total = ?,
-              place_of_supply = ?, notes = ?, converted_from = ?, updated_at = ?
-         WHERE id = ? AND docstatus = 0`,
-      [
-        meta.sessionId, meta.customerId, meta.customerName, meta.postingDate,
-        subtotal, totals.discount, totals.taxableTotal, totals.taxTotal,
-        totals.roundOff, totals.grandTotal,
+    await q(tx).update(schema.bills)
+      .set({
+        sessionId: meta.sessionId,
+        customerId: meta.customerId,
+        customerName: meta.customerName,
+        postingDate: meta.postingDate,
+        subtotal,
+        discount: totals.discount,
+        taxableTotal: totals.taxableTotal,
+        taxTotal: totals.taxTotal,
+        roundOff: totals.roundOff,
+        grandTotal: totals.grandTotal,
         // Written plainly rather than kept: a cart cleared of the order's items
         // and refilled with others is no longer that order's bill, and the
         // counter is what knows which it is.
-        meta.placeOfSupply, meta.notes, input.convertedFrom ?? null,
-        meta.now.toISOString(), input.billId,
-      ],
-    )
+        placeOfSupply: meta.placeOfSupply,
+        notes: meta.notes,
+        convertedFrom: input.convertedFrom ?? null,
+        updatedAt: meta.now.toISOString(),
+      })
+      /* The docstatus is in the WHERE and not merely checked above. The read
+         that let this call through happened before the transaction opened, and
+         a draft submitted by the other till in between must not be rewritten. */
+      .where(and(eq(schema.bills.id, input.billId), eq(schema.bills.docstatus, DRAFT)))
   })
 
   return {
@@ -449,14 +485,18 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
   const now = input.now ?? new Date()
 
   if (input.idempotencyKey) {
-    const existing = await db.get<{ id: string; doc_no: string; grand_total: number }>(
-      `SELECT id, doc_no, grand_total FROM bills WHERE idempotency_key = ?`,
-      [input.idempotencyKey],
-    )
+    const [existing] = await q(db)
+      .select({
+        id: schema.bills.id,
+        docNo: schema.bills.docNo,
+        grandTotal: schema.bills.grandTotal,
+      })
+      .from(schema.bills)
+      .where(eq(schema.bills.idempotencyKey, input.idempotencyKey))
     if (existing) {
       return {
-        ok: true, billId: existing.id, docNo: existing.doc_no,
-        grandTotal: existing.grand_total as Money,
+        ok: true, billId: existing.id, docNo: existing.docNo,
+        grandTotal: existing.grandTotal,
         // A replay reports nothing new: whatever was short was said at the time.
         pointsEarned: 0, pointsRedeemed: 0, idempotent: true, shortfalls: [],
       }
@@ -484,14 +524,17 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     }
   }
 
-  const lines = await db.query<{
-    product_id: string; product_name: string; base_qty: number
-    line_total: number; loyalty_blocked: number
-  }>(
-    `SELECT product_id, product_name, base_qty, line_total, loyalty_blocked
-       FROM bill_items WHERE bill_id = ? ORDER BY idx`,
-    [input.billId],
-  )
+  const lines = await q(db)
+    .select({
+      productId: schema.billItems.productId,
+      productName: schema.billItems.productName,
+      baseQty: schema.billItems.baseQty,
+      lineTotal: schema.billItems.lineTotal,
+      loyaltyBlocked: schema.billItems.loyaltyBlocked,
+    })
+    .from(schema.billItems)
+    .where(eq(schema.billItems.billId, input.billId))
+    .orderBy(schema.billItems.idx)
 
   const program = await loadLoyaltyProgram(db)
   let pointsRedeemed = 0
@@ -531,9 +574,9 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
   }
 
   const requirements = lines.map((l) => ({
-    productId: l.product_id,
-    productName: l.product_name,
-    required: qty(l.base_qty),
+    productId: l.productId,
+    productName: l.productName,
+    required: l.baseQty,
   }))
   /* The check is the same as it always was; what changed is who it binds.
      Under `block` a short line still refuses the sale. Otherwise the sale goes
@@ -547,14 +590,17 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
   // Read off the line's own flag rather than the product's, so a bill earns on
   // the rules that were in force when it was rung up.
   const earningTotal = add(
-    ...lines.filter((l) => l.loyalty_blocked !== 1).map((l) => l.line_total as Money),
+    ...lines.filter((l) => l.loyaltyBlocked !== 1).map((l) => l.lineTotal),
   )
   const earned = calculateEarned(
     program,
     { grandTotal: bill.grandTotal, creditPortion: creditTotal, earningTotal },
     now,
   )
-  const register = await db.get<{ prefix: string }>(`SELECT prefix FROM registers WHERE id = ?`, [bill.registerId])
+  const [register] = await q(db)
+    .select({ prefix: schema.registers.prefix })
+    .from(schema.registers)
+    .where(eq(schema.registers.id, bill.registerId))
   const snapshot = await recipientSnapshot(db, bill)
   const nowIso = now.toISOString()
   let docNo = ''
@@ -564,8 +610,8 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
 
     for (const line of lines) {
       await postMovement(tx, {
-        productId: line.product_id,
-        qtyChange: negQty(qty(line.base_qty)),
+        productId: line.productId,
+        qtyChange: negQty(line.baseQty),
         voucherType: 'bill',
         voucherId: input.billId,
         postingDate: bill.postingDate,
@@ -574,10 +620,13 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     }
 
     for (const payment of input.payments) {
-      await tx.execute(
-        `INSERT INTO bill_payments (id, bill_id, method, amount, reference) VALUES (?, ?, ?, ?, ?)`,
-        [newId(), input.billId, payment.method, payment.amount, payment.reference ?? null],
-      )
+      await q(tx).insert(schema.billPayments).values({
+        id: newId(),
+        billId: input.billId,
+        method: payment.method,
+        amount: payment.amount,
+        reference: payment.reference ?? null,
+      })
       // Credit moves no money today and loyalty never does.
       if (bill.sessionId && payment.method !== 'credit') {
         await postCashMovement(tx, {
@@ -595,45 +644,62 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     }
 
     if (redemptionValue > 0) {
-      await tx.execute(
-        `INSERT INTO bill_payments (id, bill_id, method, amount, reference) VALUES (?, ?, 'loyalty', ?, ?)`,
-        [newId(), input.billId, redemptionValue, `${pointsRedeemed} points`],
-      )
+      await q(tx).insert(schema.billPayments).values({
+        id: newId(),
+        billId: input.billId,
+        method: 'loyalty',
+        amount: redemptionValue,
+        reference: `${pointsRedeemed} points`,
+      })
     }
 
     for (const alloc of redemptionPlan) {
-      await tx.execute(`UPDATE loyalty_entries SET consumed = consumed + ? WHERE id = ?`, [alloc.points, alloc.entryId])
-      await tx.execute(
-        `INSERT INTO loyalty_redemptions (id, customer_id, bill_id, loyalty_entry_id, points, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [newId(), bill.customerId, input.billId, alloc.entryId, alloc.points, nowIso],
-      )
+      /* Read-modify-write in one statement, so two tills redeeming from the
+         same entry cannot both read the old figure. */
+      await q(tx).update(schema.loyaltyEntries)
+        .set({ consumed: sql`${schema.loyaltyEntries.consumed} + ${alloc.points}` })
+        .where(eq(schema.loyaltyEntries.id, alloc.entryId))
+
+      await q(tx).insert(schema.loyaltyRedemptions).values({
+        id: newId(),
+        customerId: bill.customerId!,
+        billId: input.billId,
+        loyaltyEntryId: alloc.entryId,
+        points: alloc.points,
+        createdAt: nowIso,
+      })
     }
 
     if (earned.points > 0 && bill.customerId) {
-      await tx.execute(
-        `INSERT INTO loyalty_entries (id, customer_id, bill_id, points, earned_at, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [newId(), bill.customerId, input.billId, earned.points, nowIso, earned.expiresAt, nowIso],
-      )
+      await q(tx).insert(schema.loyaltyEntries).values({
+        id: newId(),
+        customerId: bill.customerId,
+        billId: input.billId,
+        points: earned.points,
+        earnedAt: nowIso,
+        expiresAt: earned.expiresAt,
+        createdAt: nowIso,
+      })
     }
 
-    await tx.execute(
-      `UPDATE bills
-          SET docstatus = 1, doc_no = ?, paid_total = ?, credit_total = ?, idempotency_key = ?,
-              supply_type = ?, customer_gstin = ?, customer_address = ?, customer_state_code = ?,
-              updated_at = ?
-        WHERE id = ?`,
-      [
-        docNo, sub(bill.grandTotal, creditTotal), creditTotal, input.idempotencyKey ?? null,
+    await q(tx).update(schema.bills)
+      .set({
+        docstatus: SUBMITTED,
+        docNo,
+        paidTotal: sub(bill.grandTotal, creditTotal),
+        creditTotal,
+        idempotencyKey: input.idempotencyKey ?? null,
         // The document takes its own copy of what it said, here and nowhere later.
         // `reverse_charge` keeps its default of 0: nothing in this product raises
         // a bill under reverse charge, and a column that lies about it would be
         // worse than one that does not exist.
-        snapshot.supplyType, snapshot.gstin, snapshot.address, snapshot.stateCode,
-        nowIso, input.billId,
-      ],
-    )
+        supplyType: snapshot.supplyType,
+        customerGstin: snapshot.gstin,
+        customerAddress: snapshot.address,
+        customerStateCode: snapshot.stateCode,
+        updatedAt: nowIso,
+      })
+      .where(eq(schema.bills.id, input.billId))
 
     /* The order is marked off here and nowhere earlier. Loading an order onto
        the counter promises nothing; taking the money is the delivery. */
@@ -673,26 +739,36 @@ export async function cancelBill(
   const bill = await loadBill(db, input.billId)
   assertCanApply('bill', parseDocStatus(bill.docstatus), 'cancel')
 
-  const returns = await db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM sales_returns WHERE bill_id = ? AND docstatus = 1`,
-    [input.billId],
-  )
+  const [returns] = await q(db)
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.salesReturns)
+    .where(and(
+      eq(schema.salesReturns.billId, input.billId),
+      eq(schema.salesReturns.docstatus, SUBMITTED),
+    ))
   if ((returns?.n ?? 0) > 0) return { ok: false, code: 'HAS_RETURNS', returnCount: returns!.n }
 
-  const allocations = await db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM payment_allocations pa
-       JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
-      WHERE pa.bill_id = ?`,
-    [input.billId],
-  )
+  const [allocations] = await q(db)
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.paymentAllocations)
+    .innerJoin(schema.paymentEntries, and(
+      eq(schema.paymentEntries.id, schema.paymentAllocations.paymentId),
+      eq(schema.paymentEntries.docstatus, SUBMITTED),
+    ))
+    .where(eq(schema.paymentAllocations.billId, input.billId))
   if ((allocations?.n ?? 0) > 0) return { ok: false, code: 'HAS_PAYMENTS', paymentCount: allocations!.n }
 
   const nowIso = now.toISOString()
 
-  const tenders = await db.query<{ method: string; amount: number }>(
-    `SELECT method, amount FROM bill_payments WHERE bill_id = ? AND method <> 'credit'`,
-    [input.billId],
-  )
+  /* Everything except credit. Credit moved no money on the way in, so there is
+     nothing to hand back out of the drawer for it. */
+  const tenders = await q(db)
+    .select({ method: schema.billPayments.method, amount: schema.billPayments.amount })
+    .from(schema.billPayments)
+    .where(and(
+      eq(schema.billPayments.billId, input.billId),
+      ne(schema.billPayments.method, 'credit'),
+    ))
 
   await db.transaction(async (tx) => {
     await reverseVoucher(tx, 'bill', input.billId, bill.postingDate, input.actorId)
@@ -703,7 +779,7 @@ export async function cancelBill(
         await postCashMovement(tx, {
           sessionId: session,
           direction: 'out',
-          amount: tender.amount as Money,
+          amount: tender.amount,
           method: tender.method as 'cash' | 'upi' | 'card' | 'loyalty',
           sourceType: 'bill_cancel',
           sourceId: input.billId,
@@ -716,31 +792,49 @@ export async function cancelBill(
     // Only the part still outstanding. A return against this bill may already
     // have handed some of these points back, and taking them off `consumed` a
     // second time would invent points the customer never had.
-    const redemptions = await tx.query<{ id: string; loyalty_entry_id: string; owed: number }>(
-      `SELECT id, loyalty_entry_id, points - restored AS owed FROM loyalty_redemptions
-        WHERE bill_id = ? AND reversed_at IS NULL`,
-      [input.billId],
-    )
+    const redemptions = await q(tx)
+      .select({
+        id: schema.loyaltyRedemptions.id,
+        loyaltyEntryId: schema.loyaltyRedemptions.loyaltyEntryId,
+        owed: sql<number>`${schema.loyaltyRedemptions.points} - ${schema.loyaltyRedemptions.restored}`,
+      })
+      .from(schema.loyaltyRedemptions)
+      .where(and(
+        eq(schema.loyaltyRedemptions.billId, input.billId),
+        isNull(schema.loyaltyRedemptions.reversedAt),
+      ))
+
     for (const r of redemptions) {
       if (r.owed > 0) {
-        await tx.execute(`UPDATE loyalty_entries SET consumed = consumed - ? WHERE id = ?`, [r.owed, r.loyalty_entry_id])
+        await q(tx).update(schema.loyaltyEntries)
+          .set({ consumed: sql`${schema.loyaltyEntries.consumed} - ${r.owed}` })
+          .where(eq(schema.loyaltyEntries.id, r.loyaltyEntryId))
       }
-      await tx.execute(`UPDATE loyalty_redemptions SET reversed_at = ? WHERE id = ?`, [nowIso, r.id])
+      await q(tx).update(schema.loyaltyRedemptions)
+        .set({ reversedAt: nowIso })
+        .where(eq(schema.loyaltyRedemptions.id, r.id))
     }
 
-    await tx.execute(
-      `UPDATE loyalty_entries SET cancelled_at = ? WHERE bill_id = ? AND cancelled_at IS NULL`,
-      [nowIso, input.billId],
-    )
+    await q(tx).update(schema.loyaltyEntries)
+      .set({ cancelledAt: nowIso })
+      .where(and(
+        eq(schema.loyaltyEntries.billId, input.billId),
+        isNull(schema.loyaltyEntries.cancelledAt),
+      ))
 
     /* What this bill took off an order goes back. Otherwise a cancelled bill
        leaves an order claiming it was delivered, and the goods are never sent. */
     await reverseBillFulfilment(tx, { billId: input.billId, actorId: input.actorId })
 
-    await tx.execute(
-      `UPDATE bills SET docstatus = 2, cancelled_by = ?, cancelled_at = ?, cancel_reason = ?, updated_at = ? WHERE id = ?`,
-      [input.actorId, nowIso, input.reason ?? null, nowIso, input.billId],
-    )
+    await q(tx).update(schema.bills)
+      .set({
+        docstatus: CANCELLED,
+        cancelledBy: input.actorId,
+        cancelledAt: nowIso,
+        cancelReason: input.reason ?? null,
+        updatedAt: nowIso,
+      })
+      .where(eq(schema.bills.id, input.billId))
 
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'bills', entityId: input.billId, action: 'cancel',
@@ -764,10 +858,17 @@ export async function amendBill(
   const source = await loadBill(db, input.billId)
   assertAmendable('bill', parseDocStatus(source.docstatus))
 
-  const lines = await db.query<{ product_id: string; sale_unit: string; qty: number; rate: number; discount: number }>(
-    `SELECT product_id, sale_unit, qty, rate, discount FROM bill_items WHERE bill_id = ? ORDER BY idx`,
-    [input.billId],
-  )
+  const lines = await q(db)
+    .select({
+      productId: schema.billItems.productId,
+      saleUnit: schema.billItems.saleUnit,
+      qty: schema.billItems.qty,
+      rate: schema.billItems.rate,
+      discount: schema.billItems.discount,
+    })
+    .from(schema.billItems)
+    .where(eq(schema.billItems.billId, input.billId))
+    .orderBy(schema.billItems.idx)
 
   /* Everything the original charged, to the paisa.
      The line discount was being selected and then dropped on the floor, and the
@@ -808,11 +909,11 @@ export async function amendBill(
        open for goods the shop is about to send out again. */
     convertedFrom: source.convertedFrom,
     lines: lines.map((l) => ({
-      productId: l.product_id,
-      saleUnit: l.sale_unit,
-      qty: qty(l.qty),
-      rateOverride: l.rate as Money,
-      discount: l.discount as Money,
+      productId: l.productId,
+      saleUnit: l.saleUnit,
+      qty: l.qty,
+      rateOverride: l.rate,
+      discount: l.discount,
     })),
     ...(source.notes !== null ? { notes: source.notes } : {}),
     actorId: input.actorId,
@@ -822,7 +923,9 @@ export async function amendBill(
   if (!created.ok) return created
 
   await db.transaction(async (tx) => {
-    await tx.execute(`UPDATE bills SET amended_from = ? WHERE id = ?`, [input.billId, created.billId])
+    await q(tx).update(schema.bills)
+      .set({ amendedFrom: input.billId })
+      .where(eq(schema.bills.id, created.billId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'bills', entityId: created.billId, action: 'amend',
       after: { amended_from: input.billId },
@@ -850,32 +953,25 @@ interface BillRow {
 }
 
 async function loadBill(db: SqlDriver, billId: string): Promise<BillRow> {
-  const row = await db.get<{
-    id: string; doc_no: string; docstatus: number; register_id: string; session_id: string | null
-    customer_id: string | null; posting_date: string; grand_total: number
-    converted_from: string | null; discount: number; notes: string | null
-    place_of_supply: string | null
-  }>(
-    `SELECT id, doc_no, docstatus, register_id, session_id, customer_id, posting_date, grand_total,
-            converted_from, discount, notes, place_of_supply
-       FROM bills WHERE id = ?`,
-    [billId],
-  )
+  const [row] = await q(db)
+    .select({
+      id: schema.bills.id,
+      docNo: schema.bills.docNo,
+      docstatus: schema.bills.docstatus,
+      registerId: schema.bills.registerId,
+      sessionId: schema.bills.sessionId,
+      customerId: schema.bills.customerId,
+      postingDate: schema.bills.postingDate,
+      grandTotal: schema.bills.grandTotal,
+      convertedFrom: schema.bills.convertedFrom,
+      discount: schema.bills.discount,
+      notes: schema.bills.notes,
+      placeOfSupply: schema.bills.placeOfSupply,
+    })
+    .from(schema.bills)
+    .where(eq(schema.bills.id, billId))
   if (!row) throw new Error(`unknown bill: ${billId}`)
-  return {
-    id: row.id,
-    docNo: row.doc_no,
-    docstatus: row.docstatus,
-    registerId: row.register_id,
-    sessionId: row.session_id,
-    customerId: row.customer_id,
-    postingDate: row.posting_date,
-    grandTotal: row.grand_total as Money,
-    convertedFrom: row.converted_from,
-    discount: row.discount as Money,
-    notes: row.notes,
-    placeOfSupply: row.place_of_supply,
-  }
+  return row
 }
 
 interface RecipientSnapshot {
@@ -908,12 +1004,12 @@ interface RecipientSnapshot {
  * same reason.
  */
 async function recipientSnapshot(db: SqlDriver, bill: BillRow): Promise<RecipientSnapshot> {
-  const customer = bill.customerId
-    ? await db.get<{ gstin: string | null; address: string | null }>(
-        `SELECT gstin, address FROM customers WHERE id = ?`,
-        [bill.customerId],
-      )
-    : null
+  const [customer] = bill.customerId
+    ? await q(db)
+        .select({ gstin: schema.customers.gstin, address: schema.customers.address })
+        .from(schema.customers)
+        .where(eq(schema.customers.id, bill.customerId))
+    : []
 
   return {
     supplyType: await supplyFor(db, bill.placeOfSupply),
@@ -933,59 +1029,69 @@ interface CustomerRow {
 }
 
 async function loadCustomer(db: SqlDriver, customerId: string): Promise<CustomerRow> {
-  const row = await db.get<{
-    id: string; name: string; state_code: string | null; price_list_id: string | null
-    credit_limit: number; credit_enforcement: string
-  }>(
-    `SELECT id, name, state_code, price_list_id, credit_limit, credit_enforcement FROM customers WHERE id = ?`,
-    [customerId],
-  )
+  const [row] = await q(db)
+    .select({
+      id: schema.customers.id,
+      name: schema.customers.name,
+      stateCode: schema.customers.stateCode,
+      priceListId: schema.customers.priceListId,
+      creditLimit: schema.customers.creditLimit,
+      creditEnforcement: schema.customers.creditEnforcement,
+    })
+    .from(schema.customers)
+    .where(eq(schema.customers.id, customerId))
   if (!row) throw new Error(`unknown customer: ${customerId}`)
   return {
-    id: row.id,
-    name: row.name,
-    stateCode: row.state_code,
-    priceListId: row.price_list_id,
-    creditLimit: row.credit_limit as Money,
-    creditEnforcement: row.credit_enforcement as 'none' | 'soft' | 'hard',
+    ...row,
+    /* The column is a plain TEXT with a CHECK on it, so the three values it can
+       hold are a fact about the table that the type system cannot see. */
+    creditEnforcement: row.creditEnforcement as 'none' | 'soft' | 'hard',
   }
 }
 
 async function loadOpenBills(db: SqlDriver, customerId: string): Promise<OpenBill[]> {
-  const rows = await db.query<{ id: string; doc_no: string; posting_date: string; credit_total: number; allocated: number }>(
-    `SELECT b.id, b.doc_no, b.posting_date, b.credit_total,
-            COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                        JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
-                       WHERE pa.bill_id = b.id), 0) AS allocated
-       FROM bills b
-      WHERE b.customer_id = ? AND b.docstatus = 1 AND b.credit_total > 0`,
-    [customerId],
-  )
-  return rows.map((r) => ({
-    id: r.id,
-    docNo: r.doc_no,
-    postingDate: r.posting_date,
-    creditTotal: r.credit_total as Money,
-    allocated: r.allocated as Money,
-  }))
+  /* raw: a correlated subquery, which the query builder has no shape for.
+     A join to the allocations would multiply the bill row once per payment
+     against it, so a bill settled in three instalments would count its own
+     credit total three times.
+
+     `bills.id` is written out rather than interpolated as a column: inside a
+     subquery Drizzle renders the reference unqualified, and a bare `id` there
+     binds to `payment_allocations` and `payment_entries` first -- SQLite calls
+     it ambiguous and refuses, which is the good outcome of the two available. */
+  const allocated = sql<Money>`COALESCE((
+    SELECT SUM(pa.amount) FROM payment_allocations pa
+      JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = ${SUBMITTED}
+     WHERE pa.bill_id = bills.id), 0)`
+
+  return q(db)
+    .select({
+      id: schema.bills.id,
+      docNo: schema.bills.docNo,
+      postingDate: schema.bills.postingDate,
+      creditTotal: schema.bills.creditTotal,
+      allocated,
+    })
+    .from(schema.bills)
+    .where(and(
+      eq(schema.bills.customerId, customerId),
+      eq(schema.bills.docstatus, SUBMITTED),
+      gt(schema.bills.creditTotal, ZERO),
+    ))
 }
 
 async function loadLoyaltyEntries(db: SqlDriver, customerId: string): Promise<LoyaltyEntry[]> {
-  const rows = await db.query<{
-    id: string; points: number; consumed: number; earned_at: string
-    expires_at: string | null; cancelled_at: string | null
-  }>(
-    `SELECT id, points, consumed, earned_at, expires_at, cancelled_at FROM loyalty_entries WHERE customer_id = ?`,
-    [customerId],
-  )
-  return rows.map((r) => ({
-    id: r.id,
-    points: r.points,
-    consumed: r.consumed,
-    earnedAt: r.earned_at,
-    expiresAt: r.expires_at,
-    cancelledAt: r.cancelled_at,
-  }))
+  return q(db)
+    .select({
+      id: schema.loyaltyEntries.id,
+      points: schema.loyaltyEntries.points,
+      consumed: schema.loyaltyEntries.consumed,
+      earnedAt: schema.loyaltyEntries.earnedAt,
+      expiresAt: schema.loyaltyEntries.expiresAt,
+      cancelledAt: schema.loyaltyEntries.cancelledAt,
+    })
+    .from(schema.loyaltyEntries)
+    .where(eq(schema.loyaltyEntries.customerId, customerId))
 }
 
 export async function loadLoyaltyProgram(db: SqlDriver): Promise<LoyaltyProgram> {

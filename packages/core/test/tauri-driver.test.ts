@@ -38,6 +38,12 @@ function fakeRustLayer(backing: SqlDriver) {
     switch (cmd) {
       case 'sql_query':
         return backing.query(sql, params)
+      /* The positional pair. A service on typed queries reaches the bridge
+         through these and nothing else, so a fake without them is a fake of an
+         older `db.rs` — which is how this test caught `billing.ts` moving onto
+         Drizzle before the fake had been told. */
+      case 'sql_query_values':
+        return backing.queryValues(sql, params)
       case 'sql_execute':
         /* Refused while a transaction is open, as `db.rs` refuses it. There is
            one connection, so a statement outside the token would otherwise
@@ -53,6 +59,9 @@ function fakeRustLayer(backing: SqlDriver) {
       case 'sql_tx_query':
         assertToken()
         return backing.query(sql, params)
+      case 'sql_tx_query_values':
+        assertToken()
+        return backing.queryValues(sql, params)
       case 'sql_tx_execute':
         assertToken()
         return backing.execute(sql, params)
