@@ -29,16 +29,32 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 
 ## Working agreements
 
-- `npm test` from the root runs the core suite (326 tests). Types: `npm run typecheck`.
-- Any new migration needs a backfill if it adds a column existing rows should not read as zero.
+- `npm test` from the root runs every project -- core, the app, and both benches
+  (1,480 tests). Types: `npm run typecheck`, which covers all four.
+- Queries are typed: `q(db).select(...).from(schema.bills)` over `db/schema.ts`,
+  which is the database's shape by hand and is checked against a real migrated
+  file by `schemaParity.test.ts`. Hand-written SQL is still allowed where a
+  builder cannot say it -- a window function, a correlated subquery, a statement
+  whose columns are not known until run time -- and is marked `// raw: <why>`.
+  Drizzle never owns a transaction: callers keep `db.transaction(async (tx) =>
+  ...)` and build the handle from `tx`.
+- Any new migration needs three things in the same commit: the `.sql` file, its
+  entry in `db/migrations.ts` with `EXPECTED_SCHEMA_VERSION` raised, and its
+  classification in `db/migrationKinds.ts` as additive or breaking -- which
+  decides whether tills on either side of it can still sync. It needs a backfill
+  if it adds a column existing rows should not read as zero, and it needs
+  `schema.ts` edited by hand to match.
 - Before adding a feature from ERPNext, check the "deliberately not building" table in the plan.
 
 ## The plan
 
-`C:\Users\user\.claude\plans\bright-kindling-snail.md` — approved v1.1 plan, nine parts.
-Build order agreed with the owner: corrections, then seams, then features.
-Parts 1 and 1.2/1.3 are done and committed. Next up is Part 1.4/1.5:
-restore, the migrate downgrade guard, and the zip backup format.
+`docs/specs/` — the phase specs, `execution-order.md` for the order, and
+`progress.md` for where it has got to and why. That file is the one to read
+first: it carries the findings and the arguments, not only the state.
+
+Phases 0, 1, 2 and 3 are done, on branch `phase-2-foundations`, not merged and
+nothing released. Phase 4 is next: CI, the updater, licensing and the portal
+skeleton, all of which are buildable and testable unsigned.
 
 ## Design canvas
 
