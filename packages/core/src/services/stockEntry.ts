@@ -1,7 +1,9 @@
+import { eq, and, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
-import type { Money } from '../money.js'
-import { type Qty, qty } from '../quantity.js'
+import { type Money, ZERO } from '../money.js'
+import type { Qty } from '../quantity.js'
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 import { postMovement, reverseVoucher, currentStock } from './stock.js'
@@ -53,10 +55,10 @@ export async function createStockEntry(
     if (inflowOnly && line.qty < 0) {
       return { ok: false, code: 'INFLOW_NEEDS_POSITIVE_QTY', productId: line.productId }
     }
-    const exists = await db.get<{ id: string }>(
-      `SELECT id FROM products WHERE id = ? AND deleted_at IS NULL`,
-      [line.productId],
-    )
+    const [exists] = await q(db)
+      .select({ id: schema.products.id })
+      .from(schema.products)
+      .where(and(eq(schema.products.id, line.productId), isNull(schema.products.deletedAt)))
     if (!exists) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
   }
 
@@ -65,23 +67,29 @@ export async function createStockEntry(
   const postingDate = input.postingDate ?? nowIso.slice(0, 10)
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO stock_entries
-         (id, doc_no, docstatus, entry_type, posting_date, supplier_id, supplier_name, reference, notes,
-          created_by, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        entryId, `DRAFT-${entryId}`, input.entryType, postingDate,
-        input.supplierId ?? null, input.supplierName ?? null,
-        input.reference ?? null, input.notes ?? null, input.actorId, nowIso, nowIso,
-      ],
-    )
+    await q(tx).insert(schema.stockEntries).values({
+      id: entryId,
+      docNo: `DRAFT-${entryId}`,
+      docstatus: DRAFT,
+      entryType: input.entryType,
+      postingDate,
+      supplierId: input.supplierId ?? null,
+      supplierName: input.supplierName ?? null,
+      reference: input.reference ?? null,
+      notes: input.notes ?? null,
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
 
     for (const line of input.lines) {
-      await tx.execute(
-        `INSERT INTO stock_entry_items (id, entry_id, product_id, qty, unit_cost) VALUES (?, ?, ?, ?, ?)`,
-        [newId(), entryId, line.productId, line.qty, line.unitCost ?? 0],
-      )
+      await q(tx).insert(schema.stockEntryItems).values({
+        id: newId(),
+        entryId,
+        productId: line.productId,
+        qty: line.qty,
+        unitCost: line.unitCost ?? ZERO,
+      })
     }
 
     await writeAudit(tx, { actorId: input.actorId }, {
@@ -101,16 +109,20 @@ export async function submitStockEntry(
   const entry = await loadEntry(db, input.entryId)
   assertCanApply('stock entry', parseDocStatus(entry.docstatus), 'submit')
 
-  const lines = await db.query<{ product_id: string; qty: number; unit_cost: number }>(
-    `SELECT product_id, qty, unit_cost FROM stock_entry_items WHERE entry_id = ?`,
-    [input.entryId],
-  )
+  const lines = await q(db)
+    .select({
+      productId: schema.stockEntryItems.productId,
+      qty: schema.stockEntryItems.qty,
+      unitCost: schema.stockEntryItems.unitCost,
+    })
+    .from(schema.stockEntryItems)
+    .where(eq(schema.stockEntryItems.entryId, input.entryId))
 
   for (const line of lines) {
     if (line.qty >= 0) continue
-    const available = await currentStock(db, line.product_id)
+    const available = await currentStock(db, line.productId)
     if (available + line.qty < 0) {
-      return { ok: false, code: 'WOULD_GO_NEGATIVE', productId: line.product_id, available, change: qty(line.qty) }
+      return { ok: false, code: 'WOULD_GO_NEGATIVE', productId: line.productId, available, change: line.qty }
     }
   }
 
@@ -122,9 +134,10 @@ export async function submitStockEntry(
 
     for (const line of lines) {
       await postMovement(tx, {
-        productId: line.product_id,
-        qtyChange: qty(line.qty),
-        unitCost: (line.unit_cost || null) as Money | null,
+        productId: line.productId,
+        qtyChange: line.qty,
+        // Zero is "not recorded", not "free": the column has no null in it.
+        unitCost: line.unitCost || null,
         voucherType: 'stock_entry',
         voucherId: input.entryId,
         postingDate: entry.postingDate,
@@ -132,10 +145,9 @@ export async function submitStockEntry(
       })
     }
 
-    await tx.execute(
-      `UPDATE stock_entries SET docstatus = 1, doc_no = ?, updated_at = ? WHERE id = ?`,
-      [docNo, nowIso, input.entryId],
-    )
+    await q(tx).update(schema.stockEntries)
+      .set({ docstatus: SUBMITTED, docNo, updatedAt: nowIso })
+      .where(eq(schema.stockEntries.id, input.entryId))
 
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'stock_entries', entityId: input.entryId, action: 'submit',
@@ -155,12 +167,13 @@ export async function cancelStockEntry(
   const entry = await loadEntry(db, input.entryId)
   assertCanApply('stock entry', parseDocStatus(entry.docstatus), 'cancel')
 
+  const nowIso = now.toISOString()
+
   await db.transaction(async (tx) => {
     await reverseVoucher(tx, 'stock_entry', input.entryId, entry.postingDate, input.actorId)
-    await tx.execute(
-      `UPDATE stock_entries SET docstatus = 2, updated_at = ? WHERE id = ?`,
-      [now.toISOString(), input.entryId],
-    )
+    await q(tx).update(schema.stockEntries)
+      .set({ docstatus: CANCELLED, updatedAt: nowIso })
+      .where(eq(schema.stockEntries.id, input.entryId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'stock_entries', entityId: input.entryId, action: 'cancel',
       docstatusFrom: SUBMITTED, docstatusTo: CANCELLED,
@@ -180,10 +193,16 @@ interface EntryRow {
 }
 
 async function loadEntry(db: SqlDriver, entryId: string): Promise<EntryRow> {
-  const row = await db.get<{ id: string; doc_no: string; docstatus: number; entry_type: string; posting_date: string }>(
-    `SELECT id, doc_no, docstatus, entry_type, posting_date FROM stock_entries WHERE id = ?`,
-    [entryId],
-  )
+  const [row] = await q(db)
+    .select({
+      id: schema.stockEntries.id,
+      doc_no: schema.stockEntries.docNo,
+      docstatus: schema.stockEntries.docstatus,
+      entry_type: schema.stockEntries.entryType,
+      posting_date: schema.stockEntries.postingDate,
+    })
+    .from(schema.stockEntries)
+    .where(eq(schema.stockEntries.id, entryId))
   if (!row) throw new Error(`unknown stock entry: ${entryId}`)
   return {
     id: row.id,

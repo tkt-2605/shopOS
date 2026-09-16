@@ -1,6 +1,8 @@
-import type { SqlDriver, SqlValue } from '../db/driver.js'
+import { eq, and, ne, inArray, isNotNull, asc, desc, sql } from 'drizzle-orm'
+import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
-import { type Qty, qty, addQty, hasAtLeast, QTY_SCALE } from '../quantity.js'
+import { type Qty, qty, addQty, hasAtLeast, QTY_SCALE, QTY_ZERO } from '../quantity.js'
 import type { Money } from '../money.js'
 import { movingAverage, fifo, type LedgerMovement, type Valuation, type FifoResult } from '../domain/valuation.js'
 
@@ -22,11 +24,11 @@ export interface StockPosting {
 }
 
 export async function currentStock(db: SqlDriver, productId: string): Promise<Qty> {
-  const row = await db.get<{ qty_on_hand: number }>(
-    `SELECT qty_on_hand FROM product_stock WHERE product_id = ?`,
-    [productId],
-  )
-  return qty(row?.qty_on_hand ?? 0)
+  const [row] = await q(db)
+    .select({ onHand: schema.productStock.qtyOnHand })
+    .from(schema.productStock)
+    .where(eq(schema.productStock.productId, productId))
+  return row?.onHand ?? QTY_ZERO
 }
 
 export async function postMovement(tx: SqlDriver, posting: StockPosting): Promise<Qty> {
@@ -49,27 +51,47 @@ export async function postMovement(tx: SqlDriver, posting: StockPosting): Promis
 
   const now = new Date().toISOString()
 
-  await tx.execute(
-    `INSERT INTO stock_ledger
-       (id, product_id, posting_date, qty_change, unit_cost, balance_qty, voucher_type, voucher_id, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      newId(), posting.productId, posting.postingDate, posting.qtyChange,
-      unitCost, after, posting.voucherType, posting.voucherId,
-      posting.userId ?? null, now,
-    ],
-  )
+  await q(tx).insert(schema.stockLedger).values({
+    id: newId(),
+    productId: posting.productId,
+    postingDate: posting.postingDate,
+    qtyChange: posting.qtyChange,
+    unitCost,
+    balanceQty: after,
+    voucherType: posting.voucherType,
+    voucherId: posting.voucherId,
+    createdBy: posting.userId ?? null,
+    createdAt: now,
+  })
 
-  await tx.execute(
-    `INSERT INTO product_stock (product_id, qty_on_hand, stock_value, updated_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (product_id) DO UPDATE SET
-       qty_on_hand = excluded.qty_on_hand,
-       stock_value = excluded.stock_value,
-       updated_at = excluded.updated_at`,
-    [posting.productId, after, afterValue, now],
-  )
+  await cacheStock(tx, posting.productId, after, afterValue, now)
 
   return after
+}
+
+/**
+ * The cache, written as one statement.
+ *
+ * Upsert rather than read-then-write: two tills posting movements for the same
+ * product would otherwise both find no row and both insert one.
+ */
+async function cacheStock(
+  db: SqlDriver,
+  productId: string,
+  onHand: Qty,
+  value: number,
+  now: string,
+): Promise<void> {
+  await q(db).insert(schema.productStock)
+    .values({ productId, qtyOnHand: onHand, stockValue: value as Money, updatedAt: now })
+    .onConflictDoUpdate({
+      target: schema.productStock.productId,
+      set: {
+        qtyOnHand: sql`excluded.qty_on_hand`,
+        stockValue: sql`excluded.stock_value`,
+        updatedAt: sql`excluded.updated_at`,
+      },
+    })
 }
 
 interface Holding {
@@ -78,11 +100,11 @@ interface Holding {
 }
 
 async function holding(tx: SqlDriver, productId: string): Promise<Holding> {
-  const row = await tx.get<{ qty_on_hand: number; stock_value: number }>(
-    `SELECT qty_on_hand, stock_value FROM product_stock WHERE product_id = ?`,
-    [productId],
-  )
-  return { qty: qty(row?.qty_on_hand ?? 0), value: row?.stock_value ?? 0 }
+  const [row] = await q(tx)
+    .select({ onHand: schema.productStock.qtyOnHand, value: schema.productStock.stockValue })
+    .from(schema.productStock)
+    .where(eq(schema.productStock.productId, productId))
+  return { qty: row?.onHand ?? QTY_ZERO, value: row?.value ?? 0 }
 }
 
 /** Moving average: what one base unit on the shelf is worth right now. */
@@ -117,15 +139,30 @@ function valueAfter(held: Holding, change: Qty, unitCost: Money | null, after: Q
  * over goods issued, because a purchase is a price somebody actually paid.
  */
 async function lastKnownCost(tx: SqlDriver, productId: string): Promise<Money | null> {
-  const row = await tx.get<{ unit_cost: number }>(
-    `SELECT unit_cost FROM stock_ledger
-      WHERE product_id = ? AND unit_cost IS NOT NULL
-      ORDER BY (qty_change > 0) DESC, rowid DESC
-      LIMIT 1`,
-    [productId],
-  )
-  return (row?.unit_cost ?? null) as Money | null
+  const [row] = await q(tx)
+    .select({ unitCost: schema.stockLedger.unitCost })
+    .from(schema.stockLedger)
+    .where(and(
+      eq(schema.stockLedger.productId, productId),
+      isNotNull(schema.stockLedger.unitCost),
+    ))
+    /* Purchases before issues, then the most recent of whichever won. The
+       first term is a boolean sorted descending, so every row where goods came
+       *in* sorts ahead of every row where they went out. */
+    .orderBy(desc(sql`${schema.stockLedger.qtyChange} > 0`), desc(ROWID))
+    .limit(1)
+  return row?.unitCost ?? null
 }
+
+/**
+ * The order rows were written in.
+ *
+ * Not a column in `schema.ts` because it is not a column in the table: SQLite
+ * gives every row one unless the table says otherwise, and this is how the
+ * ledger's own order is read. `posting_date` is a different question -- a
+ * backdated entry belongs where it was entered, not where its date puts it.
+ */
+const ROWID = sql`rowid`
 
 /**
  * What the goods on hand are worth, and what one unit of them costs. Reported
@@ -150,13 +187,18 @@ export async function issuedUnitCost(
   voucherId: string,
   productId: string,
 ): Promise<Money | null> {
-  const row = await tx.get<{ unit_cost: number | null }>(
-    `SELECT unit_cost FROM stock_ledger
-      WHERE voucher_type = ? AND voucher_id = ? AND product_id = ? AND unit_cost IS NOT NULL
-      ORDER BY rowid LIMIT 1`,
-    [voucherType, voucherId, productId],
-  )
-  return (row?.unit_cost ?? null) as Money | null
+  const [row] = await q(tx)
+    .select({ unitCost: schema.stockLedger.unitCost })
+    .from(schema.stockLedger)
+    .where(and(
+      eq(schema.stockLedger.voucherType, voucherType),
+      eq(schema.stockLedger.voucherId, voucherId),
+      eq(schema.stockLedger.productId, productId),
+      isNotNull(schema.stockLedger.unitCost),
+    ))
+    .orderBy(asc(ROWID))
+    .limit(1)
+  return row?.unitCost ?? null
 }
 
 export interface StockRequirement {
@@ -184,11 +226,11 @@ export async function checkAvailability(
   const shortfalls: StockShortfall[] = []
 
   for (const req of requirements) {
-    const tracked = await db.get<{ is_stock_tracked: number }>(
-      `SELECT is_stock_tracked FROM products WHERE id = ?`,
-      [req.productId],
-    )
-    if (!tracked || tracked.is_stock_tracked === 0) continue
+    const [tracked] = await q(db)
+      .select({ isStockTracked: schema.products.isStockTracked })
+      .from(schema.products)
+      .where(eq(schema.products.id, req.productId))
+    if (!tracked || tracked.isStockTracked === 0) continue
 
     const available = await currentStock(db, req.productId)
     if (!hasAtLeast(available, req.required)) {
@@ -268,9 +310,6 @@ async function replay(
   repair: boolean,
   now: string,
 ): Promise<StockDrift[]> {
-  const holes = ids ? `(${ids.map(() => '?').join(', ')})` : ''
-  const params: SqlValue[] = ids ? [...ids] : []
-
   /* Replayed rather than summed.
 
      The cache used to be checked against SUM(qty_change * unit_cost), which is
@@ -285,56 +324,53 @@ async function replay(
      was built in. A backdated stock entry belongs where it was entered, not
      where its date would put it, and sorting by date would make this function
      disagree with `postMovement` about a shop that has ever backdated one. */
-  const ledger = await db.query<{ product_id: string; qty_change: number; unit_cost: number | null }>(
-    `SELECT product_id, qty_change, unit_cost FROM stock_ledger
-      ${ids ? `WHERE product_id IN ${holes}` : ''}
-      ORDER BY product_id, rowid`,
-    params,
-  )
+  const ledger = await q(db)
+    .select({
+      productId: schema.stockLedger.productId,
+      qtyChange: schema.stockLedger.qtyChange,
+      unitCost: schema.stockLedger.unitCost,
+    })
+    .from(schema.stockLedger)
+    .where(ids ? inArray(schema.stockLedger.productId, [...ids]) : undefined)
+    .orderBy(asc(schema.stockLedger.productId), asc(ROWID))
 
   const byProduct = new Map<string, LedgerMovement[]>()
   for (const row of ledger) {
-    const movements = byProduct.get(row.product_id) ?? []
-    movements.push({ qtyChange: qty(row.qty_change), unitCost: (row.unit_cost ?? null) as Money | null })
-    byProduct.set(row.product_id, movements)
+    const movements = byProduct.get(row.productId) ?? []
+    movements.push({ qtyChange: row.qtyChange, unitCost: row.unitCost })
+    byProduct.set(row.productId, movements)
   }
 
   /* Driven from `products` rather than from the ledger, so a product whose
      cache says something and whose ledger says nothing is still caught. That is
      the drift worth finding: a row written by something outside this module. */
-  const cache = await db.query<{ product_id: string; cached: number | null; cached_value: number | null }>(
-    `SELECT p.id AS product_id, ps.qty_on_hand AS cached, ps.stock_value AS cached_value
-       FROM products p LEFT JOIN product_stock ps ON ps.product_id = p.id
-      ${ids ? `WHERE p.id IN ${holes}` : ''}`,
-    params,
-  )
+  const cache = await q(db)
+    .select({
+      productId: schema.products.id,
+      cached: schema.productStock.qtyOnHand,
+      cachedValue: schema.productStock.stockValue,
+    })
+    .from(schema.products)
+    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
+    .where(ids ? inArray(schema.products.id, [...ids]) : undefined)
 
   const drift: StockDrift[] = []
 
   for (const row of cache) {
-    const truth = movingAverage(byProduct.get(row.product_id) ?? [])
-    const cached = qty(row.cached ?? 0)
-    const cachedValue = row.cached_value ?? 0
+    const truth = movingAverage(byProduct.get(row.productId) ?? [])
+    const cached = row.cached ?? QTY_ZERO
+    const cachedValue = row.cachedValue ?? 0
     if (cached === truth.qtyOnHand && cachedValue === truth.totalValue) continue
 
     drift.push({
-      productId: row.product_id,
+      productId: row.productId,
       cached,
       actual: truth.qtyOnHand,
       cachedValue: cachedValue as Money,
       actualValue: truth.totalValue,
     })
 
-    if (repair) {
-      await db.execute(
-        `INSERT INTO product_stock (product_id, qty_on_hand, stock_value, updated_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT (product_id) DO UPDATE SET
-           qty_on_hand = excluded.qty_on_hand,
-           stock_value = excluded.stock_value,
-           updated_at = excluded.updated_at`,
-        [row.product_id, truth.qtyOnHand, truth.totalValue, now],
-      )
-    }
+    if (repair) await cacheStock(db, row.productId, truth.qtyOnHand, truth.totalValue, now)
   }
 
   return drift
@@ -353,18 +389,25 @@ export async function reverseVoucher(
   postingDate: string,
   userId?: string | null,
 ): Promise<void> {
-  const movements = await tx.query<{ product_id: string; qty_change: number; unit_cost: number | null }>(
-    `SELECT product_id, qty_change, unit_cost FROM stock_ledger
-      WHERE voucher_type = ? AND voucher_id = ? AND qty_change <> 0
-      ORDER BY rowid`,
-    [voucherType, voucherId],
-  )
+  const movements = await q(tx)
+    .select({
+      productId: schema.stockLedger.productId,
+      qtyChange: schema.stockLedger.qtyChange,
+      unitCost: schema.stockLedger.unitCost,
+    })
+    .from(schema.stockLedger)
+    .where(and(
+      eq(schema.stockLedger.voucherType, voucherType),
+      eq(schema.stockLedger.voucherId, voucherId),
+      ne(schema.stockLedger.qtyChange, QTY_ZERO),
+    ))
+    .orderBy(asc(ROWID))
 
   for (const m of movements) {
     await postMovement(tx, {
-      productId: m.product_id,
-      qtyChange: qty(-m.qty_change),
-      unitCost: (m.unit_cost ?? null) as Money | null,
+      productId: m.productId,
+      qtyChange: qty(-m.qtyChange),
+      unitCost: m.unitCost,
       voucherType: `${voucherType}_reversal`,
       voucherId,
       postingDate,
@@ -382,13 +425,14 @@ export async function productValuation(
   productId: string,
   method: 'moving_average' | 'fifo' = 'moving_average',
 ): Promise<Valuation | FifoResult> {
-  const rows = await db.query<{ qty_change: number; unit_cost: number | null }>(
-    `SELECT qty_change, unit_cost FROM stock_ledger WHERE product_id = ? ORDER BY posting_date, rowid`,
-    [productId],
-  )
-  const movements = rows.map((r) => ({
-    qtyChange: qty(r.qty_change),
-    unitCost: (r.unit_cost ?? null) as Money | null,
-  }))
+  const movements = await q(db)
+    .select({
+      qtyChange: schema.stockLedger.qtyChange,
+      unitCost: schema.stockLedger.unitCost,
+    })
+    .from(schema.stockLedger)
+    .where(eq(schema.stockLedger.productId, productId))
+    .orderBy(asc(schema.stockLedger.postingDate), asc(ROWID))
+
   return method === 'fifo' ? fifo(movements) : movingAverage(movements)
 }

@@ -69,6 +69,19 @@ function watching(): { driver: SqlDriver; asked: Asked[] } {
   return { driver, asked }
 }
 
+/**
+ * A statement against the table it reads, however the table is spelled.
+ *
+ * Hand-written SQL says `FROM stock_ledger`; a typed query says
+ * `from "stock_ledger"`, lower case and quoted. The matcher has to see both, or
+ * this file goes red the day a service is rewritten and says only "no statement
+ * matching" -- which is a test failing for a reason that has nothing to do with
+ * what it is checking.
+ */
+function reads(table: string): RegExp {
+  return new RegExp(String.raw`from\s+"?${table}"?`, 'i')
+}
+
 /** The plan for the heaviest statement a call made, as one line. */
 async function planOf(run: (driver: SqlDriver) => Promise<unknown>, match: RegExp): Promise<string> {
   const { driver, asked } = watching()
@@ -101,7 +114,7 @@ describe('the Bills page, on twenty thousand bills', () => {
        answer is fine; reading the whole table is not. */
     const plan = await planOf(
       (d) => listBills(d, { from: '2026-01-01', to: '2026-03-31' }),
-      /FROM bills b/,
+      reads('bills'),
     )
     expect(plan).toMatch(/USING INDEX idx_bills_(date|ledger)/)
     expect(plan).not.toContain('SCAN b')
@@ -112,7 +125,7 @@ describe('the Audit page, on twenty-one thousand rows', () => {
   it('goes straight to one person rather than walking the whole log', async () => {
     const plan = await planOf(
       (d) => listAuditEntries(d, { actorId: shop.staffIds[3]! }),
-      /FROM audit_log a/,
+      reads('audit_log'),
     )
     expect(plan).toContain('USING INDEX idx_audit_actor')
     expect(plan).not.toContain('idx_audit_at')
@@ -125,7 +138,7 @@ describe('the Audit page, on twenty-one thousand rows', () => {
        forty times slower than having no index at all. */
     const plan = await planOf(
       (d) => listAuditEntries(d, { actorId: shop.staffIds[1]! }),
-      /FROM audit_log a/,
+      reads('audit_log'),
     )
     expect(plan).toContain('USE TEMP B-TREE FOR LAST TERM OF ORDER BY')
     expect(plan).not.toContain('USE TEMP B-TREE FOR ORDER BY')
@@ -154,7 +167,7 @@ describe('the stock ledger', () => {
        If a later migration adds that column, this test is what says so. */
     const plan = await planOf(
       (d) => productValuation(d, shop.productIds[3]!),
-      /FROM stock_ledger/,
+      reads('stock_ledger'),
     )
     expect(plan).toContain('USING INDEX idx_stock_ledger_product')
     expect(plan).not.toContain('TEMP B-TREE')
