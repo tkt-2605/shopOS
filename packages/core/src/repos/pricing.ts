@@ -200,9 +200,20 @@ export async function pricingContextFor(
   db: SqlDriver,
   customerId: string | null,
 ): Promise<BillPricingContext> {
+  /* The join is what makes archiving a price list mean anything. A customer
+     keeps pointing at the list after it is archived -- the row is not rewritten
+     and the pointer is how restoring it puts them straight back on their old
+     rates -- so the list has to be checked here, where the rate is decided,
+     rather than trusted because it was live when somebody was put on it.
+     Without this, an archived list goes on quietly pricing every line for every
+     customer on it, which is exactly what `is_active` did for the whole of this
+     table's life. */
   const customer = customerId
     ? await db.get<{ price_list_id: string | null }>(
-        `SELECT price_list_id FROM customers WHERE id = ? AND deleted_at IS NULL`,
+        `SELECT l.id AS price_list_id
+           FROM customers c
+           LEFT JOIN price_lists l ON l.id = c.price_list_id AND l.deleted_at IS NULL
+          WHERE c.id = ? AND c.deleted_at IS NULL`,
         [customerId],
       )
     : null

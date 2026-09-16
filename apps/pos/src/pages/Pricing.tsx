@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  listPriceLists, createPriceList, updatePriceList,
+  listPriceLists, createPriceList, updatePriceList, archivePriceList, restorePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
   listCustomerPrices, removeCustomerPrice, setCustomerPriceList,
   setCustomerLadder, customerLadderFor, listUnits, perBaseUnit, Ladder,
@@ -324,14 +324,28 @@ function PriceLists({ canWrite }: { canWrite: boolean }) {
   const [lists, setLists] = useState<PriceList[]>([])
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
 
-  const refresh = useCallback(async () => setLists(await listPriceLists(db)), [db])
+  const refresh = useCallback(
+    async () => setLists(await listPriceLists(db, { includeArchived: showArchived })),
+    [db, showArchived],
+  )
   useEffect(() => { void refresh() }, [refresh])
 
   async function add() {
     const result = await createPriceList(db, { actorId: user.id }, { name })
     if (!result.ok) {
-      setError(result.code === 'NO_NAME' ? 'Give the list a name.' : 'There is already a list with that name.')
+      /* The archived clash is its own message because it has its own answer.
+         The name is still taken -- the row is still there -- and telling a shop
+         only that leaves them typing "Wholesale 2" beside a Wholesale they
+         cannot see. */
+      setError(
+        result.code === 'NO_NAME' ? 'Give the list a name.'
+        : result.code === 'NAME_TAKEN_ARCHIVED'
+          ? `There is a list called “${name.trim()}” that was taken off this screen. `
+            + 'Tick “Show the ones taken off the list” and bring it back — its rates are all still on it.'
+        : 'There is already a list with that name.',
+      )
       return
     }
     setError(null)
@@ -344,6 +358,44 @@ function PriceLists({ canWrite }: { canWrite: boolean }) {
     await refresh()
   }
 
+  /**
+   * Off the screen, and back onto it.
+   *
+   * The rates stay. That is the whole reason this is safe to press: a list that
+   * comes back comes back priced, and every bill ever written from it can still
+   * be explained, because `item_prices` was never touched.
+   */
+  async function archive(list: PriceList) {
+    setError(null)
+
+    if (list.archived) {
+      await restorePriceList(db, { actorId: user.id }, list.id)
+      await refresh()
+      return
+    }
+
+    if (!window.confirm(
+      `Take ${list.name} off this screen?\n\n`
+      + 'The rates on it are kept, and old bills priced from it can still be '
+      + 'explained. You can bring it back here.',
+    )) return
+
+    const result = await archivePriceList(db, { actorId: user.id }, list.id)
+    if (!result.ok) {
+      setError(
+        result.code === 'IS_DEFAULT'
+          ? 'This is the shop’s default list — what a walk-in customer pays. '
+            + 'Make another list the default first, then take this one off.'
+          : `${result.customerCount === 1 ? 'One customer buys' : `${result.customerCount} customers buy`} `
+            + 'on this list. Taking it off would move them to the default list and change '
+            + 'what they are charged, without anyone deciding to. Move them first, under '
+            + '“Rates per customer”.',
+      )
+      return
+    }
+    await refresh()
+  }
+
   return (
     <Card title="Price lists">
       <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
@@ -353,6 +405,17 @@ function PriceLists({ canWrite }: { canWrite: boolean }) {
 
       {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
 
+      <label style={{
+        fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 5,
+        alignItems: 'center', marginBottom: 10,
+      }}>
+        <input
+          type="checkbox" checked={showArchived}
+          onChange={(e) => setShowArchived(e.target.checked)}
+        />
+        Show the ones taken off the list
+      </label>
+
       <table>
         <thead>
           <tr><th>Name</th><th className="r">Rates</th><th className="r">Customers</th><th>Default</th><th /></tr>
@@ -360,13 +423,21 @@ function PriceLists({ canWrite }: { canWrite: boolean }) {
         <tbody>
           {lists.map((l) => (
             <tr key={l.id}>
-              <td>{l.name}</td>
+              <td>
+                {l.name}
+                {l.archived && <span className="badge" style={{ marginLeft: 7 }}>removed</span>}
+              </td>
               <td className="r num">{l.priceCount}</td>
               <td className="r num">{l.customerCount}</td>
               <td>{l.isDefault ? <span className="badge ok">default</span> : ''}</td>
-              <td className="r">
-                {canWrite && !l.isDefault && (
+              <td className="r" style={{ whiteSpace: 'nowrap' }}>
+                {canWrite && !l.isDefault && !l.archived && (
                   <button className="btn ghost sm" onClick={() => void makeDefault(l.id)}>Make default</button>
+                )}
+                {canWrite && !l.isDefault && (
+                  <button className="btn ghost sm" onClick={() => void archive(l)}>
+                    {l.archived ? 'Bring back' : 'Remove'}
+                  </button>
                 )}
               </td>
             </tr>

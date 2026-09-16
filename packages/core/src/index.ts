@@ -200,6 +200,7 @@ export { listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts } from './ser
 export type { OpenDraft, DraftDetail, DraftLine } from './services/drafts.js'
 export {
   listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
+  archivePriceList, restorePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
   listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList,
   setLadder, setCustomerLadder, ladderFor, customerLadderFor, laddersFor,
@@ -207,6 +208,7 @@ export {
 } from './services/pricing.js'
 export type {
   SaleUnit, SaleUnitInput, SetUnitsResult, PriceList, PriceListResult,
+  ArchivePriceListResult,
   ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice, SetLadderResult,
 } from './services/pricing.js'
 

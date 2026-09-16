@@ -122,26 +122,30 @@ export interface PriceList {
   id: string
   name: string
   isDefault: boolean
-  isActive: boolean
-  /** How many customers are on this list, so deleting one is an informed act. */
+  /** Taken off the list of lists. See `archivePriceList`. */
+  archived: boolean
+  /** How many customers are on this list, so archiving one is an informed act. */
   customerCount: number
   priceCount: number
 }
 
-export async function listPriceLists(db: SqlDriver): Promise<PriceList[]> {
+export async function listPriceLists(
+  db: SqlDriver,
+  options: { includeArchived?: boolean } = {},
+): Promise<PriceList[]> {
   const rows = await db.query<{
-    id: string; name: string; is_default: number; is_active: number
+    id: string; name: string; is_default: number; deleted_at: string | null
     customers: number; prices: number
   }>(
-    `SELECT l.id, l.name, l.is_default, l.is_active,
+    `SELECT l.id, l.name, l.is_default, l.deleted_at,
             (SELECT COUNT(*) FROM customers c WHERE c.price_list_id = l.id AND c.deleted_at IS NULL) AS customers,
             (SELECT COUNT(*) FROM item_prices p WHERE p.price_list_id = l.id AND p.deleted_at IS NULL) AS prices
        FROM price_lists l
-      WHERE l.deleted_at IS NULL
-      ORDER BY l.is_default DESC, l.name`,
+      WHERE ${options.includeArchived ? '1 = 1' : 'l.deleted_at IS NULL'}
+      ORDER BY l.deleted_at IS NOT NULL, l.is_default DESC, l.name`,
   )
   return rows.map((r) => ({
-    id: r.id, name: r.name, isDefault: r.is_default === 1, isActive: r.is_active === 1,
+    id: r.id, name: r.name, isDefault: r.is_default === 1, archived: r.deleted_at !== null,
     customerCount: r.customers, priceCount: r.prices,
   }))
 }
@@ -150,6 +154,11 @@ export type PriceListResult =
   | { ok: true; priceListId: string }
   | { ok: false; code: 'NO_NAME' }
   | { ok: false; code: 'NAME_TAKEN' }
+  /* The name is UNIQUE in the schema and an archived list keeps its row, so
+     "Wholesale" stays spoken for after it is taken off the list. Saying which
+     kind of clash it is lets the screen offer the one useful answer -- bring
+     the old one back -- instead of a shopkeeper typing Wholesale2. */
+  | { ok: false; code: 'NAME_TAKEN_ARCHIVED'; priceListId: string }
 
 export async function createPriceList(
   db: SqlDriver,
@@ -158,10 +167,14 @@ export async function createPriceList(
 ): Promise<PriceListResult> {
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
-  const taken = await db.get<{ id: string }>(
-    `SELECT id FROM price_lists WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL`, [name],
+  const taken = await db.get<{ id: string; deleted_at: string | null }>(
+    `SELECT id, deleted_at FROM price_lists WHERE name = ? COLLATE NOCASE`, [name],
   )
-  if (taken) return { ok: false, code: 'NAME_TAKEN' }
+  if (taken) {
+    return taken.deleted_at === null
+      ? { ok: false, code: 'NAME_TAKEN' }
+      : { ok: false, code: 'NAME_TAKEN_ARCHIVED', priceListId: taken.id }
+  }
 
   const id = newId()
   const now = (ctx.now ?? (() => new Date().toISOString()))()
@@ -170,8 +183,8 @@ export async function createPriceList(
     // One default, always: a shop with two has no answer for a walk-in customer.
     if (input.isDefault) await tx.execute(`UPDATE price_lists SET is_default = 0`)
     await tx.execute(
-      `INSERT INTO price_lists (id, name, is_default, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO price_lists (id, name, is_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
       [id, name, input.isDefault ? 1 : 0, now, now],
     )
     await writeAudit(tx, ctx, {
@@ -187,8 +200,8 @@ export async function updatePriceList(
   ctx: AuditContext & { actorId: string },
   input: { priceListId: string; name?: string; isDefault?: boolean; isActive?: boolean },
 ): Promise<PriceListResult> {
-  const before = await db.get<{ name: string; is_default: number; is_active: number }>(
-    `SELECT name, is_default, is_active FROM price_lists WHERE id = ? AND deleted_at IS NULL`,
+  const before = await db.get<{ name: string; is_default: number }>(
+    `SELECT name, is_default FROM price_lists WHERE id = ? AND deleted_at IS NULL`,
     [input.priceListId],
   )
   if (!before) throw new Error('no such price list')
@@ -196,32 +209,116 @@ export async function updatePriceList(
   const name = input.name?.trim() ?? before.name
   if (name === '') return { ok: false, code: 'NO_NAME' }
   if (name !== before.name) {
-    const taken = await db.get<{ id: string }>(
-      `SELECT id FROM price_lists WHERE name = ? COLLATE NOCASE AND id <> ? AND deleted_at IS NULL`,
+    const taken = await db.get<{ id: string; deleted_at: string | null }>(
+      `SELECT id, deleted_at FROM price_lists WHERE name = ? COLLATE NOCASE AND id <> ?`,
       [name, input.priceListId],
     )
-    if (taken) return { ok: false, code: 'NAME_TAKEN' }
+    if (taken) {
+      return taken.deleted_at === null
+        ? { ok: false, code: 'NAME_TAKEN' }
+        : { ok: false, code: 'NAME_TAKEN_ARCHIVED', priceListId: taken.id }
+    }
   }
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   const isDefault = input.isDefault ?? before.is_default === 1
-  const isActive = input.isActive ?? before.is_active === 1
 
   await db.transaction(async (tx) => {
     if (isDefault) await tx.execute(`UPDATE price_lists SET is_default = 0`)
     await tx.execute(
-      `UPDATE price_lists SET name = ?, is_default = ?, is_active = ?, updated_at = ?, rev = rev + 1
+      `UPDATE price_lists SET name = ?, is_default = ?, updated_at = ?, rev = rev + 1
         WHERE id = ?`,
-      [name, isDefault ? 1 : 0, isActive ? 1 : 0, now, input.priceListId],
+      [name, isDefault ? 1 : 0, now, input.priceListId],
     )
     await writeAudit(tx, ctx, {
       entity: 'price_lists', entityId: input.priceListId, action: 'update',
-      before: { name: before.name, is_default: before.is_default, is_active: before.is_active },
-      after: { name, is_default: isDefault ? 1 : 0, is_active: isActive ? 1 : 0 },
+      before: { name: before.name, is_default: before.is_default },
+      after: { name, is_default: isDefault ? 1 : 0 },
     })
   })
 
   return { ok: true, priceListId: input.priceListId }
+}
+
+export type ArchivePriceListResult =
+  | { ok: true }
+  /* The default list. Archiving it leaves a walk-in customer with no list at
+     all, and `idx_price_lists_one_default` would go on holding the default
+     slot for a row nothing can see. Make another one default first. */
+  | { ok: false; code: 'IS_DEFAULT' }
+  /* Customers buy on this list. Hiding it does not move them off it -- it
+     changes what they are charged, quietly, at the counter, tomorrow morning.
+     That is a decision about prices, and it belongs to the shop, one customer
+     at a time, on the screen that shows who they are. */
+  | { ok: false; code: 'IN_USE'; customerCount: number }
+
+/**
+ * Taking a price list off the list of price lists.
+ *
+ * `deleted_at` on this table has been filtered by every reader since 001 --
+ * `listPriceLists`, `createPriceList`, `defaultPriceListId` -- and set by
+ * nothing. So a list typed in by mistake, or one for a scheme that ended two
+ * Diwalis ago, stayed on the screen for the life of the shop. This is the
+ * writing half those readers were waiting for.
+ *
+ * It is a soft delete and it has to be. `item_prices` rows point at the list,
+ * and a submitted bill line points at the `item_prices` row it was priced from
+ * through `price_source_id` -- that chain is how support answers "why was this
+ * one 42 rupees last March", and a hard delete breaks it at the first link.
+ *
+ * Archiving takes the rates out of use without taking them out of the record:
+ * `pricingContextFor` will not price a customer on an archived list, and the
+ * list stops appearing anywhere a live list belongs.
+ */
+export async function archivePriceList(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  priceListId: string,
+): Promise<ArchivePriceListResult> {
+  const list = await db.get<{ is_default: number }>(
+    `SELECT is_default FROM price_lists WHERE id = ? AND deleted_at IS NULL`, [priceListId],
+  )
+  if (!list) throw new Error('no such price list')
+  if (list.is_default === 1) return { ok: false, code: 'IS_DEFAULT' }
+
+  const on = await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM customers WHERE price_list_id = ? AND deleted_at IS NULL`,
+    [priceListId],
+  )
+  if ((on?.n ?? 0) > 0) return { ok: false, code: 'IN_USE', customerCount: on?.n ?? 0 }
+
+  const now = (ctx.now ?? (() => new Date().toISOString()))()
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      `UPDATE price_lists SET deleted_at = ?, updated_at = ? WHERE id = ?`, [now, now, priceListId],
+    )
+    await writeAudit(tx, ctx, { entity: 'price_lists', entityId: priceListId, action: 'delete' })
+  })
+
+  return { ok: true }
+}
+
+/**
+ * And back.
+ *
+ * The rates on it were never touched, so the list resumes pricing exactly as it
+ * did. That is the reason a shop can afford to archive one at all.
+ */
+export async function restorePriceList(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  priceListId: string,
+): Promise<void> {
+  const now = (ctx.now ?? (() => new Date().toISOString()))()
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      `UPDATE price_lists SET deleted_at = NULL, updated_at = ? WHERE id = ?`, [now, priceListId],
+    )
+    await writeAudit(tx, ctx, {
+      entity: 'price_lists', entityId: priceListId, action: 'update',
+      before: { 'On the list': 'removed' }, after: { 'On the list': 'yes' },
+    })
+  })
 }
 
 /* ----------------------------------------------------------- item prices --- */

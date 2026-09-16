@@ -274,3 +274,34 @@ owner decision**, and the one place it is still load-bearing is a shop that is
 *not* registered and has been charging tax anyway. Nothing in the database can
 tell that shop from a registered one with an unfilled field, and only the owner
 can.
+
+## Finding 12 — the price list guard is the first one that bites on this shop
+
+Migration 031 drops `price_lists.is_active`, run here against a copy of the
+owner's database:
+
+| | before | after |
+|---|---|---|
+| price lists | Retail (default), Wholesale | unchanged |
+| `is_active` values present | `1`, `1` | column gone |
+| `change_feed` rows | 195 | 195 |
+| `rev` per row | 1, 1 | 1, 1 |
+| `PRAGMA integrity_check` | — | ok |
+| `PRAGMA foreign_key_check` | — | no rows |
+
+Both lists carried `is_active = 1`, the default the column was created with and
+the only value anything ever wrote, so nothing is lost by dropping it.
+
+The `change_feed` count and the untouched `rev` are the part worth recording.
+Migration 029 manufactured a sync conflict on every till by updating a row the
+`019`/`021` triggers watched, and this is the check that 031 does not repeat it:
+`ALTER TABLE ... DROP COLUMN` rewrites the table without firing row triggers, so
+no till raises a revision of a list nobody touched, and there is nothing for the
+other end to merge.
+
+**The `IN_USE` refusal fires on this shop.** One customer is on Wholesale. So if
+the owner presses Remove on that list, `archivePriceList` refuses and names the
+count, rather than moving that customer to Retail rates overnight without anyone
+deciding to. Every other 1c and 1d guard written so far declines to fire on this
+database; this is the first that does, and it does it on the case it was written
+for.
