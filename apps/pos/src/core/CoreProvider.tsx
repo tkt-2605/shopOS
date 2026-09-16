@@ -16,6 +16,7 @@ import {
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
+  loadTaxScheme, setTaxScheme, taxSchemeAnswered, type TaxScheme,
   loadShopProfile,
 } from '@shopos/core'
 import type {
@@ -72,6 +73,21 @@ interface CoreValue {
   rounding: Rounding
   setRoundingTo: (rule: Rounding) => Promise<void>
   setStockPolicyTo: (policy: StockPolicy) => Promise<void>
+  /**
+   * Which GST scheme the shop is under, and whether a person has ever said.
+   *
+   * In context for the same reason as `rounding`: the cart works out its own
+   * totals as the cashier types, the service works them out again when it
+   * writes the bill, and a screen that thought the shop charged tax while the
+   * service thought it did not would show one figure and charge another.
+   *
+   * `taxSchemeAsked` is false until somebody answers. Until then the till is
+   * deriving the scheme from whether a GSTIN is set, which is a guess -- a good
+   * one, and still a guess about whether this shop may collect tax.
+   */
+  taxScheme: TaxScheme
+  taxSchemeAsked: boolean
+  setTaxSchemeTo: (scheme: TaxScheme) => Promise<void>
   /**
    * How the last automatic backup went, or null before the first one has run.
    *
@@ -185,6 +201,8 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   const [features, setFeatures] = useState<Features>(FEATURES_OFF)
   const [stockPolicy, setPolicy] = useState<StockPolicy>(STOCK_POLICY_DEFAULT)
   const [rounding, setRound] = useState<Rounding>(ROUNDING_DEFAULT)
+  const [taxScheme, setScheme] = useState<TaxScheme>('regular')
+  const [taxSchemeAsked, setSchemeAsked] = useState(true)
   const [backup, setBackup] = useState<DailyResult | null>(null)
 
   useEffect(() => {
@@ -216,6 +234,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         setFeatures(await loadFeatures(db))
         setPolicy(await loadStockPolicy(db))
         setRound(await loadRounding(db))
+        await refreshScheme()
         await devAutoLogin()
         if (!cancelled) setStatus({ phase: 'ready' })
 
@@ -297,6 +316,17 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setRound(await loadRounding(db))
   }
 
+  async function refreshScheme() {
+    setScheme(await loadTaxScheme(db))
+    setSchemeAsked(await taxSchemeAnswered(db))
+  }
+
+  async function setTaxSchemeTo(scheme: TaxScheme) {
+    if (!user) return
+    await setTaxScheme(db, { actorId: user.id }, scheme)
+    await refreshScheme()
+  }
+
   async function loadRegister() {
     /* Which counter this machine is used to be a row in `settings`, which the
        whole shop shares — so two tills would have claimed the same counter and
@@ -327,6 +357,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setFeatures(await loadFeatures(db))
     setPolicy(await loadStockPolicy(db))
     setRound(await loadRounding(db))
+    await refreshScheme()
     setStatus({ phase: 'ready' })
   }
 
@@ -335,6 +366,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       db, status, user, registerId, registerName,
       shop, refreshShop, shopName: shop.name,
       features, stockPolicy, rounding, backup,
+      taxScheme, taxSchemeAsked, setTaxSchemeTo,
       setFeatureFlag, setStockPolicyTo, setRoundingTo,
       reloadRegister: loadRegister, setUser, completeSetup,
     }}>

@@ -1,7 +1,7 @@
 import { openMemoryDatabase } from '../src/db/node-driver.js'
 import { migrate } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
-import { bootstrap, type BootstrapResult } from '../src/services/bootstrap.js'
+import { bootstrap, setSetting, type BootstrapResult } from '../src/services/bootstrap.js'
 import { newId } from '../src/ids.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
@@ -15,6 +15,19 @@ export async function freshDb(): Promise<Fixture> {
   const db = openMemoryDatabase()
   await migrate(db, MIGRATIONS)
   const seed = await bootstrap(db, { shopName: 'Test Shop' })
+
+  /* A registered shop, because almost every test here is about tax and a shop
+     that charges GST is registered for it.
+
+     This used to be left unset, and the fixture was then a shop collecting CGST
+     and SGST with no registration to collect it under -- which is not a shop,
+     it is an offence, and it is the exact state the owner's real database
+     turned out to be in (`findings-real-shop.md`, finding 2). Phase 1b's tax
+     scheme reads this: with no GSTIN a shop derives to `unregistered` and the
+     till stops adding tax, which is correct and which every tax test here would
+     otherwise fail against. Saying it out loud in the fixture is better than a
+     default that quietly makes the tests pass. */
+  await setSetting(db, 'shop_gstin', '33ALNPJ1906G1ZC')
 
   const adminId = newId()
   const now = new Date().toISOString()

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Reports as R, Money, Quantity, listRegisters, type DateRange, type Register,
+  Reports as R, Money, Quantity, listRegisters, chargesTax,
+  type DateRange, type Register,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'
@@ -30,7 +31,11 @@ interface Data {
 }
 
 export default function Reports() {
-  const { db } = useCore()
+  const { db, taxScheme } = useCore()
+  /* Whether there is a GST report to run at all. A composition dealer and an
+     unregistered shop collect none, so the tab would be a page of zeroes and
+     the export a file of them. */
+  const collectsTax = chargesTax(taxScheme)
   const [range, setRange] = useState<DateRange>(() => rangePreset('month'))
   const [registers, setRegisters] = useState<Register[]>([])
   const [tab, setTab] = useState<Tab>('days')
@@ -73,6 +78,11 @@ export default function Reports() {
   }, [db, range])
 
   useEffect(() => { void load() }, [load])
+
+  /* A shop that switches to composition while looking at the GST tab would
+     otherwise be left on a tab that is no longer offered, with no way back to
+     it and no way off it. */
+  useEffect(() => { if (!collectsTax && tab === 'tax') setTab('days') }, [collectsTax, tab])
 
   async function exportCsv() {
     setError(null)
@@ -157,7 +167,9 @@ export default function Reports() {
         )}
 
         <div style={{ flex: 1 }} />
-        <button className="btn sm" onClick={() => void exportGstLines()}>Export GST detail</button>
+        {collectsTax && (
+          <button className="btn sm" onClick={() => void exportGstLines()}>Export GST detail</button>
+        )}
       </div>
 
       {!s ? (
@@ -180,7 +192,13 @@ export default function Reports() {
                   : `${(data.margin.marginBp / 100).toFixed(1)}% of ${Money.formatWithSymbol(data.margin.revenue)}`
               }
             />
-            <Stat label="GST collected" value={<Rupees value={s.tax} />} sub={`on ${Money.formatWithSymbol(s.taxable)} taxable`} />
+            {/* A shop that may not collect GST has none to report, and a tile
+                reading ₹0.00 for ever is a tile that teaches people the row
+                means nothing. The sentence under the tabs says why it is gone,
+                because a missing report with no explanation reads as a fault. */}
+            {collectsTax && (
+              <Stat label="GST collected" value={<Rupees value={s.tax} />} sub={`on ${Money.formatWithSymbol(s.taxable)} taxable`} />
+            )}
             <Stat label="Sold on credit" value={<Rupees value={s.credit} />} sub={`${Money.formatWithSymbol(s.paid)} taken at the counter`} />
             {/* Only when the shop rounds. A tile reading ₹0.00 every day on a
                 counter that charges what the bill comes to is a tile that
@@ -196,7 +214,7 @@ export default function Reports() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="segment">
-              {TABS.map((t) => (
+              {TABS.filter((t) => t.id !== 'tax' || collectsTax).map((t) => (
                 <button key={t.id} aria-selected={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</button>
               ))}
             </div>
@@ -204,6 +222,14 @@ export default function Reports() {
             <button className="btn sm" onClick={() => void exportCsv()}>Save as CSV</button>
             <button className="btn sm" onClick={() => void exportPdf()}>Save as PDF</button>
           </div>
+
+          {!collectsTax && (
+            <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              {taxScheme === 'composition'
+                ? 'This shop is on the composition scheme, so it does not collect GST from customers and there is no GST report to run. The bills go out as a Bill of Supply.'
+                : 'This shop is not registered for GST, so it does not charge it and there is no GST report to run. Settings is where that changes.'}
+            </div>
+          )}
 
           <Card>
             {tab === 'days' && <DaysTable rows={data.days} />}

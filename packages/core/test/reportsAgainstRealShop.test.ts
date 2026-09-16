@@ -7,6 +7,8 @@ import Database from 'better-sqlite3'
 import { openDatabase } from '../src/db/node-driver.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { salesSummary, taxByRate, gstLines } from '../src/repos/reports.js'
+import { loadTaxScheme, taxSchemeAnswered } from '../src/services/features.js'
+import { getSetting } from '../src/services/bootstrap.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -179,6 +181,25 @@ describe.skipIf(!present)('the GST export over the real shop', () => {
          and because it is the one fact about this database that makes the
          inter-state path untestable here. See `findings-real-shop.md`. */
       expect(rows.every((r) => r.igst === 0)).toBe(true)
+    })
+  })
+
+  it('does not switch this shop_s tax off on the upgrade', async () => {
+    await withShop(async (db) => {
+      /* The single most consequential line of Phase 1b for the shop that is
+         actually running this. TRT has no `shop_gstin` -- there was no screen
+         that could save one until `services/shop.ts` -- and 29 submitted bills
+         every one of which carries CGST and SGST.
+
+         Read the missing field as "not registered" and this till stops charging
+         GST the morning it upgrades, and the shop owes output tax on every sale
+         it makes afterwards out of its own takings. The evidence of what it has
+         been doing outranks the absence of a setting. */
+      expect(await getSetting(db, 'shop_gstin')).toBeFalsy()
+      expect(await loadTaxScheme(db)).toBe('regular')
+
+      // And it is still a guess, so Settings still asks the owner to settle it.
+      expect(await taxSchemeAnswered(db)).toBe(false)
     })
   })
 

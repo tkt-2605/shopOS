@@ -239,3 +239,38 @@ issued, the customer holds a copy, and a submitted document is never rewritten.
 Worth knowing because the first person to run the GST export after the fix will
 see halves that do not match and reasonably wonder whether the fix worked. It
 did. The bills below it are older than the fix.
+
+---
+
+## 11. Finding 2, settled: the shop keeps charging tax
+
+Finding 2 was that TRT charges GST on every bill with no `shop_gstin` set, and
+that Phase 1's scheme rule -- `regular` if a GSTIN is set, otherwise
+`unregistered` -- would therefore stop the till charging tax on the day it
+upgrades.
+
+That rule is not the one that shipped, because the premise is wrong. Until
+`services/shop.ts` was written there was **no screen in this product that could
+save a GSTIN**. The field was read by the receipt, by the statement and by every
+bill, and written nowhere. An empty `shop_gstin` is a fact about this software,
+not about the shop.
+
+What is a fact about the shop is what it has been doing: 29 submitted bills,
+every one carrying CGST and SGST, entered by a person who meant to. So
+`loadTaxScheme` weighs that too:
+
+1. the stored answer, if a person has given one
+2. otherwise `regular` if a GSTIN is set
+3. otherwise `regular` if any submitted bill has ever carried tax
+4. otherwise `unregistered`
+
+TRT lands on 3, and its till goes on charging exactly what it charged
+yesterday. Asserted against the owner's own database, in
+`reportsAgainstRealShop.test.ts`.
+
+Settings still asks -- the banner says which way the till is guessing and that
+choosing settles it -- because the guess is still a guess. **This remains an
+owner decision**, and the one place it is still load-bearing is a shop that is
+*not* registered and has been charging tax anyway. Nothing in the database can
+tell that shop from a registered one with an unfilled field, and only the owner
+can.

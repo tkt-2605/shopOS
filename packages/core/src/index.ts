@@ -77,6 +77,7 @@ export { loadFeatures, isOn, setFeature, FEATURES_OFF } from './services/feature
 export { loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT } from './services/features.js'
 export type { StockPolicy } from './services/features.js'
 export { loadRounding, setRounding, ROUNDING_DEFAULT } from './services/features.js'
+export { loadTaxScheme, setTaxScheme, taxSchemeAnswered } from './services/features.js'
 export type { Rounding } from './domain/billTotals.js'
 export type { Features, FeatureKey } from './services/features.js'
 
@@ -144,6 +145,11 @@ export type {
   PlaceOfSupply, RateSummaryRow,
 } from './domain/receipt.js'
 export { BILL_WORDING, formatRate, rateSummaryOf } from './domain/receipt.js'
+export {
+  TAX_SCHEMES, isTaxScheme, chargesTax, documentTitle, schemeStatement, defaultScheme,
+  billWording, COMPOSITION_STATEMENT,
+} from './domain/taxScheme.js'
+export type { TaxScheme } from './domain/taxScheme.js'
 export { buildInvoiceHtml } from './domain/invoiceHtml.js'
 export type { InvoiceHtmlOptions } from './domain/invoiceHtml.js'
 

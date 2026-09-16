@@ -3,7 +3,7 @@ import { deviceSetting, setDeviceSetting } from '../core/device'
 import {
   Money, Backup, setSetting, loadLoyaltyProgram, CARRY_WINDOW_DAYS,
   saveShopProfile, stateName, STATES, Permissions,
-  type Loyalty, type ShopProfile, type Page,
+  type Loyalty, type ShopProfile, type Page, type TaxScheme,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { goTo } from '../core/nav'
@@ -28,6 +28,13 @@ const THEMES: { id: Theme; name: string; note: string; swatch: [string, string, 
   { id: 'night', name: 'Night counter', note: 'Dark, for late hours.', swatch: ['#1c2430', '#2a3442', '#6f9fe8'] },
 ]
 
+/** For the sentence that says what the till is assuming while nobody has said. */
+const SCHEME_LABEL: Record<TaxScheme, string> = {
+  regular: 'Registered',
+  composition: 'Composition scheme',
+  unregistered: 'Not registered',
+}
+
 const DENSITIES: { id: Density; name: string }[] = [
   { id: 'comfortable', name: 'Comfortable' },
   { id: 'compact', name: 'Compact' },
@@ -38,6 +45,7 @@ export default function Settings() {
   const {
     db, features, setFeatureFlag, stockPolicy, setStockPolicyTo,
     rounding, setRoundingTo, backup: dailyBackup,
+    taxScheme, taxSchemeAsked, setTaxSchemeTo,
   } = useCore()
   const [theme, setTheme] = useState<Theme>('daylight')
   const [density, setDensity] = useState<Density>('compact')
@@ -429,6 +437,52 @@ export default function Settings() {
             + 'accounts on purpose. Nothing already saved is changed either way.'
           }
         />
+
+        <div style={{ paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>What this shop is, for GST</div>
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 2, marginBottom: 9, lineHeight: 1.5 }}>
+            This decides whether the till adds tax to a bill at all, and what the
+            paper handed to the customer is called. It is the one setting here
+            that can be wrong in a way that costs money: a shop collecting tax it
+            is not registered to collect has to give it back, and a registered
+            shop that stops charging has to find the difference out of its own
+            takings. Item tax rates are kept whichever is chosen, so nothing has
+            to be re-entered if this changes.
+          </div>
+
+          {!taxSchemeAsked && (
+            <div style={{ marginBottom: 9 }}>
+              <Alert>
+                Nobody has answered this yet, so the till is going by whether a
+                GSTIN is set on the shop details — it is treating this shop as
+                <strong>{` ${SCHEME_LABEL[taxScheme].toLowerCase()}`}</strong>.
+                {' '}Choosing below settles it.
+              </Alert>
+            </div>
+          )}
+
+          <Choice
+            value={taxScheme}
+            onChange={(next) => void setTaxSchemeTo(next)}
+            options={[
+              {
+                id: 'regular',
+                title: 'Registered, and charges GST',
+                note: 'The ordinary case. CGST and SGST on a local sale, IGST across a state line, and the bill is headed Tax Invoice.',
+              },
+              {
+                id: 'composition',
+                title: 'Composition scheme',
+                note: 'A flat percentage paid out of the shop’s own pocket. The law forbids collecting tax from the customer, so the till adds none and the paper is a Bill of Supply carrying the sentence the rules require.',
+              },
+              {
+                id: 'unregistered',
+                title: 'Not registered for GST',
+                note: 'No GSTIN, no tax on the bill, and the paper is an Invoice rather than a tax invoice. Right for a shop under the turnover threshold, and for one that has applied and is waiting.',
+              },
+            ]}
+          />
+        </div>
 
         <div style={{ paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
           <div style={{ fontSize: 13, fontWeight: 500 }}>When the count says there is nothing left</div>

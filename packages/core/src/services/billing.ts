@@ -11,7 +11,8 @@ import { calculateEarned, planRedemption, type LoyaltyProgram, type LoyaltyEntry
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, assertAmendable, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
-import { loadStockPolicy, loadRounding } from './features.js'
+import { loadStockPolicy, loadRounding, loadTaxScheme } from './features.js'
+import { chargesTax } from '../domain/taxScheme.js'
 import { checkAvailability, postMovement, reverseVoucher, type StockShortfall } from './stock.js'
 import { nextDocNo } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
@@ -160,6 +161,19 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
   const sessionId = input.sessionId ?? (await openSessionFor(db, input.registerId))
   const customer = input.customerId ? await loadCustomer(db, input.customerId) : null
   const supply = await supplyFor(db, customer?.stateCode ?? null)
+
+  /* A composition dealer may not collect tax on supplies at all (Section 10,
+     Rule 49) and an unregistered shop has none to collect. Until now this
+     product charged CGST and SGST on every line whatever the shop was, and
+     handed the customer a document headed "Tax Invoice" to prove it.
+
+     The rate is zeroed on the *line*, not on the product: the product's rate is
+     a fact about the goods and has to survive the day the shop registers,
+     whereas `bill_items.tax_rate_bp` is what this bill charged -- which was
+     nothing. Everything downstream then follows without knowing the scheme
+     exists: `splitTax` at 0 makes the taxable value the line total, the GST
+     export reports a 0% row, and a return reverses nothing. */
+  const taxed = chargesTax(await loadTaxScheme(db))
   const pricing = await pricingContextFor(db, input.customerId ?? null)
 
   const computed: ComputedLine[] = []
@@ -210,7 +224,7 @@ async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced>
       rate: priced.rate,
       mrp: (product.mrp ?? null) as Money | null,
       discount,
-      taxRateBp: product.tax_rate_bp,
+      taxRateBp: taxed ? product.tax_rate_bp : 0,
       priceSource: priced.source,
       priceSourceId: priced.sourceId,
       discountBlocked,

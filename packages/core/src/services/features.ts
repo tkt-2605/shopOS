@@ -2,6 +2,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { getSetting, setSetting } from './bootstrap.js'
 import type { Rounding } from '../domain/billTotals.js'
+import { defaultScheme, isTaxScheme, type TaxScheme } from '../domain/taxScheme.js'
 
 /**
  * The capabilities a shop has chosen to use.
@@ -195,6 +196,85 @@ export async function setRounding(
       action: 'update',
       before: { 'Rounding the total': before },
       after: { 'Rounding the total': rule },
+    })
+  })
+}
+
+/**
+ * Which GST scheme the shop is under.
+ *
+ * The rules and the reasoning are in `domain/taxScheme.ts`. Here is only where
+ * the answer is kept, and what happens before anybody has given one.
+ *
+ * Absent means unanswered, and an unanswered shop is *derived* from whether it
+ * has a GSTIN, every time it is asked, rather than having a default written in
+ * once by a migration. A shop that enters its GSTIN next week stops being
+ * treated as unregistered without anybody having to remember this setting
+ * exists — and `taxSchemeAnswered` is how Settings knows to ask.
+ */
+const TAX_SCHEME = 'shop_tax_scheme'
+
+export async function loadTaxScheme(db: SqlDriver): Promise<TaxScheme> {
+  const stored = await getSetting(db, TAX_SCHEME)
+  if (isTaxScheme(stored)) return stored
+
+  const gstin = await getSetting(db, 'shop_gstin')
+  if (defaultScheme(gstin) === 'regular') return 'regular'
+
+  /* No GSTIN is not evidence of not being registered.
+   *
+   * Until `services/shop.ts` was written there was no screen in this product
+   * that could save one -- the field was read by the receipt, the statement and
+   * every bill, and written nowhere. So a shop that has been trading for a year
+   * and is properly registered has an empty `shop_gstin` for reasons that are
+   * this software's fault and say nothing about the shop.
+   *
+   * What does say something is what the shop has been doing. A till with
+   * submitted bills carrying tax has been operating as a registered shop, by a
+   * person who meant to. Reading a missing field as "not registered" and
+   * silently switching that shop's tax off on upgrade would leave it owing
+   * output tax on every sale it made afterwards -- money it has to find out of
+   * its own takings, because the customer is long gone.
+   *
+   * So the behaviour is preserved and Settings asks. The owner's own database
+   * is exactly this case: 29 submitted bills, every one carrying CGST and SGST,
+   * and no GSTIN anywhere (`findings-real-shop.md`, finding 2).
+   *
+   * A till that has never charged tax has nothing to preserve, and there the
+   * safe reading is the one that does not collect tax in a shop's name without
+   * being told it may. */
+  const charged = await db.get<{ found: number }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM bills WHERE docstatus = 1 AND tax_total > 0
+     ) AS found`,
+  )
+  return charged?.found ? 'regular' : 'unregistered'
+}
+
+/** Whether a person has said, as opposed to the till having worked it out. */
+export async function taxSchemeAnswered(db: SqlDriver): Promise<boolean> {
+  return isTaxScheme(await getSetting(db, TAX_SCHEME))
+}
+
+export async function setTaxScheme(
+  db: SqlDriver,
+  ctx: AuditContext & { actorId: string },
+  scheme: TaxScheme,
+): Promise<void> {
+  const before = await loadTaxScheme(db)
+  const answered = await taxSchemeAnswered(db)
+  // Written even when it matches what was derived: answering the question is
+  // itself the change, and it is what stops the till asking again.
+  if (answered && before === scheme) return
+
+  await db.transaction(async (tx) => {
+    await setSetting(tx, TAX_SCHEME, scheme, ctx.now?.())
+    await writeAudit(tx, ctx, {
+      entity: 'settings',
+      entityId: TAX_SCHEME,
+      action: 'update',
+      before: { 'GST scheme': answered ? before : `${before} (assumed)` },
+      after: { 'GST scheme': scheme },
     })
   })
 }

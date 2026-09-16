@@ -1,6 +1,6 @@
 import {
   buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadReturnDetail, loadShopProfile,
-  rateSummaryOf, stateName,
+  loadTaxScheme, billWording, schemeStatement, rateSummaryOf, stateName,
   type SqlDriver, type ReceiptDoc, type ReceiptItem, type BillDetailItem,
   type DocWording, type DocumentKind, type PlaceOfSupply, type ReturnDetailItem,
 } from '@shopos/core'
@@ -234,6 +234,8 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
   if (!bill) return null
 
   const shop = await loadShopProfile(db)
+  // Tax Invoice, Bill of Supply or Invoice, and the Rule 49 sentence with it.
+  const scheme = await loadTaxScheme(db)
   const sum = (pick: (i: BillDetailItem) => number) =>
     bill.items.reduce((total, i) => total + pick(i), 0) as never
 
@@ -289,6 +291,9 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     ...(bill.supplyType ? { supplyType: bill.supplyType } : {}),
     reverseCharge: bill.reverseCharge,
     rateSummary: rateSummaryOf(items),
+
+    wording: billWording(scheme),
+    ...(schemeStatement(scheme) ? { schemeStatement: schemeStatement(scheme) } : {}),
 
     terms: shop.terms,
     footer: shop.receiptFooter,

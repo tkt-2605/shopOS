@@ -36,6 +36,7 @@ const FILES: ReadonlyArray<readonly [number, string]> = [
   [26, '026_sync_visibility.sql'],
   [27, '027_doc_no_length.sql'],
   [28, '028_invoice_snapshot.sql'],
+  [29, '029_document_says_what_it_is.sql'],
 ]
 
 export const MIGRATIONS: Migration[] = FILES.map(([version, file]) => ({

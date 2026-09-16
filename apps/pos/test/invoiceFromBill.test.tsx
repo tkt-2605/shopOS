@@ -44,6 +44,10 @@ beforeEach(async () => {
     [adminId, seed.roleIds['Admin']!, now, now],
   )
   await setSetting(db, 'shop_state_code', '33')
+  /* A registered shop. Without a GSTIN the till derives `unregistered` and
+     charges no tax at all, which is correct and is not what these tests are
+     about — see `domain/taxScheme.ts`. */
+  await setSetting(db, 'shop_gstin', '33ALNPJ1906G1ZC')
 })
 
 afterEach(async () => { await db.close() })

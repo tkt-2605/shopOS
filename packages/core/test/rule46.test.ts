@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { buildInvoiceHtml } from '../src/domain/invoiceHtml.js'
 import { STANDARD_INVOICE, type DocFormat } from '../src/domain/docFormat.js'
 import { rateSummaryOf, type ReceiptDoc, type ReceiptItem } from '../src/domain/receipt.js'
+import { billWording, schemeStatement } from '../src/domain/taxScheme.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
 
@@ -265,5 +266,88 @@ describe('what the sheet does when it has not been told', () => {
     const p = text(render(old))
     expect(p).toContain('A4 Copier Paper 500 sheets')
     expect(p).not.toContain('18%')
+  })
+})
+
+describe('a composition dealer, who may not collect tax at all', () => {
+  /* Section 10 forbids it and Rule 49 says what the document is instead. The
+     figures here are what `priceBill` produces under the scheme: the whole line
+     is the value of the goods, and there is no tax anywhere on it. */
+  function billOfSupply(): ReceiptDoc {
+    const items = [item({
+      taxableValue: rupees(680), taxRateBp: 0,
+      cgst: 0 as Money, sgst: 0 as Money, igst: 0 as Money,
+    })]
+    return {
+      ...intraState(),
+      wording: billWording('composition'),
+      schemeStatement: schemeStatement('composition'),
+      items,
+      rateSummary: rateSummaryOf(items),
+      taxableTotal: rupees(680),
+      cgst: 0 as Money,
+      sgst: 0 as Money,
+      igst: 0 as Money,
+    }
+  }
+
+  const page = () => text(render(billOfSupply()))
+
+  it('calls itself a Bill of Supply and not an invoice of any kind', () => {
+    const p = page()
+    expect(p).toContain('Bill of Supply')
+    expect(p).not.toContain('Tax Invoice')
+  })
+
+  it('carries the Rule 49 statement, in the words the rule uses', () => {
+    expect(page()).toContain('Composition taxable person, not eligible to collect tax on supplies')
+  })
+
+  it('shows no tax, under any head', () => {
+    const p = page()
+    expect(p).not.toContain('CGST')
+    expect(p).not.toContain('SGST')
+    expect(p).not.toContain('IGST')
+  })
+
+  it('still says who, what, when and where — the rest of Rule 46 is unchanged', () => {
+    const p = page()
+    expect(p).toContain('TRT Stationery')
+    expect(p).toContain('INV/MR/26-27/00023')
+    expect(p).toContain('Sri Vidya School')
+    expect(p).toContain('4802')
+    expect(p).toContain('2 ream')
+    expect(p).toContain('33 — Tamil Nadu')
+    expect(p).toContain('Authorised signatory')
+  })
+
+  it('states the value of the goods as the whole of the line', () => {
+    // ₹680 of goods, not ₹576.27 of goods and ₹103.73 of tax nobody collected.
+    expect(page()).toContain('680.00')
+    expect(page()).not.toContain('576.27')
+  })
+})
+
+describe('a shop with no registration', () => {
+  it('calls its paper an Invoice, which is honest and is not a tax invoice', () => {
+    const items = [item({
+      taxableValue: rupees(680), taxRateBp: 0,
+      cgst: 0 as Money, sgst: 0 as Money, igst: 0 as Money,
+    })]
+    const doc: ReceiptDoc = {
+      ...intraState(),
+      wording: billWording('unregistered'),
+      items,
+      rateSummary: rateSummaryOf(items),
+      taxableTotal: rupees(680),
+      cgst: 0 as Money, sgst: 0 as Money, igst: 0 as Money,
+    }
+
+    const p = text(render(doc))
+    expect(p).toContain('Invoice')
+    expect(p).not.toContain('Tax Invoice')
+    // No statement is owed, and one that appeared here would be a claim about
+    // the shop that is not true.
+    expect(p).not.toContain('Composition taxable person')
   })
 })

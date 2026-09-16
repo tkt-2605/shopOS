@@ -294,6 +294,11 @@ export function buildReceipt(doc: ReceiptDoc, format: DocFormat = STANDARD_RECEI
 
 const DEFAULT_FOOTER = 'Thank you. Goods once sold are not returnable without this bill.'
 
+/** Whether the document charged tax under any head at all. */
+function taxCharged(doc: ReceiptDoc): boolean {
+  return doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0
+}
+
 function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
   switch (block.kind) {
     case 'shop': {
@@ -356,7 +361,13 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     case 'totals': {
       const out = [kv('Subtotal', fmtMoney(doc.subtotal), width)]
       if (doc.discount > 0) out.push(kv('Discount', `-${fmtMoney(doc.discount)}`, width))
-      out.push(kv('Taxable value', fmtMoney(doc.taxableTotal), width))
+      /* Left off a document that charged no tax and took nothing off, where it
+         would be the subtotal again under a heading that claims something the
+         document is not allowed to claim -- a bill of supply has no taxable
+         value, it has a value. */
+      if (taxCharged(doc) || doc.taxableTotal !== doc.subtotal) {
+        out.push(kv('Taxable value', fmtMoney(doc.taxableTotal), width))
+      }
       if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
       if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
       if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))

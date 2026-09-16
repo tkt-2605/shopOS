@@ -145,7 +145,11 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
     case 'totals': {
       const rows = [row('Subtotal', doc.subtotal)]
       if (doc.discount > 0) rows.push(row('Discount', doc.discount, '-'))
-      rows.push(row('Taxable value', doc.taxableTotal))
+      // Same reasoning as the roll: not on a document that charged no tax and
+      // took nothing off, where it is the subtotal again under a wrong heading.
+      if (columnsFor(doc).taxed || doc.taxableTotal !== doc.subtotal) {
+        rows.push(row('Taxable value', doc.taxableTotal))
+      }
       if (doc.cgst > 0) rows.push(row('CGST', doc.cgst))
       if (doc.sgst > 0) rows.push(row('SGST', doc.sgst))
       if (doc.igst > 0) rows.push(row('IGST', doc.igst))
@@ -271,7 +275,14 @@ interface Columns {
  * supply type can tell an exempt local sale from an exempt inter-state one.
  */
 function columnsFor(doc: ReceiptDoc): Columns {
-  const taxed = doc.items.some((i) => i.taxableValue !== undefined)
+  /* No tax anywhere means no tax columns, not columns of zeroes. On a bill of
+     supply that is the whole point: a composition dealer may not charge tax,
+     and a document of theirs showing a CGST column -- even an empty one -- is
+     making the claim Rule 49 exists to stop them making. The taxable column
+     goes with it, because with nothing taken out of it the taxable value is the
+     amount, printed twice under two headings, one of which is wrong. */
+  const charged = doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0
+  const taxed = charged && doc.items.some((i) => i.taxableValue !== undefined)
   const inter = doc.supplyType !== undefined
     ? doc.supplyType === 'inter_state'
     : doc.igst > 0

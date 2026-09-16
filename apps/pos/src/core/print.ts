@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting } from './device'
 import {
   Receipt, loadShopProfile, loadBillDetail, customerAccount, businessDate, formatFor,
+  loadTaxScheme, billWording, schemeStatement, rateSummaryOf,
   type SqlDriver, type ReceiptDoc, type ReceiptItem,
 } from '@shopos/core'
 
@@ -38,19 +39,38 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
      this file having to be told about it. */
   const shop = await loadShopProfile(db)
 
+  /* What this shop is allowed to call the paper it hands over. A composition
+     dealer's document is a Bill of Supply and has to carry the Rule 49
+     sentence; an unregistered shop's is an Invoice. The roll is the document
+     for a counter sale -- there is no sheet behind it -- so it is the roll that
+     has to be right about this. */
+  const scheme = await loadTaxScheme(db)
+
+  const items = bill.items.map((i): ReceiptItem => ({
+    name: i.productName,
+    qty: i.qty,
+    saleUnit: i.saleUnit,
+    rate: i.rate,
+    lineTotal: i.lineTotal,
+    // Not printed per line on 42 columns; they are what the rate summary is
+    // built from.
+    taxableValue: i.taxableValue,
+    taxRateBp: i.taxRateBp,
+    cgst: i.cgst,
+    sgst: i.sgst,
+    igst: i.igst,
+  }))
+
   const doc: ReceiptDoc = {
     shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin },
     docNo: bill.docNo,
     postingDate: bill.postingDate,
     cashier: bill.createdBy,
     customerName: bill.customerName,
-    items: bill.items.map((i): ReceiptItem => ({
-      name: i.productName,
-      qty: i.qty,
-      saleUnit: i.saleUnit,
-      rate: i.rate,
-      lineTotal: i.lineTotal,
-    })),
+    items,
+    wording: billWording(scheme),
+    ...(schemeStatement(scheme) ? { schemeStatement: schemeStatement(scheme) } : {}),
+    rateSummary: rateSummaryOf(items),
     subtotal: bill.subtotal,
     discount: bill.discount,
     taxableTotal: bill.taxableTotal,
