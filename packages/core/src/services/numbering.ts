@@ -1,4 +1,6 @@
+import { eq, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 
 /**
  * Numbers are scoped per register and per fiscal year. The register prefix is not
@@ -93,26 +95,27 @@ export async function nextDocNo(
   const fy = fiscalYearTag(on)
   const scope = `${docType}:${registerPrefix}:${fy}`
 
-  await tx.execute(
-    `INSERT INTO doc_sequences (scope, last_value) VALUES (?, 0) ON CONFLICT (scope) DO NOTHING`,
-    [scope],
-  )
-  await tx.execute(`UPDATE doc_sequences SET last_value = last_value + 1 WHERE scope = ?`, [scope])
+  await q(tx).insert(schema.docSequences)
+    .values({ scope, lastValue: 0 })
+    .onConflictDoNothing()
+  await q(tx).update(schema.docSequences)
+    .set({ lastValue: sql`${schema.docSequences.lastValue} + 1` })
+    .where(eq(schema.docSequences.scope, scope))
 
-  const row = await tx.get<{ last_value: number }>(
-    `SELECT last_value FROM doc_sequences WHERE scope = ?`,
-    [scope],
-  )
-  const seq = row?.last_value ?? 1
+  const [row] = await q(tx)
+    .select({ lastValue: schema.docSequences.lastValue })
+    .from(schema.docSequences)
+    .where(eq(schema.docSequences.scope, scope))
+  const seq = row?.lastValue ?? 1
 
   return `${MARK[docType]}${registerPrefix}/${fy}/${String(seq).padStart(5, '0')}`
 }
 
 export async function peekDocNo(db: SqlDriver, docType: DocType, registerPrefix: string, on: Date = new Date()): Promise<string> {
   const fy = fiscalYearTag(on)
-  const row = await db.get<{ last_value: number }>(
-    `SELECT last_value FROM doc_sequences WHERE scope = ?`,
-    [`${docType}:${registerPrefix}:${fy}`],
-  )
-  return `${MARK[docType]}${registerPrefix}/${fy}/${String((row?.last_value ?? 0) + 1).padStart(5, '0')}`
+  const [row] = await q(db)
+    .select({ lastValue: schema.docSequences.lastValue })
+    .from(schema.docSequences)
+    .where(eq(schema.docSequences.scope, `${docType}:${registerPrefix}:${fy}`))
+  return `${MARK[docType]}${registerPrefix}/${fy}/${String((row?.lastValue ?? 0) + 1).padStart(5, '0')}`
 }

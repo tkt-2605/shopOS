@@ -1,4 +1,6 @@
+import { eq, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
@@ -225,10 +227,9 @@ async function markFulfilled(
 ): Promise<void> {
   await db.transaction(async (tx) => {
     for (const line of lines) {
-      await tx.execute(
-        `UPDATE document_items SET fulfilled_qty = fulfilled_qty + ? WHERE id = ?`,
-        [line.by, line.id],
-      )
+      await q(tx).update(schema.documentItems)
+        .set({ fulfilledQty: sql`${schema.documentItems.fulfilledQty} + ${line.by}` })
+        .where(eq(schema.documentItems.id, line.id))
     }
     await writeAudit(tx, { actorId: meta.actorId }, {
       entity: 'document',
@@ -240,10 +241,11 @@ async function markFulfilled(
 }
 
 async function registerOf(db: SqlDriver, documentId: string): Promise<string> {
-  const row = await db.get<{ register_id: string }>(
-    `SELECT register_id FROM documents WHERE id = ?`, [documentId],
-  )
-  return row!.register_id
+  const [row] = await q(db)
+    .select({ registerId: schema.documents.registerId })
+    .from(schema.documents)
+    .where(eq(schema.documents.id, documentId))
+  return row!.registerId
 }
 
 function isoDate(at: Date): string {

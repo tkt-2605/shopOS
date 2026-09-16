@@ -1,5 +1,7 @@
+import { eq, and, lt, asc, isNull, count, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
-import { type Qty, qty } from '../quantity.js'
+import { q, schema } from '../db/q.js'
+import { type Qty, qty, QTY_ZERO } from '../quantity.js'
 
 /**
  * Counts that need fixing.
@@ -39,44 +41,49 @@ export interface ShortfallSummary {
 }
 
 export async function listShortfalls(db: SqlDriver): Promise<ShortfallSummary> {
-  const rows = await db.query<{
-    id: string; name: string; code: string | null; base_unit: string
-    on_hand: number
-    short_since: string | null
-    sold_short: number | null
-    last_sold: string | null
-    last_counted: string | null
-    last_received: string | null
-  }>(
-    /* `balance_qty` is stamped on every ledger row as it is written, so the day
-       the count first went under is a lookup rather than a replay. */
-    `SELECT p.id, p.name, p.code, p.base_unit,
-            s.qty_on_hand AS on_hand,
-            (SELECT MIN(sl.posting_date) FROM stock_ledger sl
-              WHERE sl.product_id = p.id AND sl.balance_qty < 0)         AS short_since,
-            (SELECT COALESCE(SUM(-sl.qty_change), 0) FROM stock_ledger sl
-              WHERE sl.product_id = p.id AND sl.qty_change < 0 AND sl.balance_qty < 0) AS sold_short,
-            (SELECT MAX(sl.posting_date) FROM stock_ledger sl
-              WHERE sl.product_id = p.id AND sl.qty_change < 0)          AS last_sold,
-            (SELECT MAX(c.posting_date) FROM stock_count_items ci
-               JOIN stock_counts c ON c.id = ci.count_id
-              WHERE ci.product_id = p.id AND ci.counted_qty IS NOT NULL
-                AND c.docstatus = 1)                                     AS last_counted,
-            (SELECT MAX(sl.posting_date) FROM stock_ledger sl
-              WHERE sl.product_id = p.id AND sl.qty_change > 0)          AS last_received
-       FROM products p
-       JOIN product_stock s ON s.product_id = p.id
-      WHERE s.qty_on_hand < 0 AND p.is_stock_tracked = 1 AND p.deleted_at IS NULL
-      ORDER BY s.qty_on_hand ASC`,
-  )
+  /* The five dates and totals are correlated subqueries against the ledger,
+     marked raw and written with `products.id` in full: a bare `id` inside them
+     would bind to `stock_ledger`. They stay subqueries rather than becoming
+     five more joins, which would multiply the rows against each other and give
+     the wrong sum for `sold_short`.
+
+     `balance_qty` is stamped on every ledger row as it is written, so the day
+     the count first went under is a lookup rather than a replay. */
+  const rows = await q(db)
+    .select({
+      id: schema.products.id,
+      name: schema.products.name,
+      code: schema.products.code,
+      baseUnit: schema.products.baseUnit,
+      onHand: schema.productStock.qtyOnHand,
+      shortSince: sql<string | null>`(SELECT MIN(sl.posting_date) FROM stock_ledger sl
+        WHERE sl.product_id = products.id AND sl.balance_qty < 0)`,
+      soldShort: sql<Qty>`(SELECT COALESCE(SUM(-sl.qty_change), 0) FROM stock_ledger sl
+        WHERE sl.product_id = products.id AND sl.qty_change < 0 AND sl.balance_qty < 0)`,
+      lastSold: sql<string | null>`(SELECT MAX(sl.posting_date) FROM stock_ledger sl
+        WHERE sl.product_id = products.id AND sl.qty_change < 0)`,
+      lastCounted: sql<string | null>`(SELECT MAX(c.posting_date) FROM stock_count_items ci
+        JOIN stock_counts c ON c.id = ci.count_id
+        WHERE ci.product_id = products.id AND ci.counted_qty IS NOT NULL AND c.docstatus = 1)`,
+      lastReceived: sql<string | null>`(SELECT MAX(sl.posting_date) FROM stock_ledger sl
+        WHERE sl.product_id = products.id AND sl.qty_change > 0)`,
+    })
+    .from(schema.products)
+    .innerJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
+    .where(and(
+      lt(schema.productStock.qtyOnHand, QTY_ZERO),
+      eq(schema.products.isStockTracked, 1),
+      isNull(schema.products.deletedAt),
+    ))
+    .orderBy(asc(schema.productStock.qtyOnHand))
 
   return {
     rows: rows.map((r) => ({
       productId: r.id,
       name: r.name,
       code: r.code,
-      baseUnit: r.base_unit,
-      onHand: qty(r.on_hand),
+      baseUnit: r.baseUnit,
+      onHand: r.onHand,
       /* `balance_qty` is each till's own running total at the moment it wrote
          the row, and two tills that have merged never shared one. Two counters
          each holding the last unit and each selling it are both at zero and
@@ -88,12 +95,12 @@ export async function listShortfalls(db: SqlDriver): Promise<ShortfallSummary> {
          happened is the day of the last sale. Both are inferred rather than
          read, and saying nothing at all would be worse: this is precisely the
          case a second till creates, and it is the one a shop most needs named. */
-      shortSince: r.short_since ?? r.last_sold,
-      soldShort: qty(r.sold_short === null || r.sold_short === 0
-        ? -r.on_hand
-        : r.sold_short),
-      lastCountedOn: r.last_counted,
-      lastReceivedOn: r.last_received,
+      shortSince: r.shortSince ?? r.lastSold,
+      soldShort: qty(r.soldShort === null || r.soldShort === 0
+        ? -r.onHand
+        : r.soldShort),
+      lastCountedOn: r.lastCounted,
+      lastReceivedOn: r.lastReceived,
     })),
     count: rows.length,
   }
@@ -101,10 +108,14 @@ export async function listShortfalls(db: SqlDriver): Promise<ShortfallSummary> {
 
 /** Just the number, for a badge. One query rather than the whole list. */
 export async function countShortfalls(db: SqlDriver): Promise<number> {
-  const row = await db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM product_stock s
-       JOIN products p ON p.id = s.product_id
-      WHERE s.qty_on_hand < 0 AND p.is_stock_tracked = 1 AND p.deleted_at IS NULL`,
-  )
+  const [row] = await q(db)
+    .select({ n: count() })
+    .from(schema.productStock)
+    .innerJoin(schema.products, eq(schema.products.id, schema.productStock.productId))
+    .where(and(
+      lt(schema.productStock.qtyOnHand, QTY_ZERO),
+      eq(schema.products.isStockTracked, 1),
+      isNull(schema.products.deletedAt),
+    ))
   return row?.n ?? 0
 }

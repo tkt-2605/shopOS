@@ -1,4 +1,6 @@
+import { eq } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 
 /**
@@ -40,12 +42,12 @@ export async function setProductActive(
   productId: string,
   isActive: boolean,
 ): Promise<void> {
-  const before = await db.get<{ is_active: number; name: string }>(
-    `SELECT is_active, name FROM products WHERE id = ?`,
-    [productId],
-  )
+  const [before] = await q(db)
+    .select({ isActive: schema.products.isActive, name: schema.products.name })
+    .from(schema.products)
+    .where(eq(schema.products.id, productId))
   if (!before) throw new Error(`unknown product: ${productId}`)
-  if ((before.is_active === 1) === isActive) return
+  if ((before.isActive === 1) === isActive) return
 
   const now = ctx.now?.() ?? new Date().toISOString()
 
@@ -54,15 +56,14 @@ export async function setProductActive(
        this to the other till: a product retired on the back-office machine has
        to stop appearing on the counter's search, and that is a sync, not a
        local preference. */
-    await tx.execute(
-      `UPDATE products SET is_active = ?, updated_at = ? WHERE id = ?`,
-      [isActive ? 1 : 0, now, productId],
-    )
+    await q(tx).update(schema.products)
+      .set({ isActive: isActive ? 1 : 0, updatedAt: now })
+      .where(eq(schema.products.id, productId))
     await writeAudit(tx, ctx, {
       entity: 'products',
       entityId: productId,
       action: 'update',
-      before: { 'Sold here': before.is_active === 1 ? 'yes' : 'retired' },
+      before: { 'Sold here': before.isActive === 1 ? 'yes' : 'retired' },
       after: { 'Sold here': isActive ? 'yes' : 'retired' },
     })
   })
