@@ -144,7 +144,55 @@ Set up by hand on a copy, like finding 3.
 
 ---
 
-## 6. Schema 26, code at 27
+## 6. Two Rule 46 fields have no data at all — **Phase 1b will render them blank**
+
+Found while replaying migration 028. Rule 46 makes both of these mandatory, and
+neither is a code problem:
+
+- **The shop has no address.** There is no `shop_address` row in `settings`.
+  Rule 46(c) requires the supplier's address on every tax invoice.
+- **No customer has an address.** Zero of six. Rule 46(e) requires the
+  recipient's address whenever the invoice is B2B, and **two of the six
+  customers have a GSTIN** — Sri Vidya School and Ramesh Traders — so those two
+  relationships are B2B and cannot produce a compliant invoice until somebody
+  types an address.
+
+Phase 1b builds the A4 renderer that has to print these. It will print them
+empty, correctly, because there is nothing to print. This is data entry the
+owner has to do, not a task that can be coded.
+
+Worth deciding in Phase 1c, where the guards live: `saveShop` is specified to
+refuse `GSTIN_REQUIRED` when the scheme is `regular` and the GSTIN is empty.
+The spec does not mention the address, and by the same rule it should —
+an invoice missing the supplier's address is as defective as one missing the
+GSTIN. Flagged rather than added, because it is a new guard and guards that
+stop a shop billing are the ones to be slowest about.
+
+**The good news in the same query:** both GSTINs begin `33`, so Phase 1a's
+"derive the state from the GSTIN prefix" gives those two customers a state code
+that is genuinely theirs rather than a default.
+
+---
+
+## 7. Migration 028, replayed against this database
+
+Run before anything trusted it, as 027 was, and now kept as
+`packages/core/test/migration028Real.test.ts` so it stays repeatable.
+
+Schema 26 → 28. Bills 29, lines 51, customers 6, return lines 2 — every count
+unchanged. `integrity_check` ok, `foreign_key_check` empty.
+
+- All 29 submitted bills stamped `intra_state`, which matches
+  `SUM(igst_amount) = 0` exactly.
+- 6 of the 12 bills with a customer took a GSTIN snapshot; 0 took an address,
+  because there are none to take (finding 6).
+- `customer_state_code` left null on every row, deliberately.
+- Both return lines carry the HSN and rate of the bill line they reverse.
+- All six fabricated `'33'` customer state codes cleared.
+
+---
+
+## 8. Schema 26, code at 27
 
 The live database is one migration behind the code, so it has not been opened
 by a current build. Useful rather than a problem: it is a genuine "needs
