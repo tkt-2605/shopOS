@@ -1,4 +1,4 @@
-import type { SqlDriver } from '../db/driver.js'
+import type { SqlDriver, TxOptions } from '../db/driver.js'
 import { REPLICATED } from '../domain/replicaShape.js'
 
 /**
@@ -111,6 +111,7 @@ export async function pendingCount(db: SqlDriver, cursor = 0): Promise<number> {
 export async function applyingRemote<T>(
   db: SqlDriver,
   fn: (tx: SqlDriver) => Promise<T>,
+  opts: TxOptions = {},
 ): Promise<T> {
   return db.transaction(async (tx) => {
     await tx.execute(`UPDATE sync_state SET applying = 1 WHERE id = 1`)
@@ -121,7 +122,7 @@ export async function applyingRemote<T>(
       // path this runs and is then rolled back anyway, which is the same answer.
       await tx.execute(`UPDATE sync_state SET applying = 0 WHERE id = 1`)
     }
-  })
+  }, opts)
 }
 
 /** Whether the feed is currently switched off. For tests and for a diagnostic. */

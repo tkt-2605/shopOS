@@ -10,6 +10,9 @@ import { fromUnits, toUnits } from '../src/quantity.js'
 import { rupees } from '../src/money.js'
 import { newId } from '../src/ids.js'
 import type { SqlDriver } from '../src/db/driver.js'
+import { MERGE_BUDGET_MS } from '../src/db/driver.js'
+import { applyBatch } from '../src/services/sync.js'
+import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
 
 /**
  * Stands in for src-tauri/src/db.rs: one connection, one transaction at a time,
@@ -19,6 +22,8 @@ import type { SqlDriver } from '../src/db/driver.js'
 function fakeRustLayer(backing: SqlDriver) {
   let activeToken: string | null = null
   const calls: string[] = []
+  /** What each `sql_tx_begin` asked to be allowed, in order. */
+  const budgets: (number | undefined)[] = []
 
   const invoke = async (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
     calls.push(cmd)
@@ -34,9 +39,14 @@ function fakeRustLayer(backing: SqlDriver) {
       case 'sql_query':
         return backing.query(sql, params)
       case 'sql_execute':
+        /* Refused while a transaction is open, as `db.rs` refuses it. There is
+           one connection, so a statement outside the token would otherwise
+           silently join the running transaction and share its fate. */
+        if (activeToken !== null) throw 'a transaction is open'
         return backing.execute(sql, params)
       case 'sql_tx_begin':
         if (activeToken !== null) throw 'a transaction is already open'
+        budgets.push(args['budgetMs'] as number | undefined)
         await backing.execute('BEGIN IMMEDIATE')
         activeToken = newId()
         return activeToken
@@ -61,7 +71,7 @@ function fakeRustLayer(backing: SqlDriver) {
     }
   }
 
-  return { invoke, calls, isTxOpen: () => activeToken !== null }
+  return { invoke, calls, budgets, isTxOpen: () => activeToken !== null }
 }
 
 let backing: SqlDriver
@@ -184,5 +194,96 @@ describe('services run unchanged over the bridge', () => {
     expect(toUnits(await currentStock(db, productId))).toBe(17)
     expect(await recomputeStock(db)).toEqual([])
     expect(rust.isTxOpen()).toBe(false)
+  })
+})
+
+
+describe('what a transaction is allowed to take', () => {
+  it('asks for nothing in particular when the work is a bill', async () => {
+    /* Undefined rather than fifteen thousand: the default belongs in one place,
+       in Rust next to the watchdog that reads it, not written down twice. */
+    await db.transaction(async (tx) => {
+      await tx.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('k', 'v', 'now')`)
+    })
+    expect(rust.budgets).toEqual([undefined])
+  })
+
+  it('asks for ninety seconds when the work is a merge', async () => {
+    /* A merge is one transaction on purpose — half a merge is not a state any
+       reconciliation rule can describe — and on a till a week behind it can
+       legitimately run for a minute. Under a bill's fifteen seconds the
+       watchdog rolls it back, the next round starts again from the beginning,
+       and a till far enough behind never catches up. */
+    await applyBatch(db, {
+      fromDevice: '2222bbbb-2222-4222-8222-222222222222',
+      schemaVersion: EXPECTED_SCHEMA_VERSION,
+      records: [{
+        table: 'customers',
+        rowId: newId(),
+        op: 'upsert',
+        row: {
+          id: newId(), code: null, name: 'Someone', phone: null, email: null, gstin: null,
+          address: null, state_code: '33', price_list_id: null, credit_limit: 0,
+          credit_enforcement: 'hard', is_active: 1, rev: 1, origin_id: null,
+          created_at: '2026-03-01T10:00:00.000Z', updated_at: '2026-03-01T10:00:00.000Z',
+          deleted_at: null,
+        },
+      }],
+      upTo: 1,
+      complete: true,
+    })
+
+    expect(rust.budgets).toEqual([MERGE_BUDGET_MS])
+  })
+
+  it('does not re-negotiate from inside one already running', async () => {
+    /* A helper deep inside a merge must not be able to shorten the merge's own
+       deadline by opening a nested transaction with a bill's budget. */
+    await db.transaction(async (tx) => {
+      await tx.transaction(async (inner) => {
+        await inner.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('k', 'v', 'now')`)
+      }, { budgetMs: 1000 })
+    }, { budgetMs: 90_000 })
+
+    expect(rust.budgets).toEqual([90_000])
+  })
+})
+
+describe('a write that is not part of the transaction', () => {
+  it('is refused rather than allowed to join it', async () => {
+    /* The bug this closes. `db.execute` and `tx.execute` reach the same
+       connection, so before this a setting saved during a long merge joined the
+       merge's transaction — and if the merge rolled back the setting was gone,
+       with the screen having already said it was saved. */
+    await db.transaction(async (tx) => {
+      await tx.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('mine', 'v', 'now')`)
+
+      await expect(
+        db.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('joined', 'v', 'now')`),
+      ).rejects.toThrow('a transaction is open')
+    })
+
+    expect(await db.query(`SELECT key FROM settings WHERE key = 'joined'`)).toHaveLength(0)
+    expect(await db.query(`SELECT key FROM settings WHERE key = 'mine'`)).toHaveLength(1)
+  })
+
+  it('works again the moment the transaction ends', async () => {
+    await db.transaction(async (tx) => {
+      await tx.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('k', 'v', 'now')`)
+    })
+    await db.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('after', 'v', 'now')`)
+    expect(await db.query(`SELECT key FROM settings WHERE key = 'after'`)).toHaveLength(1)
+  })
+
+  it('leaves reads alone', async () => {
+    /* The other half of the same decision: a merge can hold the connection for
+       a minute, and a counter that cannot read for a minute is a counter that
+       has stopped. */
+    await db.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('before', 'v', 'now')`)
+
+    await db.transaction(async (tx) => {
+      await tx.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('k', 'v', 'now')`)
+      expect(await db.query(`SELECT key FROM settings WHERE key = 'before'`)).toHaveLength(1)
+    })
   })
 })

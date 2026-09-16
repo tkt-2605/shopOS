@@ -1,4 +1,5 @@
 import type { Row, SqlDriver, SqlValue } from '../db/driver.js'
+import { MERGE_BUDGET_MS } from '../db/driver.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { deviceId } from '../device.js'
 import { newId } from '../ids.js'
@@ -366,6 +367,14 @@ async function mergeBatch(
   batch: ChangeBatch,
   changedHereToo: ReadonlySet<string>,
 ): Promise<{ applied: number; contested: ContestedChange[] }> {
+  /* Ninety seconds rather than a bill's fifteen.
+   *
+   * The whole batch is one transaction on purpose: half a merge is not a state
+   * any reconciliation rule can describe. On a till that has been offline a week
+   * that can legitimately take a minute, and under a bill's budget the watchdog
+   * rolls it back — so the next round starts again from the beginning, takes
+   * just as long, and is rolled back again. A till far enough behind would never
+   * catch up, and nobody would diagnose that from the shop floor. */
   return applyingRemote(db, async (tx) => {
     let applied = 0
     const contested: ContestedChange[] = []
@@ -465,7 +474,7 @@ async function mergeBatch(
     }
 
     return { applied, contested }
-  })
+  }, { budgetMs: MERGE_BUDGET_MS })
 }
 
 export interface RecordedConflict extends ContestedChange {

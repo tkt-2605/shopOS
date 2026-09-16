@@ -57,6 +57,11 @@ class NodeDriver implements SqlDriver {
     }
   }
 
+  /**
+   * `TxOptions` is accepted and ignored. There is no watchdog here: tests run in
+   * one process against a file nobody else holds, and a transaction that hangs
+   * hangs the test, which is the report you want.
+   */
   async transaction<T>(fn: (tx: SqlDriver) => Promise<T>): Promise<T> {
     if (this.#inTransaction) return fn(this)
 

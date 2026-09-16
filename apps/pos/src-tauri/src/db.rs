@@ -10,10 +10,40 @@ use tauri::State;
 /// A transaction is held open across IPC calls, which means a JavaScript
 /// exception between begin and end would otherwise strand the connection and
 /// freeze every later query. Two things prevent that: the TypeScript driver ends
-/// the transaction in a `finally`, and this watchdog rolls back anything left
-/// open past the timeout. A rolled-back bill is recoverable; a till that stops
+/// the transaction in a `finally`, and a watchdog rolls back anything left open
+/// past its budget. A rolled-back bill is recoverable; a till that stops
 /// responding on a Saturday evening is not.
-const TX_TIMEOUT: Duration = Duration::from_secs(15);
+///
+/// ## Why the budget is per transaction
+///
+/// Fifteen seconds is right for a bill. It is not right for a merge: taking in
+/// a few hundred changes from another till is one transaction on purpose --
+/// half a merge is not a state any reconciliation rule can describe -- and it
+/// can legitimately run for a minute on a shop that has been offline a week.
+///
+/// With one global timeout those two needs are the same number, and whichever
+/// way it is set something breaks. At fifteen seconds the watchdog rolls back a
+/// merge that was working, the next round starts again from the beginning, and
+/// a till far enough behind can never catch up -- a livelock nobody would
+/// diagnose from the shop floor. Raised to ninety, a bill stranded by a
+/// JavaScript exception freezes the counter for a minute and a half at the
+/// till, mid-queue.
+///
+/// So the caller says which kind of work it is, and the watchdog reads the
+/// budget off the transaction rather than off a constant. A stuck bill is still
+/// cleared in fifteen seconds while a legitimate merge is left alone.
+const DEFAULT_TX_BUDGET: Duration = Duration::from_millis(15_000);
+
+/// The floor and ceiling on what a caller may ask for.
+///
+/// The ceiling is the point. The budget arrives from the webview, and a caller
+/// that asks for an hour has not been given a long transaction, it has switched
+/// the watchdog off -- and the watchdog is the only thing standing between a
+/// JavaScript exception and a till that will not respond until it is restarted.
+/// Five minutes is well beyond the ninety seconds the merge asks for and well
+/// short of a shop losing its evening.
+const MIN_TX_BUDGET_MS: u64 = 1_000;
+const MAX_TX_BUDGET_MS: u64 = 300_000;
 
 /// Why the database could not be opened, in the words the screen will use.
 ///
@@ -89,9 +119,11 @@ struct Inner {
 struct ActiveTx {
     token: String,
     started: Instant,
+    /// How long this one is allowed to take before the watchdog ends it.
+    budget: Duration,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct ExecResult {
     #[serde(rename = "rowsAffected")]
     rows_affected: usize,
@@ -212,16 +244,97 @@ impl Db {
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(1));
             let Ok(mut guard) = inner.lock() else { return };
-            let expired = guard
-                .active_tx
-                .as_ref()
-                .is_some_and(|tx| tx.started.elapsed() > TX_TIMEOUT);
-            if expired {
-                let _ = guard.conn.execute_batch("ROLLBACK");
-                guard.active_tx = None;
-                eprintln!("shopos: rolled back a transaction left open past {TX_TIMEOUT:?}");
-            }
+            sweep(&mut guard);
         });
+    }
+
+    /// Opens a transaction and hands back the token every later call must carry.
+    ///
+    /// `budget_ms` is what the caller believes this piece of work is worth
+    /// waiting for. Absent means a bill.
+    pub fn begin(&self, budget_ms: Option<u64>) -> Result<String, String> {
+        let mut inner = lock(self)?;
+        if inner.active_tx.is_some() {
+            return Err("a transaction is already open".into());
+        }
+        // IMMEDIATE so write contention fails here rather than at commit, when
+        // the work is already done.
+        inner
+            .conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        let token = uuid_v4();
+        inner.active_tx = Some(ActiveTx {
+            token: token.clone(),
+            started: Instant::now(),
+            budget: budget_of(budget_ms),
+        });
+        Ok(token)
+    }
+
+    /// A write that is not part of any transaction.
+    ///
+    /// Refused while one is open, and this is the whole of the fix.
+    ///
+    /// SQLite has one connection here and one transaction on it. A statement
+    /// sent outside the token while a transaction is running does not fail and
+    /// does not wait -- it silently *joins* that transaction, and then shares
+    /// its fate. A setting saved during a merge that rolls back is gone, with
+    /// the screen having already said it was saved; a `recordAttempt` row
+    /// written during a merge that rolls back takes the sync loop's memory of
+    /// what it just tried with it.
+    ///
+    /// Reads are still allowed, which is the other half of the same decision:
+    /// a merge can hold the connection for a minute, and a counter that cannot
+    /// read during it is a counter that has stopped. A read that joins a
+    /// transaction sees uncommitted rows, which is a real cost and a much
+    /// smaller one than the screen going blank.
+    pub fn execute(&self, sql: &str, params: &[Json]) -> Result<ExecResult, String> {
+        let inner = lock(self)?;
+        if inner.active_tx.is_some() {
+            return Err("a transaction is open".into());
+        }
+        run_execute(&inner.conn, sql, params)
+    }
+
+    /// A read, transaction or no transaction. See `execute` for why the two are
+    /// treated differently.
+    pub fn query(&self, sql: &str, params: &[Json]) -> Result<Vec<Json>, String> {
+        let inner = lock(self)?;
+        run_query(&inner.conn, sql, params)
+    }
+
+    /// One watchdog tick, for a test that cannot wait a second per assertion.
+    #[cfg(test)]
+    fn sweep_now(&self) -> bool {
+        let Ok(mut guard) = self.0.lock() else { return false };
+        sweep(&mut guard)
+    }
+}
+
+/// Rolls back a transaction that has outstayed its own budget. Returns whether
+/// it did.
+fn sweep(guard: &mut Inner) -> bool {
+    let Some(tx) = guard.active_tx.as_ref() else { return false };
+    if tx.started.elapsed() <= tx.budget {
+        return false;
+    }
+    let budget = tx.budget;
+    let _ = guard.conn.execute_batch("ROLLBACK");
+    guard.active_tx = None;
+    eprintln!("shopos: rolled back a transaction left open past {budget:?}");
+    true
+}
+
+/// What the caller asked for, brought inside the bounds.
+///
+/// Clamped rather than refused. A budget that is out of range is a programming
+/// mistake in the webview, and failing the transaction over it would turn a
+/// sensible default into a till that cannot bill.
+fn budget_of(ms: Option<u64>) -> Duration {
+    match ms {
+        None => DEFAULT_TX_BUDGET,
+        Some(ms) => Duration::from_millis(ms.clamp(MIN_TX_BUDGET_MS, MAX_TX_BUDGET_MS)),
     }
 }
 
@@ -369,34 +482,17 @@ fn assert_token(inner: &Inner, token: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub fn sql_query(db: State<'_, DbState>, sql: String, params: Vec<Json>) -> Result<Vec<Json>, String> {
-    let inner = lock(db.get()?)?;
-    run_query(&inner.conn, &sql, &params)
+    db.get()?.query(&sql, &params)
 }
 
 #[tauri::command]
 pub fn sql_execute(db: State<'_, DbState>, sql: String, params: Vec<Json>) -> Result<ExecResult, String> {
-    let inner = lock(db.get()?)?;
-    run_execute(&inner.conn, &sql, &params)
+    db.get()?.execute(&sql, &params)
 }
 
 #[tauri::command]
-pub fn sql_tx_begin(db: State<'_, DbState>) -> Result<String, String> {
-    let mut inner = lock(db.get()?)?;
-    if inner.active_tx.is_some() {
-        return Err("a transaction is already open".into());
-    }
-    // IMMEDIATE so write contention fails here rather than at commit, when the
-    // work is already done.
-    inner
-        .conn
-        .execute_batch("BEGIN IMMEDIATE")
-        .map_err(|e| e.to_string())?;
-    let token = uuid_v4();
-    inner.active_tx = Some(ActiveTx {
-        token: token.clone(),
-        started: Instant::now(),
-    });
-    Ok(token)
+pub fn sql_tx_begin(db: State<'_, DbState>, budget_ms: Option<u64>) -> Result<String, String> {
+    db.get()?.begin(budget_ms)
 }
 
 #[tauri::command]
@@ -500,6 +596,137 @@ mod tests {
         assert_eq!(synchronous, 2, "PRAGMA synchronous must read back as 2 (FULL)");
         assert_eq!(journal, "wal");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A database in a folder of its own, with one table to write to.
+    fn a_till() -> (std::path::PathBuf, Db) {
+        let dir = scratch();
+        let db = Db::open(&dir.join("shop.db")).unwrap();
+        db.execute("CREATE TABLE note (id INTEGER PRIMARY KEY, text TEXT)", &[])
+            .unwrap();
+        (dir, db)
+    }
+
+    /// Pretends the open transaction started `ago` in the past.
+    ///
+    /// Reaching in rather than sleeping: the floor on a budget is a second, and
+    /// a suite that waits one out per assertion is a suite people stop running.
+    fn started_ago(db: &Db, ago: Duration) {
+        let mut inner = db.0.lock().unwrap();
+        let tx = inner.active_tx.as_mut().expect("a transaction is open");
+        tx.started = Instant::now().checked_sub(ago).expect("clock has a past");
+    }
+
+    #[test]
+    fn a_bill_gets_fifteen_seconds_and_a_merge_gets_what_it_asked_for() {
+        assert_eq!(budget_of(None), Duration::from_secs(15));
+        assert_eq!(budget_of(Some(90_000)), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn a_budget_nobody_could_have_meant_is_brought_back_into_range() {
+        /* Clamped and not refused. An impossible budget is a mistake in the
+           webview, and failing the transaction over it would turn a sensible
+           default into a till that cannot bill. The ceiling is the one that
+           matters: a caller asking for an hour has not been given a long
+           transaction, it has switched the watchdog off. */
+        assert_eq!(budget_of(Some(0)), Duration::from_millis(MIN_TX_BUDGET_MS));
+        assert_eq!(budget_of(Some(1)), Duration::from_millis(MIN_TX_BUDGET_MS));
+        assert_eq!(budget_of(Some(3_600_000)), Duration::from_millis(MAX_TX_BUDGET_MS));
+    }
+
+    #[test]
+    fn a_bill_left_open_is_cleared_and_the_till_writes_again() {
+        let (dir, db) = a_till();
+        let token = db.begin(None).unwrap();
+
+        started_ago(&db, Duration::from_secs(16));
+        assert!(db.sweep_now(), "a bill past fifteen seconds is the watchdog's whole job");
+
+        // Rolled back, not committed: the point is that the till is usable
+        // again, not that half a bill was kept.
+        assert!(db.execute("INSERT INTO note (text) VALUES ('after')", &[]).is_ok());
+        let rows = db.query("SELECT text FROM note", &[]).unwrap();
+        assert_eq!(rows.len(), 1, "only the write that came after the rollback");
+
+        // And the stale token cannot commit anything.
+        let inner = db.0.lock().unwrap();
+        assert!(assert_token(&inner, &token).is_err());
+        drop(inner);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_merge_that_asked_for_ninety_seconds_is_left_alone_at_twenty() {
+        /* The livelock this exists to prevent: with one fifteen-second timeout
+           for everything, a till a week behind has its merge rolled back, starts
+           again from the beginning next round, and never catches up. Nobody
+           would diagnose that from the shop floor. */
+        let (dir, db) = a_till();
+        db.begin(Some(90_000)).unwrap();
+
+        started_ago(&db, Duration::from_secs(20));
+        assert!(!db.sweep_now(), "twenty seconds is inside ninety");
+
+        started_ago(&db, Duration::from_secs(91));
+        assert!(db.sweep_now(), "and ninety-one is not");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_write_outside_the_token_is_refused_while_a_transaction_is_open() {
+        /* The bug, in one sentence: SQLite has one connection here, so a
+           statement sent outside the token does not fail and does not wait --
+           it silently joins whatever transaction is running, and shares its
+           fate. A setting saved during a merge that rolls back is gone, with
+           the screen having already said it was saved. */
+        let (dir, db) = a_till();
+        let token = db.begin(None).unwrap();
+
+        let refused = db.execute("INSERT INTO note (text) VALUES ('joined')", &[]);
+        assert_eq!(refused.unwrap_err(), "a transaction is open");
+
+        // Through the token it is fine, because that is the work that opened it.
+        {
+            let inner = db.0.lock().unwrap();
+            assert_token(&inner, &token).unwrap();
+            run_execute(&inner.conn, "INSERT INTO note (text) VALUES ('mine')", &[]).unwrap();
+        }
+        {
+            let mut inner = db.0.lock().unwrap();
+            inner.conn.execute_batch("COMMIT").unwrap();
+            inner.active_tx = None;
+        }
+
+        let rows = db.query("SELECT text FROM note", &[]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(db.execute("INSERT INTO note (text) VALUES ('later')", &[]).is_ok());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_read_is_still_allowed_while_a_transaction_is_open() {
+        /* The other half of the same decision. A merge can hold the connection
+           for a minute, and a counter that cannot read for a minute is a
+           counter that has stopped. */
+        let (dir, db) = a_till();
+        db.execute("INSERT INTO note (text) VALUES ('before')", &[]).unwrap();
+        db.begin(Some(90_000)).unwrap();
+
+        let rows = db.query("SELECT text FROM note", &[]).unwrap();
+        assert_eq!(rows.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_second_transaction_is_refused_rather_than_nested() {
+        let (dir, db) = a_till();
+        db.begin(None).unwrap();
+        assert_eq!(db.begin(None).unwrap_err(), "a transaction is already open");
         std::fs::remove_dir_all(&dir).ok();
     }
 

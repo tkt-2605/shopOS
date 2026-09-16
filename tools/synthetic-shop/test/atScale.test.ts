@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { openMemoryDatabase } from '@shopos/core/node'
 import {
   migrate, searchCustomers, countCustomers, totalOutstandingAll, recomputeStock,
-  applyBatch, newId, type ChangeBatch, type Row, type SqlDriver, type SqlValue,
+  applyBatch, newId, MERGE_BUDGET_MS,
+  type ChangeBatch, type ChangeRecord, type Row, type SqlDriver, type SqlValue,
 } from '@shopos/core'
 import { EXPECTED_SCHEMA_VERSION } from '../../../packages/core/src/db/schemaVersion.js'
 import { MIGRATIONS } from '@shopos/core/migrations'
@@ -151,4 +152,58 @@ describe('replaying the stock ledger, on forty-seven thousand movements', () => 
     expect(outcome.applied).toBe(1)
     expect(rows()).toBeLessThan(shop.ledgerRows / 100)
   })
+})
+
+
+describe('a merge of five hundred changes', () => {
+  it('finishes well inside the ninety seconds it asks to be allowed', async () => {
+    /* The phase's verification line. The watchdog is Rust's and is tested
+     * there, against a transaction whose start time is moved rather than one
+     * that is waited out; what cannot be tested there is whether five hundred
+     * real changes against a real shop are anywhere near ninety seconds.
+     *
+     * Five hundred bills with their lines, sent as if from the other till with
+     * a higher `rev` so every one of them is applied rather than skipped. That
+     * is the heaviest ordinary batch there is: `collectChanges` caps a round,
+     * and a bill carries four line tables behind it.
+     *
+     * A quarter of the budget is the threshold rather than all of it. Passing
+     * at eighty-nine seconds would tell nobody anything useful, and a merge
+     * that has crept to a quarter of its allowance on a fixture this size is
+     * already worth looking at. */
+    const bills = await db.query<Row>(
+      `SELECT * FROM bills WHERE docstatus = 1 ORDER BY posting_date LIMIT 500`,
+    )
+    expect(bills).toHaveLength(500)
+
+    const records: ChangeRecord[] = []
+    for (const bill of bills) {
+      const id = bill['id'] as string
+      const items = await db.query<Row>(`SELECT * FROM bill_items WHERE bill_id = ?`, [id])
+      records.push({
+        table: 'bills',
+        rowId: id,
+        op: 'upsert',
+        // Newer than this copy, so the merge decides for the incoming side and
+        // actually writes. A batch that loses every row would measure nothing.
+        row: { ...bill, rev: (bill['rev'] as number) + 1, updated_at: '2026-09-16T10:00:00.000Z' },
+        lines: { bill_items: items },
+      })
+    }
+
+    const batch: ChangeBatch = {
+      fromDevice: '2222bbbb-2222-4222-8222-222222222222',
+      schemaVersion: EXPECTED_SCHEMA_VERSION,
+      records,
+      upTo: records.length,
+      complete: true,
+    }
+
+    const started = Date.now()
+    const outcome = await applyBatch(db, batch)
+    const took = Date.now() - started
+
+    expect(outcome.applied).toBe(500)
+    expect(took).toBeLessThan(MERGE_BUDGET_MS / 4)
+  }, 120_000)
 })
