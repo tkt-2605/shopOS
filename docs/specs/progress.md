@@ -1,9 +1,9 @@
 # Progress
 
-Branch `phase-0-and-the-test-bench`, 11 commits, not pushed. Everything below
+Branch `phase-0-and-the-test-bench`, 15 commits, not pushed. Everything below
 is on this machine only.
 
-State of the tree: **1109 TypeScript tests** passing and 3 skipped (Phase 2c
+State of the tree: **1160 TypeScript tests** passing and 3 skipped (Phase 2c
 placeholders that fail loudly if un-skipped early), **73 Rust tests** passing
 with zero warnings, typecheck clean across core, app and bench, and Layer 2 of
 the test bench green in Docker.
@@ -47,6 +47,25 @@ All three layers.
   smoke test that exits 0 and says "self-hosted only" rather than going red on
   a runner that cannot do the job.
 
+### Row 3 — migration 028 and Phase 1a
+
+Every item on the 1a list, and the migration under it.
+
+- **028, the invoice snapshot.** Five columns on `bills`, two on
+  `sales_return_items`. Replayed against the owner's database before anything
+  trusted it, as 027 was, and kept as `migration028Real.test.ts`.
+- **The snapshot is written**, at submit, by `submitBill`. The migration added
+  the columns and nothing filled them.
+- **Customer state.** `customers.ts` wrote the literal `'33'` into every INSERT
+  and no screen could set it. Derived now, GSTIN first, with `domain/gstin.ts`
+  and `domain/states.ts` shared with the shop's own rule.
+- **`amendBill` carries the bill**, rather than issuing a larger one.
+- **Returns in the GST export**, as credit notes, negative, against the invoice
+  number -- with the 028 snapshot and the returns' own supply type underneath
+  it. Verified on the owner's database: `reportsAgainstRealShop.test.ts`.
+- **`round_off` on the last rate row**, so the export ties to `grand_total`.
+- **`receipt.ts`** stopped dividing money by money to recover a quantity.
+
 ### Pulled forward out of order
 
 - **Phase 1d's host-sync fix.** The bench demanded it: `host-initiates.test.ts`
@@ -58,7 +77,7 @@ All three layers.
 
 ## What the real database changed
 
-`findings-real-shop.md` has all six findings. Three affect the plan:
+`findings-real-shop.md` has ten findings now. Four affect the plan:
 
 1. **CGST ≠ SGST on 29 of 51 lines.** Not in any spec. Fixed.
 2. **The shop charges GST with no GSTIN set.** Phase 1's scheme rule will
@@ -69,18 +88,23 @@ All three layers.
    `'33'` — the fabrication the plan predicted — and the shop is also `'33'`,
    so the fabrication and the truth coincide and `SUM(igst_amount)` is zero.
    Phase 1's IGST verification has to be staged by hand.
+4. **The dashboard's tax figure and the GST rate rows now differ** by the tax
+   on a credit note -- gross against net. Both honest, different questions, two
+   numbers one shopkeeper will read as one. Left for the 1b/1c review.
 
 ---
 
 ## Left
 
-### Phase 1 — the bills have to be right (next, ~10 days)
+### Phase 1 — the bills have to be right (in progress, ~7 days left)
 
-Migration 028 → 1a → 1b → 1c. 1d is done. The largest phase and the one with
-the least tolerance for "close enough": the invoice snapshot columns, the tax
-scheme as a shop setting, Rule 46(f), the A4 invoice with the rate-wise
-summary, credit-note printing, and the eight switches in 1d that are on and do
-nothing.
+028 and 1a are done. **1b next**: the A4 invoice with the rate-wise summary,
+`ReceiptDoc` carrying the recipient and the place of supply off the 028
+columns, the credit-note print, and the document title per tax scheme. Then
+**1c**: the tax scheme as a shop setting, Rule 46(f)'s `NEEDS_RECIPIENT`, the
+HSN shape warning, `rule46.test.ts`. Then the rest of **1d** -- the amend
+button, retire against soft delete, cash-close history, `changePassword`, and
+the switches that are on and do nothing.
 
 **Blocked on nothing.** Its verification is not: five of its eight checks need
 the owner's database with things staged by hand.
