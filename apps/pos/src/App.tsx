@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { login, Permissions, type Page } from '@shopos/core'
 import { useCore, type FailureKind } from './core/CoreProvider'
+import { advice } from './core/startupAdvice'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
@@ -100,13 +101,10 @@ export default function App() {
  * cannot read fails before sign-in — and a fix that sits behind the screen that
  * will not load is not a fix.
  */
+
 function CouldNotStart({ error, kind }: { error: string; kind: FailureKind }) {
   const [restoring, setRestoring] = useState(false)
-  /* A till that is merely behind and a database that is damaged both land here
-     and want opposite advice. Offering "Restore a backup…" first to the former
-     invites somebody to overwrite a newer database with an older copy — a day's
-     billing lost while following the instructions on the screen. */
-  const behind = kind === 'schema_too_new'
+  const said = advice(kind)
   // The one screen where the version matters most and was hardest to get: a
   // shop that cannot start cannot open Settings to read it.
   const [version, setVersion] = useState<AppVersion | null>(null)
@@ -116,25 +114,19 @@ function CouldNotStart({ error, kind }: { error: string; kind: FailureKind }) {
     <div className="centre">
       <div className="panel" style={{ maxWidth: restoring ? 620 : undefined }}>
         <div className="panel-head">
-          <h1>{behind ? 'This till needs updating' : 'Could not start'}</h1>
+          <h1>{said.title}</h1>
         </div>
         <div className="panel-body">
           <Alert>{error}</Alert>
-          {behind && (
+          {said.says && (
             <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.6 }}>
-              Nothing is wrong with the database — it was written by a newer
-              ShopOS than this machine has. Update this till and it will open as
-              it was.
-              <br />
-              <strong>Do not restore an older backup to get past this.</strong>{' '}
-              It would replace what the newer version has written, and whatever
-              was billed on it would be gone.
+              {said.says}
             </div>
           )}
           {!restoring && (
             <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
               <button
-                className={behind ? 'btn ghost' : 'btn'}
+                className={said.restore === 'first' ? 'btn primary' : said.restore === 'last' ? 'btn ghost' : 'btn'}
                 onClick={() => setRestoring(true)}
               >
                 Restore a backup…

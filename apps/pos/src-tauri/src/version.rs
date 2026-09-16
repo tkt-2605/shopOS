@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::db::Db;
+use crate::db::DbState;
 
 /// What is actually running, as against what somebody believes is running.
 ///
@@ -24,9 +24,14 @@ pub struct AppVersion {
 }
 
 #[tauri::command]
-pub fn app_version(app: AppHandle, db: State<'_, Db>) -> AppVersion {
+pub fn app_version(app: AppHandle, db: State<'_, DbState>) -> AppVersion {
     AppVersion {
         version: app.package_info().version.to_string(),
-        schema: db.user_version().ok(),
+        /* `.ok()` twice over, because this is the one line the
+           `CouldNotStart` screen shows and that screen exists precisely when
+           the database did not open. A version line that refused to render
+           without a database would go missing exactly when somebody is reading
+           it down a phone line. */
+        schema: db.get().ok().and_then(|d| d.user_version().ok()),
     }
 }

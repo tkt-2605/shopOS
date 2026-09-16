@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { startupStatus, type StartupFailureKind } from './startup'
 import {
   createTauriDriver, migrate, SchemaTooNewError, SchemaUnversionedError, type SqlDriver,
 } from '@shopos/core'
@@ -48,7 +49,21 @@ type Status =
    */
   | { phase: 'failed'; error: string; kind: FailureKind }
 
-export type FailureKind = 'schema_too_new' | 'schema_unversioned' | 'other'
+/**
+ * Every way the till can fail to open, from both sides of the bridge.
+ *
+ * The first three are Rust's, decided from SQLite's own error codes before the
+ * webview has asked the database anything. The next two are the webview's,
+ * raised by the migration runner. They are one union because `CouldNotStart` has
+ * to give one answer, and the answers are opposites: a till that is merely
+ * behind must not be offered a Restore button, and a till with a damaged file
+ * must not be told to go and update itself.
+ */
+export type FailureKind =
+  | StartupFailureKind
+  | 'schema_too_new'
+  | 'schema_unversioned'
+  | 'other'
 
 interface CoreValue {
   db: SqlDriver
@@ -225,6 +240,17 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 
     void (async () => {
       try {
+        /* Before the driver and before the migrations, because both would fail
+           with something less true. A file that is not a database produces a
+           SQL error about a missing `settings` table, and the shop reads that
+           and starts wondering what it did to its settings. */
+        const refused = await startupStatus()
+        if (cancelled) return
+        if (refused) {
+          setStatus({ phase: 'failed', error: refused.message, kind: refused.kind })
+          return
+        }
+
         const { needsSetup } = await startOnce()
         if (cancelled) return
 

@@ -54,13 +54,32 @@ pub fn run() {
                 log::write("error", "restore", e);
             }
 
-            let database = db::Db::open(&dir.join(paths::DB_FILE))?;
-            match database.user_version() {
-                Ok(v) => log::write("info", "startup", &format!("database open, schema {v}")),
-                Err(e) => log::write("warn", "startup", &format!("schema unreadable: {e}")),
+            /* Never `?`. This used to be `Db::open(..)?`, which made a
+               database that would not open into a setup that returned `Err`,
+               which made Tauri never create a window -- and with
+               `windows_subsystem = "windows"` there is no console either. The
+               whole symptom was an icon that did nothing when it was
+               double-clicked: no message, no log, and no way to reach the
+               Restore button that would have fixed it.
+
+               The failure is carried into the app instead, and `App.tsx` asks
+               for it before it asks for anything else. */
+            let opened = db::Db::open(&dir.join(paths::DB_FILE));
+            match &opened {
+                Ok(database) => match database.user_version() {
+                    Ok(v) => log::write("info", "startup", &format!("database open, schema {v}")),
+                    Err(e) => log::write("warn", "startup", &format!("schema unreadable: {e}")),
+                },
+                Err(f) => log::write(
+                    "error",
+                    "startup",
+                    &format!("{:?}: {} ({})", f.kind, f.message, f.db_path),
+                ),
             }
-            database.start_watchdog();
-            app.manage(database);
+            if let Ok(database) = &opened {
+                database.start_watchdog();
+            }
+            app.manage(db::DbState(opened));
             app.manage(restore::LastRestore(report));
 
             // Nothing listens until a shop asks for it. A single-till shop --
@@ -71,6 +90,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             log::log_event,
+            db::startup_status,
             db::sql_query,
             db::sql_execute,
             db::sql_tx_begin,

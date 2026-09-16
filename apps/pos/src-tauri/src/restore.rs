@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::archive;
-use crate::db::Db;
+use crate::db::DbState;
 use crate::paths::{self, DB_FILE};
 
 const MARKER: &str = "RESTORE.json";
@@ -198,13 +198,13 @@ pub fn restore_inspect(app: tauri::AppHandle, name: String, supported: i64) -> R
 #[tauri::command]
 pub fn restore_begin(
     app: tauri::AppHandle,
-    db: State<'_, Db>,
+    db: State<'_, DbState>,
     name: String,
     safety_name: String,
     now: String,
     supported: i64,
 ) -> Result<(), String> {
-    if db.has_open_transaction() {
+    if db.get()?.has_open_transaction() {
         return Err("A bill is being saved right now. Try again in a moment.".into());
     }
 
@@ -239,7 +239,7 @@ pub fn restore_begin(
     // the main file alone is stale by whatever the log still holds, and this is
     // the only copy the owner has if the restore turns out to be the wrong one.
     paths::remove_if_present(&safety_path)?;
-    db.vacuum_into(&safety_path)?;
+    db.get()?.vacuum_into(&safety_path)?;
 
     // Photographs go in before the database, and outside the marker, because they
     // are content-addressed and additive: writing them twice is the same as

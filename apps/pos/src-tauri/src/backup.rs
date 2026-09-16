@@ -10,7 +10,7 @@ use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::archive;
-use crate::db::Db;
+use crate::db::DbState;
 use crate::paths::{self, DB_FILE};
 
 #[derive(Serialize)]
@@ -63,7 +63,7 @@ pub fn backup_delete(app: tauri::AppHandle, name: String) -> Result<(), String> 
 #[tauri::command]
 pub fn backup_write_zip(
     app: tauri::AppHandle,
-    db: State<'_, Db>,
+    db: State<'_, DbState>,
     name: String,
     now: String,
     attachments: Vec<String>,
@@ -77,7 +77,7 @@ pub fn backup_write_zip(
     let work = paths::work_dir(&app)?;
     let copy = archive::Temp(work.join(DB_FILE));
     paths::remove_if_present(&copy.0)?;
-    db.vacuum_into(&copy.0)?;
+    db.get()?.vacuum_into(&copy.0)?;
 
     let version = app.package_info().version.to_string();
     let photos = paths::attachments_dir(&app)?;
