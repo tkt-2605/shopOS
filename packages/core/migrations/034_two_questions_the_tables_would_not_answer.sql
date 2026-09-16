@@ -1,0 +1,80 @@
+-- Two indexes, measured on a shop with a year behind it rather than guessed.
+--
+-- The phase asked for three. One of them is not here, and the reason is at the
+-- bottom -- it would have made the query it was meant to help slower.
+--
+-- Everything below was measured against `tools/synthetic-shop`: 20,000 bills,
+-- 21,400 audit rows, four people behind the counter. Timings are an in-memory
+-- SQLite on one machine and are worth nothing as absolutes; the ratios and the
+-- query plans are the finding.
+--
+-- No `ANALYZE` is run here or anywhere. ShopOS keeps no `sqlite_stat1`, so the
+-- planner works from fixed guesses about selectivity, and measuring with
+-- statistics the shop does not have would be measuring a different database.
+-- Every plan below was checked both ways and is the same either way. Whether
+-- the weekly job should start collecting statistics is a real question and
+-- not this migration's.
+--
+-- ── bills(kind, docstatus, posting_date) ──────────────────────────────────
+--
+-- The Bills page's own query. `billWhere` puts `b.kind = 'sale'` in every
+-- clause it builds, then a docstatus, then optionally a date range, and the
+-- list is `ORDER BY b.posting_date DESC, b.created_at DESC LIMIT 50`.
+--
+-- What it did before: SEARCH USING idx_bills_status (docstatus=?) and then a
+-- temp B-tree to sort all 19,800 matching rows, to show fifty. 24.8 ms, for
+-- the first thing a shopkeeper looks at after the counter itself.
+--
+-- After: SEARCH USING this index, with only the `created_at` tiebreak left to
+-- sort. 0.48 ms. Fifty times, and it grows with the table -- the old plan is
+-- linear in every bill the shop has ever raised, and a shop that has been open
+-- three years has three times as many.
+--
+-- `idx_bills_status` and `idx_bills_kind` are left alone. The first is still
+-- the only thing serving a docstatus lookup that says nothing about kind, and
+-- the second is partial (`WHERE kind <> 'sale'`), which is a different and much
+-- smaller index for the opposite question.
+--
+-- ── audit_log(actor_id, at DESC) ──────────────────────────────────────────
+--
+-- "Show me everything Meena did." Before: SCAN USING idx_audit_at, walking the
+-- log newest-first and discarding rows until a hundred of them are hers.
+--
+-- Which is fast when she rang up half the bills in the shop, and slow exactly
+-- when the question is worth asking. The manager who logs in once a month has
+-- twenty rows in twenty-one thousand, so the scan reads the entire log to find
+-- them: 6.1 ms, against 0.14 ms with this index. Forty times, for the case the
+-- filter exists for.
+--
+-- **The second column is load-bearing**, and this is the part that had to be
+-- measured. `audit_log(actor_id)` on its own -- which is what the phase asked
+-- for -- makes the busy cashier's case forty times *worse*: 0.25 ms to 9.8 ms.
+-- With no ordering inside the actor, SQLite seeks all 9,401 of her rows and
+-- sorts every one of them to show a hundred. With `at DESC` in the index the
+-- rows arrive nearly in order and only the rowid tiebreak is left, so the busy
+-- case stays at 0.27 ms and the rare case keeps its forty-fold win.
+--
+-- It also covers the actor dropdown on the Audit page, which was scanning the
+-- whole log to find four names: 7.4 ms to 5.3 ms, as a covering index.
+--
+-- ── the third one, and why it is not here ─────────────────────────────────
+--
+-- The phase asked for `stock_ledger(product_id, posting_date, created_at)`.
+--
+-- `idx_stock_ledger_product` has been `(product_id, posting_date)` since 001,
+-- and `productValuation` reads `WHERE product_id = ? ORDER BY posting_date,
+-- rowid`. An index's key order ends with the rowid, so that index already
+-- answers that query in order, with no sort at all.
+--
+-- Appending `created_at` puts a column *between* `posting_date` and the rowid,
+-- and the ordering the query wants is no longer a prefix of the index. The
+-- plan gains `USE TEMP B-TREE FOR LAST TERM OF ORDER BY`: the one query the
+-- index was for gets a sort it did not have.
+--
+-- So the index is left as it is. The item was written from the query and not
+-- from the schema, which is a reasonable way to be wrong and the reason the
+-- synthetic shop was built before this migration rather than after it.
+
+CREATE INDEX idx_bills_ledger ON bills(kind, docstatus, posting_date);
+
+CREATE INDEX idx_audit_actor ON audit_log(actor_id, at DESC);

@@ -74,6 +74,8 @@ export interface SyntheticShop {
   registerId: string
   registerPrefix: string
   adminId: string
+  /** Everyone who has billed on this till, `adminId` first. */
+  staffIds: string[]
   productIds: string[]
   customerIds: string[]
   /** Submitted sales only; `cancelled` is on top of this. */
@@ -137,12 +139,29 @@ export async function buildSyntheticShop(
   await setSetting(db, 'shop_gstin', '33ALNPJ1906G1ZC', now)
   await setSetting(db, 'shop_state_code', '33', now)
 
-  const adminId = newId()
-  await db.execute(
-    `INSERT INTO users (id, username, full_name, role_id, password_hash, created_at, updated_at)
-     VALUES (?, 'admin', 'Administrator', ?, 'x', ?, ?)`,
-    [adminId, seed.roleIds['Admin']!, now, now],
-  )
+  /* Four people behind the counter, not one.
+   *
+   * A shop where every one of twenty thousand bills was rung up by the same
+   * login is not a shop, and it silently answers a question it has no business
+   * answering. "Show me everything this cashier did" is trivial when there is
+   * only one cashier, so an index meant to make that question cheap measures as
+   * useless against a fixture that had already answered it. Four is enough for
+   * the audit log to have a shape. */
+  const staffIds = [newId(), newId(), newId(), newId()]
+  const staff = [
+    ['admin', 'Administrator', 'Admin'],
+    ['meena', 'Meena at the counter', 'Cashier'],
+    ['raja', 'Raja on the evening shift', 'Cashier'],
+    ['suresh', 'Suresh, stock', 'Manager'],
+  ] as const
+  for (const [i, [username, fullName, role]] of staff.entries()) {
+    await db.execute(
+      `INSERT INTO users (id, username, full_name, role_id, password_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'x', ?, ?)`,
+      [staffIds[i]!, username, fullName, seed.roleIds[role] ?? seed.roleIds['Admin']!, now, now],
+    )
+  }
+  const adminId = staffIds[0]!
 
   return applyingQuietly(db, async () => {
     const days = businessDays(s.until, s.days)
@@ -161,7 +180,7 @@ export async function buildSyntheticShop(
       ['id', 'code', 'name', 'phone', 'state_code', 'credit_limit', 'created_at', 'updated_at'],
       customers.map((c) => [c.id, c.code, c.name, c.phone, '33', c.creditLimit, now, now]))
 
-    const till = new Till(rand, products, customers, days, adminId, seed.registerId, prefix)
+    const till = new Till(rand, products, customers, days, staffIds, seed.registerId, prefix)
     till.trade(s.bills)
     await till.write(db, now)
 
@@ -170,6 +189,7 @@ export async function buildSyntheticShop(
       registerId: seed.registerId,
       registerPrefix: prefix,
       adminId,
+      staffIds,
       productIds: products.map((p) => p.id),
       customerIds: customers.map((c) => c.id),
       bills: till.submitted,
@@ -233,10 +253,25 @@ class Till {
     private readonly products: Product[],
     private readonly customers: Customer[],
     private readonly days: string[],
-    private readonly userId: string,
+    private readonly staff: string[],
     private readonly registerId: string,
     private readonly prefix: string,
   ) {}
+
+  /**
+   * Whoever is on the counter for the bill being written.
+   *
+   * A field rather than an argument threaded through six methods: a bill, its
+   * lines, its ledger movements and its audit rows are all one person's doing,
+   * and passing the same id down four levels only to have one of them get it
+   * wrong is the mistake this avoids.
+   */
+  #onDuty = ""
+
+  #cashier(): string {
+    // Two cashiers between them, and the owner covering the quiet hours.
+    return this.rand.chance(0.12) ? this.staff[0]! : this.rand.pick(this.staff.slice(1, 3))
+  }
 
   trade(count: number): void {
     this.#openingStock()
@@ -257,6 +292,7 @@ class Till {
 
   #openingStock(): void {
     const day = this.days[0]!
+    this.#onDuty = this.staff[3] ?? this.staff[0]!
     for (const p of this.products) {
       if (!p.tracked) continue
       const q = Quantity.fromUnits(this.rand.int(120, 900))
@@ -266,6 +302,7 @@ class Till {
 
   #bill(day: string): void {
     const id = newId()
+    this.#onDuty = this.#cashier()
     const at = `${day}T${String(this.rand.int(8, 20)).padStart(2, '0')}:${String(this.rand.int(0, 59)).padStart(2, '0')}:00.000Z`
 
     // Roughly a third of sales are to somebody the shop knows by name. The rest
@@ -308,7 +345,7 @@ class Till {
       totals.subtotal, totals.discount, totals.taxableTotal, totals.taxTotal,
       totals.roundOff, totals.grandTotal, totals.grandTotal - credit, credit,
       '33', 'intra_state', 'sale',
-      this.userId, cancelled ? this.userId : null, cancelled ? at : null,
+      this.#onDuty, cancelled ? this.#onDuty : null, cancelled ? at : null,
       cancelled ? 'Wrong customer' : null,
       at, at,
     ])
@@ -331,14 +368,14 @@ class Till {
       issued.push(l.product.tracked ? this.#move(l.product, day, -l.qty, null, 'bill', id) : null)
     })
 
-    this.audit.push([newId(), 'bills', id, 'submit', this.userId, 0, 1, null, at])
+    this.audit.push([newId(), 'bills', id, 'submit', this.#onDuty, 0, 1, null, at])
 
     if (cancelled) {
       this.cancelled++
       lines.forEach((l, i) => {
         if (l.product.tracked) this.#move(l.product, day, l.qty, issued[i] ?? null, 'bill_reversal', id)
       })
-      this.audit.push([newId(), 'bills', id, 'cancel', this.userId, 1, 2, null, at])
+      this.audit.push([newId(), 'bills', id, 'cancel', this.#onDuty, 1, 2, null, at])
       return
     }
 
@@ -369,7 +406,7 @@ class Till {
     const at = `${day}T18:30:00.000Z`
     this.payments.push([
       paymentId, this.#docNo('payment', day), 1, 'customer', customer.id, day,
-      this.rand.pick(['cash', 'upi', 'card']), amount, this.userId, at, at,
+      this.rand.pick(['cash', 'upi', 'card']), amount, this.#onDuty, at, at,
     ])
 
     let left = amount
@@ -383,7 +420,7 @@ class Till {
     }
     this.#open.set(customer.id, open.filter((b) => b.left > 0))
     this.#paid.set(customer.id, (this.#paid.get(customer.id) ?? 0) + (amount - left))
-    this.audit.push([newId(), 'payment_entries', paymentId, 'submit', this.userId, 0, 1, null, at])
+    this.audit.push([newId(), 'payment_entries', paymentId, 'submit', this.#onDuty, 0, 1, null, at])
   }
 
   /** What the shop is owed: customers in credit do not pay off customers in debt. */
@@ -442,7 +479,7 @@ class Till {
 
     this.ledger.push([
       newId(), product.id, day, change, cost, held.qty,
-      voucherType, voucherId, this.userId, `${day}T12:00:00.000Z`,
+      voucherType, voucherId, this.#onDuty, `${day}T12:00:00.000Z`,
     ])
     return cost
   }
