@@ -304,6 +304,12 @@ impl Db {
         run_query(&inner.conn, sql, params)
     }
 
+    /// The same read, as rows of values in the order the SELECT names them.
+    pub fn query_values(&self, sql: &str, params: &[Json]) -> Result<Vec<Vec<Json>>, String> {
+        let inner = lock(self)?;
+        run_query_values(&inner.conn, sql, params)
+    }
+
     /// One watchdog tick, for a test that cannot wait a second per assertion.
     #[cfg(test)]
     fn sweep_now(&self) -> bool {
@@ -461,6 +467,38 @@ fn run_query(conn: &Connection, sql: &str, params: &[Json]) -> Result<Vec<Json>,
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// A read whose rows come back positionally, in the order the statement asks
+/// for its columns.
+///
+/// `run_query` above builds each row as a `serde_json::Map`, and without the
+/// `preserve_order` feature that is a `BTreeMap`: the keys come out sorted, not
+/// in SELECT order. Every caller in ShopOS reads rows by name, so that has never
+/// mattered -- but Drizzle's proxy takes positional rows and maps them onto the
+/// columns it asked for, and handed sorted objects it would read `SELECT b, a`
+/// as `[a, b]` and put every value in the wrong field. Plausible values in the
+/// wrong fields is the worst failure shape this file has.
+///
+/// Turning `preserve_order` on would also work, until an upgrade somewhere in
+/// the dependency graph turned it off again with nothing going red. Asking
+/// SQLite for positions cannot drift.
+fn run_query_values(conn: &Connection, sql: &str, params: &[Json]) -> Result<Vec<Vec<Json>>, String> {
+    let bound = bind(params)?;
+    let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
+    let count = stmt.column_count();
+
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(bound), |row| {
+            let mut values = Vec::with_capacity(count);
+            for i in 0..count {
+                values.push(to_json(row.get_ref(i)?));
+            }
+            Ok(values)
+        })
+        .map_err(|e| e.to_string())?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 fn run_execute(conn: &Connection, sql: &str, params: &[Json]) -> Result<ExecResult, String> {
     let bound = bind(params)?;
     let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
@@ -486,6 +524,15 @@ pub fn sql_query(db: State<'_, DbState>, sql: String, params: Vec<Json>) -> Resu
 }
 
 #[tauri::command]
+pub fn sql_query_values(
+    db: State<'_, DbState>,
+    sql: String,
+    params: Vec<Json>,
+) -> Result<Vec<Vec<Json>>, String> {
+    db.get()?.query_values(&sql, &params)
+}
+
+#[tauri::command]
 pub fn sql_execute(db: State<'_, DbState>, sql: String, params: Vec<Json>) -> Result<ExecResult, String> {
     db.get()?.execute(&sql, &params)
 }
@@ -505,6 +552,18 @@ pub fn sql_tx_query(
     let inner = lock(db.get()?)?;
     assert_token(&inner, &token)?;
     run_query(&inner.conn, &sql, &params)
+}
+
+#[tauri::command]
+pub fn sql_tx_query_values(
+    db: State<'_, DbState>,
+    token: String,
+    sql: String,
+    params: Vec<Json>,
+) -> Result<Vec<Vec<Json>>, String> {
+    let inner = lock(db.get()?)?;
+    assert_token(&inner, &token)?;
+    run_query_values(&inner.conn, &sql, &params)
 }
 
 #[tauri::command]
@@ -893,5 +952,52 @@ mod tests {
         assert!(said.contains("Another program"), "{said}");
         assert!(said.contains("Close any other copy of ShopOS"), "{said}");
         assert!(said.contains("database is locked"), "{said}");
+    }
+
+    /// Positional rows come back in SELECT order, where objects come back
+    /// sorted.
+    ///
+    /// Both halves are asserted together because the second is the reason the
+    /// first exists. `run_query` builds a `serde_json::Map`, which is a
+    /// `BTreeMap` in this build: ask for `(text, id)` and the object has `id`
+    /// first. Nothing in ShopOS has ever minded, because every caller reads by
+    /// name -- but Drizzle reads by position, and handed the object it would put
+    /// every value in the wrong field with no error anywhere.
+    #[test]
+    fn positional_rows_keep_the_order_the_statement_asked_for() {
+        let (dir, db) = a_till();
+        db.execute("INSERT INTO note (id, text) VALUES (7, 'paid')", &[])
+            .unwrap();
+
+        let values = db.query_values("SELECT text, id FROM note", &[]).unwrap();
+        assert_eq!(values, vec![vec![Json::String("paid".into()), Json::Number(Number::from(7))]]);
+
+        let objects = db.query("SELECT text, id FROM note", &[]).unwrap();
+        let keys: Vec<&String> = objects[0].as_object().unwrap().keys().collect();
+        assert_eq!(keys, vec!["id", "text"], "the object is sorted, which is the hazard");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A read is allowed while a transaction is open, positional or not.
+    #[test]
+    fn positional_rows_read_inside_an_open_transaction() {
+        let (dir, db) = a_till();
+        db.execute("INSERT INTO note (id, text) VALUES (1, 'before')", &[])
+            .unwrap();
+        let _token = db.begin(None).unwrap();
+
+        let values = db.query_values("SELECT text FROM note", &[]).unwrap();
+        assert_eq!(values, vec![vec![Json::String("before".into())]]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// No rows means no rows, not one row of nothing.
+    #[test]
+    fn positional_rows_are_empty_when_nothing_matches() {
+        let (dir, db) = a_till();
+        assert!(db.query_values("SELECT text FROM note", &[]).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

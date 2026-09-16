@@ -55,6 +55,13 @@ function watching(): { driver: SqlDriver; asked: Asked[] } {
       asked.push({ sql, params })
       return db.get<T>(sql, params)
     },
+    /* Recorded like the other two. A query that Drizzle sends is still a
+       statement this repo issued, and a plan test that could not see it would
+       go quietly blind the day a service moves onto typed queries. */
+    queryValues: (sql: string, params: SqlValue[] = []) => {
+      asked.push({ sql, params })
+      return db.queryValues(sql, params)
+    },
     execute: (sql, params) => db.execute(sql, params),
     transaction: (fn) => fn(driver),
     close: () => Promise.resolve(),

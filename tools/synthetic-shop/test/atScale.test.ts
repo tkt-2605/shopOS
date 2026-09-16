@@ -99,6 +99,11 @@ function counting(db: SqlDriver): { driver: SqlDriver; rows: () => number } {
       return rows
     },
     get: (sql, params) => db.get(sql, params),
+    queryValues: async (sql, params) => {
+      const rows = await db.queryValues(sql, params)
+      read += rows.length
+      return rows
+    },
     execute: (sql, params) => db.execute(sql, params),
     transaction: (fn) => fn(driver),
     close: () => Promise.resolve(),
