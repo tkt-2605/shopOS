@@ -3,47 +3,15 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import type { Migration } from './migrate.js'
 import { EXPECTED_SCHEMA_VERSION } from './schemaVersion.js'
+import { MIGRATION_FILES } from './migrationKinds.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const migrationsDir = join(here, '..', '..', 'migrations')
 
-const FILES: ReadonlyArray<readonly [number, string]> = [
-  [1, '001_initial.sql'],
-  [2, '002_stock_value.sql'],
-  [3, '003_margin_guards.sql'],
-  [4, '004_attachments.sql'],
-  [5, '005_stock_counts.sql'],
-  [6, '006_reorder.sql'],
-  [7, '007_barcodes.sql'],
-  [8, '008_pricing_page.sql'],
-  [9, '009_grouping.sql'],
-  [10, '010_customer_ladders.sql'],
-  [11, '011_features_and_returns.sql'],
-  [12, '012_stock_policy.sql'],
-  [13, '013_customer_identity.sql'],
-  [14, '014_doc_formats.sql'],
-  [15, '015_sheet_formats.sql'],
-  [16, '016_documents.sql'],
-  [17, '017_bill_from_order.sql'],
-  [18, '018_sheet_templates.sql'],
-  [19, '019_device_provenance.sql'],
-  [20, '020_settings_revision.sql'],
-  [21, '021_change_feed.sql'],
-  [22, '022_document_revision.sql'],
-  [23, '023_sync_peers.sql'],
-  [24, '024_shop_identity.sql'],
-  [25, '025_pairing.sql'],
-  [26, '026_sync_visibility.sql'],
-  [27, '027_doc_no_length.sql'],
-  [28, '028_invoice_snapshot.sql'],
-  [29, '029_document_says_what_it_is.sql'],
-  [30, '030_two_tables_nobody_read.sql'],
-  [31, '031_one_way_to_retire_a_price_list.sql'],
-  [32, '032_the_retirement_that_never_was.sql'],
-  [33, '033_a_setting_nothing_asks_for.sql'],
-  [34, '034_two_questions_the_tables_would_not_answer.sql'],
-  [35, '035_money_that_goes_the_other_way.sql'],
-]
+/* The list lives in `migrationKinds.ts`, which reads nothing off disk and can
+   therefore be imported by the webview as well as by this file. See the note
+   there on why the classification has to be reachable from both. */
+const FILES = MIGRATION_FILES
 
 export const MIGRATIONS: Migration[] = FILES.map(([version, file]) => ({
   version,

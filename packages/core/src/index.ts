@@ -11,6 +11,9 @@ export { MERGE_BUDGET_MS } from './db/driver.js'
 export { SqlError } from './db/driver.js'
 export { migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type Migration } from './db/migrate.js'
 export { EXPECTED_SCHEMA_VERSION } from './db/schemaVersion.js'
+export {
+  MIN_PEER_SCHEMA_VERSION, MIGRATION_FILES, type MigrationKind,
+} from './db/migrationKinds.js'
 export { createTauriDriver, backupDatabase } from './db/tauri-driver.js'
 
 export * as Tax from './domain/tax.js'

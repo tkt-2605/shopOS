@@ -1,6 +1,7 @@
 import type { Row, SqlDriver, SqlValue } from '../db/driver.js'
 import { MERGE_BUDGET_MS } from '../db/driver.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
+import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 import { deviceId } from '../device.js'
 import { newId } from '../ids.js'
 import { decideRow, decideDeletion } from '../domain/merge.js'
@@ -31,6 +32,16 @@ export interface PeerHello {
   deviceId: string | null
   label: string | null
   schemaVersion: number
+  /**
+   * The oldest schema the peer will sync with.
+   *
+   * Optional, and its absence means something specific rather than nothing: a
+   * till running a build from before Phase 2c does not send this field *and*
+   * refuses anything but an exact match. Treating "absent" as "they demand
+   * equality" is therefore the truth about that peer, not a guess -- and it
+   * gives the honest refusal here instead of a round that dies at their end.
+   */
+  minPeerSchema?: number
   /**
    * Which shop the peer is. Null on a till that has been migrated and not set
    * up, which is what a new till joining an existing shop looks like.
@@ -64,8 +75,24 @@ export type SyncResult =
       contested: ContestedChange[]
       /** True when more is waiting and another round would fetch it. */
       more: boolean
+      /**
+       * Columns and tables in what arrived that this database has no place for.
+       *
+       * Not an error and not silence. A till one additive migration ahead sends
+       * rows with a column this one has never heard of; dropping it is right,
+       * and saying nothing about it would leave a shopkeeper with two tills
+       * that quietly hold different things. The newer side reports zero and the
+       * older side reports what it left out, so the counts also say which way
+       * round the pair is.
+       */
+      ignoredColumns: number
+      ignoredTables: number
     }
-  | { ok: false; code: 'SCHEMA_MISMATCH'; mine: number; theirs: number }
+  | {
+      ok: false; code: 'SCHEMA_MISMATCH'; mine: number; theirs: number
+      /** Which side is too old to be talked to, for the sentence a screen shows. */
+      behind: 'mine' | 'theirs'
+    }
   | { ok: false; code: 'NO_IDENTITY' }
   | { ok: false; code: 'SAME_DEVICE' }
   | { ok: false; code: 'DIFFERENT_SHOP'; mine: string; theirs: string }
@@ -99,18 +126,31 @@ export async function syncWith(
 
   const hello = await transport.hello()
 
-  /* Before a single row moves. Two tills on different builds is the sync bug
-     that corrupts data rather than the one that annoys somebody: the newer one
-     writes columns the older one has no place for, and the older one sends rows
-     missing columns the newer one has made NOT NULL. `staleBuild()` already
-     refuses to start an app against a database it is behind; this is the same
-     refusal across the wire. */
-  if (hello.schemaVersion !== EXPECTED_SCHEMA_VERSION) {
+  /* Before a single row moves.
+   *
+   * This used to demand that the two versions be equal, which is right while
+   * every till in the shop is updated by one person on one afternoon and wrong
+   * the first time it is not. An update rolls out; the second till is switched
+   * off; it comes back on Monday and the shop cannot sync at all, with nothing
+   * on either screen explaining why. That is the common case, and across an
+   * additive migration there was never anything unsafe about it.
+   *
+   * So each side carries a floor -- the version after its last breaking
+   * migration -- and the pair is allowed when each is at or above the other's.
+   * Both directions are checked because the danger is not symmetrical with the
+   * numbers: the newer till writes columns the older has no place for, and the
+   * older sends rows missing columns the newer has made NOT NULL. */
+  const theirFloor = hello.minPeerSchema ?? hello.schemaVersion
+  if (hello.schemaVersion < MIN_PEER_SCHEMA_VERSION) {
     return {
-      ok: false,
-      code: 'SCHEMA_MISMATCH',
-      mine: EXPECTED_SCHEMA_VERSION,
-      theirs: hello.schemaVersion,
+      ok: false, code: 'SCHEMA_MISMATCH', behind: 'theirs',
+      mine: EXPECTED_SCHEMA_VERSION, theirs: hello.schemaVersion,
+    }
+  }
+  if (EXPECTED_SCHEMA_VERSION < theirFloor) {
+    return {
+      ok: false, code: 'SCHEMA_MISMATCH', behind: 'mine',
+      mine: EXPECTED_SCHEMA_VERSION, theirs: hello.schemaVersion,
     }
   }
 
@@ -157,7 +197,8 @@ export async function syncWith(
   // ── pull ────────────────────────────────────────────────────────────────
   const incoming = await transport.fetch(peer.theirCursor, BATCH)
   const mineChanged = await changedHere(db, peer.myCursor)
-  const { applied, contested } = await applyBatch(db, incoming, mineChanged)
+  const { applied, contested, ignoredColumns, ignoredTables } =
+    await applyBatch(db, incoming, mineChanged)
 
   if (incoming.records.length > 0) {
     await db.execute(
@@ -191,6 +232,8 @@ export async function syncWith(
     peer: hello.deviceId,
     received: applied,
     sent,
+    ignoredColumns,
+    ignoredTables,
     contested,
     more: !incoming.complete || !outgoing.complete,
   }
@@ -301,12 +344,22 @@ export async function collectChanges(
  * raised here would make this copy look newer than the machine that wrote it,
  * and the next round would send it straight back as an edit nobody made.
  */
+export interface MergeOutcome {
+  applied: number
+  contested: ContestedChange[]
+  /** See `SyncResult.ignoredColumns`. */
+  ignoredColumns: number
+  ignoredTables: number
+}
+
 export async function applyBatch(
   db: SqlDriver,
   batch: ChangeBatch,
   changedHereToo: ReadonlySet<string> = new Set(),
-): Promise<{ applied: number; contested: ContestedChange[] }> {
-  if (batch.records.length === 0) return { applied: 0, contested: [] }
+): Promise<MergeOutcome> {
+  if (batch.records.length === 0) {
+    return { applied: 0, contested: [], ignoredColumns: 0, ignoredTables: 0 }
+  }
 
   const outcome = await mergeBatch(db, batch, changedHereToo)
 
@@ -362,11 +415,56 @@ function productsIn(batch: ChangeBatch): string[] | null {
   return [...ids]
 }
 
+/**
+ * What columns a table has here, asked once per table per process.
+ *
+ * A merge reads this for every row it applies, and the answer cannot change
+ * while the app is running: a migration runs at startup, before anything syncs.
+ * Cached on the driver rather than globally, so a test that opens two databases
+ * in one process does not hand one of them the other's shape.
+ */
+const columnsOf = new WeakMap<SqlDriver, Map<string, Set<string> | null>>()
+
+async function localColumns(db: SqlDriver, table: string): Promise<Set<string> | null> {
+  let tables = columnsOf.get(db)
+  if (!tables) { tables = new Map(); columnsOf.set(db, tables) }
+
+  const cached = tables.get(table)
+  if (cached !== undefined) return cached
+
+  /* The table name is interpolated because it cannot be bound -- it is an
+     identifier, not a value. It comes from `REPLICATED` in `replicaShape.ts`
+     and never from the wire: `shapeOf` has already refused anything that is not
+     on that list, so a peer cannot name a table here. */
+  const info = await db.query<{ name: string }>(`PRAGMA table_info("${table}")`)
+  const columns = info.length === 0 ? null : new Set(info.map((c) => c.name))
+  tables.set(table, columns)
+  return columns
+}
+
+/**
+ * A row as this database can hold it: the columns it knows, and no others.
+ *
+ * A till one additive migration ahead sends rows carrying a column this one has
+ * never heard of. Passing it straight to an INSERT fails the whole batch on
+ * "no such column", every round, in the same way, for ever -- so the shop stops
+ * syncing rather than syncing slightly less.
+ */
+function known(row: Row, columns: Set<string>): { row: Row; dropped: number } {
+  const kept: Row = {}
+  let dropped = 0
+  for (const [name, value] of Object.entries(row)) {
+    if (columns.has(name)) kept[name] = value
+    else dropped += 1
+  }
+  return { row: kept, dropped }
+}
+
 async function mergeBatch(
   db: SqlDriver,
   batch: ChangeBatch,
   changedHereToo: ReadonlySet<string>,
-): Promise<{ applied: number; contested: ContestedChange[] }> {
+): Promise<MergeOutcome> {
   /* Ninety seconds rather than a bill's fifteen.
    *
    * The whole batch is one transaction on purpose: half a merge is not a state
@@ -377,6 +475,8 @@ async function mergeBatch(
    * catch up, and nobody would diagnose that from the shop floor. */
   return applyingRemote(db, async (tx) => {
     let applied = 0
+    let ignoredColumns = 0
+    let ignoredTables = 0
     const contested: ContestedChange[] = []
 
     /* Foreign keys are checked at COMMIT rather than per statement, for the rows
@@ -394,6 +494,12 @@ async function mergeBatch(
     for (const record of batch.records) {
       const shape = shapeOf(record.table)
       if (shape === undefined) continue
+
+      /* A table the peer has and this database does not -- they are ahead by a
+         migration that added one. Counted and skipped, rather than failing the
+         batch that carries it. */
+      const columns = await localColumns(tx, shape.table)
+      if (columns === null) { ignoredTables += 1; continue }
 
       const mine = await tx.get<Row>(
         `SELECT * FROM "${shape.table}" WHERE "${shape.key}" = ?`, [record.rowId],
@@ -440,7 +546,10 @@ async function mergeBatch(
         if (call.winner === 'mine') continue
       }
 
-      await upsert(tx, shape.table, shape.key, record.row)
+      const trimmed = known(record.row, columns)
+      ignoredColumns += trimmed.dropped
+      await upsert(tx, shape.table, shape.key, trimmed.row)
+
       for (const line of shape.lines) {
         /* The winning side's document is the document. Merging lines one by one
            builds a bill neither till ever had — three items from here, two from
@@ -448,8 +557,13 @@ async function mergeBatch(
         await tx.execute(
           `DELETE FROM "${line.table}" WHERE "${line.parentKey}" = ?`, [record.rowId],
         )
+        const lineColumns = await localColumns(tx, line.table)
+        if (lineColumns === null) { ignoredTables += 1; continue }
+
         for (const row of record.lines?.[line.table] ?? []) {
-          await insert(tx, line.table, row)
+          const line0 = known(row, lineColumns)
+          ignoredColumns += line0.dropped
+          await insert(tx, line.table, line0.row)
         }
       }
       applied += 1
@@ -473,7 +587,7 @@ async function mergeBatch(
       )
     }
 
-    return { applied, contested }
+    return { applied, contested, ignoredColumns, ignoredTables }
   }, { budgetMs: MERGE_BUDGET_MS })
 }
 

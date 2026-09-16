@@ -1,5 +1,6 @@
 import type { SqlDriver } from '../db/driver.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
+import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 import { deviceId } from '../device.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import { applyBatch, changedHere, collectChanges } from './sync.js'
@@ -241,6 +242,7 @@ async function handlePair(
     label: await getSetting(db, 'shop_name'),
     shopId: await getSetting(db, 'shop_id'),
     schemaVersion: EXPECTED_SCHEMA_VERSION,
+    minPeerSchema: MIN_PEER_SCHEMA_VERSION,
   })
 }
 
@@ -253,6 +255,7 @@ async function handleHello(db: SqlDriver, them: string): Promise<SyncResponse> {
     label: await getSetting(db, 'shop_name'),
     shopId: await getSetting(db, 'shop_id'),
     schemaVersion: EXPECTED_SCHEMA_VERSION,
+    minPeerSchema: MIN_PEER_SCHEMA_VERSION,
     /* Which counter this till bills on. Two tills on one counter mint invoice
        numbers from the same series, so the asking side refuses before a bill
        crosses and collides. */
@@ -302,7 +305,11 @@ async function handleOffer(
   const batch = parse<ChangeBatch>(request.body)
   if (batch === null || !Array.isArray(batch.records)) return refuse(400, 'MALFORMED')
 
-  if (batch.schemaVersion !== EXPECTED_SCHEMA_VERSION) {
+  /* The same floor the handshake applies, applied again to the batch itself.
+     Equality here would have undone Phase 2c entirely: the asking till would
+     agree at `hello` and then have every batch it pushed refused, which is a
+     shop that reports a successful sync and moves nothing in one direction. */
+  if (batch.schemaVersion < MIN_PEER_SCHEMA_VERSION) {
     return refuse(409, 'SCHEMA_MISMATCH')
   }
 

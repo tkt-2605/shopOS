@@ -6,6 +6,7 @@ import {
 } from '../src/services/sync.js'
 import { setDeviceId, deviceId } from '../src/device.js'
 import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
+import { MIN_PEER_SCHEMA_VERSION } from '../src/db/migrationKinds.js'
 import { changesSince, feedHead, pruneFeed, seedFeedWithEverything } from '../src/services/changefeed.js'
 import { setSetting, getSetting } from '../src/services/bootstrap.js'
 import { createBill } from '../src/services/billing.js'
@@ -280,16 +281,61 @@ describe('when both tills changed the same thing', () => {
 })
 
 describe('what must never happen', () => {
-  it('refuses a till on a different schema before a single row moves', async () => {
+  it('refuses a till too far behind to be talked to, before a single row moves', async () => {
     await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
 
+    /* Below the floor, so the two are on opposite sides of a migration that
+       dropped something. One version behind is a different case and is allowed
+       -- `schema-skew.test.ts` in the bench is where both are pinned. */
     const round = await as(a, () =>
-      syncWith(a.db, wireTo(b, a, { schemaVersion: EXPECTED_SCHEMA_VERSION - 1 })))
+      syncWith(a.db, wireTo(b, a, { schemaVersion: MIN_PEER_SCHEMA_VERSION - 1 })))
 
     expect(round.ok).toBe(false)
-    if (!round.ok) expect(round.code).toBe('SCHEMA_MISMATCH')
+    if (!round.ok && round.code === 'SCHEMA_MISMATCH') {
+      expect(round.behind).toBe('theirs')
+    } else {
+      expect.fail(`expected SCHEMA_MISMATCH, got ${round.ok ? 'ok' : round.code}`)
+    }
     // And nothing crossed.
     expect(await b.db.query(`SELECT id FROM products`)).toHaveLength(0)
+  })
+
+  it('refuses when this till is the one that is too old', async () => {
+    /* The other direction, which is not the same test. A peer that has taken a
+       breaking migration this build has never seen says so in `minPeerSchema`,
+       and the honest answer is that *we* are behind -- which is the sentence a
+       shopkeeper needs, because the fix is on this machine. */
+    await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+
+    const round = await as(a, () => syncWith(a.db, wireTo(b, a, {
+      schemaVersion: EXPECTED_SCHEMA_VERSION + 2,
+      minPeerSchema: EXPECTED_SCHEMA_VERSION + 1,
+    })))
+
+    expect(round.ok).toBe(false)
+    if (!round.ok && round.code === 'SCHEMA_MISMATCH') {
+      expect(round.behind).toBe('mine')
+    } else {
+      expect.fail(`expected SCHEMA_MISMATCH, got ${round.ok ? 'ok' : round.code}`)
+    }
+    expect(await b.db.query(`SELECT id FROM products`)).toHaveLength(0)
+  })
+
+  it('refuses a peer running a build from before the floor existed', async () => {
+    /* An older build does not send `minPeerSchema` at all, and its own code
+       demands an exact match -- so a round with it would be refused at its end
+       whatever this side decides. Absent is read as "they demand equality",
+       which makes the refusal happen here, with a reason, rather than halfway
+       through. */
+    const round = await as(a, () =>
+      syncWith(a.db, wireTo(b, a, { schemaVersion: EXPECTED_SCHEMA_VERSION + 1 })))
+
+    expect(round.ok).toBe(false)
+    if (!round.ok && round.code === 'SCHEMA_MISMATCH') {
+      expect(round.behind).toBe('mine')
+    } else {
+      expect.fail(`expected SCHEMA_MISMATCH, got ${round.ok ? 'ok' : round.code}`)
+    }
   })
 
   it('refuses a till that has set itself up as its own shop', async () => {
