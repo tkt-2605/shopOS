@@ -1,4 +1,6 @@
+import { eq, and, gt, isNull, desc, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { businessDate } from '../dates.js'
 import { newId } from '../ids.js'
 import { type Money, ZERO, paise, add, sub } from '../money.js'
@@ -126,12 +128,15 @@ async function computeLines(
 ): Promise<ComputeResult> {
   if (lines.length === 0) return { ok: false, code: 'NO_LINES' }
 
-  const bill = await db.get<{
-    id: string; docstatus: number; place_of_supply: string | null; supply_type: string | null
-  }>(
-    `SELECT id, docstatus, place_of_supply, supply_type FROM bills WHERE id = ?`,
-    [billId],
-  )
+  const [bill] = await q(db)
+    .select({
+      id: schema.bills.id,
+      docstatus: schema.bills.docstatus,
+      placeOfSupply: schema.bills.placeOfSupply,
+      supplyType: schema.bills.supplyType,
+    })
+    .from(schema.bills)
+    .where(eq(schema.bills.id, billId))
   if (!bill) throw new Error(`unknown bill: ${billId}`)
   if (bill.docstatus !== SUBMITTED) return { ok: false, code: 'BILL_NOT_SUBMITTED' }
 
@@ -145,33 +150,39 @@ async function computeLines(
      right state after the sale, would have found IGST credited back against
      CGST+SGST collected, and the difference would have sat in the return
      unexplained. The bill says what it was. Rule 53 asks for exactly that. */
-  const supply = bill.supply_type === 'inter_state' || bill.supply_type === 'intra_state'
-    ? bill.supply_type
+  const supply = bill.supplyType === 'inter_state' || bill.supplyType === 'intra_state'
+    ? bill.supplyType
     // Only for a bill submitted before migration 028 backfilled it, which the
     // migration leaves none of. Deriving is what this did before, so a gap here
     // is no worse than the behaviour it replaces.
-    : supplyTypeFor(await getSetting(db, 'shop_state_code'), bill.place_of_supply)
+    : supplyTypeFor(await getSetting(db, 'shop_state_code'), bill.placeOfSupply)
 
   const computed: ComputedReturnLine[] = []
 
   for (const line of lines) {
-    const item = await db.get<{
-      id: string; product_id: string; product_name: string; qty: number; base_qty: number
-      returned_qty: number; line_total: number; tax_rate_bp: number; hsn_code: string | null
-    }>(
-      `SELECT id, product_id, product_name, qty, base_qty, returned_qty, line_total, tax_rate_bp, hsn_code
-         FROM bill_items WHERE id = ? AND bill_id = ?`,
-      [line.billItemId, billId],
-    )
+    const [item] = await q(db)
+      .select({
+        id: schema.billItems.id,
+        productId: schema.billItems.productId,
+        productName: schema.billItems.productName,
+        qty: schema.billItems.qty,
+        baseQty: schema.billItems.baseQty,
+        returnedQty: schema.billItems.returnedQty,
+        lineTotal: schema.billItems.lineTotal,
+        taxRateBp: schema.billItems.taxRateBp,
+        hsnCode: schema.billItems.hsnCode,
+      })
+      .from(schema.billItems)
+      .where(and(eq(schema.billItems.id, line.billItemId), eq(schema.billItems.billId, billId)))
     if (!item) return { ok: false, code: 'UNKNOWN_LINE', billItemId: line.billItemId }
 
-    const blocked = await db.get<{ name: string; return_blocked: number }>(
-      `SELECT name, return_blocked FROM products WHERE id = ?`,
-      [item.product_id],
-    )
-    if (blocked?.return_blocked === 1) return { ok: false, code: 'RETURN_BLOCKED', productName: blocked.name }
+    const [blocked] = await q(db)
+      .select({ name: schema.products.name, returnBlocked: schema.products.returnBlocked })
+      .from(schema.products)
+      .where(eq(schema.products.id, item.productId))
+    if (blocked?.returnBlocked === 1) return { ok: false, code: 'RETURN_BLOCKED', productName: blocked.name }
 
-    const returnable = subQty(qty(item.qty), qty(item.returned_qty))
+    const returnable = subQty(item.qty, item.returnedQty)
     if (line.qty <= 0 || line.qty > returnable) {
       return { ok: false, code: 'EXCEEDS_RETURNABLE', billItemId: line.billItemId, requested: line.qty, returnable }
     }
@@ -179,23 +190,23 @@ async function computeLines(
     // A return that finishes the line refunds whatever is left rather than a fresh
     // percentage, so successive partial returns always sum back to the line total.
     const alreadyRefunded = await refundedSoFar(db, item.id)
-    const completesLine = addQty(qty(item.returned_qty), line.qty) === qty(item.qty)
+    const completesLine = addQty(item.returnedQty, line.qty) === item.qty
     const refund = completesLine
-      ? sub(item.line_total as Money, alreadyRefunded)
-      : paise(Math.round((item.line_total * line.qty) / item.qty))
+      ? sub(item.lineTotal, alreadyRefunded)
+      : paise(Math.round((item.lineTotal * line.qty) / item.qty))
 
     // Splitting tax out of the refund keeps each credit note internally consistent:
     // taxable + cgst + sgst equals the refund exactly, as on the original invoice.
-    const tax = splitTax(refund, item.tax_rate_bp, supply)
+    const tax = splitTax(refund, item.taxRateBp, supply)
 
     computed.push({
       billItemId: item.id,
-      productId: item.product_id,
-      productName: item.product_name,
+      productId: item.productId,
+      productName: item.productName,
       qty: line.qty,
-      baseQty: qty(Math.round((item.base_qty * line.qty) / item.qty)),
-      hsnCode: item.hsn_code,
-      taxRateBp: item.tax_rate_bp,
+      baseQty: qty(Math.round((item.baseQty * line.qty) / item.qty)),
+      hsnCode: item.hsnCode,
+      taxRateBp: item.taxRateBp,
       refund,
       taxableValue: tax.taxableValue,
       cgst: tax.cgst,
@@ -254,30 +265,37 @@ export async function createReturn(db: SqlDriver, input: CreateReturnInput): Pro
   const postingDate = businessDate(now)
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO sales_returns
-         (id, doc_no, docstatus, bill_id, posting_date, refund_total, tax_reversed, refund_method, reason,
-          created_by, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        returnId, `DRAFT-${returnId}`, input.billId, postingDate,
-        computed.refundTotal, computed.taxReversed, input.refundMethod, input.reason ?? null,
-        input.actorId, nowIso, nowIso,
-      ],
-    )
+    await q(tx).insert(schema.salesReturns).values({
+      id: returnId,
+      docNo: `DRAFT-${returnId}`,
+      docstatus: DRAFT,
+      billId: input.billId,
+      postingDate,
+      refundTotal: computed.refundTotal,
+      taxReversed: computed.taxReversed,
+      refundMethod: input.refundMethod,
+      reason: input.reason ?? null,
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
 
     for (const line of computed.lines) {
-      await tx.execute(
-        `INSERT INTO sales_return_items
-           (id, return_id, bill_item_id, product_id, qty, base_qty, refund_amount,
-            taxable_value, cgst_amount, sgst_amount, igst_amount, hsn_code, tax_rate_bp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          newId(), returnId, line.billItemId, line.productId, line.qty, line.baseQty,
-          line.refund, line.taxableValue, line.cgst, line.sgst, line.igst,
-          line.hsnCode, line.taxRateBp,
-        ],
-      )
+      await q(tx).insert(schema.salesReturnItems).values({
+        id: newId(),
+        returnId,
+        billItemId: line.billItemId,
+        productId: line.productId,
+        qty: line.qty,
+        baseQty: line.baseQty,
+        refundAmount: line.refund,
+        taxableValue: line.taxableValue,
+        cgstAmount: line.cgst,
+        sgstAmount: line.sgst,
+        igstAmount: line.igst,
+        hsnCode: line.hsnCode,
+        taxRateBp: line.taxRateBp,
+      })
     }
 
     await writeAudit(tx, { actorId: input.actorId }, {
@@ -314,8 +332,10 @@ export async function processReturn(db: SqlDriver, input: CreateReturnInput): Pr
   // A refusal at submit would otherwise leave a draft nobody will ever finish,
   // silting the bill up with returns that did not happen.
   if (!submitted.ok) {
-    await db.execute(`DELETE FROM sales_return_items WHERE return_id = ?`, [created.returnId])
-    await db.execute(`DELETE FROM sales_returns WHERE id = ?`, [created.returnId])
+    await q(db).delete(schema.salesReturnItems)
+      .where(eq(schema.salesReturnItems.returnId, created.returnId))
+    await q(db).delete(schema.salesReturns)
+      .where(eq(schema.salesReturns.id, created.returnId))
   }
   return submitted
 }
@@ -328,13 +348,17 @@ export async function submitReturn(
   const ret = await loadReturn(db, input.returnId)
   assertCanApply('return', parseDocStatus(ret.docstatus), 'submit')
 
-  const bill = await db.get<{
-    docstatus: number; register_id: string; customer_id: string | null
-    grand_total: number; posting_date: string; doc_no: string
-  }>(
-    `SELECT docstatus, register_id, customer_id, grand_total, posting_date, doc_no FROM bills WHERE id = ?`,
-    [ret.billId],
-  )
+  const [bill] = await q(db)
+    .select({
+      docstatus: schema.bills.docstatus,
+      registerId: schema.bills.registerId,
+      customerId: schema.bills.customerId,
+      grandTotal: schema.bills.grandTotal,
+      postingDate: schema.bills.postingDate,
+      docNo: schema.bills.docNo,
+    })
+    .from(schema.bills)
+    .where(eq(schema.bills.id, ret.billId))
   if (!bill || bill.docstatus !== SUBMITTED) return { ok: false, code: 'BILL_CANCELLED' }
 
   const split = splitRefund(ret.refundTotal, await refundBasis(db, ret.billId))
@@ -343,19 +367,27 @@ export async function submitReturn(
   // no store-credit wallet, and inventing one here would leave money sitting
   // somewhere no screen adds up. Cash, or a smaller return.
   if (ret.refundMethod === 'credit' && split.cash > 0) {
-    if (!bill.customer_id) return { ok: false, code: 'NOTHING_TO_CREDIT', refund: split.cash, outstanding: ZERO }
-    const outstanding = await outstandingFor(db, bill.customer_id)
+    if (!bill.customerId) return { ok: false, code: 'NOTHING_TO_CREDIT', refund: split.cash, outstanding: ZERO }
+    const outstanding = await outstandingFor(db, bill.customerId)
     if (outstanding < split.cash) {
       return { ok: false, code: 'NOTHING_TO_CREDIT', refund: split.cash, outstanding }
     }
   }
 
-  const lines = await db.query<{ bill_item_id: string; product_id: string; qty: number; base_qty: number }>(
-    `SELECT bill_item_id, product_id, qty, base_qty FROM sales_return_items WHERE return_id = ?`,
-    [input.returnId],
-  )
+  const lines = await q(db)
+    .select({
+      billItemId: schema.salesReturnItems.billItemId,
+      productId: schema.salesReturnItems.productId,
+      qty: schema.salesReturnItems.qty,
+      baseQty: schema.salesReturnItems.baseQty,
+    })
+    .from(schema.salesReturnItems)
+    .where(eq(schema.salesReturnItems.returnId, input.returnId))
 
-  const register = await db.get<{ prefix: string }>(`SELECT prefix FROM registers WHERE id = ?`, [bill.register_id])
+  const [register] = await q(db)
+    .select({ prefix: schema.registers.prefix })
+    .from(schema.registers)
+    .where(eq(schema.registers.id, bill.registerId))
   const nowIso = now.toISOString()
   let docNo = ''
   let creditNoteDocNo: string | null = null
@@ -365,37 +397,40 @@ export async function submitReturn(
 
     for (const line of lines) {
       await postMovement(tx, {
-        productId: line.product_id,
-        qtyChange: qty(line.base_qty),
-        unitCost: await issuedUnitCost(tx, 'bill', ret.billId, line.product_id),
+        productId: line.productId,
+        qtyChange: line.baseQty,
+        unitCost: await issuedUnitCost(tx, 'bill', ret.billId, line.productId),
         voucherType: 'sales_return',
         voucherId: input.returnId,
         postingDate: ret.postingDate,
         userId: input.actorId,
       })
-      await tx.execute(
-        `UPDATE bill_items SET returned_qty = returned_qty + ? WHERE id = ?`,
-        [line.qty, line.bill_item_id],
-      )
+      /* Read-modify-write in one statement rather than two: the figure this
+         adds to is the one the other till may be adding to at the same moment. */
+      await q(tx).update(schema.billItems)
+        .set({ returnedQty: sql`${schema.billItems.returnedQty} + ${line.qty}` })
+        .where(eq(schema.billItems.id, line.billItemId))
     }
 
     if (split.cash > 0) {
       if (ret.refundMethod === 'credit') {
         const note = await postCreditNote(tx, {
-          customerId: bill.customer_id!,
+          customerId: bill.customerId!,
           amount: split.cash,
-          reference: `${docNo} against ${bill.doc_no}`,
+          reference: `${docNo} against ${bill.docNo}`,
           notes: ret.reason,
           ...(register?.prefix ? { registerPrefix: register.prefix } : {}),
           actorId: input.actorId,
           now,
         })
         creditNoteDocNo = note.docNo
-        await tx.execute(`UPDATE sales_returns SET credit_note_id = ? WHERE id = ?`, [note.paymentId, input.returnId])
+        await q(tx).update(schema.salesReturns)
+          .set({ creditNoteId: note.paymentId })
+          .where(eq(schema.salesReturns.id, input.returnId))
       } else {
         // Out of whichever drawer is open now — a return days later must not
         // reach back into a session that has been counted and closed.
-        const session = await openSessionFor(tx, bill.register_id)
+        const session = await openSessionFor(tx, bill.registerId)
         if (session) {
           await postCashMovement(tx, {
             sessionId: session,
@@ -414,12 +449,16 @@ export async function submitReturn(
     if (split.pointsRestored > 0) await restorePoints(tx, ret.billId, split.pointsRestored)
     if (split.pointsRemoved > 0) await clawBackPoints(tx, ret.billId, split.pointsRemoved, nowIso)
 
-    await tx.execute(
-      `UPDATE sales_returns
-          SET docstatus = 1, doc_no = ?, refund_cash = ?, points_restored = ?, points_removed = ?, updated_at = ?
-        WHERE id = ?`,
-      [docNo, split.cash, split.pointsRestored, split.pointsRemoved, nowIso, input.returnId],
-    )
+    await q(tx).update(schema.salesReturns)
+      .set({
+        docstatus: SUBMITTED,
+        docNo,
+        refundCash: split.cash,
+        pointsRestored: split.pointsRestored,
+        pointsRemoved: split.pointsRemoved,
+        updatedAt: nowIso,
+      })
+      .where(eq(schema.salesReturns.id, input.returnId))
 
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'sales_returns', entityId: input.returnId, action: 'submit',
@@ -454,25 +493,26 @@ export async function cancelReturn(
   const ret = await loadReturn(db, input.returnId)
   assertCanApply('return', parseDocStatus(ret.docstatus), 'cancel')
 
-  const lines = await db.query<{ bill_item_id: string; qty: number }>(
-    `SELECT bill_item_id, qty FROM sales_return_items WHERE return_id = ?`,
-    [input.returnId],
-  )
+  const lines = await q(db)
+    .select({ billItemId: schema.salesReturnItems.billItemId, qty: schema.salesReturnItems.qty })
+    .from(schema.salesReturnItems)
+    .where(eq(schema.salesReturnItems.returnId, input.returnId))
   const nowIso = now.toISOString()
 
   await db.transaction(async (tx) => {
     await reverseVoucher(tx, 'sales_return', input.returnId, ret.postingDate, input.actorId)
 
     for (const line of lines) {
-      await tx.execute(`UPDATE bill_items SET returned_qty = returned_qty - ? WHERE id = ?`, [line.qty, line.bill_item_id])
+      await q(tx).update(schema.billItems)
+        .set({ returnedQty: sql`${schema.billItems.returnedQty} - ${line.qty}` })
+        .where(eq(schema.billItems.id, line.billItemId))
     }
 
     // Everything the return handed back is taken back, in the same currencies.
     if (ret.creditNoteId) {
-      await tx.execute(
-        `UPDATE payment_entries SET docstatus = 2, updated_at = ? WHERE id = ?`,
-        [nowIso, ret.creditNoteId],
-      )
+      await q(tx).update(schema.paymentEntries)
+        .set({ docstatus: CANCELLED, updatedAt: nowIso })
+        .where(eq(schema.paymentEntries.id, ret.creditNoteId))
       await writeAudit(tx, { actorId: input.actorId }, {
         entity: 'payment_entries', entityId: ret.creditNoteId, action: 'cancel',
         docstatusFrom: SUBMITTED, docstatusTo: CANCELLED,
@@ -482,10 +522,9 @@ export async function cancelReturn(
     if (ret.pointsRestored > 0) await unrestorePoints(tx, ret.billId, ret.pointsRestored)
     if (ret.pointsRemoved > 0) await regrantPoints(tx, ret.billId, ret.pointsRemoved)
 
-    await tx.execute(
-      `UPDATE sales_returns SET docstatus = 2, updated_at = ? WHERE id = ?`,
-      [nowIso, input.returnId],
-    )
+    await q(tx).update(schema.salesReturns)
+      .set({ docstatus: CANCELLED, updatedAt: nowIso })
+      .where(eq(schema.salesReturns.id, input.returnId))
 
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'sales_returns', entityId: input.returnId, action: 'cancel',
@@ -504,36 +543,57 @@ export async function cancelReturn(
  * hand back the exact remainder instead of a rounded share of it.
  */
 async function refundBasis(db: SqlDriver, billId: string): Promise<RefundBasis> {
-  const bill = await db.get<{ grand_total: number }>(`SELECT grand_total FROM bills WHERE id = ?`, [billId])
+  const [bill] = await q(db)
+    .select({ grandTotal: schema.bills.grandTotal })
+    .from(schema.bills)
+    .where(eq(schema.bills.id, billId))
 
-  const paidWithPoints = await db.get<{ amount: number | null }>(
-    `SELECT SUM(amount) AS amount FROM bill_payments WHERE bill_id = ? AND method = 'loyalty'`,
-    [billId],
-  )
-  const redeemed = await db.get<{ points: number | null }>(
-    `SELECT SUM(points) AS points FROM loyalty_redemptions WHERE bill_id = ? AND reversed_at IS NULL`,
-    [billId],
-  )
-  const earned = await db.get<{ points: number; consumed: number }>(
-    `SELECT points, consumed FROM loyalty_entries WHERE bill_id = ? AND cancelled_at IS NULL`,
-    [billId],
-  )
-  const priorReturns = await db.get<{ refunded: number | null; as_points: number | null; removed: number | null }>(
-    `SELECT SUM(refund_total) AS refunded,
-            SUM(refund_total - refund_cash) AS as_points,
-            SUM(points_removed) AS removed
-       FROM sales_returns WHERE bill_id = ? AND docstatus = 1`,
-    [billId],
-  )
+  /* COALESCE on every sum, because a SUM over no rows is null and every one of
+     these figures is arithmetic the moment it comes back. */
+  const [paidWithPoints] = await q(db)
+    .select({ amount: sql<Money>`COALESCE(SUM(${schema.billPayments.amount}), 0)` })
+    .from(schema.billPayments)
+    .where(and(
+      eq(schema.billPayments.billId, billId),
+      eq(schema.billPayments.method, 'loyalty'),
+    ))
+
+  const [redeemed] = await q(db)
+    .select({ points: sql<number>`COALESCE(SUM(${schema.loyaltyRedemptions.points}), 0)` })
+    .from(schema.loyaltyRedemptions)
+    .where(and(
+      eq(schema.loyaltyRedemptions.billId, billId),
+      isNull(schema.loyaltyRedemptions.reversedAt),
+    ))
+
+  const [earned] = await q(db)
+    .select({ points: schema.loyaltyEntries.points, consumed: schema.loyaltyEntries.consumed })
+    .from(schema.loyaltyEntries)
+    .where(and(
+      eq(schema.loyaltyEntries.billId, billId),
+      isNull(schema.loyaltyEntries.cancelledAt),
+    ))
+
+  const [priorReturns] = await q(db)
+    .select({
+      refunded: sql<Money>`COALESCE(SUM(${schema.salesReturns.refundTotal}), 0)`,
+      asPoints: sql<Money>`COALESCE(SUM(${schema.salesReturns.refundTotal} - ${schema.salesReturns.refundCash}), 0)`,
+      removed: sql<number>`COALESCE(SUM(${schema.salesReturns.pointsRemoved}), 0)`,
+    })
+    .from(schema.salesReturns)
+    .where(and(
+      eq(schema.salesReturns.billId, billId),
+      eq(schema.salesReturns.docstatus, SUBMITTED),
+    ))
 
   return {
-    billTotal: (bill?.grand_total ?? 0) as Money,
-    pointsValue: (paidWithPoints?.amount ?? 0) as Money,
+    billTotal: bill?.grandTotal ?? ZERO,
+    pointsValue: paidWithPoints?.amount ?? ZERO,
     pointsRedeemed: redeemed?.points ?? 0,
     pointsEarned: earned?.points ?? 0,
     pointsEarnedSpent: earned?.consumed ?? 0,
-    alreadyRefunded: (priorReturns?.refunded ?? 0) as Money,
-    alreadyRestoredValue: (priorReturns?.as_points ?? 0) as Money,
+    alreadyRefunded: priorReturns?.refunded ?? ZERO,
+    alreadyRestoredValue: priorReturns?.asPoints ?? ZERO,
     alreadyRemovedPoints: priorReturns?.removed ?? 0,
   }
 }
@@ -545,37 +605,61 @@ async function refundBasis(db: SqlDriver, billId: string): Promise<RefundBasis> 
  * shop never offered.
  */
 async function restorePoints(tx: SqlDriver, billId: string, points: number): Promise<void> {
-  const rows = await tx.query<{ id: string; loyalty_entry_id: string; points: number; restored: number }>(
-    `SELECT id, loyalty_entry_id, points, restored FROM loyalty_redemptions
-      WHERE bill_id = ? AND reversed_at IS NULL ORDER BY created_at`,
-    [billId],
-  )
+  const rows = await q(tx)
+    .select({
+      id: schema.loyaltyRedemptions.id,
+      loyaltyEntryId: schema.loyaltyRedemptions.loyaltyEntryId,
+      points: schema.loyaltyRedemptions.points,
+      restored: schema.loyaltyRedemptions.restored,
+    })
+    .from(schema.loyaltyRedemptions)
+    .where(and(
+      eq(schema.loyaltyRedemptions.billId, billId),
+      isNull(schema.loyaltyRedemptions.reversedAt),
+    ))
+    .orderBy(schema.loyaltyRedemptions.createdAt)
 
   let remaining = points
   for (const row of rows) {
     if (remaining <= 0) break
     const take = Math.min(remaining, row.points - row.restored)
     if (take <= 0) continue
-    await tx.execute(`UPDATE loyalty_entries SET consumed = consumed - ? WHERE id = ?`, [take, row.loyalty_entry_id])
-    await tx.execute(`UPDATE loyalty_redemptions SET restored = restored + ? WHERE id = ?`, [take, row.id])
+    await q(tx).update(schema.loyaltyEntries)
+      .set({ consumed: sql`${schema.loyaltyEntries.consumed} - ${take}` })
+      .where(eq(schema.loyaltyEntries.id, row.loyaltyEntryId))
+    await q(tx).update(schema.loyaltyRedemptions)
+      .set({ restored: sql`${schema.loyaltyRedemptions.restored} + ${take}` })
+      .where(eq(schema.loyaltyRedemptions.id, row.id))
     remaining -= take
   }
 }
 
 /** The same, backwards, when the return itself is cancelled. */
 async function unrestorePoints(tx: SqlDriver, billId: string, points: number): Promise<void> {
-  const rows = await tx.query<{ id: string; loyalty_entry_id: string; restored: number }>(
-    `SELECT id, loyalty_entry_id, restored FROM loyalty_redemptions
-      WHERE bill_id = ? AND reversed_at IS NULL AND restored > 0 ORDER BY created_at DESC`,
-    [billId],
-  )
+  const rows = await q(tx)
+    .select({
+      id: schema.loyaltyRedemptions.id,
+      loyaltyEntryId: schema.loyaltyRedemptions.loyaltyEntryId,
+      restored: schema.loyaltyRedemptions.restored,
+    })
+    .from(schema.loyaltyRedemptions)
+    .where(and(
+      eq(schema.loyaltyRedemptions.billId, billId),
+      isNull(schema.loyaltyRedemptions.reversedAt),
+      gt(schema.loyaltyRedemptions.restored, 0),
+    ))
+    .orderBy(desc(schema.loyaltyRedemptions.createdAt))
 
   let remaining = points
   for (const row of rows) {
     if (remaining <= 0) break
     const take = Math.min(remaining, row.restored)
-    await tx.execute(`UPDATE loyalty_entries SET consumed = consumed + ? WHERE id = ?`, [take, row.loyalty_entry_id])
-    await tx.execute(`UPDATE loyalty_redemptions SET restored = restored - ? WHERE id = ?`, [take, row.id])
+    await q(tx).update(schema.loyaltyEntries)
+      .set({ consumed: sql`${schema.loyaltyEntries.consumed} + ${take}` })
+      .where(eq(schema.loyaltyEntries.id, row.loyaltyEntryId))
+    await q(tx).update(schema.loyaltyRedemptions)
+      .set({ restored: sql`${schema.loyaltyRedemptions.restored} - ${take}` })
+      .where(eq(schema.loyaltyRedemptions.id, row.id))
     remaining -= take
   }
 }
@@ -588,65 +672,90 @@ async function unrestorePoints(tx: SqlDriver, billId: string, points: number): P
  * does, so both paths leave the same shape behind.
  */
 async function clawBackPoints(tx: SqlDriver, billId: string, points: number, nowIso: string): Promise<void> {
-  const entry = await tx.get<{ id: string; points: number; consumed: number }>(
-    `SELECT id, points, consumed FROM loyalty_entries WHERE bill_id = ? AND cancelled_at IS NULL`,
-    [billId],
-  )
+  const [entry] = await q(tx)
+    .select({ id: schema.loyaltyEntries.id, points: schema.loyaltyEntries.points })
+    .from(schema.loyaltyEntries)
+    .where(and(
+      eq(schema.loyaltyEntries.billId, billId),
+      isNull(schema.loyaltyEntries.cancelledAt),
+    ))
   if (!entry) return
 
   if (points >= entry.points) {
-    await tx.execute(`UPDATE loyalty_entries SET cancelled_at = ? WHERE id = ?`, [nowIso, entry.id])
+    await q(tx).update(schema.loyaltyEntries)
+      .set({ cancelledAt: nowIso })
+      .where(eq(schema.loyaltyEntries.id, entry.id))
     return
   }
-  await tx.execute(`UPDATE loyalty_entries SET points = points - ? WHERE id = ?`, [points, entry.id])
+  await q(tx).update(schema.loyaltyEntries)
+    .set({ points: sql`${schema.loyaltyEntries.points} - ${points}` })
+    .where(eq(schema.loyaltyEntries.id, entry.id))
 }
 
 async function regrantPoints(tx: SqlDriver, billId: string, points: number): Promise<void> {
-  const entry = await tx.get<{ id: string; points: number; cancelled_at: string | null }>(
-    `SELECT id, points, cancelled_at FROM loyalty_entries WHERE bill_id = ?`,
-    [billId],
-  )
+  const [entry] = await q(tx)
+    .select({
+      id: schema.loyaltyEntries.id,
+      points: schema.loyaltyEntries.points,
+      cancelledAt: schema.loyaltyEntries.cancelledAt,
+    })
+    .from(schema.loyaltyEntries)
+    .where(eq(schema.loyaltyEntries.billId, billId))
   if (!entry) return
 
-  if (entry.cancelled_at !== null && entry.points === points) {
-    await tx.execute(`UPDATE loyalty_entries SET cancelled_at = NULL WHERE id = ?`, [entry.id])
+  if (entry.cancelledAt !== null && entry.points === points) {
+    await q(tx).update(schema.loyaltyEntries)
+      .set({ cancelledAt: null })
+      .where(eq(schema.loyaltyEntries.id, entry.id))
     return
   }
-  await tx.execute(`UPDATE loyalty_entries SET points = points + ? WHERE id = ?`, [points, entry.id])
+  await q(tx).update(schema.loyaltyEntries)
+    .set({ points: sql`${schema.loyaltyEntries.points} + ${points}` })
+    .where(eq(schema.loyaltyEntries.id, entry.id))
 }
 
 async function refundedSoFar(db: SqlDriver, billItemId: string): Promise<Money> {
-  const row = await db.get<{ total: number | null }>(
-    `SELECT SUM(sri.refund_amount) AS total
-       FROM sales_return_items sri
-       JOIN sales_returns sr ON sr.id = sri.return_id AND sr.docstatus = 1
-      WHERE sri.bill_item_id = ?`,
-    [billItemId],
-  )
-  return (row?.total ?? 0) as Money
+  const [row] = await q(db)
+    .select({ total: sql<Money>`COALESCE(SUM(${schema.salesReturnItems.refundAmount}), 0)` })
+    .from(schema.salesReturnItems)
+    .innerJoin(schema.salesReturns, and(
+      eq(schema.salesReturns.id, schema.salesReturnItems.returnId),
+      eq(schema.salesReturns.docstatus, SUBMITTED),
+    ))
+    .where(eq(schema.salesReturnItems.billItemId, billItemId))
+  return row?.total ?? ZERO
 }
+
+/* raw: a correlated subquery, which the query builder has no shape for.
+   Joining to the allocations instead would repeat the bill row once per payment
+   against it, so a bill settled in instalments would count its own credit total
+   once per instalment. `bills.id` is written out rather than interpolated
+   because Drizzle renders a column reference unqualified inside a subquery,
+   where a bare `id` binds to the allocation tables first. */
+const ALLOCATED = sql`COALESCE((
+  SELECT SUM(pa.amount) FROM payment_allocations pa
+    JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = ${SUBMITTED}
+   WHERE pa.bill_id = bills.id), 0)`
 
 /** What is still owed on one bill. */
 async function outstandingOn(db: SqlDriver, billId: string): Promise<Money> {
-  const row = await db.get<{ due: number | null }>(
-    `SELECT b.credit_total - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                                         JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
-                                        WHERE pa.bill_id = b.id), 0) AS due
-       FROM bills b WHERE b.id = ?`,
-    [billId],
-  )
+  const [row] = await q(db)
+    .select({ due: sql<number>`${schema.bills.creditTotal} - ${ALLOCATED}` })
+    .from(schema.bills)
+    .where(eq(schema.bills.id, billId))
   return paise(Math.max(0, row?.due ?? 0))
 }
 
 /** What is still owed across every bill of one customer. */
 async function outstandingFor(db: SqlDriver, customerId: string): Promise<Money> {
-  const row = await db.get<{ due: number | null }>(
-    `SELECT SUM(b.credit_total - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
-                                             JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
-                                            WHERE pa.bill_id = b.id), 0)) AS due
-       FROM bills b WHERE b.customer_id = ? AND b.docstatus = 1 AND b.credit_total > 0`,
-    [customerId],
-  )
+  const [row] = await q(db)
+    .select({ due: sql<number>`COALESCE(SUM(${schema.bills.creditTotal} - ${ALLOCATED}), 0)` })
+    .from(schema.bills)
+    .where(and(
+      eq(schema.bills.customerId, customerId),
+      eq(schema.bills.docstatus, SUBMITTED),
+      gt(schema.bills.creditTotal, ZERO),
+    ))
   return paise(Math.max(0, row?.due ?? 0))
 }
 
@@ -718,107 +827,106 @@ export interface ReturnDetail {
 
 /** One return, whole, for the credit note print and the screen that offers it. */
 export async function loadReturnDetail(db: SqlDriver, returnId: string): Promise<ReturnDetail | null> {
-  const head = await db.get<{
-    id: string; doc_no: string; docstatus: number; posting_date: string
-    refund_total: number; refund_cash: number; refund_method: string; reason: string | null
-    tax_reversed: number; bill_id: string; username: string | null
-    bill_doc_no: string; bill_date: string
-    customer_name: string | null; customer_address: string | null; customer_gstin: string | null
-    customer_state_code: string | null; place_of_supply: string | null; supply_type: string | null
-  }>(
-    `SELECT r.id, r.doc_no, r.docstatus, r.posting_date, r.refund_total, r.refund_cash,
-            r.refund_method, r.reason, r.tax_reversed, r.bill_id, u.username,
-            b.doc_no AS bill_doc_no, b.posting_date AS bill_date,
-            b.customer_name, b.customer_address, b.customer_gstin, b.customer_state_code,
-            b.place_of_supply, b.supply_type
-       FROM sales_returns r
-       JOIN bills b ON b.id = r.bill_id
-       LEFT JOIN users u ON u.id = r.created_by
-      WHERE r.id = ?`,
-    [returnId],
-  )
+  const [head] = await q(db)
+    .select({
+      id: schema.salesReturns.id,
+      docNo: schema.salesReturns.docNo,
+      docstatus: schema.salesReturns.docstatus,
+      postingDate: schema.salesReturns.postingDate,
+      refundTotal: schema.salesReturns.refundTotal,
+      refundCash: schema.salesReturns.refundCash,
+      refundMethod: schema.salesReturns.refundMethod,
+      reason: schema.salesReturns.reason,
+      taxReversed: schema.salesReturns.taxReversed,
+      billId: schema.salesReturns.billId,
+      username: schema.users.username,
+      againstDocNo: schema.bills.docNo,
+      againstDate: schema.bills.postingDate,
+      customerName: schema.bills.customerName,
+      customerAddress: schema.bills.customerAddress,
+      customerGstin: schema.bills.customerGstin,
+      customerStateCode: schema.bills.customerStateCode,
+      placeOfSupply: schema.bills.placeOfSupply,
+      supplyType: schema.bills.supplyType,
+    })
+    .from(schema.salesReturns)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.salesReturns.billId))
+    /* Left, because the user who took the return may since have been removed
+       from the shop, and a credit note that stops loading for that reason is a
+       document the shop cannot reprint. */
+    .leftJoin(schema.users, eq(schema.users.id, schema.salesReturns.createdBy))
+    .where(eq(schema.salesReturns.id, returnId))
   if (!head) return null
 
-  const rows = await db.query<{
-    product_name: string; sale_unit: string; qty: number; refund_amount: number
-    taxable_value: number; cgst_amount: number; sgst_amount: number; igst_amount: number
-    hsn_code: string | null; tax_rate_bp: number
-  }>(
-    /* The unit is on the bill line, not on the return line: a return records
-       how many came back, and what one of them is called is the invoice's
-       answer. Joined rather than duplicated for that reason. */
-    `SELECT ri.product_id, bi.product_name, bi.sale_unit, ri.qty, ri.refund_amount,
-            ri.taxable_value, ri.cgst_amount, ri.sgst_amount, ri.igst_amount,
-            ri.hsn_code, ri.tax_rate_bp
-       FROM sales_return_items ri
-       JOIN bill_items bi ON bi.id = ri.bill_item_id
-      WHERE ri.return_id = ?`,
-    [returnId],
-  )
+  /* The unit is on the bill line, not on the return line: a return records how
+     many came back, and what one of them is called is the invoice's answer.
+     Joined rather than duplicated for that reason. */
+  const rows = await q(db)
+    .select({
+      productName: schema.billItems.productName,
+      saleUnit: schema.billItems.saleUnit,
+      qty: schema.salesReturnItems.qty,
+      refundAmount: schema.salesReturnItems.refundAmount,
+      taxableValue: schema.salesReturnItems.taxableValue,
+      cgstAmount: schema.salesReturnItems.cgstAmount,
+      sgstAmount: schema.salesReturnItems.sgstAmount,
+      igstAmount: schema.salesReturnItems.igstAmount,
+      hsnCode: schema.salesReturnItems.hsnCode,
+      taxRateBp: schema.salesReturnItems.taxRateBp,
+    })
+    .from(schema.salesReturnItems)
+    .innerJoin(schema.billItems, eq(schema.billItems.id, schema.salesReturnItems.billItemId))
+    .where(eq(schema.salesReturnItems.returnId, returnId))
+
+  /* `username` is pulled out rather than spread through: the field this
+     document carries is `createdBy`, and leaving both on the object would put a
+     second name for the same thing into every caller. */
+  const { username, ...rest } = head
 
   return {
-    id: head.id,
-    docNo: head.doc_no,
-    docstatus: head.docstatus,
-    postingDate: head.posting_date,
-    refundTotal: head.refund_total as Money,
-    refundCash: head.refund_cash as Money,
-    refundMethod: head.refund_method as RefundMethod,
-    reason: head.reason,
-    taxReversed: head.tax_reversed as Money,
-    billId: head.bill_id,
-    againstDocNo: head.bill_doc_no,
-    againstDate: head.bill_date,
-    customerName: head.customer_name,
-    customerAddress: head.customer_address,
-    customerGstin: head.customer_gstin,
-    customerStateCode: head.customer_state_code,
-    placeOfSupply: head.place_of_supply,
-    supplyType: head.supply_type === 'inter_state' || head.supply_type === 'intra_state'
-      ? head.supply_type
+    ...rest,
+    refundMethod: head.refundMethod as RefundMethod,
+    supplyType: head.supplyType === 'inter_state' || head.supplyType === 'intra_state'
+      ? head.supplyType
       : null,
-    createdBy: head.username,
+    createdBy: username,
     items: rows.map((r) => ({
-      productName: r.product_name,
-      saleUnit: r.sale_unit,
-      qty: qty(r.qty),
+      productName: r.productName,
+      saleUnit: r.saleUnit,
+      qty: r.qty,
       // Back out of the refund and the quantity, never off the product: this is
       // what the goods were credited at, which is what the invoice charged.
-      rate: paise(r.qty === 0 ? 0 : Math.round((r.refund_amount * QTY_SCALE) / r.qty)),
-      refund: r.refund_amount as Money,
-      taxableValue: r.taxable_value as Money,
-      cgst: r.cgst_amount as Money,
-      sgst: r.sgst_amount as Money,
-      igst: r.igst_amount as Money,
-      hsnCode: r.hsn_code,
-      taxRateBp: r.tax_rate_bp,
+      rate: paise(r.qty === 0 ? 0 : Math.round((r.refundAmount * QTY_SCALE) / r.qty)),
+      refund: r.refundAmount,
+      taxableValue: r.taxableValue,
+      cgst: r.cgstAmount,
+      sgst: r.sgstAmount,
+      igst: r.igstAmount,
+      hsnCode: r.hsnCode,
+      taxRateBp: r.taxRateBp,
     })),
   }
 }
 
 /** The returns already taken against a bill, for the screen that shows it. */
 export async function listReturns(db: SqlDriver, billId: string): Promise<ReturnListItem[]> {
-  const rows = await db.query<{
-    id: string; doc_no: string; docstatus: number; posting_date: string
-    refund_total: number; refund_cash: number; points_restored: number
-    refund_method: string; reason: string | null
-  }>(
-    `SELECT id, doc_no, docstatus, posting_date, refund_total, refund_cash, points_restored,
-            refund_method, reason
-       FROM sales_returns WHERE bill_id = ? ORDER BY created_at DESC`,
-    [billId],
-  )
-  return rows.map((r) => ({
-    id: r.id,
-    docNo: r.doc_no,
-    docstatus: r.docstatus,
-    postingDate: r.posting_date,
-    refundTotal: r.refund_total as Money,
-    refundCash: r.refund_cash as Money,
-    pointsRestored: r.points_restored,
-    refundMethod: r.refund_method as RefundMethod,
-    reason: r.reason,
-  }))
+  const rows = await q(db)
+    .select({
+      id: schema.salesReturns.id,
+      docNo: schema.salesReturns.docNo,
+      docstatus: schema.salesReturns.docstatus,
+      postingDate: schema.salesReturns.postingDate,
+      refundTotal: schema.salesReturns.refundTotal,
+      refundCash: schema.salesReturns.refundCash,
+      pointsRestored: schema.salesReturns.pointsRestored,
+      refundMethod: schema.salesReturns.refundMethod,
+      reason: schema.salesReturns.reason,
+    })
+    .from(schema.salesReturns)
+    .where(eq(schema.salesReturns.billId, billId))
+    .orderBy(desc(schema.salesReturns.createdAt))
+
+  return rows.map((r) => ({ ...r, refundMethod: r.refundMethod as RefundMethod }))
 }
 
 interface ReturnRow {
@@ -836,39 +944,33 @@ interface ReturnRow {
 }
 
 async function loadReturn(db: SqlDriver, returnId: string): Promise<ReturnRow> {
-  const row = await db.get<{
-    id: string; doc_no: string; docstatus: number; bill_id: string
-    posting_date: string; refund_total: number; refund_method: string; reason: string | null
-    credit_note_id: string | null; points_restored: number; points_removed: number
-  }>(
-    `SELECT id, doc_no, docstatus, bill_id, posting_date, refund_total, refund_method, reason,
-            credit_note_id, points_restored, points_removed
-       FROM sales_returns WHERE id = ?`,
-    [returnId],
-  )
+  const [row] = await q(db)
+    .select({
+      id: schema.salesReturns.id,
+      docNo: schema.salesReturns.docNo,
+      docstatus: schema.salesReturns.docstatus,
+      billId: schema.salesReturns.billId,
+      postingDate: schema.salesReturns.postingDate,
+      refundTotal: schema.salesReturns.refundTotal,
+      refundMethod: schema.salesReturns.refundMethod,
+      reason: schema.salesReturns.reason,
+      creditNoteId: schema.salesReturns.creditNoteId,
+      pointsRestored: schema.salesReturns.pointsRestored,
+      pointsRemoved: schema.salesReturns.pointsRemoved,
+    })
+    .from(schema.salesReturns)
+    .where(eq(schema.salesReturns.id, returnId))
   if (!row) throw new Error(`unknown return: ${returnId}`)
-  return {
-    id: row.id,
-    docNo: row.doc_no,
-    docstatus: row.docstatus,
-    billId: row.bill_id,
-    postingDate: row.posting_date,
-    refundTotal: row.refund_total as Money,
-    refundMethod: row.refund_method as RefundMethod,
-    reason: row.reason,
-    creditNoteId: row.credit_note_id,
-    pointsRestored: row.points_restored,
-    pointsRemoved: row.points_removed,
-  }
+  return { ...row, refundMethod: row.refundMethod as RefundMethod }
 }
 
 export async function returnableQty(db: SqlDriver, billItemId: string): Promise<Qty> {
-  const row = await db.get<{ qty: number; returned_qty: number }>(
-    `SELECT qty, returned_qty FROM bill_items WHERE id = ?`,
-    [billItemId],
-  )
+  const [row] = await q(db)
+    .select({ qty: schema.billItems.qty, returnedQty: schema.billItems.returnedQty })
+    .from(schema.billItems)
+    .where(eq(schema.billItems.id, billItemId))
   if (!row) return qty(0)
-  return subQty(qty(row.qty), qty(row.returned_qty))
+  return subQty(row.qty, row.returnedQty)
 }
 
 export const ZERO_REFUND = ZERO
