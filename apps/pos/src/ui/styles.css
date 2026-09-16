@@ -699,6 +699,10 @@ tbody tr:hover { background: var(--accent-soft); }
   border: 1px solid var(--rule);
 }
 .sheet-preview.paper-a5 { height: 460px; }
+/* The preview inside a dialog is the only look at the page there is, so it
+   gets the height the dialog can spare rather than the designer's thumbnail
+   proportions. */
+.sheet-preview.tall { width: 100%; height: 62vh; }
 
 /* ── the shop's own sheet markup ─────────────────────────────────── */
 

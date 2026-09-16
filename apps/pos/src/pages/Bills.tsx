@@ -11,7 +11,7 @@ import {
 } from '../ui/components'
 import { printBill } from '../core/print'
 import { printBillSheet, printCreditNoteSheet, previewBillSheet } from '../core/printHtml'
-import { SheetFallback } from '../ui/SheetFallback'
+import { SheetPreview } from '../ui/SheetPreview'
 import { Attachments } from '../ui/Attachments'
 import { ReturnSheet } from '../ui/ReturnSheet'
 import { usePickList } from '../ui/PickList'
@@ -58,8 +58,7 @@ export default function Bills() {
   const [returning, setReturning] = useState(false)
   const [returns, setReturns] = useState<ReturnListItem[]>([])
   const [note, setNote] = useState<string | null>(null)
-  /* Only set when a webview refuses a second window; a panel then stands in
-     for it. `sheetPreview.ts` carries why that is not an error. */
+  /** The A4 page, while somebody is looking at it. */
   const [sheet, setSheet] = useState<{ html: string; docNo: string } | null>(null)
   /* The return just taken, so the credit note can be offered where the person
      already is rather than left to be found again in a list. Cleared with the
@@ -183,7 +182,7 @@ export default function Bills() {
     const result = await previewBillSheet(db, billId)
     if (!result.ok) { setError(result.message); return }
     setError(null)
-    if (result.shown === 'blocked') setSheet({ html: result.html, docNo: result.docNo })
+    setSheet({ html: result.html, docNo: result.docNo })
   }
 
   /* The roll goes straight to the till printer; a sheet goes through the
@@ -504,7 +503,7 @@ export default function Bills() {
         />
       )}
 
-      {sheet && <SheetFallback html={sheet.html} docNo={sheet.docNo} onClose={() => setSheet(null)} />}
+      {sheet && <SheetPreview html={sheet.html} docNo={sheet.docNo} onClose={() => setSheet(null)} />}
     </>
   )
 }

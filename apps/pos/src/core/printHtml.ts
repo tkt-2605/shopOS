@@ -5,7 +5,6 @@ import {
   type DocWording, type DocumentKind, type PlaceOfSupply, type ReturnDetailItem,
 } from '@shopos/core'
 import type { PrintResult } from './print'
-import { openSheetPreview } from './sheetPreview'
 
 /**
  * Printing a sheet, as opposed to a roll.
@@ -61,26 +60,24 @@ export async function billSheetHtml(db: SqlDriver, billId: string): Promise<Shee
 }
 
 export type PreviewResult =
-  | { ok: true; shown: 'window' }
-  /** No window could be opened. The page is here; show it in the app instead. */
-  | { ok: true; shown: 'blocked'; html: string; docNo: string }
+  | { ok: true; html: string; docNo: string }
   | { ok: false; message: string }
 
 /**
- * Shows the sheet without printing it and without disturbing the counter.
+ * The sheet, to look at rather than to print.
  *
- * The bill half rung up is the thing that must not be moved. A preview that
- * took over the screen would put the cashier's cart behind it while a customer
- * waits; a window can be pushed aside, kept open beside the till, or closed,
- * and the till never went anywhere.
+ * Hands back the page for a screen to show. It deliberately opens nothing
+ * itself: a preview that reached for a window of its own is what closed the
+ * application.
+ *
+ * `window.open('', '_blank')` inside a Tauri WebView2 does not give a second
+ * window — it gives back **the window already there**, so writing the invoice
+ * into it replaced the running app, and the Close button on the result shut the
+ * app down. A cashier halfway through a bill would have lost the cart to a
+ * preview. `ui/SheetPreview.tsx` carries what a real second window would take.
  */
 export async function previewBillSheet(db: SqlDriver, billId: string): Promise<PreviewResult> {
-  const sheet = await billSheetHtml(db, billId)
-  if (!sheet.ok) return sheet
-
-  const outcome = openSheetPreview(sheet.html, sheet.docNo)
-  if (outcome.shown === 'window') return { ok: true, shown: 'window' }
-  return { ok: true, shown: 'blocked', html: sheet.html, docNo: sheet.docNo }
+  return billSheetHtml(db, billId)
 }
 
 /**
