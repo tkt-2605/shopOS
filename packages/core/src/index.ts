@@ -84,9 +84,11 @@ export type { Features, FeatureKey } from './services/features.js'
 
 export {
   recordPayment, cancelPayment, customerOutstanding, customerStatement, loadOpenBills,
+  totalOutstandingAll,
 } from './services/payments.js'
 export type {
   RecordPaymentInput, RecordPaymentResult, ReceiptMethod, CustomerStatementRow,
+  OutstandingTotal,
 } from './services/payments.js'
 
 export {
@@ -124,7 +126,7 @@ export type {
 
 export {
   searchProducts, findByBarcode, productsByIds, saleUnitsFor, searchCustomers,
-  listBills, countBills, loadBillDetail, loadCustomer,
+  countCustomers, listBills, countBills, loadBillDetail, loadCustomer,
 } from './repos/catalog.js'
 export type {
   BillFilter, BillStatusFilter,

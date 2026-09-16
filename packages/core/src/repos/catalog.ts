@@ -279,6 +279,36 @@ export async function searchCustomers(
   }))
 }
 
+/**
+ * How many customers a search would find, ignoring the limit.
+ *
+ * `searchCustomers` stops at its limit and says nothing about having stopped,
+ * so a screen showing five hundred of six hundred looks exactly like a screen
+ * showing all six hundred. This is what lets it say which of the two it is.
+ *
+ * The filter is `searchCustomers`' filter, written out again rather than shared,
+ * which is a risk worth naming: if one grows a condition the other must too.
+ * The alternative was a `countOnly` flag threaded through a function whose
+ * whole job is to return rows, and a boolean that changes what a function
+ * returns is the worse trade.
+ */
+export async function countCustomers(
+  db: SqlDriver,
+  term = '',
+  opts: { includeArchived?: boolean } = {},
+): Promise<number> {
+  const like = `%${term.trim()}%`
+  const archivedClause = opts.includeArchived ? '' : 'AND c.deleted_at IS NULL'
+  const row = await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n
+       FROM customers c
+      WHERE c.is_active = 1 ${archivedClause}
+        AND (? = '' OR c.name LIKE ? OR c.phone LIKE ? OR c.code LIKE ?)`,
+    [term.trim(), like, like, like],
+  )
+  return row?.n ?? 0
+}
+
 export interface BillListItem {
   id: string
   docNo: string
