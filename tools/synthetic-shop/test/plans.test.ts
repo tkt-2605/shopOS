@@ -145,12 +145,12 @@ describe('the Audit page, on twenty-one thousand rows', () => {
   })
 
   it('reads the actor list off the index it already has', async () => {
-    const plan = await planOf((d) => auditActors(d), /DISTINCT/)
+    const plan = await planOf((d) => auditActors(d), /distinct/i)
     expect(plan).toContain('COVERING INDEX idx_audit_actor')
   })
 
   it('still opens unfiltered through the date index', async () => {
-    const plan = await planOf((d) => listAuditEntries(d, {}), /FROM audit_log a/)
+    const plan = await planOf((d) => listAuditEntries(d, {}), reads('audit_log'))
     expect(plan).toContain('idx_audit_at')
     expect(plan).not.toContain('TEMP B-TREE')
   })

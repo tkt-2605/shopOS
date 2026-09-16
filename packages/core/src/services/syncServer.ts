@@ -266,9 +266,10 @@ async function handlePair(
 }
 
 async function handleHello(db: SqlDriver, them: string): Promise<SyncResponse> {
-  const row = await db.get<{ their_cursor: number }>(
-    `SELECT their_cursor FROM sync_peers WHERE device_id = ?`, [them],
-  )
+  const [row] = await q(db)
+    .select({ theirCursor: schema.syncPeers.theirCursor })
+    .from(schema.syncPeers)
+    .where(eq(schema.syncPeers.deviceId, them))
   return ok({
     deviceId: deviceId(),
     label: await getSetting(db, 'shop_name'),
@@ -281,7 +282,7 @@ async function handleHello(db: SqlDriver, them: string): Promise<SyncResponse> {
     registerId: await resolveDeviceRegister(db, currentServingRegister()),
     // How far we have read of theirs is, from where they stand, how far they
     // have been read. The two cursors are one number seen from two sides.
-    yourCursorWithThem: row?.their_cursor ?? 0,
+    yourCursorWithThem: row?.theirCursor ?? 0,
   })
 }
 
