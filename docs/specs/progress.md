@@ -1,7 +1,13 @@
 # Progress
 
-Branch `phase-0-and-the-test-bench`, 18 commits, not pushed. Everything below
-is on this machine only.
+Branch `phase-0-and-the-test-bench`, 18 commits, pushed to
+`origin/phase-0-and-the-test-bench`. Not merged to `main`, and nothing is
+released: no installer, no tag, no update anybody's till will fetch.
+
+The owner's own database is **not** in the repository and never has been --
+`tools/fixtures/` is gitignored as a folder. The figures quoted in
+`findings-real-shop.md` and `evidence/returns-in-gst-real-shop.txt` are the
+aggregates this work was checked against, and they are in the shop's own repo.
 
 State of the tree: **1217 TypeScript tests** passing and 3 skipped (Phase 2c
 placeholders that fail loudly if un-skipped early), **73 Rust tests** passing
