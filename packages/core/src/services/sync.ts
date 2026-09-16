@@ -1,5 +1,7 @@
+import { eq, desc, count, min } from 'drizzle-orm'
 import type { Row, SqlDriver, SqlValue } from '../db/driver.js'
 import { MERGE_BUDGET_MS } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 import { deviceId } from '../device.js'
@@ -192,7 +194,7 @@ export async function syncWith(
     return { ok: false, code: 'SAME_REGISTER', registerId: mineRegister }
   }
 
-  const peer = await rememberPeer(db, hello)
+  const peer = await rememberPeer(db, hello.deviceId, hello.label)
 
   // ── pull ────────────────────────────────────────────────────────────────
   const incoming = await transport.fetch(peer.theirCursor, BATCH)
@@ -201,10 +203,9 @@ export async function syncWith(
     await applyBatch(db, incoming, mineChanged)
 
   if (incoming.records.length > 0) {
-    await db.execute(
-      `UPDATE sync_peers SET their_cursor = ? WHERE device_id = ?`,
-      [incoming.upTo, hello.deviceId],
-    )
+    await q(db).update(schema.syncPeers)
+      .set({ theirCursor: incoming.upTo })
+      .where(eq(schema.syncPeers.deviceId, hello.deviceId))
   }
 
   // ── push ────────────────────────────────────────────────────────────────
@@ -216,16 +217,14 @@ export async function syncWith(
        be sent again, and a cursor moved because we posted it is a row lost with
        nothing anywhere recording that it went missing. */
     sent = outgoing.records.length
-    await db.execute(
-      `UPDATE sync_peers SET my_cursor = ? WHERE device_id = ?`,
-      [ack.upTo, hello.deviceId],
-    )
+    await q(db).update(schema.syncPeers)
+      .set({ myCursor: ack.upTo })
+      .where(eq(schema.syncPeers.deviceId, hello.deviceId))
   }
 
-  await db.execute(
-    `UPDATE sync_peers SET last_agreed_at = ? WHERE device_id = ?`,
-    [clock.iso(), hello.deviceId],
-  )
+  await q(db).update(schema.syncPeers)
+    .set({ lastAgreedAt: clock.iso() })
+    .where(eq(schema.syncPeers.deviceId, hello.deviceId))
 
   return {
     ok: true,
@@ -298,6 +297,8 @@ export async function collectChanges(
     const shape = shapeOf(entry.table)
     if (shape === undefined) continue // not replicated; see NOT_REPLICATED
 
+    /* raw: the table and its key are `REPLICATED`'s, read at run time. See the
+       note on `upsert` below for why this half of the file stays written out. */
     const row = await db.get<Row>(
       `SELECT * FROM "${shape.table}" WHERE "${shape.key}" = ?`, [entry.rowId],
     )
@@ -436,6 +437,7 @@ async function localColumns(db: SqlDriver, table: string): Promise<Set<string> |
      identifier, not a value. It comes from `REPLICATED` in `replicaShape.ts`
      and never from the wire: `shapeOf` has already refused anything that is not
      on that list, so a peer cannot name a table here. */
+  // raw: a PRAGMA, which a query builder has no words for.
   const info = await db.query<{ name: string }>(`PRAGMA table_info("${table}")`)
   const columns = info.length === 0 ? null : new Set(info.map((c) => c.name))
   tables.set(table, columns)
@@ -501,6 +503,7 @@ async function mergeBatch(
       const columns = await localColumns(tx, shape.table)
       if (columns === null) { ignoredTables += 1; continue }
 
+      // raw: `REPLICATED`'s table and key again. See the note on `upsert`.
       const mine = await tx.get<Row>(
         `SELECT * FROM "${shape.table}" WHERE "${shape.key}" = ?`, [record.rowId],
       )
@@ -576,15 +579,15 @@ async function mergeBatch(
        was watching the answer, and from here nobody is. A dropped edit that is
        only ever returned from a function is a dropped edit nobody hears about. */
     for (const complaint of contested) {
-      await tx.execute(
-        `INSERT INTO sync_conflicts
-           (id, at, peer_device, table_name, row_id, winner, explain)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          newId(), clock.iso(), batch.fromDevice,
-          complaint.table, complaint.rowId, complaint.winner, complaint.explain,
-        ],
-      )
+      await q(tx).insert(schema.syncConflicts).values({
+        id: newId(),
+        at: clock.iso(),
+        peerDevice: batch.fromDevice,
+        tableName: complaint.table,
+        rowId: complaint.rowId,
+        winner: complaint.winner,
+        explain: complaint.explain,
+      })
     }
 
     return { applied, contested, ignoredColumns, ignoredTables }
@@ -608,31 +611,36 @@ export async function recentConflicts(
   db: SqlDriver,
   options: { unreadOnly?: boolean; limit?: number } = {},
 ): Promise<RecordedConflict[]> {
-  const rows = await db.query<{
-    id: string; at: string; peer_device: string | null
-    table_name: string; row_id: string; winner: 'mine' | 'theirs'; explain: string
-  }>(
-    `SELECT id, at, peer_device, table_name, row_id, winner, explain
-       FROM sync_conflicts
-      WHERE acknowledged = 0 OR ? = 0
-      ORDER BY at DESC
-      LIMIT ?`,
-    [options.unreadOnly === false ? 0 : 1, options.limit ?? 50],
-  )
-  return rows.map((r) => ({
-    id: r.id,
-    at: r.at,
-    peerDevice: r.peer_device,
-    table: r.table_name,
-    rowId: r.row_id,
-    winner: r.winner,
-    explain: r.explain,
-  }))
+  /* `WHERE acknowledged = 0 OR ? = 0` bound the flag itself so SQLite could
+     work out the condition did not apply. Here it is either in the list or it
+     is not. */
+  const unreadOnly = options.unreadOnly !== false
+
+  const rows = await q(db)
+    .select({
+      id: schema.syncConflicts.id,
+      at: schema.syncConflicts.at,
+      peerDevice: schema.syncConflicts.peerDevice,
+      table: schema.syncConflicts.tableName,
+      rowId: schema.syncConflicts.rowId,
+      winner: schema.syncConflicts.winner,
+      explain: schema.syncConflicts.explain,
+    })
+    .from(schema.syncConflicts)
+    .where(unreadOnly ? eq(schema.syncConflicts.acknowledged, 0) : undefined)
+    .orderBy(desc(schema.syncConflicts.at))
+    .limit(options.limit ?? 50)
+
+  // `winner` is text in the database and these are the two words this build
+  // writes into it. A third could only come from a build that had a third.
+  return rows.map((r) => ({ ...r, winner: r.winner as 'mine' | 'theirs' }))
 }
 
 /** Marks them read. Kept rather than deleted — what the tills disagreed about
  *  is worth having later, even once somebody has seen it. */
 export async function acknowledgeConflicts(db: SqlDriver): Promise<number> {
+  // raw: how many were marked read is the answer, and the proxy the typed
+  // queries go over does not carry a row count back.
   const result = await db.execute(
     `UPDATE sync_conflicts SET acknowledged = 1 WHERE acknowledged = 0`,
   )
@@ -641,9 +649,10 @@ export async function acknowledgeConflicts(db: SqlDriver): Promise<number> {
 
 /** How many nobody has looked at. For a badge, and for the screen's headline. */
 export async function unreadConflictCount(db: SqlDriver): Promise<number> {
-  const row = await db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM sync_conflicts WHERE acknowledged = 0`,
-  )
+  const [row] = await q(db)
+    .select({ n: count() })
+    .from(schema.syncConflicts)
+    .where(eq(schema.syncConflicts.acknowledged, 0))
   return row?.n ?? 0
 }
 
@@ -659,10 +668,9 @@ export async function recordAttempt(
   peerDeviceId: string,
   error: string | null,
 ): Promise<void> {
-  await db.execute(
-    `UPDATE sync_peers SET last_error = ?, last_tried_at = ? WHERE device_id = ?`,
-    [error, clock.iso(), peerDeviceId],
-  )
+  await q(db).update(schema.syncPeers)
+    .set({ lastError: error, lastTriedAt: clock.iso() })
+    .where(eq(schema.syncPeers.deviceId, peerDeviceId))
 }
 
 /** Which records have also changed here since the peer last read our feed. */
@@ -674,6 +682,25 @@ export async function changedHere(
   return new Set(entries.map((e) => `${e.table}\u0000${e.rowId}`))
 }
 
+/**
+ * The half of sync that is written out, and why it stays that way.
+ *
+ * Everything from here down takes its table, its key and its column list from
+ * `replicaShape.ts` at run time and from the row that arrived over the wire.
+ * A query builder is a way of naming columns at compile time; this code does
+ * not know its columns until a batch is in front of it, and that is not an
+ * accident of how it was written -- it is what lets one function replicate
+ * forty-three tables instead of forty-three functions doing it each their own
+ * way, each able to forget a column.
+ *
+ * The safety here is not the compiler. It is `shapeOf`, which refuses any table
+ * not on the replicated list before a name reaches a statement, and `known()`,
+ * which drops any column this database does not have. A peer cannot name a
+ * table or a column that gets this far.
+ *
+ * `PRAGMA table_info` and `PRAGMA defer_foreign_keys` are written out for a
+ * plainer reason: they are not statements a builder has any words for.
+ */
 async function upsert(tx: SqlDriver, table: string, key: string, row: Row): Promise<void> {
   const columns = Object.keys(row)
   const assignments = columns
@@ -702,20 +729,31 @@ async function insert(tx: SqlDriver, table: string, row: Row): Promise<void> {
   )
 }
 
+/* Takes the two fields rather than the whole `hello`, because the device id is
+   not optional here although it is on the wire: `syncWith` refuses a peer
+   without one before it gets this far, and the column is NOT NULL. */
 async function rememberPeer(
   db: SqlDriver,
-  hello: PeerHello,
+  deviceId: string,
+  label: string | null,
 ): Promise<{ theirCursor: number; myCursor: number }> {
-  await db.execute(
-    `INSERT INTO sync_peers (device_id, label, created_at) VALUES (?, ?, ?)
-     ON CONFLICT (device_id) DO UPDATE SET label = excluded.label`,
-    [hello.deviceId, hello.label, clock.iso()],
-  )
-  const row = await db.get<{ their_cursor: number; my_cursor: number }>(
-    `SELECT their_cursor, my_cursor FROM sync_peers WHERE device_id = ?`,
-    [hello.deviceId],
-  )
-  return { theirCursor: row?.their_cursor ?? 0, myCursor: row?.my_cursor ?? 0 }
+  await q(db).insert(schema.syncPeers)
+    .values({ deviceId, label, createdAt: clock.iso() })
+    .onConflictDoUpdate({
+      target: schema.syncPeers.deviceId,
+      // The label only. The cursors are where this pair has got to and are
+      // never reset by meeting again.
+      set: { label },
+    })
+
+  const [row] = await q(db)
+    .select({
+      theirCursor: schema.syncPeers.theirCursor,
+      myCursor: schema.syncPeers.myCursor,
+    })
+    .from(schema.syncPeers)
+    .where(eq(schema.syncPeers.deviceId, deviceId))
+  return { theirCursor: row?.theirCursor ?? 0, myCursor: row?.myCursor ?? 0 }
 }
 
 export interface PeerHealth {
@@ -740,24 +778,22 @@ export interface PeerHealth {
  * last attempt and its error come with it, and so does how much is queued.
  */
 export async function listPeers(db: SqlDriver): Promise<PeerHealth[]> {
-  const rows = await db.query<{
-    device_id: string; label: string | null; last_agreed_at: string | null
-    last_tried_at: string | null; last_error: string | null; my_cursor: number
-  }>(
-    `SELECT device_id, label, last_agreed_at, last_tried_at, last_error, my_cursor
-       FROM sync_peers ORDER BY created_at`,
-  )
+  const rows = await q(db)
+    .select({
+      deviceId: schema.syncPeers.deviceId,
+      label: schema.syncPeers.label,
+      lastAgreedAt: schema.syncPeers.lastAgreedAt,
+      lastTriedAt: schema.syncPeers.lastTriedAt,
+      lastError: schema.syncPeers.lastError,
+      myCursor: schema.syncPeers.myCursor,
+    })
+    .from(schema.syncPeers)
+    .orderBy(schema.syncPeers.createdAt)
 
   const out: PeerHealth[] = []
   for (const r of rows) {
-    out.push({
-      deviceId: r.device_id,
-      label: r.label,
-      lastAgreedAt: r.last_agreed_at,
-      lastTriedAt: r.last_tried_at,
-      lastError: r.last_error,
-      waiting: await pendingCount(db, r.my_cursor),
-    })
+    const { myCursor, ...peer } = r
+    out.push({ ...peer, waiting: await pendingCount(db, myCursor) })
   }
   return out
 }
@@ -772,9 +808,9 @@ export async function listPeers(db: SqlDriver): Promise<PeerHealth[]> {
  * to have told.
  */
 export async function pruneAcknowledged(db: SqlDriver): Promise<number> {
-  const row = await db.get<{ safe: number | null; peers: number }>(
-    `SELECT MIN(my_cursor) AS safe, COUNT(*) AS peers FROM sync_peers`,
-  )
+  const [row] = await q(db)
+    .select({ safe: min(schema.syncPeers.myCursor), peers: count() })
+    .from(schema.syncPeers)
   if (!row || row.peers === 0 || row.safe === null) return 0
   return pruneFeed(db, row.safe)
 }
