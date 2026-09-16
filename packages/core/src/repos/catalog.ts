@@ -14,6 +14,15 @@ export interface ProductListItem {
   taxRateBp: number
   hsnCode: string | null
   isStockTracked: boolean
+  /**
+   * Still sold here. False means retired: hidden from the counter's search and
+   * the reorder list, still on every report and every old bill.
+   *
+   * Returned because the one screen that shows retired products has to be able
+   * to say which they are. Everywhere else filters them out in SQL and never
+   * sees a false.
+   */
+  isActive: boolean
   qtyOnHand: Qty
   /** Margin too thin to carry a discount, or to pay loyalty points on. */
   discountBlocked: boolean
@@ -60,7 +69,7 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
 
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
             p.discount_blocked, p.loyalty_blocked, p.return_blocked,
             p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
@@ -91,7 +100,7 @@ export async function productsByIds(db: SqlDriver, ids: string[]): Promise<Produ
 
   const rows = await db.query<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
             p.discount_blocked, p.loyalty_blocked, p.return_blocked,
             p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
@@ -110,7 +119,7 @@ export async function productsByIds(db: SqlDriver, ids: string[]): Promise<Produ
 export async function findByBarcode(db: SqlDriver, barcode: string): Promise<ProductListItem | null> {
   const row = await db.get<ProductRow>(
     `SELECT p.id, p.code, p.name, p.brand, p.barcode, p.base_unit, p.base_rate, p.mrp,
-            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked,
+            p.tax_rate_bp, p.hsn_code, p.is_stock_tracked, p.is_active,
             p.discount_blocked, p.loyalty_blocked, p.return_blocked,
             p.reorder_level, p.reorder_qty,
             p.category_id, cat.name AS category_name,
@@ -535,6 +544,7 @@ interface ProductRow {
   tax_rate_bp: number
   hsn_code: string | null
   is_stock_tracked: number
+  is_active: number
   qty_on_hand: number
   discount_blocked: number
   loyalty_blocked: number
@@ -561,6 +571,7 @@ function toProduct(r: ProductRow): ProductListItem {
     taxRateBp: r.tax_rate_bp,
     hsnCode: r.hsn_code,
     isStockTracked: r.is_stock_tracked === 1,
+    isActive: r.is_active === 1,
     qtyOnHand: qty(r.qty_on_hand),
     discountBlocked: r.discount_blocked === 1,
     loyaltyBlocked: r.loyalty_blocked === 1,

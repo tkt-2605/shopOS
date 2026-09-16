@@ -153,6 +153,7 @@ export {
   billWording, COMPOSITION_STATEMENT,
 } from './domain/taxScheme.js'
 export type { TaxScheme } from './domain/taxScheme.js'
+export { setProductActive } from './services/products.js'
 export { HSN_SHAPE, isHsn, hsnProblem, HSN_SHAPE_MESSAGE } from './domain/hsn.js'
 export type { HsnProblem } from './domain/hsn.js'
 export { buildInvoiceHtml } from './domain/invoiceHtml.js'

@@ -5,7 +5,7 @@ import {
   listBarcodes, setBarcodes, listUnits, setUnits,
   listCategories, createCategory, renameCategory, removeCategory,
   setProductCategory, setVariantOf,
-  setLadder, laddersFor, defaultPriceListId, Ladder,
+  setLadder, laddersFor, defaultPriceListId, Ladder, setProductActive,
   hsnProblem, HSN_SHAPE_MESSAGE,
   type Category,
   type ProductListItem,
@@ -341,6 +341,34 @@ export default function Inventory() {
     })
   }
 
+  /**
+   * Taking a product out of use, and putting it back.
+   *
+   * `is_active` has been read by the counter's search, the reorder list and
+   * this screen since the catalogue was written, and nothing could ever set it.
+   * What a shop did instead was rename the thing to "OLD - do not use".
+   *
+   * Nothing is deleted and nothing is hidden from history: the stock stays
+   * counted, old bills still reprint and the reports still name it. It stops
+   * appearing where a live product belongs.
+   */
+  async function retire(p: ProductListItem) {
+    if (p.isActive && !window.confirm(
+      `Retire “${p.name}”?
+
+`
+      + 'It stops appearing at the counter and on the reorder list. Nothing is '
+      + 'deleted: the stock on hand stays counted, old bills still show it, and '
+      + 'it can be brought back from this screen at any time.',
+    )) return
+
+    await setProductActive(db, { actorId: user.id }, p.id, !p.isActive)
+    await refresh()
+    setNotice(p.isActive
+      ? `“${p.name}” is retired. The counter will not find it.`
+      : `“${p.name}” is back on sale.`)
+  }
+
   async function showValuation(p: ProductListItem) {
     const v = await productValuation(db, p.id)
     setValuation({ name: p.name, qty: v.qtyOnHand, value: v.totalValue, avg: v.averageCost })
@@ -400,6 +428,10 @@ export default function Inventory() {
                   <div>
                     {p.name}
                     {p.variantLabel && <span className="badge" style={{ marginLeft: 6 }}>{p.variantLabel}</span>}
+                    {/* Said on the row, because a retired product that looks
+                        exactly like a live one is a product somebody will try
+                        to sell and then wonder why the counter cannot find. */}
+                    {!p.isActive && <span className="badge" style={{ marginLeft: 6 }}>retired</span>}
                   </div>
                   <div className="src">
                     {[p.parentName ? `version of ${p.parentName}` : null, p.categoryName, p.brand]
@@ -422,6 +454,11 @@ export default function Inventory() {
                   <button className="btn ghost sm" onClick={() => void showValuation(p)}>Cost</button>
                   {canWrite && (
                     <button className="btn ghost sm" onClick={() => void edit(p)}>Edit</button>
+                  )}
+                  {canWrite && (
+                    <button className="btn ghost sm" onClick={() => void retire(p)}>
+                      {p.isActive ? 'Retire' : 'Bring back'}
+                    </button>
                   )}
                 </td>
               </tr>
