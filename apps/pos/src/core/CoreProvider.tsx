@@ -12,10 +12,10 @@ import {
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
 import { runStockCheck, startMaintenanceTimer } from './maintenance'
-import { resumeServing } from './syncHost'
-import { startSyncLoop, stopSyncLoop } from './syncLoop'
+import { resumeServing, servingOn } from './syncHost'
+import { startSyncLoop, stopSyncLoop, runOnce } from './syncLoop'
 import {
-  isFirstRun, firstRun, seedDemoData, applyUpgrades, login,
+  isFirstRun, firstRun, seedDemoData, applyUpgrades, login, pairWith,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
   moveSettingsToDevice, resetSyncState,
   loadFeatures, setFeature, FEATURES_OFF,
@@ -131,6 +131,22 @@ interface CoreValue {
   reloadRegister: () => Promise<void>
   setUser: (user: SessionUser | null) => void
   completeSetup: (input: { shopName: string; password: string; withDemo: boolean }) => Promise<void>
+  /**
+   * Joins a shop that already exists on another till.
+   *
+   * The other half of `completeSetup`, and the important thing about it is what
+   * it does *not* do: it never calls `bootstrap`. A machine that sets itself up
+   * has created a second shop -- its own Admin role, its own counter, its own
+   * default price list, all under the same names as the first shop's and none
+   * of them the same row -- and no merge rule reconciles that. The handshake
+   * refuses such a pair with `DIFFERENT_SHOP`, which is correct and arrives too
+   * late to be any use to anybody.
+   *
+   * So a joining till stays empty and receives the shop: staff, roles,
+   * counters, prices, customers, bills. It signs in afterwards with the shop's
+   * own password, because the users arrived with everything else.
+   */
+  joinShop: (input: { address: string; code: string }) => Promise<void>
 }
 
 const Ctx = createContext<CoreValue | null>(null)
@@ -410,6 +426,32 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setRegisterName(row?.name ?? '')
   }
 
+  async function joinShop(input: { address: string; code: string }) {
+    const bare = input.address.trim().replace(/\/+$/, '')
+    const url = bare.startsWith('http') ? bare : `http://${bare}`
+
+    /* Where to call back. A till that is not listening yet sends nothing and is
+       recorded when it first makes a signed request instead -- but if it is
+       listening, saying so now is the difference between the other till being
+       able to start a round and only ever answering one. */
+    const mine = await servingOn()
+    await pairWith(db, url, input.code.trim(), null, fetch, { listenPort: mine?.port ?? null })
+
+    /* Everything, in batches, through the loop the app already runs rather than
+       a second path that could differ from it. `force` because the loop's own
+       backoff has no opinion yet about a peer it has never met. */
+    await runOnce(db, true)
+
+    await loadRegister()
+    await applyAppearance()
+    setFeatures(await loadFeatures(db))
+    setPolicy(await loadStockPolicy(db))
+    setRound(await loadRounding(db))
+    await refreshScheme()
+    startSyncLoop(db)
+    setStatus({ phase: 'ready' })
+  }
+
   async function completeSetup(input: { shopName: string; password: string; withDemo: boolean }) {
     const { adminId } = await firstRun(db, { shopName: input.shopName, adminPassword: input.password })
     if (input.withDemo) await seedDemoData(db, adminId)
@@ -429,7 +471,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       features, stockPolicy, rounding, backup,
       taxScheme, taxSchemeAsked, setTaxSchemeTo,
       setFeatureFlag, setStockPolicyTo, setRoundingTo,
-      reloadRegister: loadRegister, setUser, completeSetup,
+      reloadRegister: loadRegister, setUser, completeSetup, joinShop,
     }}>
       {children}
     </Ctx.Provider>

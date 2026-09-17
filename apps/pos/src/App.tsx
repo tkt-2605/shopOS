@@ -4,6 +4,8 @@ import { useCore, type FailureKind } from './core/CoreProvider'
 import { advice } from './core/startupAdvice'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
+import { JoinShop } from './ui/JoinShop'
+import { lookAround, type FoundTill } from './core/syncHost'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
 import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
@@ -153,7 +155,127 @@ function CouldNotStart({ error, kind }: { error: string; kind: FailureKind }) {
   )
 }
 
+/**
+ * The first screen a machine ever shows, and it has three doors.
+ *
+ * It used to have one, which created a shop. That is right for the first
+ * machine in a shop and wrong for every one after it: a second till that sets
+ * itself up has made a *second shop*, with its own Admin role and its own
+ * counter under the same names, and the two can never be merged. The refusal
+ * exists (`DIFFERENT_SHOP`) and arrives after the day's work is in the wrong
+ * database.
+ *
+ * So the machine asks the network first. If a till answers, joining is the
+ * offer that leads; if none does, setting up is. Discovery decides which door
+ * is obvious and never decides for anybody -- a shop opening its second branch
+ * on the same network still has to be able to say "no, a new shop".
+ */
 function Setup() {
+  const [door, setDoor] = useState<'asking' | 'new' | 'join' | 'restore'>('asking')
+
+  if (door === 'join') return <JoinPanel onCancel={() => setDoor('asking')} />
+  if (door === 'restore') return <RestoreDoor onCancel={() => setDoor('asking')} />
+  if (door === 'new') return <NewShop onCancel={() => setDoor('asking')} />
+  return <WhichDoor choose={setDoor} />
+}
+
+function WhichDoor({ choose }: { choose: (door: 'new' | 'join' | 'restore') => void }) {
+  const [neighbours, setNeighbours] = useState<FoundTill[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void lookAround().then(
+      (tills) => { if (!cancelled) setNeighbours(tills) },
+      // A network that will not answer is not a reason to hold up setting up a
+      // shop. The join door stays; it just has nothing to suggest.
+      () => { if (!cancelled) setNeighbours([]) },
+    )
+    return () => { cancelled = true }
+  }, [])
+
+  const here = neighbours?.[0]
+
+  return (
+    <div className="centre">
+      <div className="panel">
+        <div className="panel-head">
+          <h1>ShopOS</h1>
+          <p>{here
+            ? 'There is already a till on this network.'
+            : 'Nothing else is running on this network.'}</p>
+        </div>
+        <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {here && (
+            <button className="btn primary lg" onClick={() => choose('join')}>
+              Join {here.shop ?? 'that shop'}
+            </button>
+          )}
+          <button
+            className={here ? 'btn lg' : 'btn primary lg'}
+            onClick={() => choose('new')}
+          >
+            Set up a new shop
+          </button>
+          {!here && (
+            <button className="btn lg" onClick={() => choose('join')}>
+              Join a shop on another till
+            </button>
+          )}
+          <button className="btn ghost" onClick={() => choose('restore')}>
+            Restore a backup
+          </button>
+          <p style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4, lineHeight: 1.6 }}>
+            A second counter <strong>joins</strong>. Setting up again makes a
+            separate shop, and two shops cannot be merged afterwards.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function JoinPanel({ onCancel }: { onCancel: () => void }) {
+  return (
+    <div className="centre">
+      <div className="panel" style={{ maxWidth: 560 }}>
+        <div className="panel-head">
+          <h1>Join a shop</h1>
+          <p>This machine becomes another counter of a shop that already exists.</p>
+        </div>
+        <JoinShop onCancel={onCancel} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Restore, before anybody has signed in.
+ *
+ * The panel already had to work here -- a database this build cannot read fails
+ * before the login screen, which is why `CouldNotStart` carries it. What was
+ * missing is the case where the machine is fine and the shop is in a zip: a
+ * replacement till, or one being rebuilt.
+ */
+function RestoreDoor({ onCancel }: { onCancel: () => void }) {
+  return (
+    <div className="centre">
+      <div className="panel" style={{ maxWidth: 620 }}>
+        <div className="panel-head">
+          <h1>Restore a backup</h1>
+          <p>The shop comes back exactly as the backup left it, staff and all.</p>
+        </div>
+        <div className="panel-body">
+          <RestorePanel standalone />
+          <button className="btn ghost sm" style={{ marginTop: 10 }} onClick={onCancel}>
+            Back
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NewShop({ onCancel }: { onCancel: () => void }) {
   const { completeSetup } = useCore()
   const [shopName, setShopName] = useState('')
   const [password, setPassword] = useState('')
@@ -192,9 +314,12 @@ function Setup() {
             <input type="checkbox" id="with-demo" checked={withDemo} onChange={(e) => setWithDemo(e.target.checked)} />
             Load a demo catalogue to try it out
           </label>
-          <button className="btn primary lg" disabled={busy || password.length < 6}>
-            {busy ? 'Setting up…' : 'Finish setup'}
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn primary lg" disabled={busy || password.length < 6}>
+              {busy ? 'Setting up…' : 'Finish setup'}
+            </button>
+            <button type="button" className="btn ghost" onClick={onCancel}>Back</button>
+          </div>
         </div>
       </form>
     </div>
