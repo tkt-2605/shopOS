@@ -30,7 +30,7 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 ## Working agreements
 
 - `npm test` from the root runs every project -- core, the app, and both benches
-  (1,480 tests). Types: `npm run typecheck`, which covers all four.
+  (1,484 tests). Types: `npm run typecheck`, which covers all four.
 - Queries are typed: `q(db).select(...).from(schema.bills)` over `db/schema.ts`,
   which is the database's shape by hand and is checked against a real migrated
   file by `schemaParity.test.ts`. Hand-written SQL is still allowed where a

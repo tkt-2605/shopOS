@@ -9,11 +9,11 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,480 TypeScript tests** passing and **none skipped** --
-the three Phase 2c placeholders are real tests now -- across 110 files, **111
+State of the tree: **1,484 TypeScript tests** passing and **none skipped** --
+the three Phase 2c placeholders are real tests now -- across 111 files, **111
 Rust tests** passing with a clean build, typecheck clean across core, app and
 both bench packages, and Layer 2 of the test bench green in Docker. Schema at
-35.
+36.
 
 ---
 
@@ -383,6 +383,59 @@ the app running:
 | replay green on the synthetic shop | `shape.test.ts:174`, which builds it by running the same migrations |
 | a till at N and one at N−1 sync; a breaking one refuses | `schema-skew.test.ts` |
 
+
+### Row 9 — the third till, which looked like it worked
+
+Found while answering a question about putting two tills in the owner's own
+shop, and it is the worst shape a sync bug has: right on the day, wrong from
+tomorrow.
+
+A shop with three counters builds a hub. One machine everything talks to,
+because that is the arrangement a person can hold in their head -- and the hub
+received everything and relayed nothing. The third counter pulled the whole
+shop the day it was set up, including the second counter's history, and then
+never saw another sale rung up there. Every round reported ok. Both screens
+said the tills agreed.
+
+The catch-up crossed tills because pairing seeds the *entire* database into the
+feed of whoever you pair with, so the newcomer gets everything that machine
+holds whatever wrote it. `third-till.test.ts` asserted exactly that and passed.
+What nothing asserted was the next day's sale, and a probe took four minutes to
+confirm it never arrives.
+
+The cause is the thing that makes two tills safe. A merge sets
+`sync_state.applying`, all 108 triggers from 021 check it, and the rows it
+writes stay out of the feed -- which is what stops two tills handing one row
+back and forth for ever.
+
+**036** gives the feed an origin. A merge writes the entries for what it
+applied, naming the till the batch came from, and a batch built for a peer
+leaves out only the entries that came from *that* peer. Everything else
+travels, so a hub relays and the ping-pong stays prevented. The 108 triggers
+are untouched: each deletes the row's entry and inserts a fresh one, so a local
+edit to a relayed row clears the origin without being told to.
+
+The third part was not obvious and is load-bearing. `bump_rev` from 019 fires
+`WHEN NEW.rev = OLD.rev`, so **a write that changes nothing is exactly the write
+that raises a revision**. Two tills never noticed, because the per-peer filter
+ends the echo before it returns. A ring of three does: the row comes back
+identical, loses a tiebreak, gets written, gains a revision, and goes round
+again. Measured with the guard removed: four laps take one product from rev 1
+to rev 9, and a settled ring still moves three records a round. That is not a
+wasted round -- it is every till in the shop disagreeing about which copy is
+newest, for ever.
+
+It also means the escalation was already reachable before 036, as a divergence
+of `rev` between two tills whenever an identical row lost a tiebreak. The write
+was not fed anywhere, so it never circulated; the two tills simply stopped
+agreeing about the revision, and the higher one won every subsequent tie.
+
+`mesh-settles.test.ts` is the scenario: three tills, all three pairs, a row sent
+round both ways four times, and the assertion that its revision has not moved on
+any of them. `changedHere` now counts only locally written entries -- a row this
+till merely relayed did change here, but nobody at this counter touched it, and
+calling it contested would tell a shopkeeper that two people edited one thing
+when one did.
 
 ### Pulled forward out of order
 
