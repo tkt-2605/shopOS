@@ -78,6 +78,7 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [33, '033_a_setting_nothing_asks_for.sql', 'additive'],
   [34, '034_two_questions_the_tables_would_not_answer.sql', 'additive'],
   [35, '035_money_that_goes_the_other_way.sql', 'additive'],
+  [36, '036_a_hub_that_relays.sql', 'additive'],
 ]
 
 /**

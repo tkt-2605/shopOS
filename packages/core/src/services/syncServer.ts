@@ -309,7 +309,7 @@ async function handleFetch(
       lt(schema.syncPeers.myCursor, since),
     ))
 
-  return ok(await collectChanges(db, since, limit))
+  return ok(await collectChanges(db, since, limit, them))
 }
 
 /**

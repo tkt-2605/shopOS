@@ -1,4 +1,4 @@
-import { eq, gt, count, max } from 'drizzle-orm'
+import { eq, gt, and, count, max, sql } from 'drizzle-orm'
 import type { SqlDriver, TxOptions } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { REPLICATED } from '../domain/replicaShape.js'
@@ -26,6 +26,14 @@ export interface Change {
   table: string
   rowId: string
   /**
+   * The till this row arrived from, or null when it was written here.
+   *
+   * What lets a till in the middle relay. A batch built for a peer leaves out
+   * the entries that came from that peer, so the row reaches everybody else
+   * and never goes back where it came from. See migration 036.
+   */
+  originDevice: string | null
+  /**
    * A hint, not the answer. The sender resolves the row when it sends it, and a
    * row that is not there has been deleted whatever this says — which is what
    * settles the one case the triggers cannot agree on between them, a document
@@ -46,6 +54,14 @@ export async function changesSince(
   db: SqlDriver,
   cursor: number,
   limit = 500,
+  /**
+   * Leave out what this peer sent us, when building a batch for it.
+   *
+   * Only the entries that came from *that* till. Everything else travels,
+   * including rows a third counter wrote -- which is the whole point: the till
+   * in the middle is how they reach a counter that is not paired with it.
+   */
+  exceptFrom: string | null = null,
 ): Promise<Change[]> {
   const rows = await q(db)
     .select({
@@ -54,9 +70,18 @@ export async function changesSince(
       rowId: schema.changeFeed.rowId,
       op: schema.changeFeed.op,
       at: schema.changeFeed.at,
+      originDevice: schema.changeFeed.originDevice,
     })
     .from(schema.changeFeed)
-    .where(gt(schema.changeFeed.seq, cursor))
+    .where(and(
+      gt(schema.changeFeed.seq, cursor),
+      /* `IS NOT`, not `<>`: the column is null for everything written here,
+         and `null <> 'a-device'` is null, which would drop every locally
+         written row out of every batch. */
+      ...(exceptFrom === null
+        ? []
+        : [sql`${schema.changeFeed.originDevice} IS NOT ${exceptFrom}`]),
+    ))
     .orderBy(schema.changeFeed.seq)
     .limit(limit)
 
@@ -106,6 +131,42 @@ export async function pendingCount(db: SqlDriver, cursor = 0): Promise<number> {
  * does nothing — so it is arranged not to be reachable rather than cleaned up
  * afterwards.
  */
+/**
+ * Records that a row was applied from another till, so this one can pass it on.
+ *
+ * The triggers are silent for the length of a merge -- that is what
+ * `applyingRemote` is for -- so the entry is written here instead, naming where
+ * the row came from. Same shape as the triggers from 021: the row's existing
+ * entry goes and a fresh one takes its place, so the feed stays a set of what
+ * is dirty rather than a log.
+ *
+ * Deliberately *not* the peer whose batch this was in every case -- it is the
+ * till the row was written on, which for a relayed row is a third machine. A
+ * batch is only filtered against the peer it is being built for, so naming the
+ * true origin is what stops a row going back to the till that wrote it while
+ * still letting it reach everybody else.
+ */
+export async function feedApplied(
+  tx: SqlDriver,
+  table: string,
+  rowId: string,
+  op: ChangeOp,
+  origin: string | null,
+): Promise<void> {
+  await q(tx).delete(schema.changeFeed)
+    .where(and(
+      eq(schema.changeFeed.tableName, table),
+      eq(schema.changeFeed.rowId, rowId),
+    ))
+  await q(tx).insert(schema.changeFeed).values({
+    tableName: table,
+    rowId,
+    op,
+    at: new Date().toISOString(),
+    originDevice: origin,
+  })
+}
+
 export async function applyingRemote<T>(
   db: SqlDriver,
   fn: (tx: SqlDriver) => Promise<T>,

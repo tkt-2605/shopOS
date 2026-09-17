@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { DEVICE_IDS, benchDir, host, joiner, till, stopAll, writeBill, countOf } from './bench.js'
+import { DEVICE_IDS, benchDir, drain, host, joiner, till, stopAll, writeBill, countOf } from './bench.js'
 
 /**
  * A third counter, added to a shop that has been trading.
@@ -83,6 +83,41 @@ describe('a till that joins a shop already in business', () => {
     for (const table of ['registers', 'roles', 'settings']) {
       expect(await countOf(third.db, table)).toBe(await countOf(front.db, table))
     }
+  })
+
+  it('keeps getting that counter’s sales afterwards, through the till in the middle', async () => {
+    /* The one that matters, and the one the two above do not cover.
+       `seedFeedWithEverything` means a joining till receives the whole shop
+       from whoever it pairs with, including rows that came from a third
+       machine -- so a shop set up this morning looks perfectly synced. What a
+       shop actually does is sell something tomorrow.
+
+       A hub is what a shopkeeper builds: one machine everything talks to. So
+       the hub has to relay, and relaying is exactly what a till that applies a
+       change does not do by default -- it keeps the change out of its own feed
+       so two tills cannot hand one row back and forth for ever. */
+    const front = await host()
+    const back = await joiner()
+    await back.pairWith(front)
+    await back.sync(front)
+    await back.claimRegister()
+
+    const third = await till({
+      dataDir: benchDir(), deviceId: DEVICE_IDS.c, label: 'Side counter',
+      registerPrefix: 'SD', seed: 'empty',
+    })
+    await third.pairWith(front)
+    await drain(third, front)
+
+    // Tomorrow. The back counter sells something; the side counter is not
+    // paired with it and never will be.
+    await back.as(() => writeBill(back.db, back.registerId!, { docNo: 'BBC/2627/00999' }))
+    await back.sync(front)
+    await drain(third, front)
+
+    const onThird = await third.db.query<{ doc_no: string }>(
+      `SELECT doc_no FROM bills WHERE doc_no = ?`, ['BBC/2627/00999'])
+    expect(onThird, 'the side counter has the back counter’s sale').toHaveLength(1)
   })
 
   it('agrees with both of the others, not just the one it paired with', async () => {

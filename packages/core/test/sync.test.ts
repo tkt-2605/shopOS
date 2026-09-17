@@ -31,6 +31,8 @@ import type { Row, SqlDriver } from '../src/db/driver.js'
 
 const TILL_A = '1111aaaa-1111-4111-8111-111111111111'
 const TILL_B = '2222bbbb-2222-4222-8222-222222222222'
+/** Not a till in these scenarios -- a name for "some other machine". */
+const TILL_C = '3333cccc-3333-4333-8333-333333333333'
 
 interface Till {
   id: string
@@ -102,7 +104,11 @@ function wireTo(peer: Till, me: Till, over: Partial<PeerHello> = {}): SyncTransp
       }
     },
     async fetch(since, limit) {
-      return as(peer, () => collectChanges(peer.db, since, limit))
+      /* The asking till is passed on, as `handleFetch` passes it: a batch
+         leaves out what that till sent us, so nothing goes back where it came
+         from. A fake wire that dropped this would make the relay untestable
+         here and green anyway. */
+      return as(peer, () => collectChanges(peer.db, since, limit, me.id))
     },
     async offer(batch) {
       return as(peer, async () => {
@@ -382,11 +388,49 @@ describe('what must never happen', () => {
     const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
     await bothWays()
 
-    /* Applying is a write. Without the suppression that write lands in B's feed,
-       and A pulls its own change back, applies it, feeds it — two tills passing
-       one row between them for ever, each doing real work. */
+    /* Applying is a write, and the write does land in B's feed — that is how a
+       till in the middle relays to a third counter, which is migration 036. The
+       thing that must not happen is the row going back to A: A would pull its
+       own change, apply it, feed it, and two tills would pass one row between
+       them for ever, each doing real work.
+
+       So the entry is there, it says where it came from, and a batch built for
+       A leaves it out. */
     const bFeed = await changesSince(b.db, 0, 1000)
-    expect(bFeed.some((c) => c.rowId === id)).toBe(false)
+    const entry = bFeed.find((c) => c.rowId === id)
+    expect(entry?.originDevice).toBe(TILL_A)
+
+    const forA = await collectChanges(b.db, 0, 500, TILL_A)
+    expect(forA.records.some((r) => r.rowId === id)).toBe(false)
+
+    // And for anybody else it travels, which is the point of keeping it.
+    const forSomebodyElse = await collectChanges(b.db, 0, 500, TILL_C)
+    expect(forSomebodyElse.records.some((r) => r.rowId === id)).toBe(true)
+  })
+
+  it('settles rather than circling, when both tills keep asking', async () => {
+    /* The property the suppression used to give for free. Five rounds after the
+       row has landed must move nothing and change nothing: an identical row
+       that keeps being written is an identical row that keeps raising its own
+       revision, because `bump_rev` fires on exactly the write that changes
+       nothing. */
+    const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await bothWays()
+
+    const revOf = async (till: Till) => (await till.db.get<{ rev: number }>(
+      `SELECT rev FROM products WHERE id = ?`, [id]))?.rev
+
+    const settled = { a: await revOf(a), b: await revOf(b) }
+    expect(settled.a).toBe(settled.b)
+
+    for (let i = 0; i < 5; i += 1) {
+      const { first, second } = await bothWays()
+      expect(first.ok && first.received, `round ${i} pulled nothing back`).toBe(0)
+      expect(second.ok && second.received, `round ${i} pulled nothing back`).toBe(0)
+    }
+
+    expect(await revOf(a)).toBe(settled.a)
+    expect(await revOf(b)).toBe(settled.b)
   })
 
   it('does not raise the revision of a row it was given', async () => {

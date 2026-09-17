@@ -10,7 +10,7 @@ import { decideRow, decideDeletion } from '../domain/merge.js'
 import {
   REPLICATED, shapeOf, type ChangeBatch, type ChangeRecord,
 } from '../domain/replicaShape.js'
-import { applyingRemote, changesSince, pendingCount, pruneFeed } from './changefeed.js'
+import { applyingRemote, changesSince, feedApplied, pendingCount, pruneFeed } from './changefeed.js'
 import { getSetting } from './bootstrap.js'
 import { recomputeStock } from './stock.js'
 import { resolveDeviceRegister } from './registers.js'
@@ -209,7 +209,7 @@ export async function syncWith(
   }
 
   // ── push ────────────────────────────────────────────────────────────────
-  const outgoing = await collectChanges(db, hello.yourCursorWithThem, BATCH)
+  const outgoing = await collectChanges(db, hello.yourCursorWithThem, BATCH, hello.deviceId)
   let sent = 0
   if (outgoing.records.length > 0) {
     const ack = await transport.offer(outgoing)
@@ -287,8 +287,10 @@ export async function collectChanges(
   db: SqlDriver,
   cursor: number,
   limit = BATCH,
+  /** The till this batch is for. Its own changes are left out of it. */
+  forPeer: string | null = null,
 ): Promise<ChangeBatch> {
-  const entries = await changesSince(db, cursor, limit + 1)
+  const entries = await changesSince(db, cursor, limit + 1, forPeer)
   const complete = entries.length <= limit
   const batch = complete ? entries : entries.slice(0, limit)
 
@@ -509,6 +511,19 @@ async function mergeBatch(
       )
       const both = changedHereToo.has(`${record.table}\u0000${record.rowId}`)
 
+      /* Nothing to do, so nothing is done -- and nothing is said about it.
+         Two tills that both hold this row identically is the ordinary state of
+         a shop that has just synced, and an identical row arrives on every
+         round that relays one. Writing it anyway would be worse than wasteful:
+         `bump_rev` from 019 fires `WHEN NEW.rev = OLD.rev`, so a write that
+         changes nothing is exactly the write that raises the revision -- this
+         till would come out looking newer than the machine that wrote the row,
+         win every later tiebreak against it, and feed it back again. */
+      if (record.op === 'upsert' && record.row !== null && mine !== undefined
+          && same(known(record.row, columns).row, mine)) {
+        continue
+      }
+
       if (record.op === 'delete') {
         if (mine === undefined) continue
         const call = decideDeletion({
@@ -517,6 +532,7 @@ async function mergeBatch(
         })
         if (call.winner === 'delete') {
           await tx.execute(`DELETE FROM "${shape.table}" WHERE "${shape.key}" = ?`, [record.rowId])
+          await feedApplied(tx, shape.table, record.rowId, 'delete', origin(record, batch))
           applied += 1
           if (both) {
             contested.push({
@@ -552,6 +568,7 @@ async function mergeBatch(
       const trimmed = known(record.row, columns)
       ignoredColumns += trimmed.dropped
       await upsert(tx, shape.table, shape.key, trimmed.row)
+      await feedApplied(tx, shape.table, record.rowId, 'upsert', origin(record, batch))
 
       for (const line of shape.lines) {
         /* The winning side's document is the document. Merging lines one by one
@@ -673,13 +690,45 @@ export async function recordAttempt(
     .where(eq(schema.syncPeers.deviceId, peerDeviceId))
 }
 
-/** Which records have also changed here since the peer last read our feed. */
+/**
+ * Which records have also changed *here* since the peer last read our feed.
+ *
+ * Locally written entries only. A row this till merely relayed from a third
+ * counter did change here in the sense that it was written, but nobody at this
+ * counter touched it -- and reporting it as contested would tell a shopkeeper
+ * that two people edited one thing when one did.
+ */
 export async function changedHere(
   db: SqlDriver,
   cursor: number,
 ): Promise<ReadonlySet<string>> {
   const entries = await changesSince(db, cursor, 100_000)
-  return new Set(entries.map((e) => `${e.table}\u0000${e.rowId}`))
+  return new Set(
+    entries
+      .filter((e) => e.originDevice === null)
+      .map((e) => `${e.table}\u0000${e.rowId}`),
+  )
+}
+
+/**
+ * Where a record was originally written.
+ *
+ * The batch says which till sent it; the record does not say who wrote it, and
+ * for a relayed row those are two different machines. Until the wire format
+ * carries the true origin, the sender is the best answer available -- and it is
+ * the one that matters, because it is the till this row must not be sent back
+ * to. A relayed row is therefore attributed to the middle till, which sends it
+ * one hop further than strictly necessary and then stops.
+ */
+function origin(_record: ChangeRecord, batch: ChangeBatch): string | null {
+  return batch.fromDevice
+}
+
+/** Whether an incoming row says anything this database does not already hold. */
+function same(theirs: Row, mine: Row): boolean {
+  const keys = Object.keys(theirs)
+  if (keys.length !== Object.keys(mine).length) return false
+  return keys.every((k) => theirs[k] === mine[k])
 }
 
 /**

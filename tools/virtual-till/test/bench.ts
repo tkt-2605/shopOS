@@ -55,6 +55,23 @@ export function joiner(over: Partial<TillOptions> = {}): Promise<Till> {
   })
 }
 
+/**
+ * Rounds against one peer until it has nothing more to give.
+ *
+ * A round is capped at a batch, and a till joining a shop that has been trading
+ * needs several. `syncUntilDone` is what the app runs; this is the same idea
+ * with a ceiling, so a scenario that never drains fails as a scenario rather
+ * than hanging the file.
+ */
+export async function drain(from: Till, peer: Till, rounds = 12): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    const round = await from.sync(peer)
+    if (!round.ok) throw new Error(`round refused: ${round.code}`)
+    if (!round.more) return
+  }
+  throw new Error(`still not drained after ${rounds} rounds`)
+}
+
 export async function stopAll(): Promise<void> {
   for (const t of running) {
     try { await t.stop() } catch { /* a scenario may have stopped it already */ }
@@ -94,6 +111,30 @@ export async function writeBill(
      user!.id, now, now],
   )
   return id
+}
+
+/**
+ * A product, which unlike a bill is edited in place and carries a `rev`.
+ *
+ * What `writeBill` cannot exercise: `bump_rev` from 019 fires on UPDATE, so a
+ * row that travels and is written back is a row whose revision can move.
+ */
+export async function writeProduct(
+  db: SqlDriver, opts: { name: string; rate?: number },
+): Promise<string> {
+  const id = newId()
+  const now = new Date().toISOString()
+  await db.execute(
+    `INSERT INTO products (id, name, base_rate, tax_rate_bp, created_at, updated_at)
+     VALUES (?, ?, ?, 0, ?, ?)`,
+    [id, opts.name, opts.rate ?? 10000, now, now],
+  )
+  return id
+}
+
+export async function revOf(db: SqlDriver, productId: string): Promise<number | undefined> {
+  const row = await db.get<{ rev: number }>(`SELECT rev FROM products WHERE id = ?`, [productId])
+  return row?.rev
 }
 
 export async function billIds(db: SqlDriver): Promise<string[]> {

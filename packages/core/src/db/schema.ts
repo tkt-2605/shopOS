@@ -752,7 +752,11 @@ export const changeFeed = sqliteTable('change_feed', {
   rowId: text('row_id').notNull(),
   op: text().notNull(),
   at: text().notNull(),
-})
+  /** The till this row arrived from, or null when it was written here. */
+  originDevice: text('origin_device'),
+}, (table) => [
+  index('idx_change_feed_origin').on(table.originDevice, table.seq),
+])
 
 export const syncState = sqliteTable('sync_state', {
   id: integer().primaryKey(),
