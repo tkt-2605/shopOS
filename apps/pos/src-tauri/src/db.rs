@@ -272,6 +272,43 @@ impl Db {
         Ok(token)
     }
 
+    /// Ends the transaction the token names, committing it or throwing it away.
+    ///
+    /// On `Db` rather than in the command for the reason `begin` is: the command
+    /// layer is plumbing, and what this does when a COMMIT fails is a rule that
+    /// wants a test around it.
+    pub fn end(&self, token: &str, commit: bool) -> Result<(), String> {
+        let mut inner = lock(self)?;
+        assert_token(&inner, token)?;
+        let statement = if commit { "COMMIT" } else { "ROLLBACK" };
+        let result = inner.conn.execute_batch(statement).map_err(|e| e.to_string());
+
+        /* A COMMIT that fails does not always end the transaction, and this database
+           arranges for exactly the case where it does not: `mergeBatch` sets
+           `PRAGMA defer_foreign_keys = ON` so a batch may arrive in any order, and
+           SQLite answers an outstanding deferred violation at COMMIT by refusing and
+           leaving the write transaction open.
+
+           Clearing `active_tx` on the way out was then enough to put the connection
+           beyond every rescue there is. The watchdog reads `active_tx` and finds
+           nothing to sweep. The driver has already called this, so its `finally` has
+           nothing left to try. `Db::execute`'s "a transaction is open" guard now
+           passes, so every later write silently joins the orphan and shares its
+           fate, and the next `begin` answers "cannot start a transaction within a
+           transaction". The till is finished until somebody restarts it, with
+           nothing on any screen saying why.
+
+           The rollback is what actually ends it. Its own error is dropped on
+           purpose: the COMMIT's is the one that says what went wrong, and a ROLLBACK
+           that fails because nothing was open is the ordinary case. */
+        if result.is_err() {
+            let _ = inner.conn.execute_batch("ROLLBACK");
+        }
+
+        inner.active_tx = None;
+        result
+    }
+
     /// A write that is not part of any transaction.
     ///
     /// Refused while one is open, and this is the whole of the fix.
@@ -580,12 +617,7 @@ pub fn sql_tx_execute(
 
 #[tauri::command]
 pub fn sql_tx_end(db: State<'_, DbState>, token: String, commit: bool) -> Result<(), String> {
-    let mut inner = lock(db.get()?)?;
-    assert_token(&inner, &token)?;
-    let statement = if commit { "COMMIT" } else { "ROLLBACK" };
-    let result = inner.conn.execute_batch(statement).map_err(|e| e.to_string());
-    inner.active_tx = None;
-    result
+    db.get()?.end(&token, commit)
 }
 
 /// Rolls back a transaction nothing can still be holding.
@@ -998,6 +1030,68 @@ mod tests {
     fn positional_rows_are_empty_when_nothing_matches() {
         let (dir, db) = a_till();
         assert!(db.query_values("SELECT text FROM note", &[]).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    /// A COMMIT that SQLite refuses must still leave the connection usable.
+    ///
+    /// The merge turns deferred foreign keys on so a batch can arrive in any
+    /// order, which means a COMMIT can fail with the transaction still open.
+    /// Clearing `active_tx` without ending it put the connection somewhere
+    /// nothing could reach: not the watchdog, which reads `active_tx`; not the
+    /// driver, which has already called this; not the guard on `execute`, which
+    /// now sees no transaction and lets every later write join the orphan. The
+    /// till was finished until it was restarted and said nothing about it.
+    ///
+    /// Written against `Db` rather than the command, because the command is
+    /// plumbing and this is a rule.
+    #[test]
+    fn a_commit_that_fails_does_not_leave_a_transaction_nobody_can_reach() {
+        let (dir, db) = a_till();
+        db.execute(
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, note_id INTEGER              REFERENCES note(id))",
+            &[],
+        )
+        .unwrap();
+
+        let token = db.begin(None).unwrap();
+        db.end(&token, true).unwrap();
+
+        // A child pointing at a note that is not there. Deferred, so it is the
+        // COMMIT that objects rather than the INSERT.
+        let token = db.begin(None).unwrap();
+        {
+            let inner = db.0.lock().unwrap();
+            inner
+                .conn
+                .execute_batch("PRAGMA defer_foreign_keys = ON")
+                .unwrap();
+            inner
+                .conn
+                .execute_batch("INSERT INTO child (id, note_id) VALUES (1, 404)")
+                .unwrap();
+        }
+
+        let refused = db.end(&token, true).unwrap_err();
+        assert!(
+            refused.to_lowercase().contains("foreign key"),
+            "the COMMIT should fail on the foreign key, said: {refused}"
+        );
+
+        // The three things that were unreachable before. Each is a separate
+        // symptom of the same orphan, and each is how a shopkeeper would meet it.
+        assert!(
+            db.execute("INSERT INTO note (id, text) VALUES (1, 'after')", &[])
+                .is_ok(),
+            "a write after the failed commit must not join an orphaned transaction"
+        );
+        let token = db.begin(None).unwrap();
+        db.end(&token, true).unwrap();
+        assert_eq!(
+            db.query("SELECT text FROM note", &[]).unwrap().len(),
+            1,
+            "and the write that followed it is really there"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

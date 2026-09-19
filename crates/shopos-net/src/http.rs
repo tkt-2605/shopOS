@@ -31,7 +31,7 @@
 /// The bills themselves cross in clear. That is written down here, in the
 /// migration and in the doc rather than implied away.
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -144,6 +144,26 @@ pub fn serve(port: u16, answerer: Arc<dyn Answerer>) -> Result<Bound, String> {
     Ok(Bound { port: bound, stop })
 }
 
+/// The same, settling for any free port when the wanted one is taken.
+///
+/// A till that cannot have 7801 is still a till. The port it ends up on is
+/// carried by everything that needs it -- the shout announces the one actually
+/// bound, pairing advertises it in a header, and a peer is stored with its
+/// address and port together -- so a second number is only a number, and the
+/// screen says which one it got.
+///
+/// Without this, a shop whose 7801 is held by something else has a sync that
+/// can never be turned on, and two tills on one machine is a collision with
+/// nothing to be done about it. If an ephemeral port will not bind either, the
+/// first refusal is the one returned: it names the port the shop and whoever
+/// wrote its firewall rule are expecting.
+pub fn serve_preferring(port: u16, answerer: Arc<dyn Answerer>) -> Result<Bound, String> {
+    match serve(port, Arc::clone(&answerer)) {
+        Ok(bound) => Ok(bound),
+        Err(taken) => serve(0, answerer).map_err(|_| taken),
+    }
+}
+
 fn handle(answerer: &dyn Answerer, mut stream: TcpStream) -> std::io::Result<()> {
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
@@ -249,6 +269,132 @@ pub fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::i
     );
     stream.write_all(response.as_bytes())?;
     stream.flush()
+}
+
+/// What a till said when it was asked something.
+#[derive(Debug)]
+pub struct Answer {
+    pub status: u16,
+    pub body: String,
+}
+
+/// How long to wait for a till that is switched off but whose address still
+/// resolves. Short, because a person is watching a spinner while it runs.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The asking half, in Rust rather than in the webview.
+///
+/// The webview cannot make this call itself. The app's CSP takes `connect-src`
+/// from `default-src 'self'`, so a `fetch` aimed at another till is refused
+/// before a packet leaves -- which is the rule the program is built on, that
+/// network code lives here. `syncClient.ts` takes the fetch it uses as an
+/// argument for exactly this reason: the app hands it one that arrives here.
+///
+/// Enough HTTP/1.1 for the four POSTs in `PATHS` and deliberately not a byte
+/// more, which is the same bargain `read_request` makes on the other side.
+pub fn request(
+    address: &str,
+    path: &str,
+    body: &str,
+    auth: Option<&str>,
+    listen_port: Option<u16>,
+) -> Result<Answer, String> {
+    let resolved = address
+        .to_socket_addrs()
+        .map_err(|e| format!("{address} is not an address this machine can use: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{address} is not an address this machine can use"))?;
+
+    let mut stream = TcpStream::connect_timeout(&resolved, CONNECT_TIMEOUT)
+        .map_err(|e| format!("Could not reach {address}: {e}"))?;
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
+
+    let mut head = format!(
+        "POST {path} HTTP/1.1\r\n\
+         host: {address}\r\n\
+         content-type: application/json\r\n\
+         content-length: {}\r\n\
+         connection: close\r\n",
+        body.as_bytes().len()
+    );
+    if let Some(auth) = auth {
+        head.push_str(&format!("x-shopos-auth: {auth}\r\n"));
+    }
+    if let Some(port) = listen_port {
+        head.push_str(&format!("{LISTEN_PORT_HEADER}: {port}\r\n"));
+    }
+    head.push_str("\r\n");
+
+    stream
+        .write_all(head.as_bytes())
+        .and_then(|()| stream.write_all(body.as_bytes()))
+        .and_then(|()| stream.flush())
+        .map_err(|e| format!("Could not send to {address}: {e}"))?;
+
+    read_answer(&mut stream).map_err(|e| format!("No answer from {address}: {e}"))
+}
+
+fn read_answer(stream: &mut TcpStream) -> std::io::Result<Answer> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "the connection closed before anything was said",
+        ));
+    }
+
+    // "HTTP/1.1 200 OK" -- the middle word is the whole of what matters.
+    let status = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "not an HTTP reply")
+        })?;
+
+    let mut length: Option<usize> = None;
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header)? == 0 {
+            break;
+        }
+        let header = header.trim_end();
+        if header.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse::<usize>().ok();
+            }
+        }
+    }
+
+    /* The far side always sends a length and closes after the body. Reading to
+       the end when it does not is the reply of a till, not of a parser that
+       guesses: `connection: close` is what makes the end unambiguous. */
+    let mut body = Vec::new();
+    match length {
+        Some(length) if length > MAX_BODY => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the reply is larger than any till sends",
+            ))
+        }
+        Some(length) => {
+            body.resize(length, 0);
+            reader.read_exact(&mut body)?;
+        }
+        None => {
+            reader.take(MAX_BODY as u64).read_to_end(&mut body)?;
+        }
+    }
+
+    let body = String::from_utf8(body)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "the reply is not text"))?;
+    Ok(Answer { status, body })
 }
 
 /// This machine's address on the shop's network, for a person to read out.
@@ -445,5 +591,147 @@ mod tests {
 ");
         let parsed = request_from(&raw).unwrap();
         assert_eq!(parsed.remote_address, None);
+    }
+
+    /* The asking half, against the answering one. Both sides are hand-written
+       here, so a round trip is the test that matters: a client that agreed with
+       nothing but itself would pass every test above and reach no till. */
+
+    struct Recorder {
+        seen: std::sync::Mutex<Option<Request>>,
+        status: u16,
+        body: String,
+    }
+
+    impl Answerer for Arc<Recorder> {
+        fn answer(&self, request: Request) -> Reply {
+            *self.seen.lock().unwrap() = Some(request);
+            Reply { status: self.status, body: self.body.clone() }
+        }
+    }
+
+    fn answering(status: u16, body: &str) -> (Bound, Arc<Recorder>) {
+        let recorder = Arc::new(Recorder {
+            seen: std::sync::Mutex::new(None),
+            status,
+            body: body.to_string(),
+        });
+        let bound = serve(0, Arc::new(Arc::clone(&recorder))).unwrap();
+        (bound, recorder)
+    }
+
+    #[test]
+    fn asks_a_till_and_reads_what_it_said() {
+        let (bound, recorder) = answering(200, "{\"upTo\":41}");
+        let address = format!("127.0.0.1:{}", bound.port);
+
+        let answer = request(&address, "/offer", "{\"rows\":[]}", Some("signed"), Some(7801))
+            .unwrap();
+        bound.stop();
+
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.body, "{\"upTo\":41}");
+
+        let seen = recorder.seen.lock().unwrap();
+        let seen = seen.as_ref().expect("the till should have been asked");
+        assert_eq!(seen.path, "/offer");
+        assert_eq!(seen.body, "{\"rows\":[]}");
+        assert_eq!(seen.auth.as_deref(), Some("signed"));
+        assert_eq!(seen.listen_port, Some(7801));
+    }
+
+    #[test]
+    fn sends_a_body_larger_than_one_packet_whole() {
+        let (bound, recorder) = answering(200, "{}");
+        let address = format!("127.0.0.1:{}", bound.port);
+        let body = "x".repeat(200_000);
+
+        request(&address, "/offer", &body, None, None).unwrap();
+        bound.stop();
+
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.as_ref().unwrap().body.len(), body.len());
+    }
+
+    #[test]
+    fn brings_a_refusal_back_rather_than_failing() {
+        // A till that says no has answered. Only one that cannot be reached at
+        // all is an error, because the screen words the two differently.
+        let (bound, _) = answering(401, "{\"code\":\"BAD_SIGNATURE\"}");
+        let address = format!("127.0.0.1:{}", bound.port);
+
+        let answer = request(&address, "/fetch", "{}", Some("wrong"), None).unwrap();
+        bound.stop();
+
+        assert_eq!(answer.status, 401);
+        assert_eq!(answer.body, "{\"code\":\"BAD_SIGNATURE\"}");
+    }
+
+    #[test]
+    fn says_which_till_it_could_not_reach() {
+        // The port is bound and then dropped, so it is certainly nobody's.
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("127.0.0.1:{}", closed.local_addr().unwrap().port());
+        drop(closed);
+
+        let refused = request(&address, "/hello", "{}", None, None).unwrap_err();
+        assert!(refused.contains(&address), "{refused}");
+    }
+
+    #[test]
+    fn takes_another_port_when_the_one_it_wanted_is_taken() {
+        // Two tills on one machine, which is a developer's laptop and also a
+        // shop whose 7801 belongs to something else.
+        let (first, _) = answering(200, "{}");
+        let second = serve_preferring(first.port, Arc::new(Arc::new(Recorder {
+            seen: std::sync::Mutex::new(None),
+            status: 200,
+            body: "{}".into(),
+        })))
+        .unwrap();
+
+        assert_ne!(second.port, first.port);
+        assert_ne!(second.port, 0, "it should report the port it actually got");
+
+        // And it is a till, not just a bound socket: it answers.
+        let address = format!("127.0.0.1:{}", second.port);
+        assert_eq!(request(&address, "/hello", "{}", None, None).unwrap().status, 200);
+
+        first.stop();
+        second.stop();
+    }
+
+    #[test]
+    fn keeps_the_port_it_asked_for_when_nothing_holds_it() {
+        // The shop's case, and the one a firewall rule is written for.
+        let free = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+
+        let bound = serve_preferring(port, Arc::new(Arc::new(Recorder {
+            seen: std::sync::Mutex::new(None),
+            status: 200,
+            body: "{}".into(),
+        })))
+        .unwrap();
+        assert_eq!(bound.port, port);
+        bound.stop();
+    }
+
+    #[test]
+    fn leaves_out_the_headers_it_was_given_nothing_for() {
+        /* A till that is not listening sends no port, and pairing sends no
+           signature. Sending the header empty instead would have the far side
+           record an address of nowhere. */
+        let (bound, recorder) = answering(200, "{}");
+        let address = format!("127.0.0.1:{}", bound.port);
+
+        request(&address, "/pair", "{}", None, None).unwrap();
+        bound.stop();
+
+        let seen = recorder.seen.lock().unwrap();
+        let seen = seen.as_ref().unwrap();
+        assert_eq!(seen.auth, None);
+        assert_eq!(seen.listen_port, None);
     }
 }

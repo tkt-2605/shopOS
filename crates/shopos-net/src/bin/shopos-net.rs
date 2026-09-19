@@ -168,6 +168,9 @@ fn main() {
                     shop: arg(&args, "shop"),
                     shop_id: arg(&args, "shop-id"),
                     port: bound.port,
+                    // In a container this is the address on the bench's network,
+                    // which is the one the other containers dial.
+                    host: http::lan_address(),
                 },
                 bound.stop_flag(),
             );

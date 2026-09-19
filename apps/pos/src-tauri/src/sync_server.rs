@@ -28,8 +28,25 @@ use shopos_net::http::{self, Answerer, Bound};
 use tauri::{Emitter, Manager};
 
 /// How long the webview has to answer before the caller is told to come back.
-/// Generous, because applying a batch is a real transaction on a real disk.
-const ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
+///
+/// It must be **larger than `MERGE_BUDGET_MS`** in `packages/core/src/db/driver.ts`,
+/// and it was smaller: ninety seconds of budget behind a sixty-second wait. A
+/// merge that used the budget the budget exists for -- a till a fortnight behind,
+/// which is the whole reason it is ninety and not fifteen -- had already been
+/// answered `503 NOT_READY` and had its socket closed, while the transaction
+/// carried on and committed. The asking till then reported a failure for a round
+/// that worked, backed off, and came back to do the same ninety seconds again.
+///
+/// Timeouts grow outward: the work has a budget, the answer waits longer than the
+/// work, and the caller waits longer than the answer. `timeoutsGrowOutward.test.ts`
+/// reads both constants and fails if they ever invert again, because they are in
+/// two languages and nothing else would notice.
+///
+/// Thirty seconds of headroom over the budget, not five minutes: `MAX_TX_BUDGET_MS`
+/// lets a caller *ask* for five, but the merge asks for ninety seconds and this
+/// needs to cover what is actually scheduled rather than what is permitted. A
+/// wedged webview holding a peer's socket is its own cost.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Serialize, Clone)]
 pub struct ServeInfo {
@@ -135,7 +152,9 @@ pub fn sync_serve_start(
         return Ok(info(current.bound.port));
     }
 
-    let bound = http::serve(port, Arc::new(ToWebview { app: app.clone() }))?;
+    // Preferring, not insisting: `serve_preferring` says why, and the port it
+    // settled on is what the screen shows and what the shout announces.
+    let bound = http::serve_preferring(port, Arc::new(ToWebview { app: app.clone() }))?;
 
     /* Answering the shout and answering HTTP start and stop together, sharing
        one flag. There is deliberately no state where a till announces itself on
@@ -149,6 +168,12 @@ pub fn sync_serve_start(
                 shop,
                 shop_id,
                 port: bound.port,
+                /* The same address this till shows on its own Settings screen,
+                   rather than leaving the asker to read one off the packet. A
+                   machine with a second network card answers from whichever
+                   one the shout arrived on, which on a laptop with WSL is a
+                   virtual switch nothing can reach. */
+                host: http::lan_address(),
             },
             bound.stop_flag(),
         );

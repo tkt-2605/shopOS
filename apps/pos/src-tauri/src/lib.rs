@@ -12,6 +12,7 @@ mod paths;
 mod pdf;
 mod printing;
 mod restore;
+mod sync_client;
 mod sync_server;
 mod version;
 
@@ -110,6 +111,7 @@ pub fn run() {
             sync_server::sync_serve_stop,
             sync_server::sync_serve_status,
             sync_server::sync_reply,
+            sync_client::sync_request,
             discovery::sync_look_around,
             printing::list_printers,
             printing::default_printer,
