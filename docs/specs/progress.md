@@ -900,7 +900,12 @@ anyway is a case only its owner can identify.
 ## Verification a person has to do
 
 Nothing here can be done from a terminal. Carried forward until someone runs
-the app:
+the app.
+
+**`hand-checks.md` is the version to work from** -- the same checks ordered by
+what equipment each one needs, with what right looks like and what it means if
+it is wrong. The list below is kept because it holds the argument for each one
+and which row it came out of; the other file is the one you tick.
 
 - [ ] `backup_hook` set to `exit 1`; the Backup card shows the failure and the code
 - [ ] the backup folder renamed while the app runs; Settings names the folder
