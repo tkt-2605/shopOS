@@ -1,0 +1,48 @@
+-- A counter claim that can expire, and a till that can be forgotten.
+--
+-- ── What was wrong ────────────────────────────────────────────────────────
+--
+-- `registers.claimed_by` (037) is a lock with no expiry and no key. It is what
+-- stops two tills billing on one counter and minting the same invoice numbers,
+-- and it does that job well. What it has no answer for is the machine that does
+-- not come back.
+--
+-- The ordinary route is a restore. A backup carries the claim — it is a row in
+-- the database — and `device.json` is deliberately *not* in the backup, because
+-- a device identity that a restore could duplicate is not an identity. So a
+-- shop that restores onto a new machine gets a database whose front counter is
+-- claimed by a device id that no longer exists anywhere. That machine cannot
+-- bill: `resolveDeviceRegister` returns null the moment any peer row exists.
+-- And it cannot take the counter back either — `Registers.tsx` and `JoinShop`
+-- both hard-refuse a claimed counter, which is exactly right when the claimant
+-- is another till in the room and exactly wrong when it is a ghost.
+--
+-- The shopkeeper's position is then: a working machine, their own data, and no
+-- way to ring up a sale. Reinstalling the app on a phone makes this routine
+-- rather than rare.
+--
+-- ── What this adds ────────────────────────────────────────────────────────
+--
+-- `claimed_at`, refreshed every time a till starts up and finds the counter is
+-- its own. A claim is then a statement with a date on it rather than a fact
+-- with no end, and a claim nobody has renewed for long enough can be taken —
+-- with a warning that names the till and the date, because "the front counter
+-- was last used by Back Counter on the 3rd of March, take it over?" is a
+-- question a shopkeeper can answer and "claimed" is not.
+--
+-- Null for every existing claim, and that reads correctly: never renewed, so
+-- takeable, which is the right answer for a claim made before anything renewed
+-- one. The first startup after this migration stamps it.
+--
+-- ── What it does not do ───────────────────────────────────────────────────
+--
+-- It does not expire anything on its own. Nothing in this database runs on a
+-- clock; a claim goes stale in the sense that a screen is willing to offer it,
+-- and a person still decides. An automatic release would be two tills billing
+-- on one counter at the end of a long weekend.
+--
+-- Additive. An older till never writes the column and never reads it, so its
+-- claims look permanently stale to a newer one — which is why taking a counter
+-- asks rather than acts.
+
+ALTER TABLE registers ADD COLUMN claimed_at TEXT;

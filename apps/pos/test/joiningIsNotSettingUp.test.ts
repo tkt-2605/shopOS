@@ -93,17 +93,28 @@ describe('the first screen', () => {
 
 describe('what a joining till is told about its counter', () => {
   it('asks which counter it is before it finishes', () => {
-    /* A till with no counter of its own falls back to the first in the list,
-       which is the one it just joined -- and two tills on one counter give two
-       customers the same bill number. The next sync is refused with
-       `SAME_REGISTER`, which is right, recoverable in ten seconds, and
-       completely opaque to somebody who has never heard of a counter.
+    /* A till that is never asked has no counter at all now, and cannot bill --
+       which is safe and, on its own, a machine that has joined a shop and will
+       not sell anything. So the flow asks, here, while somebody is still
+       standing in front of it.
 
-       So the flow asks, and the refusal it would otherwise have caused cannot
-       happen. This is the assertion that fails if the step is dropped for
-       being one screen too many. */
+       This is the assertion that fails if the step is dropped for being one
+       screen too many. */
     const joining = read('ui', 'JoinShop.tsx')
     expect(/listRegisters\s*\(/.test(joining), 'it lists the shop’s counters').toBe(true)
-    expect(/chooseRegister\s*\(/.test(joining), 'it records the choice').toBe(true)
+    expect(/takeCounter\s*\(/.test(joining), 'it records the choice').toBe(true)
+  })
+
+  it('will not offer a counter another till is already sitting at', () => {
+    /* The screen that let two tills onto counter T2 and produced twenty-four
+       bills all numbered `BT2/2627/00001`. It offered every counter in the
+       shop, because it had nothing to mark the taken ones with.
+
+       `countersOtherTillsUse` is that mark. Asserted on the source rather than
+       rendered, for the same reason as the rest of this file: what is being
+       protected is that the step exists at all. */
+    const joining = read('ui', 'JoinShop.tsx')
+    expect(/countersOtherTillsUse\s*\(/.test(joining), 'it asks which are taken').toBe(true)
+    expect(/disabled=/.test(joining), 'and refuses those').toBe(true)
   })
 })

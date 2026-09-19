@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   listRegisters, createRegister, renameRegister, setRegisterActive,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
+  countersOtherTillsUse, claimRegister, claimIfUnclaimed,
 } from '../src/services/registers.js'
+import { setDeviceId } from '../src/device.js'
 import { getOrOpenSession } from '../src/services/cash.js'
 import { createBill, submitBill } from '../src/services/billing.js'
 import { postMovement } from '../src/services/stock.js'
@@ -105,6 +107,122 @@ describe('which counter this machine is', () => {
 
   it('falls back when the chosen one was deleted on another till', async () => {
     expect(await resolveDeviceRegister(fx.db, 'a-counter-that-is-not-there')).toBe(fx.seed.registerId)
+  })
+
+  /* All four above are a shop with one till, which cannot collide with anybody.
+     Once there is a second, the shop's first counter is the one that till bills
+     on, and a guess is how two machines mint the same invoice numbers. The sync
+     refusal that used to catch it arrives after both have billed, which is too
+     late to be a guard. */
+
+  async function anotherTillIsKnown() {
+    await fx.db.execute(
+      `INSERT INTO sync_peers (device_id, label, created_at) VALUES (?, ?, ?)`,
+      ['the-other-till', 'COUNTER2', new Date().toISOString()],
+    )
+  }
+
+  it('refuses to guess once the shop knows another till', async () => {
+    await anotherTillIsKnown()
+    expect(await resolveDeviceRegister(fx.db, null)).toBeNull()
+  })
+
+  it('still uses the counter this machine chose, peer or no peer', async () => {
+    const made = await createRegister(fx.db, { name: 'Front', prefix: 'FC', actorId: fx.adminId })
+    if (!made.ok) return
+    await anotherTillIsKnown()
+    expect(await resolveDeviceRegister(fx.db, made.registerId)).toBe(made.registerId)
+  })
+
+  it('refuses to guess rather than falling back when the chosen counter is gone', async () => {
+    // The dangerous version of "falls back when the chosen one was deleted":
+    // with a second till in the shop, that fallback is the other till's counter.
+    await anotherTillIsKnown()
+    expect(await resolveDeviceRegister(fx.db, 'a-counter-that-is-not-there')).toBeNull()
+  })
+})
+
+describe('a counter saying which till sits at it', () => {
+  /* Not guessing is half of it. The other half is that both screens offering a
+     counter used to offer every one of them, including the one the till next
+     door bills on. The claim lives on the counter because that is the only
+     place wide enough: a till behind a hub never speaks to its sibling, and two
+     tills choosing in the same minute have not spoken to each other yet. */
+
+  const ME = '1111aaaa-1111-4111-8111-111111111111'
+  const OTHER = '2222bbbb-2222-4222-8222-222222222222'
+
+  it('is empty in a shop where nobody has claimed anything', async () => {
+    expect(await countersOtherTillsUse(fx.db, ME)).toEqual([])
+  })
+
+  it('leaves out the counter this machine claimed', async () => {
+    // A till is not competing with itself.
+    await claimRegister(fx.db, { registerId: fx.seed.registerId, deviceId: ME })
+    expect(await countersOtherTillsUse(fx.db, ME)).toEqual([])
+  })
+
+  it('names a counter another till claimed', async () => {
+    await claimRegister(fx.db, { registerId: fx.seed.registerId, deviceId: OTHER })
+    const taken = await countersOtherTillsUse(fx.db, ME)
+    expect(taken).toHaveLength(1)
+    expect(taken[0]?.registerId).toBe(fx.seed.registerId)
+    expect(taken[0]?.deviceId).toBe(OTHER)
+  })
+
+  it('counts a claim from a till this one has never met', async () => {
+    /* The point of keeping it on the counter. A shop with a hub has tills that
+       never exchange a word, and rows -- including this one -- still reach
+       them. The peers table would have said this counter was free. */
+    await claimRegister(fx.db, { registerId: fx.seed.registerId, deviceId: 'a-till-we-never-synced-with' })
+    expect(await countersOtherTillsUse(fx.db, ME)).toHaveLength(1)
+  })
+
+  it('releases the counter a till moves away from', async () => {
+    // Otherwise a till that moves desks leaves the old counter looking busy
+    // for ever, and the shop runs out of counters it is allowed to use.
+    const front = await createRegister(fx.db, { name: 'Front', prefix: 'FC', actorId: fx.adminId })
+    if (!front.ok) return
+
+    await claimRegister(fx.db, { registerId: fx.seed.registerId, deviceId: OTHER })
+    await claimRegister(fx.db, { registerId: front.registerId, deviceId: OTHER })
+
+    const taken = await countersOtherTillsUse(fx.db, ME)
+    expect(taken).toHaveLength(1)
+    expect(taken[0]?.registerId).toBe(front.registerId)
+  })
+
+  it('takes a counter nobody has spoken for, and only that', async () => {
+    /* A till that has been selling on the shop's only counter for a year was
+       never asked which one it was on. If it never says, the second till is
+       offered that counter as free on the day it arrives. */
+    const front = await createRegister(fx.db, { name: 'Front', prefix: 'FC', actorId: fx.adminId })
+    if (!front.ok) return
+    await claimRegister(fx.db, { registerId: front.registerId, deviceId: OTHER })
+
+    await claimIfUnclaimed(fx.db, fx.seed.registerId, ME)
+    await claimIfUnclaimed(fx.db, front.registerId, ME)
+
+    // Took the free one; left the other till's alone.
+    expect(await countersOtherTillsUse(fx.db, ME))
+      .toEqual([expect.objectContaining({ registerId: front.registerId })])
+  })
+
+  it('stops this machine billing on a counter it has lost', async () => {
+    /* Two tills claimed one counter while out of touch, the merge settled on
+       one of them, and this is the other finding out. Better here than at
+       `bills.doc_no`, which is the same news one bill too late. */
+    setDeviceId(ME)
+    try {
+      await claimRegister(fx.db, { registerId: fx.seed.registerId, deviceId: ME })
+      expect(await resolveDeviceRegister(fx.db, fx.seed.registerId)).toBe(fx.seed.registerId)
+
+      // The other till's claim arrives in a merge and wins.
+      await claimRegister(fx.db, { registerId: fx.seed.registerId, deviceId: OTHER })
+      expect(await resolveDeviceRegister(fx.db, fx.seed.registerId)).toBeNull()
+    } finally {
+      setDeviceId(null)
+    }
   })
 })
 

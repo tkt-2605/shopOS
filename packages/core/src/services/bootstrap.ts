@@ -8,6 +8,21 @@ import {
 } from '../integrity/permissions.js'
 import { pagesNotYetKnown, grantPages } from './upgrade.js'
 
+/**
+ * Where the shop's answer for a walk-in customer is kept.
+ *
+ * A setting rather than a column since 043. `price_lists.is_default` was guarded
+ * by `UNIQUE (is_default) WHERE is_default = 1`, which is a rule about the shop
+ * enforced against one file — so two counters offline each chose a default quite
+ * legitimately, and the second row to arrive anywhere raised a unique failure.
+ * One value in one row has exactly one answer and needs no constraint to say so.
+ *
+ * Here rather than beside `defaultPriceListId`, because that one lives in
+ * `repos/pricing.ts` and already reads settings from this file. A key that both
+ * of them import has to sit on the side of that line they can both reach.
+ */
+export const DEFAULT_PRICE_LIST = 'default_price_list_id'
+
 export interface BootstrapOptions {
   shopName: string
   registerName?: string
@@ -92,16 +107,25 @@ export async function bootstrap(db: SqlDriver, opts: BootstrapOptions): Promise<
       register = { id }
     }
 
-    const listName = opts.defaultPriceList ?? 'Retail'
-    let [priceList] = await q(tx)
-      .select({ id: schema.priceLists.id })
-      .from(schema.priceLists)
-      .where(eq(schema.priceLists.isDefault, 1))
+    /* The default is a setting since 043, not a column — an index cannot express
+       a rule about a shop that two tills have to keep. Read here rather than
+       through `defaultPriceListId` because that one filters archived lists, and
+       a shop whose only list has been archived should not be given a second one
+       by starting up. */
+    const chosen = await getSetting(tx, DEFAULT_PRICE_LIST)
+    let [priceList] = chosen === null || chosen === ''
+      ? []
+      : await q(tx)
+        .select({ id: schema.priceLists.id })
+        .from(schema.priceLists)
+        .where(eq(schema.priceLists.id, chosen))
     if (!priceList) {
       const id = newId()
+      const listName = opts.defaultPriceList ?? 'Retail'
       await q(tx).insert(schema.priceLists).values({
-        id, name: listName, isDefault: 1, createdAt: now, updatedAt: now,
+        id, name: listName, createdAt: now, updatedAt: now,
       })
+      await setSetting(tx, DEFAULT_PRICE_LIST, id, now)
       priceList = { id }
     }
 

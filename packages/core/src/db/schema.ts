@@ -188,9 +188,11 @@ export const priceLists = sqliteTable('price_lists', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
-}, (table) => [
-  uniqueIndex('idx_price_lists_one_default').on(table.isDefault),
-])
+  /* Vestigial since 043, which moved the answer to a `default_price_list_id`
+     setting because an index cannot express a rule about a shop. Nothing reads
+     or writes it; it is still here only because dropping a column means
+     rebuilding a table `item_prices` and `customers` both point at. */
+})
 
 export const itemPrices = sqliteTable('item_prices', {
   id: text().primaryKey().notNull(),
@@ -252,10 +254,14 @@ export const registers = sqliteTable('registers', {
   name: text().notNull(),
   prefix: text().notNull(),
   isActive: integer('is_active').default(1).notNull(),
+  /** The device that says it sits here. Null until some till has claimed it. */
+  claimedBy: text('claimed_by'),
   rev: integer().default(1).notNull(),
   originId: text('origin_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+  /** When the claim was last renewed. Null means never — see migration 045. */
+  claimedAt: text('claimed_at'),
 })
 
 export const cashSessions = sqliteTable('cash_sessions', {
@@ -276,6 +282,28 @@ export const cashSessions = sqliteTable('cash_sessions', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
+  /**
+   * `UNIQUE (register_id) WHERE closed_at IS NULL`, and unlike the one 043 took
+   * off `price_lists` it stays. The difference is worth writing down, because the
+   * two look identical and only one of them is a rule two tills can keep.
+   *
+   * A partial unique index is a statement about one file. It is safe under
+   * replication only when the rows it constrains can be written by one machine
+   * in the first place — and a cash session belongs to a register, a register is
+   * claimed by one till (`registers.claimed_by`, migration 037), and a till that
+   * does not hold the claim will not bill on it at all: `resolveDeviceRegister`
+   * returns null and the app keeps that machine off the billing screen. So two
+   * tills cannot both open a drawer on one counter, which means the index is
+   * never asked to arbitrate between them.
+   *
+   * The default price list had no such owner. It is one fact about the whole
+   * shop, so every till was entitled to set it, and the index then refused the
+   * second answer to arrive rather than settling it.
+   *
+   * What would break this: letting two tills share a counter. That is refused
+   * today, loudly, by `SAME_REGISTER` at the next sync — and if it is ever
+   * allowed, this index has to go at the same time.
+   */
   uniqueIndex('idx_cash_sessions_one_open').on(table.registerId),
 ])
 
@@ -667,6 +695,7 @@ export const docFormats = sqliteTable('doc_formats', {
   template: text(),
   rev: integer().default(1).notNull(),
   originId: text('origin_id'),
+  deletedAt: text('deleted_at'),
 })
 
 export const documents = sqliteTable('documents', {
@@ -754,6 +783,11 @@ export const changeFeed = sqliteTable('change_feed', {
   at: text().notNull(),
   /** The till this row arrived from, or null when it was written here. */
   originDevice: text('origin_device'),
+  /**
+   * For a delete, the `rev` the row was at when it went. Null everywhere else,
+   * and null for a delete this till cannot account for. See migration 040.
+   */
+  deletedRev: integer('deleted_rev'),
 }, (table) => [
   index('idx_change_feed_origin').on(table.originDevice, table.seq),
 ])
@@ -774,7 +808,46 @@ export const syncPeers = sqliteTable('sync_peers', {
   address: text(),
   lastError: text('last_error'),
   lastTriedAt: text('last_tried_at'),
+  /**
+   * The shape of this peer: `lan` asks and answers, `cloud` answers and never
+   * asks, `none` asks and cannot answer. Migration 044 carries the argument —
+   * it used to be inferred from `address IS NOT NULL`, which gets a phone right
+   * by accident and a cloud peer wrong.
+   */
+  reach: text().default('lan').notNull(),
+  /** The last feed position this peer reported. `their_head - their_cursor` is
+   *  how far behind that till this one is. */
+  theirHead: integer('their_head').default(0).notNull(),
+  /**
+   * When that head was reported. Null means never — which is the one thing a
+   * `NOT NULL DEFAULT 0` column could not say, because 0 is also what a peer
+   * whose feed has been pruned empty honestly reports. See migration 048.
+   */
+  headSaidAt: text('head_said_at'),
+  /** How far this peer's clock is from ours, as of the last handshake. Zero
+   *  means level, or a peer too old to say. See migration 046. */
+  clockSkewMs: integer('clock_skew_ms').default(0).notNull(),
+  /**
+   * The peer's certificate fingerprint, exchanged at pairing. Null everywhere
+   * today, because nothing serves TLS yet — see migration 047 for why the
+   * column exists before the thing that fills it.
+   */
+  fingerprint: text(),
 })
+
+export const syncQuarantine = sqliteTable('sync_quarantine', {
+  id: text().primaryKey().notNull(),
+  at: text().notNull(),
+  peerDevice: text('peer_device'),
+  tableName: text('table_name').notNull(),
+  rowId: text('row_id').notNull(),
+  op: text().notNull(),
+  reason: text().notNull(),
+  record: text().notNull(),
+  acknowledged: integer().default(0).notNull(),
+}, (table) => [
+  index('idx_sync_quarantine_at').on(table.acknowledged, table.at),
+])
 
 export const syncConflicts = sqliteTable('sync_conflicts', {
   id: text().primaryKey().notNull(),

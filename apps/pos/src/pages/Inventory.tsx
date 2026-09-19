@@ -15,6 +15,7 @@ import { recordStockCheck } from '../core/maintenance'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 import { usePickList, Results } from '../ui/PickList'
+import { useShopChanged } from '../core/useShopChanged'
 
 interface BarcodeDraft {
   barcode: string
@@ -135,6 +136,8 @@ export default function Inventory() {
     const id = setTimeout(() => void refresh(), term === '' ? 0 : 140)
     return () => clearTimeout(id)
   }, [refresh, term, browsing])
+  // And again when the other till changes a product or a price.
+  useShopChanged(refresh)
 
   const refreshCategories = useCallback(async () => setCategories(await listCategories(db)), [db])
   useEffect(() => { void refreshCategories() }, [refreshCategories])

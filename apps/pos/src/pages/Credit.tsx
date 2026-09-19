@@ -12,6 +12,7 @@ import { usePickList, Results } from '../ui/PickList'
 import { useConfirm } from '../ui/useConfirm'
 import { printStatement } from '../core/print'
 import { statementPdf } from '../core/pdf'
+import { useShopChanged } from '../core/useShopChanged'
 
 /**
  * The khata.
@@ -95,6 +96,8 @@ export default function Credit() {
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   const shown = useMemo(() => {
     const list = who === 'owing' ? customers : everyone

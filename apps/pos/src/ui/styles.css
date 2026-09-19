@@ -279,6 +279,18 @@ tbody tr:hover { background: var(--accent-soft); }
 .alert.ok { background: var(--ok-soft); border-left-color: var(--ok); }
 
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+
+/* What a total is a total of. Quiet when everything is in, because a line that
+   shouts every day is a line nobody reads on the day it matters; and plainly
+   marked when it is not, because the figure above it is wrong and the person
+   reading it is about to act on it. No rounded corners, like everything else. */
+.completeness { font-size: 12.5px; color: var(--ink-3); padding: 6px 0; }
+.completeness.short {
+  color: var(--ink-1);
+  background: var(--warn-soft);
+  border-left: 3px solid var(--warn);
+  padding: 7px 10px;
+}
 .stat { padding: 12px 15px; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); }
 .stat .label { font-size: 11.5px; color: var(--ink-3); }
 .stat .value { margin-top: 3px; font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
@@ -450,6 +462,15 @@ tbody tr:hover { background: var(--accent-soft); }
   display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
   padding: 7px 12px; font-size: 12px; color: var(--ink-2);
   background: var(--warn-soft); border: 1px solid var(--warn);
+}
+
+/* ── a till at the door, asked about wherever somebody is looking ─────── */
+
+.join-ask {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 18px; font-size: 13px;
+  background: var(--accent-soft); color: var(--ink);
+  border-bottom: 1px solid var(--accent);
 }
 
 .kbd {

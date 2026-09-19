@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { listRegisters, type Register } from '@shopos/core'
+import { listRegisters, countersOtherTillsUse, type Register, type CounterTaken } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
-import { chooseRegister } from '../core/device'
+import { takeCounter } from '../core/counters'
 import { lookAround, type FoundTill } from '../core/syncHost'
 import { explain } from '../core/syncWords'
 import { Field, Alert } from './components'
@@ -30,16 +30,21 @@ import { Field, Alert } from './components'
 
 type Stage =
   | { at: 'choosing' }
+  | { at: 'waiting'; requestId: string; digits: string }
   | { at: 'joining' }
-  | { at: 'counter'; registers: Register[]; taken: string | null }
+  | { at: 'counter'; registers: Register[]; taken: CounterTaken[] }
 
 export function JoinShop({ onCancel }: { onCancel: () => void }) {
-  const { db, joinShop } = useCore()
+  const { db, joinShop, askToJoinShop, waitToJoinShop } = useCore()
   const [stage, setStage] = useState<Stage>({ at: 'choosing' })
   const [found, setFound] = useState<FoundTill[] | null>(null)
   const [looking, setLooking] = useState(true)
   const [address, setAddress] = useState('')
   const [code, setCode] = useState('')
+  /* The bottom rung, hidden until it is wanted. Typing a code is what this
+     screen used to make everybody do; it is kept for the network that answers
+     no shouts and the till that cannot be reached any other way. */
+  const [typingACode, setTypingACode] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   /* Asked on arrival rather than behind a button. A shopkeeper setting up a
@@ -61,31 +66,104 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
 
   useEffect(() => { void look() }, [look])
 
+  /** Knocks, then waits for somebody at the other counter to press Allow. */
+  async function ask() {
+    setError(null)
+    try {
+      const asked = await askToJoinShop(address)
+      if (asked.state !== 'PENDING') {
+        setError('That till did not understand the request. Use a code instead.')
+        return
+      }
+      setStage({ at: 'waiting', requestId: asked.requestId, digits: asked.digits })
+    } catch (err) {
+      setError(explain(err))
+    }
+  }
+
+  /* Asking again every second and a half until somebody presses something. The
+     wait is a person walking to the other counter, which no request timeout is
+     long enough to hold a connection open for. */
+  useEffect(() => {
+    if (stage.at !== 'waiting') return
+    let stopped = false
+
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const answer = await waitToJoinShop(address, stage.requestId)
+          if (stopped) return
+          if (answer.state === 'ALLOWED') { await arrived(); return }
+          if (answer.state === 'REFUSED') {
+            setError('That till said no.')
+            setStage({ at: 'choosing' })
+          }
+          if (answer.state === 'LAPSED') {
+            setError('The other till stopped waiting. Press "Add a till" there and try again.')
+            setStage({ at: 'choosing' })
+          }
+        } catch (err) {
+          if (!stopped) { setError(explain(err)); setStage({ at: 'choosing' }) }
+        }
+      })()
+    }, 1500)
+
+    return () => { stopped = true; clearInterval(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage.at, stage.at === 'waiting' ? stage.requestId : null, address])
+
+  /** The bottom rung: a code read off the other till's screen. */
   async function join() {
     setError(null)
     setStage({ at: 'joining' })
     try {
       await joinShop({ address, code })
-      /* The shop has arrived, so the counters are here to choose from. The one
-         the till we joined is billing on is marked rather than hidden: a shop
-         may genuinely have two machines at one counter for a day, and a screen
-         that removes the option is a screen that cannot explain itself. */
-      const registers = await listRegisters(db)
-      const till = found?.find((t) => t.address === address)
-      setStage({ at: 'counter', registers, taken: till?.label ?? null })
+      await arrived()
     } catch (err) {
       setError(explain(err))
       setStage({ at: 'choosing' })
     }
   }
 
+  async function arrived() {
+    /* The shop has arrived, so the counters are here to choose from -- and the
+       first sync has run, so this till has been told which ones the others sit
+       at. Those are shown and refused rather than hidden: a screen that removes
+       the option is a screen that cannot explain itself, and "that one is the
+       front counter's" is the explanation. */
+    const [registers, taken] = await Promise.all([
+      listRegisters(db),
+      countersOtherTillsUse(db),
+    ])
+    setStage({ at: 'counter', registers, taken })
+  }
+
   async function useCounter(id: string) {
     setError(null)
-    if (!(await chooseRegister(id))) {
+    if (!(await takeCounter(db, id))) {
       setError('This machine could not record which counter it sits at. '
         + 'It has joined the shop; open Counters after signing in and press "Use here".')
     }
     window.location.reload()
+  }
+
+  if (stage.at === 'waiting') {
+    return (
+      <div className="panel-body">
+        <h2 style={{ fontSize: 15, margin: '0 0 4px' }}>Waiting for the other till</h2>
+        <p style={{ fontSize: 12.5, color: 'var(--ink-2)', marginTop: 0 }}>
+          It is asking whoever is standing there to let this machine in. Check
+          these two digits match the ones on its screen before they say yes.
+        </p>
+        <div style={{ fontSize: 44, letterSpacing: 8, fontWeight: 600, margin: '10px 0' }}>
+          {stage.digits}
+        </div>
+        {error && <Alert>{error}</Alert>}
+        <button className="btn ghost" onClick={() => setStage({ at: 'choosing' })}>
+          Stop waiting
+        </button>
+      </div>
+    )
   }
 
   if (stage.at === 'joining') {
@@ -109,23 +187,37 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
         </p>
         {error && <Alert>{error}</Alert>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
-          {stage.registers.map((r) => (
-            <button
-              key={r.id}
-              className="btn"
-              style={{ justifyContent: 'space-between', display: 'flex' }}
-              onClick={() => void useCounter(r.id)}
-            >
-              <span>{r.name} — {r.prefix}</span>
-              {r.hasOpenSession && (
-                <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>a drawer is open here</span>
-              )}
-            </button>
-          ))}
+          {stage.registers.map((r) => {
+            const other = stage.taken.find((t) => t.registerId === r.id)
+            return (
+              <button
+                key={r.id}
+                className="btn"
+                style={{ justifyContent: 'space-between', display: 'flex' }}
+                disabled={other !== undefined}
+                onClick={() => void useCounter(r.id)}
+              >
+                <span>{r.name} — {r.prefix}</span>
+                {other !== undefined
+                  ? (
+                    <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
+                      {other.label ?? 'another till'} bills here
+                    </span>
+                  )
+                  : r.hasOpenSession && (
+                    <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>a drawer is open here</span>
+                  )}
+              </button>
+            )
+          })}
         </div>
         <p style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 12 }}>
-          Nothing here yet for this machine? Sign in, open Counters and add one —
-          this till will keep asking until it has one of its own.
+          {stage.registers.every((r) => stage.taken.some((t) => t.registerId === r.id))
+            ? 'Every counter in this shop already has a till on it. Sign in, open '
+              + 'Counters and add one for this machine — two tills on one counter '
+              + 'would give two customers the same bill number.'
+            : 'Nothing here for this machine? Sign in, open Counters and add one — '
+              + 'this till will keep asking until it has one of its own.'}
         </p>
       </div>
     )
@@ -151,10 +243,10 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
 
         {found !== null && found.length === 0 && (
           <p style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
-            None answered. Both machines have to be on the same network, and the
-            other till has to be serving — open Settings there and switch on
-            “Let another till join this shop”. You can also type its address
-            below.
+            None answered. Both machines have to be on the same network, and
+            somebody has to have pressed “Add a till” on the other one — it is
+            on its Settings screen, under Two tills. You can also type its
+            address below.
           </p>
         )}
 
@@ -182,29 +274,53 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
             placeholder="192.168.1.11:7801"
           />
         </Field>
-        <Field
-          label="Code from that till"
-          hint="Shown on its Settings screen. It lasts ten minutes and one attempt uses it up."
-        >
-          <input
-            className="input"
-            value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase())}
-            placeholder="ABCD2345"
-          />
-        </Field>
+        {typingACode && (
+          <Field
+            label="Code from that till"
+            hint="Shown on its Settings screen. It lasts ten minutes and one attempt uses it up."
+          >
+            <input
+              className="input"
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              placeholder="ABCD2345"
+            />
+          </Field>
+        )}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <button
-          className="btn primary"
-          disabled={address.trim() === '' || code.trim() === ''}
-          onClick={() => void join()}
-        >
-          Join this shop
-        </button>
+      <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
+        {typingACode
+          ? (
+            <button
+              className="btn primary"
+              disabled={address.trim() === '' || code.trim() === ''}
+              onClick={() => void join()}
+            >
+              Join this shop
+            </button>
+          )
+          : (
+            <button
+              className="btn primary"
+              disabled={address.trim() === ''}
+              onClick={() => void ask()}
+            >
+              Ask to join
+            </button>
+          )}
         <button className="btn ghost" onClick={onCancel}>Back</button>
+        <span style={{ flex: 1 }} />
+        <button className="link-btn" style={{ fontSize: 12 }} onClick={() => setTypingACode(!typingACode)}>
+          {typingACode ? 'Ask instead' : 'Use a code instead'}
+        </button>
       </div>
+
+      <p style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 10 }}>
+        {typingACode
+          ? 'For a till that cannot be asked — press "Add a till" there and read off the code it shows.'
+          : 'Somebody has to be standing at the other till to say yes. Press "Add a till" there first.'}
+      </p>
     </div>
   )
 }

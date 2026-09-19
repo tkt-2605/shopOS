@@ -31,6 +31,17 @@ export interface RecordShape {
   key: string
   /** Tables holding this record's lines, and the column pointing back here. */
   lines: ReadonlyArray<{ table: string; parentKey: string }>
+  /**
+   * When only some of this table's rows travel, the condition the ones that do
+   * satisfy — as SQL, because the two places that need it are a trigger and an
+   * `INSERT … SELECT`.
+   *
+   * Absent for every table but one, and that is the point of it being here
+   * rather than a name checked against in a loop somewhere: the rule is a
+   * replication decision, and this file is where replication decisions are
+   * written down once instead of three times.
+   */
+  travels?: string
 }
 
 /**
@@ -90,6 +101,11 @@ export const REPLICATED: readonly RecordShape[] = [
   {
     table: 'bills',
     key: 'id',
+    /* A draft is a cashier mid-sale. It is invisible on arrival — `listOpenDrafts`
+       filters by register and a counter belongs to one till — and it was costing
+       a round of traffic per keystroke on every edge in the shop. Migration 042
+       carries the argument. */
+    travels: 'docstatus <> 0',
     lines: [
       { table: 'bill_items', parentKey: 'bill_id' },
       { table: 'bill_payments', parentKey: 'bill_id' },
@@ -140,6 +156,7 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   sync_state: 'whether a merge is running right now',
   sync_peers: 'who this machine has paired with, and how far each has read',
   sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
+  sync_quarantine: 'a record this machine could not apply. The till that sent it applied it fine',
 }
 
 /** One record as it crosses between two tills. */

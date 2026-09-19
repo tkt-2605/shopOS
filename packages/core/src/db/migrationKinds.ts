@@ -79,6 +79,24 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [34, '034_two_questions_the_tables_would_not_answer.sql', 'additive'],
   [35, '035_money_that_goes_the_other_way.sql', 'additive'],
   [36, '036_a_hub_that_relays.sql', 'additive'],
+  /* A column on a replicated table. A till that has not run this migration
+     does not send it and drops it from what arrives -- `ignoredColumns` is the
+     machinery for exactly that -- so the two still exchange every row. What it
+     does not get is the claim, which is a shop that cannot be protected from
+     two tills on one counter until both are updated. That is a reason to
+     update, not a reason to refuse to sync. */
+  [37, '037_a_counter_says_which_till_sits_at_it.sql', 'additive'],
+  [38, '038_a_record_that_cannot_land.sql', 'additive'],
+  [39, '039_a_merge_is_not_an_edit.sql', 'additive'],
+  [40, '040_a_delete_says_what_it_was.sql', 'additive'],
+  [41, '041_a_layout_the_shop_has_finished_with.sql', 'additive'],
+  [42, '042_a_bill_nobody_has_rung_up.sql', 'additive'],
+  [43, '043_one_default_without_an_index.sql', 'additive'],
+  [44, '044_a_peer_says_how_to_reach_it.sql', 'additive'],
+  [45, '045_a_claim_with_a_date_on_it.sql', 'additive'],
+  [46, '046_two_clocks_drifting.sql', 'additive'],
+  [47, '047_a_place_for_a_fingerprint.sql', 'additive'],
+  [48, '048_nothing_to_send_is_not_silence.sql', 'additive'],
 ]
 
 /**

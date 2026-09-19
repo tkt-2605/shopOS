@@ -1,6 +1,6 @@
 export * as Money from './money.js'
 export * as Quantity from './quantity.js'
-export { newId, timestampOf } from './ids.js'
+export { newId, derivedId, timestampOf } from './ids.js'
 export { setDeviceId, setDeviceIdSource, deviceId } from './device.js'
 export { isStateCode } from './domain/states.js'
 export { GSTIN_SHAPE, isGstin, stateFromGstin, resolveCustomerState } from './domain/gstin.js'
@@ -23,11 +23,15 @@ export * as Credit from './domain/credit.js'
 export * as Returns from './domain/returns.js'
 export * as DocFormat from './domain/docFormat.js'
 export { REPLICATED, NOT_REPLICATED, shapeOf, type RecordShape, type ChangeRecord, type ChangeBatch } from './domain/replicaShape.js'
-export { handleSyncRequest, serveAs, setServingRegisterSource, LISTEN_PORT_HEADER, peerAddressFrom, offerPairing, withdrawPairing, pairingOnOffer, PAIRING_WINDOW_MS, type SyncRequest, type SyncResponse } from './services/syncServer.js'
-export { forgetNonces, CLOCK_TOLERANCE_MS } from './services/syncAuth.js'
+export { handleSyncRequest, serveAs, setServingRegisterSource, LISTEN_PORT_HEADER, peerAddressFrom, offerPairing, withdrawPairing, pairingOnOffer, expectingAJoin, pendingJoin, onJoinRequest, allowJoin, refuseJoin, PAIRING_WINDOW_MS, type SyncRequest, type SyncResponse, type JoinRequest } from './services/syncServer.js'
+export { forgetNonces, CLOCK_TOLERANCE_MS, setFingerprintSource } from './services/syncAuth.js'
 export { nextBackoff, BACKOFF_START_MS, BACKOFF_MAX_MS } from './services/syncBackoff.js'
-export { httpTransport, pairWith, pairedPeers, rememberAddress, SyncHttpError, type PeerAddress, type PairOutcome, type SelfAddress } from './services/syncClient.js'
+export { httpTransport, pairWith, askToJoin, pollJoin, pairedPeers, rememberAddress, SyncHttpError, type PeerAddress, type PairOutcome, type SelfAddress, type JoinProgress } from './services/syncClient.js'
 export { recentConflicts, acknowledgeConflicts, unreadConflictCount, recordAttempt, type RecordedConflict, type PeerHealth } from './services/sync.js'
+export {
+  quarantinedRecords, unreadQuarantineCount, acknowledgeQuarantine, discardQuarantined,
+  type QuarantinedRecord,
+} from './services/sync.js'
 export { syncWith, syncUntilDone, collectChanges, applyBatch, changedHere, listPeers, pruneAcknowledged, REPLICATED_TABLES, type SyncTransport, type PeerHello, type SyncResult, type ContestedChange } from './services/sync.js'
 export { decideRow, decideDeletion, type MergeInput, type MergeDecision, type MergeReason, type Versioned, type Side } from './domain/merge.js'
 export * as HtmlTemplate from './domain/htmlTemplate.js'
@@ -143,10 +147,13 @@ export type { FirstRunInput } from './services/seed.js'
 export type { Page, Resource, Capability, PermissionSet, RoleTemplate } from './integrity/permissions.js'
 
 export {
-  listRegisters, createRegister, renameRegister, setRegisterActive, deleteRegister,
+  listRegisters, createRegister, renameRegister, setRegisterActive,
+  renewClaim, claims, takeRegister, forgetPeer, ghostClaims, clearGhostClaims,
+  CLAIM_GOES_STALE_MS, type Claim, type TakeRegisterResult,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
+  countersOtherTillsUse, claimRegister, claimIfUnclaimed,
 } from './services/registers.js'
-export type { Register, RegisterResult } from './services/registers.js'
+export type { Register, RegisterResult, CounterTaken } from './services/registers.js'
 
 export * as Receipt from './domain/receipt.js'
 export type {

@@ -17,6 +17,7 @@ import { ReturnSheet } from '../ui/ReturnSheet'
 import { usePickList } from '../ui/PickList'
 import { useConfirm } from '../ui/useConfirm'
 import { requestRepeat } from '../core/repeat'
+import { useShopChanged } from '../core/useShopChanged'
 import { countAttachments } from '@shopos/core'
 
 /** A page of bills. Enough to scroll, few enough that the query stays quick. */
@@ -85,6 +86,8 @@ export default function Bills() {
   }, [db, range.from, range.to, status, search, page])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   /* Changing what is being looked for puts you back at the first page. Staying
      on page four of a filter that now has one page shows an empty screen and no

@@ -41,6 +41,16 @@ export interface Change {
    */
   op: ChangeOp
   at: string
+  /**
+   * For a delete, the revision the row was at when it went.
+   *
+   * The one thing a deleted row leaves behind that is worth anything: without
+   * it `decideDeletion` cannot tell a stale delete from a deliberate one, and
+   * the row it brings back keeps coming back. Migration 040 carries the whole
+   * argument. Null for an upsert, and null for a delete written before 040 or
+   * by a peer that predates it, which reads as "cannot tell".
+   */
+  deletedRev: number | null
 }
 
 /**
@@ -71,6 +81,7 @@ export async function changesSince(
       op: schema.changeFeed.op,
       at: schema.changeFeed.at,
       originDevice: schema.changeFeed.originDevice,
+      deletedRev: schema.changeFeed.deletedRev,
     })
     .from(schema.changeFeed)
     .where(and(
@@ -152,6 +163,13 @@ export async function feedApplied(
   rowId: string,
   op: ChangeOp,
   origin: string | null,
+  /**
+   * Passed on rather than recomputed, so a delete keeps saying which version it
+   * was through however many tills relay it. Read it off the row here and a
+   * till in the middle would answer with the revision *it* held, which is the
+   * one number that is certainly not what the deleting till saw.
+   */
+  deletedRev: number | null = null,
 ): Promise<void> {
   await q(tx).delete(schema.changeFeed)
     .where(and(
@@ -164,6 +182,7 @@ export async function feedApplied(
     op,
     at: new Date().toISOString(),
     originDevice: origin,
+    deletedRev: op === 'delete' ? deletedRev : null,
   })
 }
 
@@ -251,7 +270,8 @@ export async function seedFeedWithEverything(db: SqlDriver): Promise<number> {
          SELECT ?, "${shape.key}", 'upsert', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
            FROM "${shape.table}"
           WHERE "${shape.key}" NOT IN (
-                SELECT row_id FROM change_feed WHERE table_name = ?)`,
+                SELECT row_id FROM change_feed WHERE table_name = ?)
+            ${shape.travels === undefined ? '' : `AND (${shape.travels})`}`,
         [shape.table, shape.table],
       )
       marked += result.rowsAffected

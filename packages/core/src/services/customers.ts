@@ -7,6 +7,7 @@ import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { SUBMITTED } from '../integrity/docstatus.js'
 import { isOn } from './features.js'
 import { getSetting } from './bootstrap.js'
+import { myRegisterPrefix } from './registers.js'
 import { isGstin, resolveCustomerState, stateFromGstin } from '../domain/gstin.js'
 import { isStateCode } from '../domain/states.js'
 import type { CreditEnforcement } from '../domain/credit.js'
@@ -331,34 +332,79 @@ async function save(
 }
 
 /**
- * The next free code in the shop's own series.
+ * The next free code in this counter's own series.
  *
- * Counted from the highest C-number rather than from how many customers there
- * are, so deleting one does not hand its number to the next person. The loop is
- * the guard against a shop that has typed its own codes by hand and happens to
- * already own the next one.
+ * Counted from the highest number rather than from how many customers there
+ * are, so deleting one does not hand its number to the next person. The loop at
+ * the end is the guard against a shop that has typed its own codes by hand and
+ * happens to already own the next one.
+ *
+ * **Why the counter's prefix is in it.** `MAX + 1` is a shop-wide sequence
+ * computed from whatever this machine happens to hold, and two tills that are
+ * out of touch both hold C0004 as their highest. Both mint C0005, for two
+ * different people, and the sync applies both — `customers.code` carries no
+ * unique index, so nothing refuses it and nothing reports it. The shop is left
+ * with one reference number naming two customers and no sign that it happened,
+ * which is a worse outcome than the refusal would have been.
+ *
+ * `doc_no` had this problem and solved it years earlier: `nextDocNo` scopes its
+ * sequence by `registers.prefix`, so two tills counting in parallel count in
+ * different series. This is the same fix for the same reason. `CMR0005` and
+ * `CB20005` are two references to two people, minted offline, needing no
+ * agreement between the tills to be right.
+ *
+ * **Why it starts from the shop's number, not from one.** A shop that has run
+ * on a single till for a year holds C0001 through C0400 with no prefix, and
+ * that till claims its counter at startup like any other. Restarting its series
+ * at CMR0001 would be unique and would look, to the person reading the screen,
+ * like the customer list had been reset. So an unprefixed code sets the floor:
+ * the first prefixed code this till mints is CMR0401, and the series carries on
+ * reading as the shop's own. Codes already given out are never rewritten —
+ * they are printed in a book somewhere, and they cannot collide with anything
+ * minted after this, because everything minted after this carries a prefix.
+ *
+ * `prefix` is normally left out and read from the claim. Pass it to mint into
+ * another counter's series, and pass null to mint into the unprefixed one.
  */
-export async function nextCustomerCode(db: SqlDriver): Promise<string> {
+export async function nextCustomerCode(db: SqlDriver, prefix?: string | null): Promise<string> {
+  const mark = (prefix === undefined ? await myRegisterPrefix(db) : prefix) ?? ''
+
+  const mine = await highestCodeUnder(db, mark)
+  /* The floor, and only ever a floor: an unprefixed code belongs to no counter,
+     so no till may continue its series, but every till must clear it. */
+  const floor = mark === '' ? mine : await highestCodeUnder(db, '')
+
+  let next = Math.max(mine, floor) + 1
+  for (;;) {
+    const candidate = `C${mark}${String(next).padStart(4, '0')}`
+    const [taken] = await q(db)
+      .select({ id: schema.customers.id })
+      .from(schema.customers)
+      .where(eq(schema.customers.code, candidate))
+    if (!taken) return candidate
+    next += 1
+  }
+}
+
+/**
+ * The highest number given out in one series, or 0 for a series with nothing in
+ * it yet. `mark` is a register prefix, or the empty string for the unprefixed
+ * codes a single-till shop has been minting all along.
+ */
+async function highestCodeUnder(db: SqlDriver, mark: string): Promise<number> {
   const code = schema.customers.code
+  /* `substr` is 1-based, so the digits start after `C` and the prefix. */
+  const from = 2 + mark.length
 
   /* raw: two `GLOB`s and a `CAST`, which a query builder has no words for. The
      second one is not redundant: `C1A` matches the first pattern, and casting
      it gives 1, which would hand C0002 to somebody who already has it. */
   const [row] = await q(db)
-    .select({ highest: sql<number | null>`MAX(CAST(substr(${code}, 2) AS INTEGER))` })
+    .select({ highest: sql<number | null>`MAX(CAST(substr(${code}, ${from}) AS INTEGER))` })
     .from(schema.customers)
-    .where(sql`${code} GLOB 'C[0-9]*' AND substr(${code}, 2) GLOB '[0-9]*'`)
+    .where(sql`${code} GLOB ${`C${mark}[0-9]*`} AND substr(${code}, ${from}) GLOB '[0-9]*'`)
 
-  let next = (row?.highest ?? 0) + 1
-  for (;;) {
-    const candidate = `C${String(next).padStart(4, '0')}`
-    const [taken] = await q(db)
-      .select({ id: schema.customers.id })
-      .from(schema.customers)
-      .where(eq(code, candidate))
-    if (!taken) return candidate
-    next += 1
-  }
+  return row?.highest ?? 0
 }
 
 /**

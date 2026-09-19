@@ -1,11 +1,13 @@
 import { eq, and, ne, isNull, asc, desc, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
-import { newId } from '../ids.js'
+import { newId, derivedId } from '../ids.js'
 import type { Money } from '../money.js'
 import { type Qty, qty, QTY_SCALE } from '../quantity.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import type { Rung } from '../domain/ladder.js'
+import { setSetting, DEFAULT_PRICE_LIST } from './bootstrap.js'
+import { defaultPriceListId } from '../repos/pricing.js'
 
 /**
  * Writing prices down.
@@ -112,8 +114,14 @@ export async function setUnits(
       .where(eq(schema.productUnits.productId, productId))
 
     for (const input of cleaned) {
+      /* Derived, not minted. The whole set is rewritten on every save, so a
+         unit nobody touched used to come back under a new id — two tills doing
+         that mint two, and the shop ends up holding "box of 12" twice. Derived
+         from the product and the unit name, the rewrite writes the row both
+         tills already agreed on, and the feed collapses the delete and the
+         insert into one upsert of that row. */
       await q(tx).insert(schema.productUnits).values({
-        id: newId(),
+        id: await derivedId('product_units', productId, input.saleUnit),
         productId,
         saleUnit: input.saleUnit,
         baseUnits: input.baseUnits,
@@ -158,29 +166,34 @@ export async function listPriceLists(
   const prices = sql<number>`(SELECT COUNT(*) FROM item_prices p
      WHERE p.price_list_id = price_lists.id AND p.deleted_at IS NULL)`
 
+  /* Which one is the default comes from the setting, not from the column 043
+     made vestigial. Read once here rather than joined, because it is one value
+     and the alternative is a correlated subquery against `settings` on every
+     row. */
+  const chosen = await defaultPriceListId(db)
+
   const rows = await q(db)
     .select({
       id: schema.priceLists.id,
       name: schema.priceLists.name,
-      isDefault: schema.priceLists.isDefault,
       deletedAt: schema.priceLists.deletedAt,
       customerCount: customers,
       priceCount: prices,
     })
     .from(schema.priceLists)
     .where(options.includeArchived ? undefined : isNull(schema.priceLists.deletedAt))
-    // Live lists first, the default at the top of them, then by name.
     .orderBy(
       asc(sql`${schema.priceLists.deletedAt} IS NOT NULL`),
-      desc(schema.priceLists.isDefault),
       asc(schema.priceLists.name),
     )
 
-  return rows.map((r) => ({
-    ...r,
-    isDefault: r.isDefault === 1,
-    archived: r.deletedAt !== null,
-  }))
+  // Live lists first, the default at the top of them, then by name. The first
+  // two are the database's business; the third was, until the default moved.
+  return rows
+    .map((r) => ({ ...r, isDefault: r.id === chosen, archived: r.deletedAt !== null }))
+    .sort((x, y) => Number(x.archived) - Number(y.archived)
+      || Number(y.isDefault) - Number(x.isDefault)
+      || x.name.localeCompare(y.name))
 }
 
 export type PriceListResult =
@@ -218,15 +231,12 @@ export async function createPriceList(
   const now = (ctx.now ?? (() => new Date().toISOString()))()
 
   await db.transaction(async (tx) => {
-    // One default, always: a shop with two has no answer for a walk-in customer.
-    if (input.isDefault) await q(tx).update(schema.priceLists).set({ isDefault: 0 })
-    await q(tx).insert(schema.priceLists).values({
-      id,
-      name,
-      isDefault: input.isDefault ? 1 : 0,
-      createdAt: now,
-      updatedAt: now,
-    })
+    await q(tx).insert(schema.priceLists).values({ id, name, createdAt: now, updatedAt: now })
+    /* One default, always, and now by construction: one setting can only name
+       one list. This used to be `UPDATE price_lists SET is_default = 0` across
+       every row — which gave every list in the shop a revision and a feed entry
+       in order to record one fact about one of them. */
+    if (input.isDefault) await setSetting(tx, DEFAULT_PRICE_LIST, id, now)
     await writeAudit(tx, ctx, {
       entity: 'price_lists', entityId: id, action: 'create', after: { name, is_default: input.isDefault ? 1 : 0 },
     })
@@ -241,7 +251,7 @@ export async function updatePriceList(
   input: { priceListId: string; name?: string; isDefault?: boolean; isActive?: boolean },
 ): Promise<PriceListResult> {
   const [before] = await q(db)
-    .select({ name: schema.priceLists.name, isDefault: schema.priceLists.isDefault })
+    .select({ name: schema.priceLists.name })
     .from(schema.priceLists)
     .where(and(eq(schema.priceLists.id, input.priceListId), isNull(schema.priceLists.deletedAt)))
   if (!before) throw new Error('no such price list')
@@ -265,21 +275,24 @@ export async function updatePriceList(
   }
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
-  const isDefault = input.isDefault ?? before.isDefault === 1
+  const wasDefault = (await defaultPriceListId(db)) === input.priceListId
+  const isDefault = input.isDefault ?? wasDefault
 
   await db.transaction(async (tx) => {
-    if (isDefault) await q(tx).update(schema.priceLists).set({ isDefault: 0 })
     await q(tx).update(schema.priceLists)
-      .set({
-        name,
-        isDefault: isDefault ? 1 : 0,
-        updatedAt: now,
-        rev: sql`${schema.priceLists.rev} + 1`,
-      })
+      .set({ name, updatedAt: now, rev: sql`${schema.priceLists.rev} + 1` })
       .where(eq(schema.priceLists.id, input.priceListId))
+
+    /* Naming this one names it; unnaming it leaves the shop with none, which is
+       what `is_default = 0` on the last default meant too. The screen has no
+       way to ask for that — the checkbox turns off by another list being turned
+       on — so the branch exists for completeness rather than for a button. */
+    if (isDefault) await setSetting(tx, DEFAULT_PRICE_LIST, input.priceListId, now)
+    else if (wasDefault) await setSetting(tx, DEFAULT_PRICE_LIST, '', now)
+
     await writeAudit(tx, ctx, {
       entity: 'price_lists', entityId: input.priceListId, action: 'update',
-      before: { name: before.name, is_default: before.isDefault },
+      before: { name: before.name, is_default: wasDefault ? 1 : 0 },
       after: { name, is_default: isDefault ? 1 : 0 },
     })
   })
@@ -323,11 +336,11 @@ export async function archivePriceList(
   priceListId: string,
 ): Promise<ArchivePriceListResult> {
   const [list] = await q(db)
-    .select({ isDefault: schema.priceLists.isDefault })
+    .select({ id: schema.priceLists.id })
     .from(schema.priceLists)
     .where(and(eq(schema.priceLists.id, priceListId), isNull(schema.priceLists.deletedAt)))
   if (!list) throw new Error('no such price list')
-  if (list.isDefault === 1) return { ok: false, code: 'IS_DEFAULT' }
+  if (await defaultPriceListId(db) === priceListId) return { ok: false, code: 'IS_DEFAULT' }
 
   const [on] = await q(db)
     .select({ n: sql<number>`COUNT(*)` })
@@ -469,7 +482,16 @@ export async function setItemPrice(
       eq(schema.itemPrices.minQty, minQty),
     ))
 
-  const id = existing?.id ?? newId()
+  /* Reusing the row already here is what makes a second save an edit rather
+     than a second rung. `derivedId` extends that agreement to a till this one
+     has never spoken to: the id *is* the combination, so two counters that both
+     price this product on this list in this unit at this quantity write one row
+     and the later timestamp settles the rate. With `newId` they wrote two, and
+     the resolver would have found a ladder with two identical rungs. */
+  const id = existing?.id
+    ?? await derivedId(
+      'item_prices', input.productId, input.priceListId, input.saleUnit, minQty,
+    )
   await db.transaction(async (tx) => {
     if (existing) {
       /* `deleted_at = NULL` on the way past: writing the same rung again is how
@@ -600,7 +622,11 @@ export async function setCustomerPrice(
       eq(schema.customerItemPrices.saleUnit, input.saleUnit),
       eq(schema.customerItemPrices.minQty, minQty),
     ))
-  const id = existing?.id ?? newId()
+  // Same reasoning as `setItemPrice`, with the customer in the combination.
+  const id = existing?.id
+    ?? await derivedId(
+      'customer_item_prices', input.customerId, input.productId, input.saleUnit, minQty,
+    )
 
   await db.transaction(async (tx) => {
     if (existing) {

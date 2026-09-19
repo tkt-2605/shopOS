@@ -1,10 +1,11 @@
 import {
   syncUntilDone, httpTransport, pairedPeers, pruneAcknowledged, recordAttempt,
-  serveAs, type SqlDriver,
+  serveAs, rememberAddress, SyncHttpError, type SqlDriver,
 } from '@shopos/core'
 import { chosenRegister } from './device'
 import { logEvent } from './log'
-import { servingOn } from './syncHost'
+import { servingOn, lookAround } from './syncHost'
+import { syncFetch } from './syncFetch'
 import { nextBackoff } from '@shopos/core'
 
 /**
@@ -33,10 +34,24 @@ import { nextBackoff } from '@shopos/core'
  * **It does nothing at all until a shop has paired.** Which is most shops.
  */
 
-/** Long enough not to be a nuisance, short enough that a bill lands before
- *  anybody walks to the other counter to look for it. */
+/**
+ * The floor, not the pace.
+ *
+ * A till also syncs the moment it writes anything — see `nudgeSync` — so this
+ * is what catches a round that was missed, a peer that has come back, and the
+ * other till's changes on a counter that is not selling anything right now.
+ */
 const EVERY_MS = 45_000
 
+/**
+ * How long a write waits for the writes beside it.
+ *
+ * Submitting one bill is a transaction and several rows; a stock count is
+ * hundreds. Syncing per row would mean a round per row, all of them carrying
+ * the same batch. Short enough that nobody at the other counter notices, long
+ * enough that one action is one round.
+ */
+const NUDGE_MS = 400
 
 interface PeerState {
   /** Not before this time. Zero when the peer is answering normally. */
@@ -47,6 +62,9 @@ interface PeerState {
 const state = new Map<string, PeerState>()
 let timer: ReturnType<typeof setInterval> | null = null
 let running = false
+let nudge: ReturnType<typeof setTimeout> | null = null
+/** A nudge that arrived mid-round, to be honoured when that round finishes. */
+let againWhenDone = false
 
 export interface LoopReport {
   peer: string
@@ -54,6 +72,14 @@ export interface LoopReport {
   received: number
   sent: number
   contested: number
+  /**
+   * Records that arrived and could not be applied. See migration 038.
+   *
+   * Carried separately from `error` because it is not one: the round worked and
+   * the cursor moved. It is the other thing a shopkeeper is owed -- a round that
+   * dropped something, as against a round that stalled.
+   */
+  quarantined: number
   error?: string
 }
 
@@ -75,11 +101,21 @@ export interface LoopRound {
   reports: LoopReport[]
 }
 
-let onRound: ((reports: LoopReport[]) => void) | null = null
+/**
+ * Screens watching what the loop does, so their view stays current.
+ *
+ * A set rather than the one callback this used to be. With a single slot the
+ * last screen to mount silently replaced the one before it, which was fine
+ * while Settings was the only screen that cared and wrong the moment a bill
+ * list wanted to know too — the Settings card would stop updating, or the list
+ * would, depending on which happened to mount last.
+ */
+const watchers = new Set<(reports: LoopReport[]) => void>()
 
-/** A screen can watch what the loop does, so its own view stays current. */
-export function onSyncRound(fn: ((reports: LoopReport[]) => void) | null): void {
-  onRound = fn
+/** Returns the unsubscribe, so a screen cannot take somebody else's off. */
+export function onSyncRound(fn: (reports: LoopReport[]) => void): () => void {
+  watchers.add(fn)
+  return () => { watchers.delete(fn) }
 }
 
 export function startSyncLoop(db: SqlDriver): void {
@@ -95,7 +131,52 @@ export function stopSyncLoop(): void {
     clearInterval(timer)
     timer = null
   }
+  if (nudge !== null) {
+    clearTimeout(nudge)
+    nudge = null
+  }
+  againWhenDone = false
   state.clear()
+}
+
+/**
+ * Something was written here, so catch up now rather than at the next tick.
+ *
+ * Forty-five seconds is a long time to stand at the other counter waiting for a
+ * bill that has already been rung up. The loop stays as the floor -- it is what
+ * notices a till coming back, and what pulls a counter that is quiet -- and
+ * this is what makes the common case immediate.
+ *
+ * Called from the driver the app hands core, so it covers every write there is
+ * rather than the ones somebody remembered to annotate. `nudgingDriver` carries
+ * the argument for hooking it there.
+ *
+ * Does nothing at all in a shop with one till, because the loop is not running:
+ * `startSyncLoop` is called once a shop has paired.
+ */
+export function nudgeSync(db: SqlDriver): void {
+  if (timer === null) return
+
+  /* Mid-round, and most of these are the round itself writing the rows it just
+     pulled. Honoured once it finishes rather than dropped, because the one that
+     matters -- a sale rung up while a round was in flight -- is indistinguishable
+     from here, and an extra round that finds nothing costs a hello. */
+  if (running) { againWhenDone = true; return }
+
+  if (nudge !== null) clearTimeout(nudge)
+  nudge = setTimeout(() => {
+    nudge = null
+    /* Not forced. `force` skips the backoff, and a backoff is this till's
+       record that a peer is not answering — so forcing here meant every bill,
+       every stock movement and every price edit knocking on a machine that is
+       switched off, forty times an hour, each one waiting for its own timeout
+       before the counter's own write could be reported as done.
+ 
+       A person pressing "catch up now" may bypass a backoff: they are standing
+       in front of the shop and have just switched the other till on. A bill may
+       not — it has no new information about whether that till is there. */
+    void runOnce(db, false)
+  }, NUDGE_MS)
 }
 
 /**
@@ -131,7 +212,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
         /* Which counter this machine sits at, so the other till can be refused
            if it is on the same one — two tills on one counter mint invoice
            numbers from the same series and collide on the first bill. */
-        const round = await syncUntilDone(db, httpTransport(peer, fetch, { listenPort }), 50, chosenRegister())
+        const round = await syncUntilDone(db, httpTransport(peer, syncFetch, { listenPort }), 50, chosenRegister())
 
         if (round.ok) {
           /* Coming back after a spell of failures is worth a line: it is what
@@ -141,12 +222,22 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
           }
           state.set(peer.deviceId, { quietUntil: 0, backoff: 0 })
           await recordAttempt(db, peer.deviceId, null)
+          /* Never silent. A round that set a record aside is the one case
+             where everything looks like it worked and the two tills genuinely
+             differ, so it is written down even though nothing failed. */
+          if (round.quarantined > 0) {
+            logEvent(
+              'warn', 'sync',
+              `${round.quarantined} record(s) from ${peer.deviceId} could not be applied and were set aside`,
+            )
+          }
           reports.push({
             peer: peer.deviceId,
             ok: true,
             received: round.received,
             sent: round.sent,
             contested: round.contested.length,
+            quarantined: round.quarantined,
           })
         } else {
           /* A refusal is not a network failure and backing off would be wrong:
@@ -159,14 +250,48 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
           logEvent('warn', 'sync', `${peer.deviceId} refused us: ${round.code}`)
           reports.push({
             peer: peer.deviceId, ok: false, received: 0, sent: 0,
-            contested: 0, error: round.code,
+            contested: 0, quarantined: 0, error: round.code,
           })
         }
       } catch (err) {
+        /* An answer, not a silence. `syncWith` returns `{ok:false}` for the
+           refusals it decides itself, but one the far side decides -- it does
+           not know us, the signature did not verify -- arrives as a thrown
+           `SyncHttpError` from the transport, and this catch used to file it
+           under "could not be reached". Three things came of that: an hour of
+           backoff against a till that was answering every time; "Cannot reach
+           the back counter" on a screen about a till that had just replied; and
+           the message stored rather than the code, which `explainRefusal` then
+           wrapped a second time -- "The other till refused: The other till
+           refused: UNKNOWN_PEER".
+
+           `syncBackoff.ts` is where the distinction is written down, and this
+           is the one place that was not keeping it. */
+        if (err instanceof SyncHttpError) {
+          await recordAttempt(db, peer.deviceId, err.code)
+          logEvent('warn', 'sync', `${peer.deviceId} refused us: ${err.code}`)
+          reports.push({
+            peer: peer.deviceId, ok: false, received: 0, sent: 0,
+            contested: 0, quarantined: 0, error: err.code,
+          })
+          continue
+        }
+
         // Could not be reached at all: switched off, asleep, moved, unplugged.
         const wait = nextBackoff(mine.backoff)
         state.set(peer.deviceId, { quietUntil: now + wait, backoff: wait })
         await recordAttempt(db, peer.deviceId, describe(err))
+
+        /* Or still there, at a different address. A till learns where a peer is
+           from the requests that peer makes, which is no help at all when
+           neither can reach the other -- both sit holding an address that was
+           true yesterday, backing off from each other for ever.
+
+           The shout is the way out: the far till answers with where it is now.
+           A moved machine, a router that renumbered overnight, a port that came
+           back different. Only after a failure, so a shop where everything
+           works never broadcasts anything. */
+        void repairAddress(db, peer.deviceId, peer.baseUrl)
         /* Only the first failure in a run of them. This fires every 45 seconds
            against a till that is switched off for the night, and eight hours of
            "could not reach the back counter" would push everything worth
@@ -177,7 +302,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
         }
         reports.push({
           peer: peer.deviceId, ok: false, received: 0, sent: 0,
-          contested: 0, error: describe(err),
+          contested: 0, quarantined: 0, error: describe(err),
         })
       }
     }
@@ -190,8 +315,54 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
     running = false
   }
 
-  if (onRound !== null && reports.length > 0) onRound(reports)
+  /* A write landed while this round was in flight, and only one more round is
+     owed however many there were.
+
+     `moved` is what stops this being perpetual. Every round writes -- cursors,
+     `recordAttempt`, the rows a merge applies -- and every one of those writes
+     comes back through the driver as a nudge, so re-arming unconditionally
+     would mean a round every four hundred milliseconds for ever. A round that
+     carried nothing in either direction has nothing to follow up, and a shop at
+     rest goes quiet. */
+  const moved = reports.some((r) => r.ok && (r.sent > 0 || r.received > 0))
+  const owed = againWhenDone
+  againWhenDone = false
+  if (owed && moved) nudgeSync(db)
+
+  /* One screen throwing must not stop the next one hearing. They are unrelated
+     views of the same round and a broken one is a broken one, not a silent
+     list. */
+  if (reports.length > 0) {
+    for (const watcher of watchers) {
+      try { watcher(reports) } catch (err) { logEvent('warn', 'sync', describe(err)) }
+    }
+  }
   return { peers: paired, skipped: false, reports }
+}
+
+/**
+ * Asks the network where a till went, after failing to reach where it was.
+ *
+ * Deliberately quiet about failing: this runs after a round has already failed
+ * and reported why, and a shout that finds nothing is the ordinary case for a
+ * till that is switched off. Whatever it learns is used by the *next* round —
+ * nothing is retried here, because the backoff has just decided when that is.
+ *
+ * One caveat worth knowing on a machine running several tills at once: only one
+ * process can hold the discovery port, so only one of them answers a shout. On
+ * a shop's counters, where each till is its own machine, they all do.
+ */
+async function repairAddress(db: SqlDriver, device: string, staleUrl: string): Promise<void> {
+  try {
+    const found = (await lookAround()).find((t) => t.device === device)
+    if (found === undefined) return
+
+    const url = `http://${found.address}`
+    if (url === staleUrl) return
+
+    await rememberAddress(db, device, url)
+    logEvent('info', 'sync', `${device} has moved to ${found.address}`)
+  } catch { /* The shout itself failed. The round already said what it said. */ }
 }
 
 function describe(err: unknown): string {

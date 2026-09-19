@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, and, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
@@ -46,7 +46,10 @@ export async function listFormats(db: SqlDriver, paper?: PaperSize): Promise<Sto
   const rows = await q(db)
     .select(formatShape)
     .from(schema.docFormats)
-    .where(paper ? eq(schema.docFormats.paper, paper) : undefined)
+    .where(and(
+      isNull(schema.docFormats.deletedAt),
+      ...(paper ? [eq(schema.docFormats.paper, paper)] : []),
+    ))
     .orderBy(schema.docFormats.createdAt)
   return rows.map(readRow).filter((f): f is StoredFormat => f !== null)
 }
@@ -55,7 +58,7 @@ export async function loadFormat(db: SqlDriver, id: string): Promise<StoredForma
   const [row] = await q(db)
     .select(formatShape)
     .from(schema.docFormats)
-    .where(eq(schema.docFormats.id, id))
+    .where(and(eq(schema.docFormats.id, id), isNull(schema.docFormats.deletedAt)))
   return row ? readRow(row) : null
 }
 
@@ -230,7 +233,14 @@ export async function deleteFormat(
   const now = ctx.now?.() ?? new Date().toISOString()
 
   await db.transaction(async (tx) => {
-    await q(tx).delete(schema.docFormats).where(eq(schema.docFormats.id, id))
+    /* Marked gone rather than removed. A row that is gone leaves the other
+       tills nothing to compare, so one that has not heard offers it back and
+       the two keep taking turns; a date in a column is an ordinary edit and the
+       revision rule settles it. Migration 041 carries the argument, and
+       `updated_at` moves with it so that rule has something to read. */
+    await q(tx).update(schema.docFormats)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(eq(schema.docFormats.id, id))
 
     /* A choice pointing at a format that is gone would print the standard while
        the screen still named the deleted one. Clearing it here keeps the two

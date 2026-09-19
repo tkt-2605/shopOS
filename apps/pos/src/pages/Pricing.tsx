@@ -12,6 +12,7 @@ import { useCore, useDb, useUser } from '../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 import { usePickList, Results } from '../ui/PickList'
+import { useShopChanged } from '../core/useShopChanged'
 
 /**
  * Where prices are set.
@@ -331,6 +332,8 @@ function PriceLists({ canWrite }: { canWrite: boolean }) {
     [db, showArchived],
   )
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   async function add() {
     const result = await createPriceList(db, { actorId: user.id }, { name })

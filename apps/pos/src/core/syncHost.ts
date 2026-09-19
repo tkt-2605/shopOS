@@ -1,7 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { handleSyncRequest, type SqlDriver } from '@shopos/core'
+import {
+  handleSyncRequest, listPeers, loadShopProfile, getSetting, type SqlDriver,
+} from '@shopos/core'
 import { logEvent, describe } from './log'
+import { deviceSetting, setDeviceSetting } from './device'
 
 /**
  * Answering the other till.
@@ -70,18 +73,42 @@ export async function lookAround(waitMs = 1200): Promise<FoundTill[]> {
  * `shop` is what this till says about itself when another one shouts on the
  * network. It is only a name and an opaque id — enough for a person to tell two
  * shops apart on one wire, and no use to anybody without a pairing code.
+ *
+ * The port defaults to the one this machine had last time. See below.
  */
+
+/**
+ * The port this till had last time, so that it asks for the same one again.
+ *
+ * 7801 is the port a shop's firewall rule names and the one every till wants.
+ * A till that could not have it takes any free one — which is right, and made
+ * the address it advertises change every restart. Its peers went on dialling
+ * yesterday's port and got a stranger or a closed door, and since a peer's
+ * address is only re-learned from a request *that peer makes*, two tills could
+ * sit holding stale addresses for each other indefinitely.
+ *
+ * Remembering it costs one line in `device.json` and makes the common case
+ * stable: a till that ended up on 52134 asks for 52134 next time, leaving 7801
+ * to whoever actually has it.
+ */
+const PORT_KEY = 'sync_port'
+const DEFAULT_PORT = 7801
+
 export async function startServing(
   db: SqlDriver,
-  port = 7801,
+  port = Number(deviceSetting(PORT_KEY)) || DEFAULT_PORT,
   shop: { name: string | null; id: string | null } = { name: null, id: null },
 ): Promise<ServeInfo> {
   await attend(db)
 
   try {
-    return await invoke<ServeInfo>('sync_serve_start', {
+    const info = await invoke<ServeInfo>('sync_serve_start', {
       port, shop: shop.name, shopId: shop.id,
     })
+    /* What it actually got, which is not always what it asked for. Only when it
+       differs, so the file is not rewritten on every start. */
+    if (info.port !== port) void setDeviceSetting(PORT_KEY, String(info.port))
+    return info
   } catch (err) {
     // The port is taken, or the firewall said no. Stop pretending to listen.
     await stopServing()
@@ -108,6 +135,38 @@ export async function resumeServing(db: SqlDriver): Promise<ServeInfo | null> {
   if (info === null) return null
   await attend(db)
   return info
+}
+
+/**
+ * Opens the door because the shop has somebody to answer, not because anybody
+ * pressed a switch.
+ *
+ * There used to be a "Start answering" toggle, and the reasoning behind it was
+ * sound: a one-till shop should never open a port, because a port nothing uses
+ * is a way in and no use to anybody. But that is a consequence of how many
+ * tills the shop has, and a shopkeeper should not have to know it — the toggle
+ * turned a fact into a question, and then the answer to it could be wrong. A
+ * till that had been joined but never switched on was a till the shop could not
+ * reach, saying nothing about why.
+ *
+ * So: a shop with a paired till answers whenever it is running, a shop with
+ * none stays closed, and `SyncCard` opens the port for as long as it takes to
+ * add one.
+ */
+export async function serveIfPaired(db: SqlDriver): Promise<ServeInfo | null> {
+  /* Already open, which is a webview reload under a listener that outlived it.
+     Re-attend and leave the port where it is. */
+  const already = await resumeServing(db)
+  if (already !== null) return already
+
+  if ((await listPeers(db)).length === 0) return null
+
+  const shop = await loadShopProfile(db)
+  // No port: whatever this machine had last time, which is what its peers have
+  // written down as its address.
+  return await startServing(db, undefined, {
+    name: shop.name, id: await getSetting(db, 'shop_id'),
+  })
 }
 
 async function attend(db: SqlDriver): Promise<void> {

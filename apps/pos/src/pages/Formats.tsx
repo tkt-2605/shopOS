@@ -7,6 +7,7 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Alert, Field, Empty } from '../ui/components'
+import { useShopChanged } from '../core/useShopChanged'
 
 /**
  * Designing what gets printed.
@@ -184,6 +185,8 @@ export function Formats() {
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   const dirty = useMemo(
     () => JSON.stringify(draft) !== JSON.stringify(saved),

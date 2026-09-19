@@ -183,6 +183,17 @@ describe('a document travels whole', () => {
       actorId: fx.adminId,
     })
     if (!made.ok) throw new Error(`could not raise a bill: ${made.code}`)
+
+    /* Rung up, not half-typed. `createBill` leaves a draft, and since migration
+       042 a draft is deliberately none of the other tills' business — so a
+       draft would prove nothing here except that the guard works. Written
+       directly rather than through `submitBill` because this file is about the
+       triggers, and a bill that failed on stock policy would fail as the wrong
+       thing. */
+    await fx.db.execute(
+      `UPDATE bills SET docstatus = 1, updated_at = ? WHERE id = ?`,
+      [new Date().toISOString(), made.billId],
+    )
     return made.billId
   }
 })

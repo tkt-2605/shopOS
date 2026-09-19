@@ -1,7 +1,7 @@
 import { eq, ne, and, desc, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
-import { newId } from '../ids.js'
+import { derivedId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 
 /**
@@ -93,8 +93,14 @@ export async function setBarcodes(
       .where(eq(schema.productBarcodes.productId, productId))
 
     for (const [index, input] of cleaned.entries()) {
+      /* Derived from the code itself, which is the one thing about a barcode
+         that cannot be edited into something else — a different code is a
+         different barcode. The set is deleted and rewritten on every save, so
+         with a minted id a barcode nobody touched came back under a new one,
+         and two tills saving the same product wrote two rows for one code.
+         Same id, and the feed folds the delete and the insert into one upsert. */
       await q(tx).insert(schema.productBarcodes).values({
-        id: newId(),
+        id: await derivedId('product_barcodes', input.barcode),
         productId,
         barcode: input.barcode,
         label: input.label ?? null,

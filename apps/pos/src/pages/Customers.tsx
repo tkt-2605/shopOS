@@ -7,6 +7,7 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { useShopChanged } from '../core/useShopChanged'
 
 /**
  * Who the shop sells to.
@@ -105,6 +106,8 @@ export default function Customers() {
     const id = setTimeout(() => void refresh(), term === '' ? 0 : 140)
     return () => clearTimeout(id)
   }, [refresh, term])
+  // And again when the other till adds or edits one.
+  useShopChanged(refresh)
 
   /* Asked as the number is typed rather than on save, so the answer arrives
      while it is still cheap to act on — and so the way out is "open them",

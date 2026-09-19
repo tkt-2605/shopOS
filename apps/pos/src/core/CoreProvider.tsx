@@ -12,11 +12,15 @@ import {
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
 import { runStockCheck, startMaintenanceTimer } from './maintenance'
-import { resumeServing, servingOn } from './syncHost'
-import { startSyncLoop, stopSyncLoop, runOnce } from './syncLoop'
+import { serveIfPaired, servingOn } from './syncHost'
+import { syncFetch } from './syncFetch'
+import { startSyncLoop, stopSyncLoop, runOnce, nudgeSync } from './syncLoop'
+import { nudgingDriver } from './nudgingDriver'
+import { serializingDriver } from './writeLock'
 import {
-  isFirstRun, firstRun, seedDemoData, applyUpgrades, login, pairWith,
-  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
+  isFirstRun, firstRun, seedDemoData, applyUpgrades, login, pairWith, askToJoin, pollJoin,
+  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister, claimIfUnclaimed,
+  renewClaim,
   moveSettingsToDevice, resetSyncState,
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
@@ -25,7 +29,7 @@ import {
   loadShopProfile,
 } from '@shopos/core'
 import type {
-  SessionUser, Features, FeatureKey, StockPolicy, ShopProfile, Rounding,
+  SessionUser, Features, FeatureKey, StockPolicy, ShopProfile, Rounding, JoinProgress,
 } from '@shopos/core'
 
 /** Until the database has been read. Never printed — the setup screen runs first. */
@@ -147,6 +151,9 @@ interface CoreValue {
    * own password, because the users arrived with everything else.
    */
   joinShop: (input: { address: string; code: string }) => Promise<void>
+  /** Asks the other till to be let in, and waits for somebody to press Allow. */
+  askToJoinShop: (address: string) => Promise<JoinProgress>
+  waitToJoinShop: (address: string, requestId: string) => Promise<JoinProgress>
 }
 
 const Ctx = createContext<CoreValue | null>(null)
@@ -167,7 +174,20 @@ export function useUser(): SessionUser {
   return user
 }
 
-const db = createTauriDriver(invoke)
+/* Two wrappers, innermost first.
+
+   `serializingDriver` queues writes, because this webview has two independent
+   sources of them -- the sync loop and the inbound requests Rust forwards -- on
+   a connection that holds one transaction at a time. `writeLock.ts` carries the
+   argument, including why billing had to be behind the same queue.
+
+   `nudgingDriver` then tells the other tills, rather than waiting up to
+   forty-five seconds for the loop to come round. It is outside, so the nudge
+   fires once the write is committed and the queue is free again. */
+const db = nudgingDriver(
+  serializingDriver(createTauriDriver(invoke)),
+  () => nudgeSync(db),
+)
 
 /**
  * Migration must run exactly once per process. StrictMode invokes effects twice in
@@ -290,10 +310,12 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         await loadRegister()
         await applyAppearance()
 
-        /* The port is held by Rust and the subscription by the webview, and a
-           reload ends one without ending the other. Left alone that is a till
+        /* A shop that has a second till answers it, without anybody having
+           pressed anything. Also picks the port back up after a webview reload:
+           the port is held by Rust and the subscription by the webview, and a
+           reload ends one without ending the other, which leaves a till
            listening with nobody behind it. */
-        void resumeServing(db).catch(() => undefined)
+        void serveIfPaired(db).catch(() => undefined)
 
         /* Catching up on its own, because nobody presses a button every ninety
            seconds all day. Does nothing at all until a shop has paired, which
@@ -421,22 +443,59 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     }
 
     const id = await resolveDeviceRegister(db, chosenRegister())
+
+    /* A till that is billing on a counter says so, even if nobody ever asked it
+       which one -- a shop that has run on one machine for a year has never been
+       asked, and its counter would otherwise be offered to the second till as
+       free on the day it arrives. Only takes one nobody has spoken for. */
+    if (id !== null) {
+      await claimIfUnclaimed(db, id)
+      /* And says so again every start, which is what turns the claim from a
+         lock with no expiry into a statement with a date on it. A counter whose
+         holder has stopped starting up can then be offered to the machine in
+         front of the shopkeeper, by name and by date, instead of being refused
+         for ever. Migration 045 carries the argument. */
+      await renewClaim(db, id)
+    }
+
     setRegisterId(id ?? '')
     const row = id ? await db.get<{ name: string }>(`SELECT name FROM registers WHERE id = ?`, [id]) : undefined
     setRegisterName(row?.name ?? '')
   }
 
+  function urlOf(address: string): string {
+    const bare = address.trim().replace(/\/+$/, '')
+    return bare.startsWith('http') ? bare : `http://${bare}`
+  }
+
+  /* Where to call back. A till that is not listening yet sends nothing and is
+     recorded when it first makes a signed request instead -- but if it is
+     listening, saying so now is the difference between the other till being
+     able to start a round and only ever answering one. */
+  async function mineToGiveOut() {
+    return { listenPort: (await servingOn())?.port ?? null }
+  }
+
+  /** Knocking. Nothing is granted here; the other till's shopkeeper decides. */
+  async function askToJoinShop(address: string) {
+    return await askToJoin(urlOf(address), null, syncFetch, await mineToGiveOut())
+  }
+
+  /** "May I yet?" — and, once allowed, the shop arrives. */
+  async function waitToJoinShop(address: string, requestId: string) {
+    const answer = await pollJoin(db, urlOf(address), requestId, syncFetch, await mineToGiveOut())
+    if (answer.state === 'ALLOWED') await theShopHasArrived()
+    return answer
+  }
+
+  /** The bottom rung: a code read off the other till, for a network that
+   *  answers no shouts. `pairWith` settles it in one request. */
   async function joinShop(input: { address: string; code: string }) {
-    const bare = input.address.trim().replace(/\/+$/, '')
-    const url = bare.startsWith('http') ? bare : `http://${bare}`
+    await pairWith(db, urlOf(input.address), input.code.trim(), null, syncFetch, await mineToGiveOut())
+    await theShopHasArrived()
+  }
 
-    /* Where to call back. A till that is not listening yet sends nothing and is
-       recorded when it first makes a signed request instead -- but if it is
-       listening, saying so now is the difference between the other till being
-       able to start a round and only ever answering one. */
-    const mine = await servingOn()
-    await pairWith(db, url, input.code.trim(), null, fetch, { listenPort: mine?.port ?? null })
-
+  async function theShopHasArrived() {
     /* Everything, in batches, through the loop the app already runs rather than
        a second path that could differ from it. `force` because the loop's own
        backoff has no opinion yet about a peer it has never met. */
@@ -471,7 +530,8 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       features, stockPolicy, rounding, backup,
       taxScheme, taxSchemeAsked, setTaxSchemeTo,
       setFeatureFlag, setStockPolicyTo, setRoundingTo,
-      reloadRegister: loadRegister, setUser, completeSetup, joinShop,
+      reloadRegister: loadRegister, setUser, completeSetup,
+      joinShop, askToJoinShop, waitToJoinShop,
     }}>
       {children}
     </Ctx.Provider>

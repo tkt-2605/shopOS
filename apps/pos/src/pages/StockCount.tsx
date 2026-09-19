@@ -7,6 +7,7 @@ import {
 import { useCore, useDb, useUser } from '../core/CoreProvider'
 import { Card, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { useConfirm } from '../ui/useConfirm'
+import { useShopChanged } from '../core/useShopChanged'
 
 /**
  * Counting the shelves.
@@ -52,6 +53,8 @@ export default function StockCount() {
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   async function start() {
     setBusy(true)

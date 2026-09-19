@@ -6,6 +6,7 @@ import {
 import { useDb } from '../core/CoreProvider'
 import { Card, Empty, Alert, Rupees } from '../ui/components'
 import { saveFile } from '../core/exportFile'
+import { useShopChanged } from '../core/useShopChanged'
 
 /**
  * What to buy.
@@ -34,6 +35,8 @@ export default function Reorder() {
   }, [db, includeOutOfStock, windowDays])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   const total = groups.reduce((n, g) => n + g.rows.length, 0)
 

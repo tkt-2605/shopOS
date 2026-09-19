@@ -114,7 +114,7 @@ function wireTo(peer: Till, me: Till, over: Partial<PeerHello> = {}): SyncTransp
       return as(peer, async () => {
         // The far side records how far it has read of ours before answering,
         // so the cursor it hands back is one it has actually committed to.
-        const both = await changedHere(peer.db, 0)
+        const both = await changedHere(peer.db, 0, batch.records)
         await applyBatch(peer.db, batch, both)
         await peer.db.execute(
           `INSERT INTO sync_peers (device_id, their_cursor, created_at) VALUES (?, ?, ?)
@@ -181,15 +181,7 @@ describe('a change made on one till reaches the other', () => {
 describe('a bill travels whole', () => {
   it('arrives with its lines, not as an empty bill', async () => {
     const productId = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
-    const billId = await as(a, async () => {
-      const made = await createBill(a.db, {
-        registerId: a.fx!.seed.registerId,
-        lines: [{ productId, qty: fromUnits(2) }],
-        actorId: a.fx!.adminId,
-      })
-      if (!made.ok) throw new Error(made.code)
-      return made.billId
-    })
+    const billId = await raiseBill(a, productId)
 
     /* Once. This used to be twice, with a comment saying the register and the
        user "have to land first" — which was a foreign-key ordering bug being
@@ -207,15 +199,7 @@ describe('a bill travels whole', () => {
 
   it('replaces the lines rather than merging them into a bill nobody raised', async () => {
     const productId = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
-    const billId = await as(a, async () => {
-      const made = await createBill(a.db, {
-        registerId: a.fx!.seed.registerId,
-        lines: [{ productId, qty: fromUnits(2) }],
-        actorId: a.fx!.adminId,
-      })
-      if (!made.ok) throw new Error(made.code)
-      return made.billId
-    })
+    const billId = await raiseBill(a, productId)
     await bothWays()
 
     // A second line on A only. B must end with two, not three.
@@ -454,14 +438,7 @@ describe('a till joining a shop that was already selling', () => {
 
   it('is sent the whole shop, not only what has changed lately', async () => {
     const productId = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
-    await as(a, async () => {
-      const made = await createBill(a.db, {
-        registerId: a.fx!.seed.registerId,
-        lines: [{ productId, qty: fromUnits(1) }],
-        actorId: a.fx!.adminId,
-      })
-      if (!made.ok) throw new Error(made.code)
-    })
+    await raiseBill(a, productId)
 
     // Everything settles, and then the feed is emptied — a shop that has been
     // running for a year, with nothing left to say to anybody.
@@ -743,3 +720,27 @@ describe('cursors', () => {
     expect(await pruneAcknowledged(a.db)).toBe(0)
   })
 })
+
+/**
+ * A bill that has been rung up, which is the only kind that replicates.
+ *
+ * `createBill` leaves a draft, and since migration 042 a draft deliberately
+ * stays on the till that is typing it. Submitted by hand rather than through
+ * `submitBill` because these are replication tests: a bill refused on stock
+ * policy would fail here as the wrong thing entirely.
+ */
+async function raiseBill(till: Till, productId: string): Promise<string> {
+  return as(till, async () => {
+    const made = await createBill(till.db, {
+      registerId: till.fx!.seed.registerId,
+      lines: [{ productId, qty: fromUnits(2) }],
+      actorId: till.fx!.adminId,
+    })
+    if (!made.ok) throw new Error(made.code)
+    await till.db.execute(
+      `UPDATE bills SET docstatus = 1, updated_at = ? WHERE id = ?`,
+      [new Date().toISOString(), made.billId],
+    )
+    return made.billId
+  })
+}

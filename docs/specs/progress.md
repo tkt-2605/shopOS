@@ -9,11 +9,16 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,484 TypeScript tests** passing and **none skipped** --
-the three Phase 2c placeholders are real tests now -- across 111 files, **111
-Rust tests** passing with a clean build, typecheck clean across core, app and
-both bench packages, and Layer 2 of the test bench green in Docker. Schema at
-36.
+State of the tree: **1,689 TypeScript tests** passing and **none skipped**,
+across 133 files, **122 Rust tests** passing with a clean build, typecheck clean
+across core, app and both bench packages, the app bundling clean, and Layer 2 of
+the test bench green in Docker. Schema at **48**.
+
+The sync work of 19 September is Row 10 below. It has since been run in the real
+app — three tills on one machine, migrated and then left talking to each other
+— and that run found a defect none of the tests could, which is migration 048 and
+the last two paragraphs of Row 10. The five LAN checks under *Verification a
+person has to do* need real machines and are what is left.
 
 ---
 
@@ -437,6 +442,202 @@ till merely relayed did change here, but nobody at this counter touched it, and
 calling it contested would tell a shopkeeper that two people edited one thing
 when one did.
 
+### Row 10 — N tills that converge, 19 September
+
+A review of the sync seam, and then ten migrations closing what it found.
+`whimsical-baking-lighthouse.md` is the plan; its acceptance criterion is the
+thing to keep hold of:
+
+> N tills can operate offline and eventually converge. LAN is one transport that
+> can serve that. It is not the criterion.
+
+`packages/core/test/syncReview.test.ts` was written first, ten tests, every one
+failing. All ten pass now and the file stays — an earlier note on it said to
+delete it once the findings were closed, which is backwards: a defect that has
+been fixed and has no test is one waiting to be reintroduced by somebody who
+never knew it was there.
+
+**The four that could stop a shop.**
+
+- **A record that cannot land used to stop every record behind it, for ever.**
+  `upsert` names the primary key as its conflict target and nothing else, so a
+  row violating any *other* constraint threw, and the throw rolled back the
+  batch carrying it. The cursor never moved, `collectChanges` rebuilt the
+  identical batch every forty-five seconds, and it was reported as a failure to
+  reach the other till — a shopkeeper looking at their router about a fault in
+  their data. Twenty-two constraints on replicated tables can be violated by two
+  tills each doing something perfectly reasonable. 038 adds `sync_quarantine`
+  and a slow path: the batch runs as before, and only on a throw is it re-run
+  record by record under a savepoint, so a healthy merge pays nothing.
+- **A failed COMMIT orphaned the transaction** (`db.rs`). SQLite leaves its
+  write transaction open when a COMMIT fails on deferred foreign keys; Rust
+  cleared `active_tx` anyway, so the watchdog could never reach it and every
+  later write joined the orphan. The till was dead until restart, with no
+  message. The node driver recovers, which is why no in-process test showed it.
+- **Nothing serialised the answering side against the sync loop.** `db.rs`
+  refuses a second `begin` outright, and the host fired `void answer(...)` per
+  inbound request with no lock — so a cashier submitting a bill during a merge
+  got a hard refusal rather than a wait. `writeLock.ts` is one FIFO gate both
+  directions take, at the driver rather than in sync, because billing opens
+  transactions too.
+- **The deadline hierarchy was inverted.** `ANSWER_TIMEOUT` was 60s and
+  `MERGE_BUDGET_MS` is 90s, so a merge that used its budget had already been
+  answered `503 NOT_READY`.
+
+**The merge learns three things it should always have known.**
+
+- 039: the `bump_rev_*` triggers gain the `applying` guard the feed triggers
+  have had since 021. Applying a peer's row raised its revision here — in
+  exactly the case that matters, both tills level and one winning on the
+  timestamp — so the winner's row landed on the loser one revision *higher* than
+  the till it came from. On a ring of four the row never stopped moving.
+- 040: a delete says which revision it deleted. `decideDeletion` has had the
+  right rule since it was written and could never apply it, because a deleted
+  row leaves nothing to read a revision off and the record crossed with
+  `row: null`. So a delete always won, including over an edit made afterwards,
+  and on a ring it did not settle at all.
+- The merge knows about docstatus. It compared a revision and a timestamp and
+  nothing else, so a peer could overwrite a submitted invoice and the later
+  timestamp would win. `refusedAsSubmitted` freezes the money and identity
+  columns whole-record, while leaving the line tables free — `returned_qty` and
+  `fulfilled_qty` genuinely change after submit, and refusing those would drop
+  returns and order fulfilment between tills.
+
+**Causes removed, rather than caught.**
+
+- `customers.code` is partitioned by the counter's prefix, the way `doc_no`
+  always has been. The collision is worse than a stall: the column carries no
+  unique index, so two tills minting `C0005` for two different people is applied
+  by both, and nothing anywhere says the shop's own reference now names two
+  customers. An unprefixed code sets a floor rather than a series anyone may
+  continue, so a shop at C0400 gets CMR0401 and not a series that looks reset.
+- `item_prices`, `customer_item_prices`, `product_units` and `product_barcodes`
+  take ids derived from the combination they describe (`derivedId`, RFC 9562 v5
+  under ShopOS's own namespace). These rows are not events but statements about
+  a combination, and two tills can make the same statement under two ids with
+  nothing refusing either. It also stops `setBarcodes` re-minting an id for a
+  barcode nobody touched on every product save.
+- 043 drops `idx_price_lists_one_default`. Mutual exclusion expressed as a
+  partial unique index is a rule about a shop enforced against one file, and two
+  counters offline can each choose a default quite legitimately. It also ran
+  `UPDATE price_lists SET is_default = 0` across every row to record one fact
+  about one of them. `idx_cash_sessions_one_open` stays, and `schema.ts` now
+  says why the two are different: a counter has an owner and a default price
+  list does not.
+- 042 keeps drafts at home. A `docstatus 0` bill was crossing on every keystroke
+  to tills that filter it out by register anyway, and `saveDraft` rewrites every
+  line on every save — so a five-item draft saved ten times was fifty revisions
+  and ten feed entries for a row nobody else can see.
+
+**A topology the protocol can describe**, which is what makes N tills, the cloud
+peer and a phone one problem rather than three.
+
+- 044: `sync_peers.reach` — `lan` asks and answers, `cloud` answers and never
+  asks, `none` asks and cannot answer. This was inferred from whether an address
+  column happened to be set, which gets a phone right by accident and a cloud
+  peer wrong. It supersedes the `kind: 'cloud'` column `phase-6-spec.md` plans.
+- 044 also carries `their_head`, and `/hello` now answers with its own feed head
+  and its clock. A till could say what it *owed* a peer and never what it was
+  *owed* — so a screen read "both tills have everything" while this machine was
+  ninety-five bills short, and every total printed was short with them.
+- 045: `registers.claimed_at`, renewed at every startup. The claim was a lock
+  with no expiry and no key, and the machine that does not come back is routine:
+  a backup carries the claim and `device.json` deliberately does not, so a
+  restored machine holds a counter claimed by a device id that exists nowhere.
+  It cannot bill, and until now it could not take its own counter back either.
+  Three days before a screen will offer it, which is the shortest span that is
+  certainly not a weekend, and a person still decides.
+- A peer can be forgotten. There was no way to, anywhere, and the cost is that
+  `pruneAcknowledged` holds the feed at the lowest cursor of every peer — so one
+  machine that was sold pins the change feed of every remaining till for the
+  life of the shop.
+- 046: clock skew is recorded and warned about at two and a half minutes. The
+  five-minute wall arrives all at once and reads as `STALE`; and it is not even
+  the worst of it, because the merge settles a tie on `updated_at`, so two tills
+  three minutes apart are two tills where the slower one quietly loses edits it
+  genuinely made later.
+
+**Totals that say what they are totals of.** Reports, the Dashboard and the Cash
+counter each printed a figure that silently meant "what this machine knows
+about", and GSTR-1 is filed off the tax tab. `completeness.ts` is the smallest
+piece of code in the plan and the one with the largest consequence outside it:
+nothing changes a number, and after it no number is presented as more than it is.
+
+**Two cheap things that keep an option open.** `docs/specs/host-contract.md`
+states what a second host needs — a `SqlDriver`, an identity minted outside the
+database, a `fetch`, and optionally a listener — because the seams already
+existed and nobody had written them down. And 047 reserves
+`sync_peers.fingerprint`, exchanged at pairing and never read, because pairing
+is the one exchange with no cheap path later: a shop does it once, by hand, and
+a build that adds the field in two years cannot ask them to re-pair every till.
+
+**The gate.** `tools/virtual-till/test/converges.test.ts` states the acceptance
+criterion as something that can fail:
+
+> Given N replicas, any connection graph, and any order of pairwise exchanges:
+> once writing stops and every edge has carried at least once more, every replica
+> holds identical state on every replicated table.
+
+Mesh, star, line and ring, three seeded schedules, whole rows compared rather
+than counts, and the seed printed on failure. It found three of the defects above
+while it was being built, which is the argument for it. `mesh-settles.test.ts`
+folded into it: its two questions are what this asks of every shape under an
+order nobody chose. `a-peer-that-cannot-answer.test.ts` is the cloud peer and
+the phone in one file, with no transport involved. `same-register` and
+`counters-are-claimed` run at four tills, where most pairs never speak.
+
+**What was deliberately not done, so that it is a decision and not a silence.**
+
+- `roles` keeps its hard delete. `roles.name` is `UNIQUE`, so a soft-deleted
+  role holds its name against a constraint nobody can see it through — a shop
+  that removes "Cashier" and makes a new one is refused by a row that is not on
+  the screen. Freeing the name needs a partial unique index, which needs
+  rebuilding a table that `users`, `role_pages` and `role_permissions` all point
+  at. 041 records it as a passenger for the next rebuild of that table.
+- `price_lists.is_default` stays as a vestigial column. Nothing reads or writes
+  it; dropping it means rebuilding a table `item_prices` and `customers` point at.
+- `product_barcodes` and `product_units` still rewrite their sets on save.
+  Derived ids fold that into one upsert per kept row, so the churn is gone; the
+  removal of a row is still a hard delete.
+- Layer 2's Docker bench is still two-shaped. The plan calls parameterising it
+  worth doing only while LAN is still being invested in, and it is nightly
+  rather than a required check.
+
+All eleven migrations are additive, so `MIN_PEER_SCHEMA_VERSION` did not move and
+tills on either side of the rollout keep syncing. All eleven replayed over
+`tools/fixtures/real-shop.db`; a skip is not a pass and the replay was not
+skipped.
+
+They were also run, once, over the three real till databases left behind by the
+19 September bench session — `%APPDATA%/com.shopos.pos.tillN/shop.db`, each at
+37 with four bills and a WAL bigger than the file. All three reach 47 with
+`integrity_check` clean, `foreign_key_check` empty, and no table losing or
+gaining a row except `settings`, which gains the one `default_price_list_id`
+that 043 records. That was a throwaway test against paths that exist on one
+machine and it is not in the tree: a test that silently skips everywhere else
+is the kind of green this file keeps warning about. 048 below took the same
+three files from 47 to 48.
+
+**And then running them found one.** The three tills were left talking for four
+minutes. Every one caught up, every feed pruned — and all three screens said
+they could not tell whether they had everything. 044's `their_head` is
+`NOT NULL DEFAULT 0`, and the code read 0 as *this peer has never said*, because
+a build older than 044 sends no head and calling two tills level on the strength
+of a field nobody sent would be an invention. But 0 is also what a peer with an
+empty feed honestly reports, and `pruneAcknowledged` empties the feed of exactly
+the shop that has caught up. So the healthiest state a shop can be in rendered as
+`?` on the Two tills card and as *this till cannot tell whether it has
+everything* on every report — the sentence Stage 5 exists to make honest, saying
+the opposite of the truth on the ordinary day.
+
+048 puts a date beside the number: `sync_peers.head_said_at`, NULL until a peer
+has actually reported a head. After it the three cases read apart on the running
+tills — one behind by 1, one level at 0, one `?` because it has never answered.
+`howFarBehind.test.ts` pins all five, and the convergence harness structurally
+cannot find this one: it asserts the shop goes quiet and it never prunes, so a
+feed is never empty at the moment a head is read. Which is the argument for
+running the software, and the second time this file has had to make it.
+
 ### Pulled forward out of order
 
 - **Phase 1d's host-sync fix.** The bench demanded it: `host-initiates.test.ts`
@@ -634,6 +835,25 @@ the app:
 - [ ] the clock at 01:59; a backup is written two minutes later
 - [ ] the app still pairs over Wi-Fi with two real machines
 - [ ] Layer 3's four checks, before any build goes to a shop
+
+From the sync work of 19 September (migrations 038–047). Each of these is on the
+LAN road specifically: they are checks on the transport that exists today, not on
+the acceptance criterion, which `tools/virtual-till/test/converges.test.ts` asks
+without naming a transport at all.
+
+- [ ] three real machines on one wire, one switched off mid-merge, and the other
+      two still billing. The switched-off one comes back and catches up without
+      anybody pressing anything
+- [ ] a backup restored onto a different machine, which then takes its own
+      counter back. Settings should offer to free the claim the backup carried;
+      without that the machine cannot bill at all
+- [ ] both tills' clocks pushed five minutes apart, and the Two tills card saying
+      so in words about clocks rather than the word `STALE`
+- [ ] a counter left claimed by a till that is then switched off for three days;
+      Counters offers to take it over, names the till and the date, and refuses
+      if that till has started up since the screen was drawn
+- [ ] "This till is gone" pressed on a peer, and the change feed on the remaining
+      machines actually shrinking afterwards
 
 From Phase 1, which is otherwise code complete. Audited on 16 September: the
 other three on this list became tests, and the audit is in the Phase 1 section

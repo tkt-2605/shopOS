@@ -1,0 +1,70 @@
+-- Whether a peer can be dialled, said rather than guessed.
+--
+-- ── What is inferred today ────────────────────────────────────────────────
+--
+-- `pairedPeers` returns the rows where `secret` and `address` are both set, and
+-- the sync loop dials every one of them. A peer with no address is therefore
+-- invisible to it — not by decision, but because a column happened to be null.
+--
+-- That has held so far because there is one kind of peer: a till on a LAN, which
+-- answers a port. Two more are coming and neither does.
+--
+--   A cloud peer answers and never asks. It is reachable, always, from anywhere,
+--   and it never initiates a round — so it is a peer this till must dial and
+--   must never wait for.
+--
+--   A phone asks and cannot answer. iOS suspends a backgrounded app and Android
+--   is not far behind, so there is no port to knock on and there never will be.
+--   Everything it learns, it learns by asking. A till that dials it waits for a
+--   timeout every round, for ever, and reports the shop as unreachable.
+--
+-- Inferring that from a null address gets the phone right by accident and the
+-- cloud peer wrong: the cloud peer has an address and does not answer knocks
+-- from a shop behind NAT in the ordinary case. More to the point, an accident is
+-- not a thing the rest of the code can read. `syncStatus` cannot say "the back
+-- counter is 95 bills behind" about a peer whose silence might mean asleep,
+-- might mean unreachable, and might mean it was never going to answer.
+--
+-- ── What this is ──────────────────────────────────────────────────────────
+--
+-- One column naming the shape of the peer:
+--
+--   'lan'    asks and answers. A till on the same wire. What every peer is now.
+--   'cloud'  answers, and never asks. Dial it; never wait for it to dial you.
+--   'none'   asks, and cannot answer. Never dial it; it will come to you.
+--
+-- This supersedes the `kind: 'cloud'` column `phase-6-spec.md` plans, so Phase 6
+-- inherits it instead of adding a second word for the same thing.
+--
+-- It is also what keeps the transport a choice rather than a commitment. Once
+-- reachability is a property of a peer, dropping LAN or dropping the cloud is a
+-- question of which peers a shop has — not a change to the merge, the feed, the
+-- cursors or the screens, none of which learn the word.
+--
+-- Defaults to 'lan' and is backfilled to 'lan', because that is what every
+-- existing row is: a till that was paired over a wire by somebody standing in
+-- front of both machines.
+--
+-- ── And how far along that peer is ────────────────────────────────────────
+--
+-- `their_head`, the last feed position the peer reported in its `/hello`.
+--
+-- `handleHello` answers with `yourCursorWithThem` and not its own `feedHead`, so
+-- a till can work out what it still *owes* a peer and has never been able to
+-- work out what it is *owed*. Those are different questions and it is the second
+-- one a shopkeeper asks: a screen can say "everything sent" while this machine
+-- is ninety-five bills behind the back counter, and the totals on every report
+-- are short by those bills with nothing saying so.
+--
+-- One number from each `/hello`, and `their_head - their_cursor` is the answer.
+-- Zero until the first handshake after this lands, which reads as "level", and
+-- that is the right way round for a number that appears on a screen: it stays
+-- quiet until it knows something.
+--
+-- Additive. An older till does not send it, does not store it, and goes on
+-- dialling what it always dialled.
+
+ALTER TABLE sync_peers ADD COLUMN reach TEXT NOT NULL DEFAULT 'lan'
+  CHECK (reach IN ('lan', 'cloud', 'none'));
+
+ALTER TABLE sync_peers ADD COLUMN their_head INTEGER NOT NULL DEFAULT 0;

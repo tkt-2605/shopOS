@@ -6,6 +6,7 @@ import { qty, QTY_SCALE, type Qty } from '../quantity.js'
 import { resolvePrice } from '../domain/pricing.js'
 import type { PriceCandidates, PriceTier, ResolvedPrice } from '../domain/pricing.js'
 import { isOn } from '../services/features.js'
+import { getSetting, DEFAULT_PRICE_LIST } from '../services/bootstrap.js'
 
 export interface PricingContext {
   productId: string
@@ -192,13 +193,17 @@ async function baseUnitsPer(
 }
 
 export async function defaultPriceListId(db: SqlDriver): Promise<string | null> {
+  const chosen = await getSetting(db, DEFAULT_PRICE_LIST)
+  if (chosen === null || chosen === '') return null
+
+  /* Checked rather than trusted. The setting can name a list that has since been
+     archived — on this till or, more to the point, on another one — and a
+     default that does not exist must read as no default rather than as a list
+     the resolver will not find. */
   const [row] = await q(db)
     .select({ id: schema.priceLists.id })
     .from(schema.priceLists)
-    .where(and(
-      eq(schema.priceLists.isDefault, 1),
-      isNull(schema.priceLists.deletedAt),
-    ))
+    .where(and(eq(schema.priceLists.id, chosen), isNull(schema.priceLists.deletedAt)))
   return row?.id ?? null
 }
 

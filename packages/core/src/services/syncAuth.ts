@@ -27,6 +27,35 @@ const ALGORITHM = { name: 'HMAC', hash: 'SHA-256' } as const
 /** How far apart two tills' clocks may be before a request is refused. */
 export const CLOCK_TOLERANCE_MS = 5 * 60 * 1000
 
+/**
+ * This machine's own certificate fingerprint, when it has one.
+ *
+ * Null today on every build, because nothing here serves TLS and this file
+ * argues at length that on a shop's own wire it should not have to. What is
+ * coming is a cloud peer over the internet and a phone that will not open a
+ * cleartext socket at all, and the answer to both is Syncthing's: the device id
+ * *is* the fingerprint, swapped once at pairing, with no authority and nothing
+ * to renew.
+ *
+ * A source rather than a value, for the same reason as `setDeviceIdSource` — a
+ * certificate belongs to whatever is holding the socket, which is Rust in the
+ * app and nothing at all in a test. Core never mints one.
+ *
+ * It exists now, unread, because pairing is the only exchange two tills have
+ * before they trust each other, a shop performs it once by hand, and a build
+ * that adds the field later cannot ask a shop to re-pair every till it owns.
+ * Migration 047 carries the rest of the argument.
+ */
+let fingerprintSource: (() => string | null) | null = null
+
+export function setFingerprintSource(fn: (() => string | null) | null): void {
+  fingerprintSource = fn
+}
+
+export function myFingerprint(): string | null {
+  return fingerprintSource ? fingerprintSource() : null
+}
+
 export interface SignedRequest {
   deviceId: string
   timestamp: number

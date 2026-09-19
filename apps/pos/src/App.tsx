@@ -16,6 +16,8 @@ import { onGoTo } from './core/nav'
 import { appVersion, versionLine, type AppVersion } from './core/version'
 import { ICONS, BrandMark } from './ui/icons'
 import { AdminGate } from './ui/AdminGate'
+import { CounterGate } from './ui/CounterGate'
+import { JoinRequestPrompt } from './ui/JoinRequestPrompt'
 import { Formats } from './pages/Formats'
 import { lock } from './core/adminGate'
 import Billing from './pages/Billing'
@@ -458,6 +460,11 @@ function Shell() {
             who it is also stops running its backup and prints somewhere else,
             and nobody goes to Settings to find that out. */}
         <DeviceTroubleBanner />
+        {/* Also on every screen, and for the same reason turned around: the
+            person who has to say yes is standing at this till looking at the
+            counter, while the person adding one is at the other machine. A
+            prompt behind Settings is a prompt nobody is there to answer. */}
+        <JoinRequestPrompt />
         <div className={current === 'billing' ? 'content flush' : 'content'}>
           {/* Inside `main`, not around the shell: a page that throws must not
               take the sidebar with it, or there is no way back to the counter
@@ -473,7 +480,10 @@ function Shell() {
 
 function PageBody({ page }: { page: Page }) {
   switch (page) {
-    case 'billing': return <Billing />
+    /* The two that mint numbers against a counter, and so are the two that a
+       till which does not know its counter must not reach. `CounterGate` says
+       why. */
+    case 'billing': return <CounterGate><Billing /></CounterGate>
     case 'bills': return <Bills />
     case 'dashboard': return <Dashboard />
     case 'inventory': return <Inventory />
@@ -481,7 +491,7 @@ function PageBody({ page }: { page: Page }) {
     case 'stock_count': return <StockCount />
     case 'reorder': return <Reorder />
     case 'credit': return <Credit />
-    case 'cash_counter': return <CashCounter />
+    case 'cash_counter': return <CounterGate><CashCounter /></CounterGate>
     /* The two screens that can change what every other screen does. Staff is
        deliberately not among them: resetting a cashier's forgotten password is a
        daily job, and a second password in front of it is how an owner ends up

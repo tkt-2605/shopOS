@@ -7,6 +7,7 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { useShopChanged } from '../core/useShopChanged'
 
 interface Draft {
   supplierId: string | null
@@ -36,6 +37,8 @@ export default function Suppliers() {
   }, [db, showArchived])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   async function save() {
     if (!editing) return

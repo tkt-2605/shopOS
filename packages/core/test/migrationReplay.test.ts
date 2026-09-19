@@ -89,7 +89,11 @@ const WRITTEN_BY_A_MIGRATION = new Map<string, string>([
    quietly grow to cover a table it was never meant to. Checked as well as the
    counts themselves: a list of exceptions nobody looks at is how the exception
    that mattered gets added. */
-const MOVED_ON_THE_REAL_SHOP = ['doc_sequences', 'settings']
+/* `settings` was here until 043 and its absence is arithmetic rather than an
+   oversight: 033 removes a key and 043 adds one, so on this fixture the two
+   cancel and the count comes out where it started. This list is of counts that
+   move, not of tables a migration wrote — `WRITTEN_BY_A_MIGRATION` is that. */
+const MOVED_ON_THE_REAL_SHOP = ['doc_sequences']
 
 describe('replaying every migration, one at a time', () => {
   it('leaves the database sound after each one', () => {

@@ -6,6 +6,7 @@ import {
   type Loyalty, type ShopProfile, type Page, type TaxScheme,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { FreeGhostClaims } from '../ui/FreeGhostClaims'
 import { goTo } from '../core/nav'
 import { listPrinters, defaultPrinter } from '../core/print'
 import {
@@ -119,6 +120,7 @@ export default function Settings() {
     }
   }
   useEffect(() => { void lastRestore().then(setRestore) }, [])
+
 
   // Applied immediately so the choice is visible while still on this screen.
   function chooseTheme(next: Theme) {
@@ -637,6 +639,7 @@ export default function Settings() {
             </Alert>
           </div>
         )}
+        <FreeGhostClaims />
         {restore.error && <div style={{ marginBottom: 11 }}><Alert>{restore.error}</Alert></div>}
 
         <div className="card card-scroll" style={{ marginBottom: 14 }}>

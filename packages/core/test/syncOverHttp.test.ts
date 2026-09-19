@@ -264,7 +264,7 @@ describe('syncing across the wire', () => {
 describe('what the network lets somebody try', () => {
   it('refuses a till nobody has ever paired with', async () => {
     const stranger = httpTransport({
-      deviceId: TILL_A, baseUrl: host.url, secret: 'a'.repeat(64),
+      deviceId: TILL_A, baseUrl: host.url, secret: 'a'.repeat(64), reach: 'lan',
     })
 
     await expect(as(joiner, () => stranger.hello())).rejects.toMatchObject({
@@ -275,7 +275,7 @@ describe('what the network lets somebody try', () => {
   it('refuses a request signed with the wrong secret', async () => {
     await pairThem()
     const wrong = httpTransport({
-      deviceId: TILL_A, baseUrl: host.url, secret: 'b'.repeat(64),
+      deviceId: TILL_A, baseUrl: host.url, secret: 'b'.repeat(64), reach: 'lan',
     })
 
     await expect(as(joiner, () => wrong.hello())).rejects.toMatchObject({
