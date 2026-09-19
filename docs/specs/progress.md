@@ -9,17 +9,18 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,700 TypeScript tests** passing and **none skipped**,
-across 134 files, **122 Rust tests** passing with a clean build, typecheck clean
+State of the tree: **1,707 TypeScript tests** passing and **none skipped**,
+across 135 files, **122 Rust tests** passing with a clean build, typecheck clean
 across core, app and both bench packages, the app bundling clean, and Layer 2 of
 the test bench green in Docker. Schema at **49**.
 
 The sync work of 19 September is Row 10 below. It has since been run in the real
 app — three tills on one machine, migrated and then left talking to each other
 — and that run found a defect none of the tests could, which is migration 048 and
-the last two paragraphs of Row 10, and a second that is Row 11. The five LAN
+the last two paragraphs of Row 10, a second that is Row 11 and a third that is
+Row 12 — the last of which stopped a till posting stock in at all. The LAN
 checks under *Verification a person has to do* need real machines and are what
-is left.
+is left; `hand-checks.md` is the version to work from.
 
 ---
 
@@ -710,6 +711,60 @@ while an account is being guessed at.
 
 `aSignInIsNotShopNews.test.ts` is eleven tests. Two of them — the revision and
 the feed entry — were checked by putting the old write back, and both fail.
+
+### Row 12 — one series name, one counter per machine, 19 September
+
+The third thing running real tills found, reported as *cannot post entry in
+stock in*, and the most serious of the three: a till that simply could not do
+the job, with no way out by retrying.
+
+`numbering.ts` opens by saying a register prefix is not cosmetic — “two
+terminals billing offline must not both mint INV-0042, and a globally
+sequential counter cannot survive a second till.” Five callers then passed a
+constant where a register belonged. `stockEntry.ts` and `stockCount.ts`
+hard-coded `'MR'`; the three payment paths and the opening balance took an
+optional `registerPrefix` that no screen ever supplied and fell back to `'MR'`
+too. Bills, returns and documents partition correctly, which is why nothing
+showed it.
+
+`doc_sequences` is the one table deliberately kept out of replication, and the
+reason written beside it is that taking either side of a counter would hand two
+tills the same invoice number. A shared series name with a local counter is
+that same failure reached from the other direction, and `doc_no` is `UNIQUE` on
+every document table.
+
+It fails two ways and the quiet one is worse.
+
+- **The till that has received the other's document cannot mint at all.** Its
+  counter is behind, so it produces a number the incoming row already holds,
+  the UNIQUE rejects it, and the rollback means the counter never advances — so
+  the next attempt is byte for byte the previous one. On till 2 that was forty
+  identical `SMR/2627/00001` failures in forty seconds, each leaving a draft
+  behind, and no amount of trying again could ever have worked.
+- **Two tills that mint before they meet both succeed**, and one of the two
+  documents is quarantined on arrival. Stage 1's quarantine is what turns that
+  from silent loss into a row on a screen, which is the argument for building
+  it — but a payment that was taken and did not arrive is not a thing to leave
+  to a safety net.
+
+`seriesPrefix` resolves the counter this till sits at, and the five callers use
+it. The opening balance is the one that could not simply take the prefix: it
+shares the `bill` doc type with real invoices, so handing it a register prefix
+alone would file an opening balance into the invoice series. It keeps `OB` in
+front and takes the prefix from the register the screen already passes, the way
+`documents.ts` does — a fact supplied by the caller beats one inferred from the
+machine.
+
+**The first version of the test was wrong and the mutation check caught it.**
+It created both entries through `submitStockEntry` in one database, which
+advances the same local counter — so two of the three tests passed with the bug
+put back. The reproduction needs the other till's row to *arrive* without the
+sequence moving, which is what replication does and what a test writing through
+the service can never do. `twoTillsOneSeries.test.ts` inserts the row the way
+`applyBatch` would; all three then fail against the old code.
+
+No migration and no data to repair: the two tills that were stuck mint under
+their own counters from the next attempt onward.
 
 ### Pulled forward out of order
 

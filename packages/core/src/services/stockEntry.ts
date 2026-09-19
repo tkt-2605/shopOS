@@ -7,7 +7,7 @@ import type { Qty } from '../quantity.js'
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 import { postMovement, reverseVoucher, currentStock } from './stock.js'
-import { nextDocNo } from './numbering.js'
+import { nextDocNo, seriesPrefix } from './numbering.js'
 
 export type StockEntryType = 'purchase' | 'adjustment' | 'opening' | 'wastage'
 
@@ -130,7 +130,7 @@ export async function submitStockEntry(
   let docNo = ''
 
   await db.transaction(async (tx) => {
-    docNo = await nextDocNo(tx, 'stock_entry', 'MR', now)
+    docNo = await nextDocNo(tx, 'stock_entry', await seriesPrefix(tx, 'MR'), now)
 
     for (const line of lines) {
       await postMovement(tx, {

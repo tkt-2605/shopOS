@@ -1,12 +1,53 @@
 import { eq, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
+import { myRegisterPrefix } from './registers.js'
 
 /**
  * Numbers are scoped per register and per fiscal year. The register prefix is not
  * cosmetic — two terminals billing offline must not both mint INV-0042, and a
  * globally sequential counter cannot survive a second till.
  */
+
+/**
+ * The prefix a number minted on *this* till belongs under.
+ *
+ * The rule above was stated when this file was written and then broken by five
+ * callers, each of which passed a constant where a register belonged: stock
+ * entries and stock counts hard-coded `'MR'`, and the three payment paths plus
+ * the opening balance took an optional prefix that no screen ever supplied and
+ * fell back to `'MR'` as well.
+ *
+ * So every till in the shop drew from a series called `stock_entry:MR:2627`
+ * while `doc_sequences` is deliberately *not* replicated -- it is the one table
+ * whose whole reason for staying local is that taking either side of it would
+ * hand two tills the same invoice number. One series name, one counter per
+ * machine, and `doc_no` is `UNIQUE` on every document table.
+ *
+ * That fails in two different ways and the quiet one is worse:
+ *
+ * - The till that has *received* the other's document cannot mint at all. Its
+ *   own counter is behind, so it produces a number the incoming row already
+ *   holds, the UNIQUE rejects it, and the transaction rolls back -- which means
+ *   the counter never advances either, so every retry produces the identical
+ *   number for ever. A shop in this state cannot post stock in, and no amount
+ *   of trying again will change it.
+ * - Two tills that mint *before* they meet both succeed locally, and one of the
+ *   two documents is then quarantined on arrival. Stage 1's quarantine is what
+ *   turns that from silent loss into a row on a screen, which is the argument
+ *   for it -- but a payment that was taken and did not arrive is not a thing to
+ *   rely on a safety net for.
+ *
+ * Found by posting stock in on a real till, not by a test: the bench had never
+ * had two tills make a *stock entry*, only bills, which partition correctly.
+ *
+ * `fallback` is for a till with no counter of its own. A shop with one till
+ * cannot collide with anybody, which is what makes it safe there and nowhere
+ * else.
+ */
+export async function seriesPrefix(db: SqlDriver, fallback: string): Promise<string> {
+  return (await myRegisterPrefix(db)) ?? fallback
+}
 
 export type DocType =
   | 'bill' | 'return' | 'payment' | 'stock_entry' | 'stock_count'

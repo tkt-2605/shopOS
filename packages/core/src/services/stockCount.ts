@@ -7,7 +7,7 @@ import { type Qty, subQty } from '../quantity.js'
 import { businessDate } from '../dates.js'
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
-import { nextDocNo } from './numbering.js'
+import { nextDocNo, seriesPrefix } from './numbering.js'
 import { createStockEntry, submitStockEntry, cancelStockEntry } from './stockEntry.js'
 
 /**
@@ -125,7 +125,7 @@ export async function openCount(db: SqlDriver, input: OpenCountInput): Promise<O
   let docNo = ''
 
   await db.transaction(async (tx) => {
-    docNo = await nextDocNo(tx, 'stock_count', 'MR', now)
+    docNo = await nextDocNo(tx, 'stock_count', await seriesPrefix(tx, 'MR'), now)
 
     await q(tx).insert(schema.stockCounts).values({
       id: countId,

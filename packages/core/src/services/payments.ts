@@ -7,7 +7,7 @@ import { type Money, ZERO, add, sub } from '../money.js'
 import { planAllocation, totalOutstanding, type OpenBill, type PaymentAllocation } from '../domain/credit.js'
 import { SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
-import { nextDocNo } from './numbering.js'
+import { nextDocNo, seriesPrefix } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
 
 export type ReceiptMethod = 'cash' | 'upi' | 'card' | 'adjustment'
@@ -72,7 +72,9 @@ export async function recordPayment(db: SqlDriver, input: RecordPaymentInput): P
   let docNo = ''
 
   await db.transaction(async (tx) => {
-    docNo = await nextDocNo(tx, 'payment', input.registerPrefix ?? 'MR', now)
+    docNo = await nextDocNo(
+      tx, 'payment', input.registerPrefix ?? await seriesPrefix(tx, 'MR'), now,
+    )
 
     await q(tx).insert(schema.paymentEntries).values({
       id: paymentId,
@@ -155,7 +157,9 @@ export async function postCreditNote(
 
   const paymentId = newId()
   const nowIso = input.now.toISOString()
-  const docNo = await nextDocNo(tx, 'payment', input.registerPrefix ?? 'MR', input.now)
+  const docNo = await nextDocNo(
+    tx, 'payment', input.registerPrefix ?? await seriesPrefix(tx, 'MR'), input.now,
+  )
 
   await q(tx).insert(schema.paymentEntries).values({
     id: paymentId,
@@ -616,7 +620,9 @@ export async function refundAdvance(
   let docNo = ''
 
   await db.transaction(async (tx) => {
-    docNo = await nextDocNo(tx, 'payment', input.registerPrefix ?? 'MR', now)
+    docNo = await nextDocNo(
+      tx, 'payment', input.registerPrefix ?? await seriesPrefix(tx, 'MR'), now,
+    )
 
     await q(tx).insert(schema.paymentEntries).values({
       id: paymentId,
@@ -857,7 +863,21 @@ export async function recordOpeningBalance(
 
   let docNo = ''
   await db.transaction(async (tx) => {
-    docNo = await nextDocNo(tx, 'bill', input.registerPrefix ?? 'OB', now)
+    /* The counter it was entered at, read from the register the caller
+       already named -- the same way `documents.ts` does it, and better than
+       asking which counter this till sits at, because this one is a fact the
+       screen passed in.
+
+       `OB` stays in front of it. An opening balance is not a sale and must
+       not take a number out of the invoice series; handing it the register
+       prefix alone would file it among real invoices. So the marker keeps
+       the prefix beside it, which is a longer number and an unambiguous
+       one. */
+    const [at] = await q(tx)
+      .select({ prefix: schema.registers.prefix })
+      .from(schema.registers)
+      .where(eq(schema.registers.id, input.registerId))
+    docNo = await nextDocNo(tx, 'bill', input.registerPrefix ?? `OB${at?.prefix ?? ''}`, now)
     await q(tx).insert(schema.bills).values({
       id: billId,
       docNo,
