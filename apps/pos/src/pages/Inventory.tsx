@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Money, Quantity, Tax, Permissions,
-  searchProducts, productValuation, recomputeStock, newId,
+  searchProducts, recomputeStock, newId,
   listBarcodes, setBarcodes, listUnits, setUnits,
   listCategories, createCategory, renameCategory, removeCategory,
   setProductCategory, setVariantOf,
@@ -13,6 +13,7 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { recordStockCheck } from '../core/maintenance'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { ProductHistory } from '../ui/ProductHistory'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 import { usePickList, Results } from '../ui/PickList'
 import { useShopChanged } from '../core/useShopChanged'
@@ -91,7 +92,10 @@ export default function Inventory() {
   const [term, setTerm] = useState('')
   const [rows, setRows] = useState<ProductListItem[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [valuation, setValuation] = useState<{ name: string; qty: number; value: number; avg: number } | null>(null)
+  /* The whole product rather than four numbers copied out of it: the panel
+     reads the ledger itself, and a snapshot taken here would be one more
+     thing to keep in step with it. */
+  const [history, setHistory] = useState<ProductListItem | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [categories, setCategories] = useState<Category[]>([])
   const [newCategory, setNewCategory] = useState('')
@@ -373,11 +377,6 @@ export default function Inventory() {
       : `“${p.name}” is back on sale.`)
   }
 
-  async function showValuation(p: ProductListItem) {
-    const v = await productValuation(db, p.id)
-    setValuation({ name: p.name, qty: v.qtyOnHand, value: v.totalValue, avg: v.averageCost })
-  }
-
   /**
    * The full replay, on purpose and by hand.
    *
@@ -466,7 +465,10 @@ export default function Inventory() {
                   {Quantity.formatQty(p.qtyOnHand)} {p.baseUnit}
                 </td>
                 <td className="r" style={{ whiteSpace: 'nowrap' }}>
-                  <button className="btn ghost sm" onClick={() => void showValuation(p)}>Cost</button>
+                  {/* Was "Cost", and gave one number with no way to see how it
+                      got there. The average is derived, so the rows it is
+                      derived from are the answer to any question about it. */}
+                  <button className="btn ghost sm" onClick={() => setHistory(p)}>History</button>
                   {canWrite && (
                     <button className="btn ghost sm" onClick={() => void edit(p)}>Edit</button>
                   )}
@@ -809,19 +811,13 @@ export default function Inventory() {
         </Modal>
       )}
 
-      {valuation && (
-        <Modal
-          title={`Cost — ${valuation.name}`}
-          onClose={() => setValuation(null)}
-          footer={<button className="btn" onClick={() => setValuation(null)}>Close</button>}
-        >
-          <div className="total-line"><span>On hand</span><span className="num">{Quantity.formatQty(valuation.qty as never)}</span></div>
-          <div className="total-line"><span>Average cost</span><Rupees value={valuation.avg} /></div>
-          <div className="total-line grand"><span>Stock value</span><Rupees value={valuation.value} className="amount" /></div>
-          <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-            Moving average, replayed from every stock movement and what it cost at the time.
-          </div>
-        </Modal>
+      {history && (
+        <ProductHistory
+          productId={history.id}
+          name={history.name}
+          baseUnit={history.baseUnit}
+          onClose={() => setHistory(null)}
+        />
       )}
     </div>
   )

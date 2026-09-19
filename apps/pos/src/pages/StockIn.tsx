@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
-  directionOf, signedQty,
+  directionOf, signedQty, noCostBasis,
   type ProductListItem, type StockEntryType, type Supplier,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -43,6 +43,11 @@ export default function StockIn() {
   // Held with its id, not just its number: the distributor's paper bill is in
   // the shopkeeper's hand at this moment and nowhere else later.
   const [done, setDone] = useState<{ docNo: string; entryId: string } | null>(null)
+  /* Items the shop has never recorded a rate for. Read once, because it
+     answers a question about history that this screen is not changing until
+     it saves — and the difference it makes is which of two warnings is true,
+     not whether to warn. */
+  const [unpriced, setUnpriced] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     const id = setTimeout(() => { void searchProducts(db, { term, limit: 25 }).then(setResults) }, 140)
@@ -54,6 +59,10 @@ export default function StockIn() {
   }, [db])
 
   useEffect(() => { void loadSuppliers() }, [loadSuppliers])
+
+  useEffect(() => {
+    void noCostBasis(db).then((rows) => setUnpriced(new Set(rows.map((r) => r.productId))))
+  }, [db])
 
   async function addSupplier() {
     if (!newSupplier) return
@@ -238,6 +247,23 @@ export default function StockIn() {
                   <td className="r">
                     <input className="qty-input num" placeholder="0.00" value={l.cost}
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cost: e.target.value } : x))} />
+                    {/* Said, not enforced. A shopkeeper holding a delivery note
+                        they cannot read must still be able to record the stock;
+                        a save that refuses here is a shelf that goes uncounted.
+
+                        But a blank cost is not nothing. It falls back to the
+                        last rate known for the item, which is usually close
+                        enough — and where there has never been one the item
+                        enters at zero, and every sale of it reads as pure
+                        profit for ever with nothing saying so. Those are two
+                        different sentences and only one of them is alarming. */}
+                    {directionOf(entryType) === 'in' && Money.parseMoney(l.cost) === null && (
+                      <div className="src warn-note">
+                        {unpriced.has(l.product.id)
+                          ? 'no cost ever recorded — profit on this item will read as 100%'
+                          : 'no cost — the last rate paid will be assumed'}
+                      </div>
+                    )}
                   </td>
                   <td className="r"><Rupees value={value} /></td>
                   <td className="r num">{Quantity.formatQty(after)} {l.product.baseUnit}</td>

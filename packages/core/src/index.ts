@@ -72,6 +72,9 @@ export type { DocType } from './services/numbering.js'
 
 export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from './repos/pricing.js'
 
+export { productHistory, productProfit, noCostBasis } from './repos/productHistory.js'
+export type { StockMovement, ProductProfit, NoCostBasis } from './repos/productHistory.js'
+
 export {
   createReturn, submitReturn, cancelReturn, processReturn, previewReturn, listReturns,
   loadReturnDetail, returnableQty,
