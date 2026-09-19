@@ -18,7 +18,6 @@ import type { Register, CounterTaken, TakeRegisterResult } from '@shopos/core'
 let rows: Register[] = []
 let taken: CounterTaken[] = []
 let result: TakeRegisterResult = { ok: true }
-let asked = 0
 let tookWhich: string | null = null
 
 vi.mock('@shopos/core', async (real) => ({
@@ -62,16 +61,45 @@ async function show() {
   await act(async () => { await Promise.resolve() })
 }
 
+/**
+ * The dialog the app draws, rather than the one the browser used to.
+ *
+ * This test stubbed `window.confirm` and passed, while the real screen was not
+ * asking at all: Tauri replaces `window.confirm` in the webview with an async
+ * shim, the guard was written `const agreed = window.confirm(...)` with no
+ * await, and a promise is always truthy. So a counter another till was billing
+ * on could be taken with one click and no question -- which the message in that
+ * very dialog says gives two customers the same bill number.
+ *
+ * `useConfirm` exists for exactly this and this screen had not adopted it. The
+ * question is now found and answered the way a person would, which is also the
+ * only version of this test that could have failed.
+ */
+async function answer(yes: boolean) {
+  const dialog = await screen.findByRole('dialog')
+  const button = Array.from(dialog.querySelectorAll('button'))
+    .find((b) => b.textContent === (yes ? 'Yes, go ahead' : 'No, leave it'))
+  if (!button) throw new Error('the confirmation had no button to press')
+  await act(async () => {
+    fireEvent.click(button)
+    await Promise.resolve()
+  })
+}
+
+/** Whether a question is on screen at all. */
+function asking(): boolean {
+  return screen.queryByRole('dialog') !== null
+}
+
+
 beforeEach(() => {
   rows = [counter()]
   taken = []
   result = { ok: true }
-  asked = 0
   tookWhich = null
-  vi.stubGlobal('confirm', () => { asked += 1; return true })
 })
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => cleanup())
 
 describe('a counter another till is holding', () => {
   it('is refused outright while that till is still starting up', async () => {
@@ -108,7 +136,6 @@ describe('a counter another till is holding', () => {
 
   it('asks before taking it, and does nothing if the answer is no', async () => {
     taken = [heldBy()]
-    vi.stubGlobal('confirm', () => { asked += 1; return false })
     await show()
 
     await act(async () => {
@@ -116,7 +143,10 @@ describe('a counter another till is holding', () => {
       await Promise.resolve()
     })
 
-    expect(asked).toBe(1)
+    expect(asking(), 'a question, before anything is written').toBe(true)
+    expect(tookWhich, 'and nothing written while it is open').toBeNull()
+
+    await answer(false)
     expect(tookWhich, 'a refused confirmation must write nothing').toBeNull()
   })
 
@@ -128,6 +158,7 @@ describe('a counter another till is holding', () => {
       fireEvent.click(screen.getByText('Take it over'))
       await Promise.resolve()
     })
+    await answer(true)
 
     expect(tookWhich).toBe('front')
   })
@@ -144,6 +175,7 @@ describe('a counter another till is holding', () => {
       fireEvent.click(screen.getByText('Take it over'))
       await Promise.resolve()
     })
+    await answer(true)
 
     expect(document.body.textContent)
       .toContain('Back counter has started up since this screen was drawn')

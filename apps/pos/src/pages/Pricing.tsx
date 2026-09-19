@@ -10,6 +10,7 @@ import {
 } from '@shopos/core'
 import { useCore, useDb, useUser } from '../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../ui/components'
+import { useConfirm } from '../ui/useConfirm'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 import { usePickList, Results } from '../ui/PickList'
 import { useShopChanged } from '../core/useShopChanged'
@@ -322,6 +323,7 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
 function PriceLists({ canWrite }: { canWrite: boolean }) {
   const db = useDb()
   const user = useUser()
+  const [confirmUi, ask] = useConfirm()
   const [lists, setLists] = useState<PriceList[]>([])
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -377,11 +379,11 @@ function PriceLists({ canWrite }: { canWrite: boolean }) {
       return
     }
 
-    if (!window.confirm(
+    if (!(await ask(
       `Take ${list.name} off this screen?\n\n`
       + 'The rates on it are kept, and old bills priced from it can still be '
       + 'explained. You can bring it back here.',
-    )) return
+    ))) return
 
     const result = await archivePriceList(db, { actorId: user.id }, list.id)
     if (!result.ok) {
@@ -401,6 +403,7 @@ function PriceLists({ canWrite }: { canWrite: boolean }) {
 
   return (
     <Card title="Price lists">
+      {confirmUi}
       <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
         A list is a set of rates. The default one is what a walk-in customer pays; put a customer on
         another and they get its rates instead. Every shop has exactly one default.

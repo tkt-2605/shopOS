@@ -19,7 +19,6 @@ import type { PeerHealth } from '@shopos/core'
 
 let peers: PeerHealth[] = []
 let forgotten: string | null = null
-let asked = 0
 
 vi.mock('@shopos/core', async (real) => ({
   ...(await real<Record<string, unknown>>()),
@@ -68,14 +67,41 @@ async function show() {
   await act(async () => { await Promise.resolve(); await Promise.resolve() })
 }
 
+/**
+ * The dialog the app draws, rather than the one the browser used to.
+ *
+ * These tests stubbed `window.confirm` and passed, while the real app was not
+ * asking at all: Tauri replaces `window.confirm` in the webview with an async
+ * shim, every guard here was written `if (!window.confirm(...)) return`, and a
+ * promise is always truthy. `useConfirm` exists for exactly that reason and
+ * these two screens had not adopted it.
+ *
+ * So the question is now found and answered the way a person would, which is
+ * also the only version of this test that could have failed.
+ */
+async function answer(yes: boolean) {
+  const dialog = await screen.findByRole('dialog')
+  const button = Array.from(dialog.querySelectorAll('button'))
+    .find((b) => b.textContent === (yes ? 'Yes, go ahead' : 'No, leave it'))
+  if (!button) throw new Error('the confirmation had no button to press')
+  await act(async () => {
+    fireEvent.click(button)
+    await Promise.resolve()
+  })
+}
+
+/** Whether a question is on screen at all. */
+function asking(): boolean {
+  return screen.queryByRole('dialog') !== null
+}
+
+
 beforeEach(() => {
   peers = [peer()]
   forgotten = null
-  asked = 0
-  vi.stubGlobal('confirm', () => { asked += 1; return true })
 })
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => cleanup())
 
 describe('a till that is gone', () => {
   it('can be forgotten from the card that lists it', async () => {
@@ -86,7 +112,6 @@ describe('a till that is gone', () => {
   it('asks first, and does nothing if the answer is no', async () => {
     /* The counter that till was billing on is released with it. That is the
        point of the action and the reason it must not be a stray click. */
-    vi.stubGlobal('confirm', () => { asked += 1; return false })
     await show()
 
     await act(async () => {
@@ -94,8 +119,11 @@ describe('a till that is gone', () => {
       await Promise.resolve()
     })
 
-    expect(asked).toBe(1)
-    expect(forgotten).toBeNull()
+    expect(asking(), 'a question, before anything happens').toBe(true)
+    expect(forgotten, 'and nothing has happened yet').toBeNull()
+
+    await answer(false)
+    expect(forgotten, 'nor after saying no').toBeNull()
   })
 
   it('forgets the till the button belongs to', async () => {
@@ -107,6 +135,7 @@ describe('a till that is gone', () => {
       fireEvent.click(buttons[1]!)
       await Promise.resolve()
     })
+    await answer(true)
 
     expect(forgotten, 'the second row, not the first').toBe('the-other-one')
   })
@@ -117,6 +146,7 @@ describe('a till that is gone', () => {
       fireEvent.click(screen.getByText('This till is gone'))
       await Promise.resolve()
     })
+    await answer(true)
 
     expect(document.body.textContent).toContain('Back counter has been forgotten')
   })

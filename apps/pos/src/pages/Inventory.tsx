@@ -14,6 +14,7 @@ import { useCore, useUser } from '../core/CoreProvider'
 import { recordStockCheck } from '../core/maintenance'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { ProductHistory } from '../ui/ProductHistory'
+import { useConfirm } from '../ui/useConfirm'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 import { usePickList, Results } from '../ui/PickList'
 import { useShopChanged } from '../core/useShopChanged'
@@ -96,6 +97,7 @@ export default function Inventory() {
      reads the ledger itself, and a snapshot taken here would be one more
      thing to keep in step with it. */
   const [history, setHistory] = useState<ProductListItem | null>(null)
+  const [confirmUi, ask] = useConfirm()
   const [notice, setNotice] = useState<string | null>(null)
   const [categories, setCategories] = useState<Category[]>([])
   const [newCategory, setNewCategory] = useState('')
@@ -312,13 +314,13 @@ export default function Inventory() {
     /* Said in full, because "delete" beside a group holding two hundred items
        reads like it takes the items with it, and it does not. */
     const many = group.productCount === 1 ? '1 product' : `${group.productCount} products`
-    if (!window.confirm(
+    if (!(await ask(
       `Remove the group “${group.name}”?
 
 `
       + `Nothing is deleted: ${many} stay exactly as they are and simply stop `
       + 'being in a group. Any groups inside this one move to the top level.',
-    )) return
+    ))) return
 
     await removeCategory(db, { actorId: user.id }, group.id)
     setBrowsing('')
@@ -361,14 +363,14 @@ export default function Inventory() {
    * appearing where a live product belongs.
    */
   async function retire(p: ProductListItem) {
-    if (p.isActive && !window.confirm(
+    if (p.isActive && !(await ask(
       `Retire “${p.name}”?
 
 `
       + 'It stops appearing at the counter and on the reorder list. Nothing is '
       + 'deleted: the stock on hand stays counted, old bills still show it, and '
       + 'it can be brought back from this screen at any time.',
-    )) return
+    ))) return
 
     await setProductActive(db, { actorId: user.id }, p.id, !p.isActive)
     await refresh()
@@ -811,6 +813,7 @@ export default function Inventory() {
         </Modal>
       )}
 
+      {confirmUi}
       {history && (
         <ProductHistory
           productId={history.id}

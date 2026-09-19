@@ -15,6 +15,7 @@ import { explain, explainRefusal, explainQuarantine } from '../core/syncWords'
 import { startServing, stopServing, servingOn, type ServeInfo } from '../core/syncHost'
 import { useCore } from '../core/CoreProvider'
 import { Card, Alert } from './components'
+import { useConfirm } from './useConfirm'
 
 /**
  * Two tills in one shop.
@@ -35,6 +36,7 @@ import { Card, Alert } from './components'
 
 export function SyncCard() {
   const { db, shop } = useCore()
+  const [confirmUi, ask] = useConfirm()
   const [serving, setServing] = useState<ServeInfo | null>(null)
   const [code, setCode] = useState<string | null>(null)
   const [peers, setPeers] = useState<PeerHealth[]>([])
@@ -123,7 +125,7 @@ export function SyncCard() {
    */
   async function forget(peer: PeerHealth) {
     const who = peer.label ?? `till ${peer.deviceId.slice(0, 8)}`
-    const agreed = window.confirm(
+    const agreed = await ask(
       `Forget ${who}?\n\n`
       + 'Do this only if that machine is gone for good. Anything it had and this '
       + 'one has not seen is lost, and the counter it was billing on becomes free '
@@ -171,6 +173,7 @@ export function SyncCard() {
 
   return (
     <Card title="Two tills">
+      {confirmUi}
       {error && <Alert>{error}</Alert>}
       {notice && !error && <Alert kind="ok">{notice}</Alert>}
 

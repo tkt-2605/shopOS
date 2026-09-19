@@ -7,6 +7,7 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { SupplierWorth } from '../ui/SupplierWorth'
+import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
 
 interface Draft {
@@ -23,6 +24,7 @@ const EMPTY: Draft = { supplierId: null, name: '', phone: '', gstin: '', address
 export default function Suppliers() {
   const { db } = useCore()
   const user = useUser()
+  const [confirmUi, ask] = useConfirm()
   const canCreate = Permissions.can(user.permissions, 'supplier', 'create')
   const canWrite = Permissions.can(user.permissions, 'supplier', 'write')
   const canDelete = Permissions.can(user.permissions, 'supplier', 'delete')
@@ -85,11 +87,11 @@ export default function Suppliers() {
       return
     }
 
-    if (!window.confirm(
+    if (!(await ask(
       `Take ${supplier.name} off the list?\n\n`
       + 'Nothing is deleted: what was bought from them stays on every stock '
       + 'entry and keeps its cost. They can be brought back from this screen.',
-    )) return
+    ))) return
 
     await archiveSupplier(db, { supplierId: supplier.id, actorId: user.id })
     await refresh()
@@ -98,6 +100,7 @@ export default function Suppliers() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 980 }}>
+      {confirmUi}
       {error && <Alert>{error}</Alert>}
 
       <Card

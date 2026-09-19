@@ -60,12 +60,18 @@ describe('signing in', () => {
 })
 
 describe('getting the password wrong', () => {
+  /* Twenty-one bcrypt comparisons at cost 10, which is a little over five
+     seconds of deliberate work on an idle machine and more on a busy one.
+     The default budget is five, so this failed against a loaded laptop and
+     passed alone -- a red run that says nothing about the code, which is the
+     kind that teaches people to re-run rather than read. The cost factor is
+     the point of the test, so the budget is what moves. */
   it('never locks the account, however many times it happens', async () => {
     // The shop has to be able to open in the morning.
     for (let i = 0; i < 20; i++) await signIn('guess')
 
     expect((await signIn(PASSWORD)).ok).toBe(true)
-  })
+  }, 30_000)
 
   it('counts the attempts, so a run of them can be seen afterwards', async () => {
     await signIn('guess')

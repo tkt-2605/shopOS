@@ -8,6 +8,7 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { CustomerWorth } from '../ui/CustomerWorth'
+import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
 
 /**
@@ -52,6 +53,7 @@ export default function Customers() {
   /* The row, so the panel can open on the name that was clicked. It
      reads everything else itself. */
   const [worth, setWorth] = useState<CustomerListItem | null>(null)
+  const [confirmUi, ask] = useConfirm()
   const [draft, setDraft] = useState<Draft | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   /** Who already answers to the number being typed, said before the save. */
@@ -83,14 +85,14 @@ export default function Customers() {
       return
     }
 
-    if (!window.confirm(
+    if (!(await ask(
       `Archive ${c.name}?
 
 `
       + 'They stop appearing when searching here and at the counter. Nothing is '
       + 'deleted — their bills, their khata and their points are all kept, and '
       + 'they can be brought back from this screen.',
-    )) return
+    ))) return
 
     const result = await archiveCustomer(db, { actorId: user.id }, c.id)
     if (!result.ok) {
@@ -189,6 +191,7 @@ export default function Customers() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {confirmUi}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <input className="input" style={{ maxWidth: 340 }}
           placeholder="Search by name, phone or customer code"

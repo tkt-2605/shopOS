@@ -8,12 +8,14 @@ import { chosenRegister } from '../core/device'
 import { takeCounter } from '../core/counters'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert } from '../ui/components'
+import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
 import { ago } from '../core/syncStatus'
 
 export default function Registers() {
   const { db, reloadRegister } = useCore()
   const user = useUser()
+  const [confirmUi, ask] = useConfirm()
   const [rows, setRows] = useState<Register[]>([])
   const [deviceId, setDeviceId] = useState<string | null>(null)
   const [adding, setAdding] = useState<{ name: string; prefix: string } | null>(null)
@@ -110,7 +112,7 @@ export default function Registers() {
     setError(null)
     const holder = taken.find((t) => t.registerId === r.id)
     const who = holder?.label ?? 'another till'
-    const agreed = window.confirm(
+    const agreed = await ask(
       `${r.name} is claimed by ${who}`
       + `${holder?.at === null || holder?.at === undefined ? ', which has never said so since' : `, last seen ${ago(holder.at)}`}.\n\n`
       + 'Take it over only if that machine is not billing any more. Two tills on '
@@ -152,6 +154,7 @@ export default function Registers() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 860 }}>
+      {confirmUi}
       {error && <Alert>{error}</Alert>}
       {notice && <Alert kind="ok">{notice}</Alert>}
 
