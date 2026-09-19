@@ -82,6 +82,7 @@ export const REPLICATED: readonly RecordShape[] = [
   { table: 'doc_formats', key: 'id', lines: [] },
   { table: 'registers', key: 'id', lines: [] },
   { table: 'users', key: 'id', lines: [] },
+  { table: 'user_sessions', key: 'id', lines: [] },
   { table: 'products', key: 'id', lines: [] },
   { table: 'product_barcodes', key: 'id', lines: [] },
   { table: 'product_units', key: 'id', lines: [] },

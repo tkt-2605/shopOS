@@ -1,8 +1,9 @@
 import bcrypt from 'bcryptjs'
-import { eq, and, desc, sql } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
-import { newId } from '../ids.js'
+import { newId, derivedId } from '../ids.js'
+import { deviceId } from '../device.js'
 import { writeAudit } from '../integrity/audit.js'
 import { loadPermissions, type PermissionSet } from '../integrity/permissions.js'
 
@@ -15,6 +16,45 @@ export interface SessionUser {
   roleId: string
   roleName: string
   permissions: PermissionSet
+}
+
+/**
+ * This till's row for one user, created the first time it is needed.
+ *
+ * A sign-in is a fact about a machine, and before migration 049 it was
+ * written onto the `users` row, which replicates. Two counters switched on
+ * within one sync round of each other each raised that row's revision before
+ * either had told the other, so the merge filed a conflict saying an edit was
+ * being dropped -- every morning, over a login timestamp.
+ *
+ * The id is derived from the user and this till together, so no two tills ever
+ * write the same row and there is nothing for the merge to settle. The rows
+ * still travel: the Staff screen wants the latest sign-in anywhere in the shop
+ * and the total of the wrong passwords, and both of those are questions about
+ * the shop rather than about one counter.
+ *
+ * Returns null when this machine has no identity. `establishDevice` runs before
+ * the first sign-in and says why, but it can fail, and a till that cannot say
+ * which machine it is still has somebody typing wrong passwords at it. So the
+ * callers fall back to the `users` row, which is what they did before 049 --
+ * the shared count, the occasional conflict, and a number that is at least
+ * there. It is the better trade on a till that is already broken in a way the
+ * startup screen has reported.
+ */
+async function sessionRow(
+  tx: SqlDriver, userId: string, nowIso: string,
+): Promise<string | null> {
+  const device = deviceId()
+  if (device === null) return null
+
+  const id = await derivedId('user_sessions', userId, device)
+  await q(tx).insert(schema.userSessions)
+    .values({
+      id, userId, deviceId: device, lastLoginAt: null, failedLogins: 0,
+      createdAt: nowIso, updatedAt: nowIso,
+    })
+    .onConflictDoNothing()
+  return id
 }
 
 export type LoginResult =
@@ -64,14 +104,26 @@ export async function login(
        forty times on Tuesday" is worth being able to see. */
     await db.transaction(async (tx) => {
       /* Incremented in the database rather than from the number just read: two
-         tills signing in as the same user would otherwise both write the same
-         value and lose a count. */
-      await q(tx).update(schema.users)
-        .set({ failedLogins: sql`${schema.users.failedLogins} + 1`, updatedAt: nowIso })
-        .where(eq(schema.users.id, user.id))
+         windows on one till would otherwise both write the same value and lose
+         a count. Across two tills the same was true and the row could not fix
+         it -- last-writer-wins on a counter settles three guesses here and two
+         there at three, never five. Since 049 each till counts its own and the
+         Staff screen adds them up. */
+      const session = await sessionRow(tx, user.id, nowIso)
+      if (session === null) {
+        await q(tx).update(schema.users)
+          .set({ failedLogins: sql`${schema.users.failedLogins} + 1`, updatedAt: nowIso })
+          .where(eq(schema.users.id, user.id))
+      } else {
+        await q(tx).update(schema.userSessions)
+          .set({
+            failedLogins: sql`${schema.userSessions.failedLogins} + 1`,
+            updatedAt: nowIso,
+          })
+          .where(eq(schema.userSessions.id, session))
+      }
       await writeAudit(tx, { actorId: user.id }, {
         entity: 'users', entityId: user.id, action: 'login_failed',
-        after: { failed_logins: user.failedLogins + 1 },
       })
     })
 
@@ -79,9 +131,18 @@ export async function login(
   }
 
   await db.transaction(async (tx) => {
-    await q(tx).update(schema.users)
-      .set({ failedLogins: 0, lockedUntil: null, lastLoginAt: nowIso, updatedAt: nowIso })
-      .where(eq(schema.users.id, user.id))
+    /* Nothing on `users` any more. The row describes the shop -- who this
+       person is, what they may do -- and signing in changes none of it. */
+    const session = await sessionRow(tx, user.id, nowIso)
+    if (session === null) {
+      await q(tx).update(schema.users)
+        .set({ failedLogins: 0, lockedUntil: null, lastLoginAt: nowIso, updatedAt: nowIso })
+        .where(eq(schema.users.id, user.id))
+    } else {
+      await q(tx).update(schema.userSessions)
+        .set({ lastLoginAt: nowIso, failedLogins: 0, updatedAt: nowIso })
+        .where(eq(schema.userSessions.id, session))
+    }
     await writeAudit(tx, { actorId: user.id }, { entity: 'users', entityId: user.id, action: 'login' })
   })
 
@@ -282,23 +343,56 @@ export interface StaffMember {
   failedLogins: number
 }
 
+/**
+ * Everybody, with what the whole shop knows about them rather than this till.
+ *
+ * The two aggregates are the point of migration 049 and each answers its
+ * question better than the column it replaced. The latest sign-in is a `MAX`,
+ * not whichever till wrote last -- a slow clock used to be able to overwrite a
+ * later sign-in with an earlier one. The wrong passwords are a `SUM`, so three
+ * guesses at the front counter and two at the back read as five; under
+ * last-writer-wins they read as three.
+ *
+ * The `users` columns are the shop's shared baseline from before 049 and are
+ * never written again. They are counted once because they replicated and every
+ * till already agrees on them.
+ */
 export async function listStaff(db: SqlDriver): Promise<StaffMember[]> {
-  const rows = await q(db)
-    .select({
-      id: schema.users.id,
-      username: schema.users.username,
-      fullName: schema.users.fullName,
-      roleId: schema.users.roleId,
-      roleName: schema.roles.name,
-      isActive: schema.users.isActive,
-      lastLoginAt: schema.users.lastLoginAt,
-      failedLogins: schema.users.failedLogins,
-    })
-    .from(schema.users)
-    .innerJoin(schema.roles, eq(schema.roles.id, schema.users.roleId))
-    .orderBy(desc(schema.users.isActive), schema.users.username)
+  /* raw: two aggregates over a left-joined table, grouped, which the builder
+     cannot say without a subquery it would then have to name. */
+  const rows = await db.query<{
+    id: string; username: string; full_name: string | null; role_id: string
+    role_name: string; is_active: number
+    last_login_at: string | null; failed_logins: number
+  }>(
+    `SELECT u.id,
+            u.username,
+            u.full_name,
+            u.role_id,
+            r.name AS role_name,
+            u.is_active,
+            MAX(COALESCE(u.last_login_at, ''), COALESCE(MAX(s.last_login_at), ''))
+              AS last_login_at,
+            u.failed_logins + COALESCE(SUM(s.failed_logins), 0) AS failed_logins
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN user_sessions s ON s.user_id = u.id
+      GROUP BY u.id
+      ORDER BY u.is_active DESC, u.username`,
+  )
 
-  return rows.map((u) => ({ ...u, isActive: u.isActive === 1 }))
+  return rows.map((u) => ({
+    id: u.id,
+    username: u.username,
+    fullName: u.full_name,
+    roleId: u.role_id,
+    roleName: u.role_name,
+    isActive: u.is_active === 1,
+    /* `MAX` of two strings, and '' is what a user who has never signed in
+       anywhere comes back as. Neither column is ever written empty. */
+    lastLoginAt: u.last_login_at === '' ? null : u.last_login_at,
+    failedLogins: u.failed_logins,
+  }))
 }
 
 export async function updateUser(
@@ -361,6 +455,13 @@ export async function resetPassword(
  * were mine" and gets a clean number to watch from. Old databases can still
  * carry a `locked_until` from before the lockout was removed, and this clears
  * that too.
+ *
+ * Since 049 the count is spread across a row per till, so this clears every
+ * one of them and not just this machine's — an owner saying "those were mine"
+ * means all of them. It is the one place a till writes a row another till
+ * owns, and the one place that is right: it is a person's deliberate edit, so
+ * a conflict with a count rising somewhere else at that moment is a real
+ * disagreement rather than the manufactured kind 049 removed.
  */
 export async function unlockUser(
   db: SqlDriver,
@@ -371,6 +472,9 @@ export async function unlockUser(
     await q(tx).update(schema.users)
       .set({ failedLogins: 0, lockedUntil: null, updatedAt: nowIso })
       .where(eq(schema.users.id, input.userId))
+    await q(tx).update(schema.userSessions)
+      .set({ failedLogins: 0, updatedAt: nowIso })
+      .where(eq(schema.userSessions.userId, input.userId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'users', entityId: input.userId, action: 'update', after: { unlocked: 1 },
     })

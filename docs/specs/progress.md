@@ -9,16 +9,17 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,689 TypeScript tests** passing and **none skipped**,
-across 133 files, **122 Rust tests** passing with a clean build, typecheck clean
+State of the tree: **1,700 TypeScript tests** passing and **none skipped**,
+across 134 files, **122 Rust tests** passing with a clean build, typecheck clean
 across core, app and both bench packages, the app bundling clean, and Layer 2 of
-the test bench green in Docker. Schema at **48**.
+the test bench green in Docker. Schema at **49**.
 
 The sync work of 19 September is Row 10 below. It has since been run in the real
 app — three tills on one machine, migrated and then left talking to each other
 — and that run found a defect none of the tests could, which is migration 048 and
-the last two paragraphs of Row 10. The five LAN checks under *Verification a
-person has to do* need real machines and are what is left.
+the last two paragraphs of Row 10, and a second that is Row 11. The five LAN
+checks under *Verification a person has to do* need real machines and are what
+is left.
 
 ---
 
@@ -637,6 +638,78 @@ tills — one behind by 1, one level at 0, one `?` because it has never answered
 cannot find this one: it asserts the shop goes quiet and it never prunes, so a
 feed is never empty at the moment a head is read. Which is the argument for
 running the software, and the second time this file has had to make it.
+
+### Row 11 — a sign-in is not news, 19 September
+
+The second defect the three real tills found, and the one that was visible in
+their data rather than on their screens: four of the nine `sync_conflicts` rows
+across the three machines were the `users` row, and none of them was a
+disagreement about anything.
+
+`login` wrote `last_login_at`, `failed_logins` and `updated_at` onto the `users`
+row, and `users` replicates. Two counters switched on within one sync round of
+each other — 45 seconds, which is what opening time looks like — each raised
+that row's revision before either had told the other, and `decideRow` files a
+conflict whenever both sides changed since they last agreed. So every morning
+produced a row saying an edit was being dropped, and the edit was a login
+timestamp. Nothing is lost by that except the usefulness of the table a
+shopkeeper reads on the day a real edit *does* go missing.
+
+The first framing of this was that a fact about a machine was living in a table
+that describes the shop, and it was wrong. The Staff screen prints both columns,
+and both questions are genuinely shop-wide: when did this person last sign in
+*anywhere*, and how many wrong passwords has this account seen. Somebody working
+through guesses at the back counter is exactly what the front counter should
+show. The data should travel.
+
+What was wrong is that it travelled under a rule that does not fit it. `users`
+was carrying two kinds of column at once:
+
+- `username`, `password_hash`, `role_id`, `is_active` are edited deliberately,
+  rarely, by a person at one till. Last-writer-wins is right for them.
+- `last_login_at` wants the later of two values. LWW gives that only when the
+  clocks agree and the write order happens to match, so a till running slow can
+  overwrite a later sign-in with an earlier one and the screen moves backwards.
+- `failed_logins` is a counter, and LWW on a counter is simply wrong: three
+  guesses at the front and two at the back settle to three, never five.
+
+`auth.ts` already knew the third one. It increments in SQL rather than from the
+value it read, with a comment saying two tills signing in as the same user would
+otherwise lose a count. That reasoning is about two writers on one database;
+across two databases the merge lost the count anyway, so the `N failed` badge
+could under-report the one run of guesses it exists to show.
+
+049 gives each till its own row — `user_sessions`, keyed by the user and the
+machine together through `derivedId`, the same device as `item_prices` and
+`product_units`. No two tills ever write the same row, so there is nothing to
+merge; the single-owner property is the same one that makes
+`idx_cash_sessions_one_open` safe and that `price_lists.is_default` lacked.
+`listStaff` then reads a `MAX` and a `SUM`, which are better answers than the
+columns gave rather than merely quieter ones.
+
+**No backfill, and it turned out to be the better answer.** A row here needs
+this till's device id, and the database does not have one — `device.json` holds
+it and the backup deliberately does not carry it, which is the same fact that
+made 045 necessary. So the two `users` columns stay exactly as they are, are
+never written again, and are read as the shop's shared baseline beside the
+session rows. Every till already agrees on them because they replicated, so they
+are counted once. Zeroing them instead would have shown “never signed in”
+against every name on the morning of the upgrade.
+
+**One place a till writes a row another till owns**, and it is deliberate:
+`unlockUser` clears every session row for that user, not just this machine's,
+because an owner saying “I know about those, they were mine” means all of them.
+A conflict there is a person's edit meeting a count rising somewhere else, which
+is a real disagreement and the kind `sync_conflicts` is for.
+
+**A till that cannot say which machine it is falls back to the old behaviour.**
+`establishDevice` runs before the first sign-in and reports its own failure, but
+it can fail, and a till in that state still has somebody typing wrong passwords
+at it. The shared count and the occasional conflict beat a badge that reads zero
+while an account is being guessed at.
+
+`aSignInIsNotShopNews.test.ts` is eleven tests. Two of them — the revision and
+the feed entry — were checked by putting the old write back, and both fail.
 
 ### Pulled forward out of order
 

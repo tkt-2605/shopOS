@@ -108,6 +108,30 @@ export const users = sqliteTable('users', {
   index('idx_users_role').on(table.roleId),
 ])
 
+/**
+ * A sign-in, recorded against the till it happened on.
+ *
+ * One row per user per till, with the id derived from exactly that pair, so no
+ * two tills ever write the same row and there is nothing for the merge to
+ * settle. `users.last_login_at` and `users.failed_logins` are the shop's shared
+ * baseline from before 049 and are never written again -- see the migration for
+ * why a backfill was not possible and why that turns out to be the better
+ * answer.
+ */
+export const userSessions = sqliteTable('user_sessions', {
+  id: text().primaryKey().notNull(),
+  userId: text('user_id').notNull().references(() => users.id),
+  deviceId: text('device_id').notNull(),
+  lastLoginAt: text('last_login_at'),
+  failedLogins: integer('failed_logins').default(0).notNull(),
+  rev: integer().default(1).notNull(),
+  originId: text('origin_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_user_sessions_user').on(table.userId),
+])
+
 export const categories = sqliteTable('categories', {
   id: text().primaryKey().notNull(),
   name: text().notNull(),
