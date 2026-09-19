@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Permissions,
   supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
-  supplierPurchases,
-  type SupplierSummary, type PurchaseLine,
+  type SupplierSummary,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { SupplierWorth } from '../ui/SupplierWorth'
 import { useShopChanged } from '../core/useShopChanged'
 
 interface Draft {
@@ -28,7 +28,10 @@ export default function Suppliers() {
   const canDelete = Permissions.can(user.permissions, 'supplier', 'delete')
   const [rows, setRows] = useState<SupplierSummary[]>([])
   const [editing, setEditing] = useState<Draft | null>(null)
-  const [viewing, setViewing] = useState<{ supplier: SupplierSummary; lines: PurchaseLine[] } | null>(null)
+  /* The supplier, not a snapshot of their lines: the panel reads both the
+     per-item summary and the deliveries itself, and two loaders for one
+     screen is one of them going stale. */
+  const [viewing, setViewing] = useState<SupplierSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
 
@@ -92,9 +95,6 @@ export default function Suppliers() {
     await refresh()
   }
 
-  async function open(supplier: SupplierSummary) {
-    setViewing({ supplier, lines: await supplierPurchases(db, supplier.id) })
-  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 980 }}>
@@ -137,7 +137,7 @@ export default function Suppliers() {
                     {/* A button rather than a clickable cell: the row already
                         has Edit and Delete in the tab order, and the name was
                         the one thing in it the keyboard could not reach. */}
-                    <button className="cell-btn" onClick={() => void open(s)}>{s.name}</button>
+                    <button className="cell-btn" onClick={() => setViewing(s)}>{s.name}</button>
                     {!s.isActive && <span className="badge mute" style={{ marginLeft: 7 }}>off</span>}
                     {/* Two different things, and the badges say which: "off" is
                         not buying from them at the moment, "removed" is off the
@@ -211,29 +211,11 @@ export default function Suppliers() {
       )}
 
       {viewing && (
-        <Modal title={`${viewing.supplier.name} — deliveries`} onClose={() => setViewing(null)} wide>
-          {viewing.lines.length === 0 ? (
-            <Empty>Nothing has been received from this supplier</Empty>
-          ) : (
-            <table>
-              <thead>
-                <tr><th>Date</th><th>Entry</th><th>Item</th><th className="r">Qty</th><th className="r">Cost</th><th className="r">Amount</th></tr>
-              </thead>
-              <tbody>
-                {viewing.lines.map((l, i) => (
-                  <tr key={`${l.docNo}-${i}`}>
-                    <td>{l.postingDate}</td>
-                    <td className="num">{l.docNo}</td>
-                    <td>{l.productName}</td>
-                    <td className="r num">{(l.qty / 10_000).toLocaleString('en-IN')}</td>
-                    <td className="r"><Rupees value={l.unitCost} /></td>
-                    <td className="r"><Rupees value={l.amount} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Modal>
+        <SupplierWorth
+          supplierId={viewing.id}
+          name={viewing.name}
+          onClose={() => setViewing(null)}
+        />
       )}
     </div>
   )

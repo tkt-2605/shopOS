@@ -295,6 +295,72 @@ export async function supplierPurchases(
   return rows
 }
 
+export interface SupplierItem {
+  productId: string
+  name: string
+  /** Base units received, all time. */
+  qty: number
+  /** What those goods cost, all time. */
+  spent: Money
+  /** The rate on the most recent delivery, or null if none was recorded. */
+  lastRate: Money | null
+  /** The rate on the first, so the two together say which way it has moved. */
+  firstRate: Money | null
+  lastReceived: string
+  deliveries: number
+}
+
+/**
+ * What this supplier sends, and what they have been charging for it.
+ *
+ * The deliveries list answers "what arrived on Tuesday". This answers the
+ * question a shopkeeper actually negotiates on -- what do I buy from them, how
+ * much of it, and has the price moved -- which a list ordered by date cannot,
+ * because the two deliveries to compare are six weeks apart and forty rows from
+ * each other.
+ *
+ * First and last rate rather than a computed trend. Two numbers a person can
+ * check against their own paperwork beat one number they have to take on trust,
+ * and "is 285 to 300 a rise worth arguing about" is a judgement about this
+ * supplier that the shopkeeper is better placed to make than this query is.
+ *
+ * `MIN`/`MAX` over `posting_date` picks the rate by date rather than by rowid,
+ * so a delivery entered late lands where it belongs rather than at the end.
+ */
+export async function supplierItems(
+  db: SqlDriver,
+  supplierId: string,
+): Promise<SupplierItem[]> {
+  /* raw: the rate on the earliest and the latest delivery is a per-group
+     first and last value. SQLite has no FIRST_VALUE outside a window, and a
+     window function is not something the builder can say. */
+  return db.query<SupplierItem>(
+    `SELECT i.product_id                         AS productId,
+            MAX(p.name)                          AS name,
+            SUM(i.qty)                           AS qty,
+            CAST(ROUND(SUM(i.qty * COALESCE(i.unit_cost, 0) / 10000.0)) AS INTEGER) AS spent,
+            MAX(CASE WHEN e.posting_date = last.seen_on  THEN i.unit_cost END) AS lastRate,
+            MAX(CASE WHEN e.posting_date = first.seen_on THEN i.unit_cost END) AS firstRate,
+            MAX(e.posting_date)                  AS lastReceived,
+            COUNT(DISTINCT e.id)                 AS deliveries
+       FROM stock_entry_items i
+       JOIN stock_entries e ON e.id = i.entry_id
+       JOIN products      p ON p.id = i.product_id
+       JOIN (SELECT i2.product_id AS pid, MAX(e2.posting_date) AS seen_on
+               FROM stock_entry_items i2 JOIN stock_entries e2 ON e2.id = i2.entry_id
+              WHERE e2.supplier_id = ? AND e2.docstatus = 1
+              GROUP BY i2.product_id) last ON last.pid = i.product_id
+       JOIN (SELECT i3.product_id AS pid, MIN(e3.posting_date) AS seen_on
+               FROM stock_entry_items i3 JOIN stock_entries e3 ON e3.id = i3.entry_id
+              WHERE e3.supplier_id = ? AND e3.docstatus = 1
+              GROUP BY i3.product_id) first ON first.pid = i.product_id
+      WHERE e.supplier_id = ? AND e.docstatus = ?
+      GROUP BY i.product_id
+      ORDER BY spent DESC`,
+    [supplierId, supplierId, supplierId, SUBMITTED],
+  )
+}
+
 function toSupplier(r: Omit<Supplier, 'isActive'> & { isActive: number }): Supplier {
   return { ...r, isActive: r.isActive === 1 }
 }

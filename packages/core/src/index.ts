@@ -75,6 +75,9 @@ export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from './repo
 export { productHistory, productProfit, noCostBasis } from './repos/productHistory.js'
 export type { StockMovement, ProductProfit, NoCostBasis } from './repos/productHistory.js'
 
+export { customerProfit, customerItems } from './repos/customerHistory.js'
+export type { CustomerProfit, CustomerItem } from './repos/customerHistory.js'
+
 export {
   createReturn, submitReturn, cancelReturn, processReturn, previewReturn, listReturns,
   loadReturnDetail, returnableQty,
@@ -265,9 +268,9 @@ export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind } fr
 
 export {
   listSuppliers, supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
-  findOrCreateSupplier, supplierPurchases,
+  findOrCreateSupplier, supplierPurchases, supplierItems,
 } from './services/suppliers.js'
-export type { Supplier, SupplierSummary, SupplierResult, PurchaseLine } from './services/suppliers.js'
+export type { Supplier, SupplierSummary, SupplierResult, PurchaseLine, SupplierItem } from './services/suppliers.js'
 
 export {
   createDocument, submitDocument, cancelDocument, listDocuments, loadDocument,

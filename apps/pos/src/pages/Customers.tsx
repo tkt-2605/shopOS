@@ -7,6 +7,7 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { CustomerWorth } from '../ui/CustomerWorth'
 import { useShopChanged } from '../core/useShopChanged'
 
 /**
@@ -48,6 +49,9 @@ export default function Customers() {
   const canWrite = Permissions.can(user.permissions, 'customer', 'write')
   const [term, setTerm] = useState('')
   const [rows, setRows] = useState<CustomerListItem[]>([])
+  /* The row, so the panel can open on the name that was clicked. It
+     reads everything else itself. */
+  const [worth, setWorth] = useState<CustomerListItem | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   /** Who already answers to the number being typed, said before the save. */
@@ -219,7 +223,10 @@ export default function Customers() {
               <tr key={c.id}>
                 <td className="num" style={{ color: 'var(--ink-2)' }}>{c.code ?? '—'}</td>
                 <td>
-                  {c.name}
+                  {/* The name is the way in. A customer's worth to the shop
+                     is a question asked while looking at their name, not
+                     one reached from a menu somewhere else. */}
+                  <button className="cell-btn" onClick={() => setWorth(c)}>{c.name}</button>
                   {c.archived && <span className="badge" style={{ marginLeft: 6 }}>archived</span>}
                 </td>
                 <td className="num">{c.phone ?? '—'}</td>
@@ -352,6 +359,14 @@ export default function Customers() {
             </select>
           </Field>
         </Modal>
+      )}
+      {worth && (
+        <CustomerWorth
+          customerId={worth.id}
+          name={worth.name}
+          code={worth.code}
+          onClose={() => setWorth(null)}
+        />
       )}
     </div>
   )
