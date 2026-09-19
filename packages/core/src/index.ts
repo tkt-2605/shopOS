@@ -108,7 +108,7 @@ export type {
   CashMovementInput, OpenSessionInput, SessionSummary, CloseSessionResult, CashDirection, TenderMethod,
 } from './services/cash.js'
 
-export { createStockEntry, submitStockEntry, cancelStockEntry } from './services/stockEntry.js'
+export { createStockEntry, submitStockEntry, cancelStockEntry, directionOf, signedQty } from './services/stockEntry.js'
 export type {
   StockEntryType, StockEntryLineInput, CreateStockEntryInput,
   CreateStockEntryResult, SubmitStockEntryResult,

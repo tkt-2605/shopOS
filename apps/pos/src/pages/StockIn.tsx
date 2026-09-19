@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
+  directionOf, signedQty,
   type ProductListItem, type StockEntryType, type Supplier,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -16,11 +17,15 @@ interface Line {
   cost: string
 }
 
+/* Each note says which way the shelf moves, because that is what the list is
+   choosing between. It used to ask for the direction back: “Wastage.
+   Negative.” meant typing a minus into a box that starts at 1, having already
+   picked Wastage from this list. `signedQty` settles it now. */
 const TYPES: { id: StockEntryType; name: string; note: string }[] = [
-  { id: 'purchase', name: 'Purchase', note: 'Goods received from a supplier.' },
-  { id: 'opening', name: 'Opening stock', note: 'What was on the shelf when you started.' },
-  { id: 'adjustment', name: 'Adjustment', note: 'Correcting a count. May be negative.' },
-  { id: 'wastage', name: 'Wastage', note: 'Damaged or expired. Negative.' },
+  { id: 'purchase', name: 'Purchase', note: 'Goods received from a supplier. Stock goes up.' },
+  { id: 'opening', name: 'Opening stock', note: 'What was on the shelf when you started. Stock goes up.' },
+  { id: 'adjustment', name: 'Adjustment', note: 'Correcting a count. Type a minus to take stock off.' },
+  { id: 'wastage', name: 'Wastage', note: 'Damaged or expired. Stock goes down by what you enter.' },
 ]
 
 export default function StockIn() {
@@ -79,21 +84,18 @@ export default function StockIn() {
 
   async function submit() {
     setError(null)
-    const inflow = entryType === 'purchase' || entryType === 'opening'
-
     const entry = await createStockEntry(db, {
       entryType,
       supplierId: supplierId || null,
       supplierName: suppliers.find((x) => x.id === supplierId)?.name ?? null,
       reference: reference.trim(),
-      lines: lines.map((l) => {
-        const units = Number(l.qty) || 0
-        return {
-          productId: l.product.id,
-          qty: Quantity.fromUnits(inflow ? Math.abs(units) : units),
-          unitCost: (Money.parseMoney(l.cost) ?? 0) as never,
-        }
-      }),
+      lines: lines.map((l) => ({
+        productId: l.product.id,
+        /* As typed. `createStockEntry` applies the direction, so this screen
+           and any other way in agree without each having to remember it. */
+        qty: Quantity.fromUnits(Number(l.qty) || 0),
+        unitCost: (Money.parseMoney(l.cost) ?? 0) as never,
+      })),
       actorId: user.id,
     })
 
@@ -209,11 +211,23 @@ export default function StockIn() {
       <div className="card card-scroll">
         <table>
           <thead>
-            <tr><th>Item</th><th className="r">Quantity</th><th className="r">Unit cost</th><th className="r">Value</th><th /></tr>
+            <tr>
+              <th>Item</th>
+              <th className="r">{directionOf(entryType) === 'out' ? 'Quantity lost' : 'Quantity'}</th>
+              <th className="r">Unit cost</th><th className="r">Value</th>
+              <th className="r">On hand after</th><th />
+            </tr>
           </thead>
           <tbody>
             {lines.map((l) => {
-              const value = Math.round((Number(l.qty) || 0) * (Money.parseMoney(l.cost) ?? 0))
+              const typed = Number(l.qty) || 0
+              const value = Math.round(Math.abs(typed) * (Money.parseMoney(l.cost) ?? 0))
+              /* The answer rather than the convention. Whatever the sign rule
+                 is, a shopkeeper can see what the shelf will say afterwards
+                 before pressing save. */
+              const after = Quantity.addQty(
+                l.product.qtyOnHand, signedQty(entryType, Quantity.fromUnits(typed)),
+              )
               return (
                 <tr key={l.key}>
                   <td>{l.product.name}<div className="src">on hand {Quantity.formatQty(l.product.qtyOnHand)} {l.product.baseUnit}</div></td>
@@ -226,13 +240,14 @@ export default function StockIn() {
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cost: e.target.value } : x))} />
                   </td>
                   <td className="r"><Rupees value={value} /></td>
+                  <td className="r num">{Quantity.formatQty(after)} {l.product.baseUnit}</td>
                   <td className="r">
                     <button className="btn ghost sm" onClick={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}>✕</button>
                   </td>
                 </tr>
               )
             })}
-            {lines.length === 0 && <tr><td colSpan={5}><Empty>Nothing added yet</Empty></td></tr>}
+            {lines.length === 0 && <tr><td colSpan={6}><Empty>Nothing added yet</Empty></td></tr>}
           </tbody>
         </table>
       </div>
