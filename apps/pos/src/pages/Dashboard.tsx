@@ -3,6 +3,8 @@ import { Money, Quantity, businessDate, totalOutstandingAll, type SqlDriver } fr
 import { useCore } from '../core/CoreProvider'
 import { lastStockCheck, type StockCheck } from '../core/maintenance'
 import { Stat, Card, Empty, Alert, Rupees } from '../ui/components'
+import { useShopChanged } from '../core/useShopChanged'
+import { Completeness } from '../ui/Completeness'
 
 interface Snapshot {
   todaySales: number
@@ -18,11 +20,16 @@ export default function Dashboard() {
   const [snap, setSnap] = useState<Snapshot | null>(null)
 
   useEffect(() => { void load(db).then(setSnap) }, [db])
+  // The one screen whose whole point is today's numbers.
+  useShopChanged(() => { void load(db).then(setSnap) })
 
   if (!snap) return <Empty>Loading…</Empty>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Above the numbers rather than under them: a qualification read after
+          the figure has already been believed is not a qualification. */}
+      <Completeness />
       <div className="stat-row">
         <Stat label="Sales today" value={<Rupees value={snap.todaySales} />} sub={`${snap.todayBills} bills`} />
         <Stat label="Outstanding credit" value={<Rupees value={snap.outstanding} />} sub="across all customers" />

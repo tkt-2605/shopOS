@@ -5,6 +5,8 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { useShopChanged } from '../core/useShopChanged'
+import { Completeness } from '../ui/Completeness'
 
 const NOTES = [500, 200, 100, 50, 20, 10, 5, 2, 1]
 
@@ -47,6 +49,8 @@ export default function CashCounter() {
   }, [db, registerId])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   async function openDrawer() {
     await getOrOpenSession(db, {
@@ -113,6 +117,10 @@ export default function CashCounter() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* A drawer is counted against what the till thinks it took. If the back
+          counter's card payments have not arrived, the variance is somebody
+          else's sales and not a shortfall in this drawer. */}
+      <Completeness />
       <div style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
         {registerName} · this machine's drawer
       </div>

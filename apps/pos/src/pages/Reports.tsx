@@ -7,6 +7,8 @@ import { useCore } from '../core/CoreProvider'
 import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'
 import { saveFile } from '../core/exportFile'
 import { reportPdf } from '../core/pdf'
+import { useShopChanged } from '../core/useShopChanged'
+import { Completeness } from '../ui/Completeness'
 
 type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer'
 
@@ -81,6 +83,8 @@ export default function Reports() {
   }, [db, range])
 
   useEffect(() => { void load() }, [load])
+  // A report of yesterday's takings is wrong the moment the other till syncs one.
+  useShopChanged(load)
 
   /* A shop that switches to composition while looking at the GST tab would
      otherwise be left on a tab that is no longer offered, with no way back to
@@ -178,6 +182,10 @@ export default function Reports() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {error && <Alert>{error}</Alert>}
       {notice && <Alert kind="ok">{notice}</Alert>}
+      {/* What these figures are figures of. GSTR-1 is filed off the tax tab
+          below, and until this line the screen said nothing at all about
+          whether the other counter's bills were in it. */}
+      <Completeness />
 
       <div className="filter-bar">
         <DateRangePicker value={range} onChange={setRange} />
