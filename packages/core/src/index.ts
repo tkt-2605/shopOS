@@ -290,3 +290,29 @@ export * as Totals from './domain/billTotals.js'
 export type { ComputedTotals, LineTotals, TotalsLine } from './domain/billTotals.js'
 export { pricingContextFor, resolveLinePrice } from './repos/pricing.js'
 export type { BillPricingContext } from './repos/pricing.js'
+
+export {
+  TIERS, isTier, GRACE_DAYS, GATED, verifyToken, readTokenUnverified, stateOf,
+  allows, overTillLimit, encodePayload, toBase64Url, fromBase64Url,
+} from './domain/licence.js'
+export type {
+  Tier, LicenceToken, LicenceState, GatedFeature, SigningKey,
+  VerifyFailure, VerifyResult,
+} from './domain/licence.js'
+
+export {
+  entitlement, entitled, installToken, removeToken, storedToken, tillOverage,
+  witnessClock, UNLICENSED, CLOCK_SLACK_MS,
+} from './services/licence.js'
+export type { Entitlement, EntitlementOptions, InstallResult } from './services/licence.js'
+
+export {
+  canInstall, dueForCheck, updateWords, CHECK_EVERY_MS,
+} from './services/update.js'
+export type {
+  AvailableUpdate, UpdateSource, UpdateStage, CanInstall, InstallRefusal,
+} from './services/update.js'
+
+export { describeSchema } from './db/describe.js'
+export type { SchemaDescription, TableShape, ColumnShape } from './db/describe.js'
+export { renderSchemaDoc } from './db/schemaDoc.js'
