@@ -480,8 +480,22 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
   const [saleUnit, setSaleUnit] = useState('')
   const [ladder, setLadder] = useState<LadderRow[]>([])
   const [error, setError] = useState<string | null>(null)
+  /**
+   * Every special price in the shop, for the list below.
+   *
+   * Held separately from `rates`, which is one customer's. Before this, the
+   * only way to find out whether anybody had a special price on anything was
+   * to search customers one at a time and look — so a rate agreed two years
+   * ago by somebody who has left was invisible until it appeared on a bill.
+   */
+  const [everyone, setEveryone] = useState<CustomerPrice[]>([])
+
+  const loadEveryone = useCallback(async () => {
+    setEveryone(await listCustomerPrices(db, {}))
+  }, [db])
 
   useEffect(() => { void listPriceLists(db).then(setLists) }, [db])
+  useEffect(() => { void loadEveryone() }, [loadEveryone])
 
   useEffect(() => {
     const id = setTimeout(async () => {
@@ -498,12 +512,20 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
   }, [db, productTerm])
 
   async function choose(customer: CustomerListItem) {
-    setChosen(customer)
+    await chooseById(customer.id, customer.name)
+  }
+
+  /**
+   * By id and name, so the list below can open a customer it already knows
+   * without a second round trip to look one up it has the name of.
+   */
+  async function chooseById(id: string, name: string) {
+    setChosen({ id, name } as CustomerListItem)
     setResults([])
     setTerm('')
-    setRates(await listCustomerPrices(db, { customerId: customer.id }))
+    setRates(await listCustomerPrices(db, { customerId: id }))
     const row = await db.get<{ price_list_id: string | null }>(
-      `SELECT price_list_id FROM customers WHERE id = ?`, [customer.id],
+      `SELECT price_list_id FROM customers WHERE id = ?`, [id],
     )
     setOnList(row?.price_list_id ?? '')
   }
@@ -546,16 +568,33 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
     setPicked(null)
     setLadder([])
     setRates(await listCustomerPrices(db, { customerId: chosen.id }))
+    await loadEveryone()
   }
 
   async function drop(id: string) {
     if (!chosen) return
     await removeCustomerPrice(db, { actorId: user.id }, id)
     setRates(await listCustomerPrices(db, { customerId: chosen.id }))
+    await loadEveryone()
   }
 
   const box = useRef<HTMLInputElement>(null)
   const itemBox = useRef<HTMLInputElement>(null)
+
+  /**
+   * The same rows, gathered under the customer they belong to and sorted by
+   * name — which is the order somebody looking for "did we give Kumar a
+   * rate?" reads in. `listCustomerPrices` already orders within a customer.
+   */
+  const byCustomer = useMemo(() => {
+    const groups = new Map<string, { id: string; name: string; rates: CustomerPrice[] }>()
+    for (const rate of everyone) {
+      const found = groups.get(rate.customerId)
+      if (found) found.rates.push(rate)
+      else groups.set(rate.customerId, { id: rate.customerId, name: rate.customerName, rates: [rate] })
+    }
+    return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [everyone])
 
   const customerPick = usePickList({
     count: results.length,
@@ -585,6 +624,44 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
           </div>
         </Results>
       </Card>
+
+      {!chosen && (
+        <Card title={`Special prices — ${everyone.length} across ${byCustomer.length} customer${byCustomer.length === 1 ? '' : 's'}`}>
+          {byCustomer.length === 0 ? (
+            <Empty>No customer has a price of their own yet. Search for one above to give them one.</Empty>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer</th><th>Item</th><th>Unit</th>
+                  <th className="r">From qty</th><th className="r">Rate</th><th>Until</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byCustomer.map((group) => group.rates.map((r, i) => (
+                  <tr key={r.id}>
+                    {/* The name once per customer rather than once per row:
+                        a customer with nine special items is one agreement,
+                        and nine repetitions of their name reads as nine. */}
+                    <td>
+                      {i === 0 && (
+                        <button className="btn ghost sm" onClick={() => void chooseById(group.id, group.name)}>
+                          {group.name}
+                        </button>
+                      )}
+                    </td>
+                    <td>{r.productName}</td>
+                    <td>{r.saleUnit ?? ''}</td>
+                    <td className="r num">{r.minQty > 0 ? Quantity.formatQty(r.minQty) : '—'}</td>
+                    <td className="r"><Rupees value={r.rate} /></td>
+                    <td className="num">{r.validTo ?? ''}</td>
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
 
       {chosen && (
         <Card title={chosen.name}>

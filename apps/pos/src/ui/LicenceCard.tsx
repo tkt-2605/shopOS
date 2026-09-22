@@ -150,10 +150,10 @@ export function LicenceCard() {
             onFocus={(e) => e.currentTarget.select()}
           />
           <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            <button type="button" onClick={() => { void copy() }}>Copy</button>
-            <button type="button" onClick={() => { void save() }}>Save to a file</button>
+            <button type="button" className="btn" onClick={() => { void copy() }}>Copy</button>
+            <button type="button" className="btn" onClick={() => { void save() }}>Save to a file</button>
             <div className="spacer" />
-            <button type="button" className="ghost" onClick={() => { void remove() }}>Remove</button>
+            <button type="button" className="btn ghost" onClick={() => { void remove() }}>Remove</button>
           </div>
         </Field>
       )}
@@ -173,7 +173,7 @@ export function LicenceCard() {
         <div className="row" style={{ gap: 8, marginTop: 8 }}>
           <button
             type="button"
-            className="primary"
+            className="btn primary"
             disabled={busy || typed.trim() === ''}
             onClick={() => { void install() }}
           >

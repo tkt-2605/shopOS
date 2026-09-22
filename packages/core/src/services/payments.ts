@@ -807,7 +807,10 @@ export async function writeOff(
 }
 
 export type OpeningBalanceResult =
-  | { ok: true; billId: string; docNo: string }
+  /** They owed the shop. Recorded as a bill; `billId` is it. */
+  | { ok: true; direction: 'owed'; billId: string; docNo: string }
+  /** The shop was holding theirs. Recorded as a receipt nothing points at. */
+  | { ok: true; direction: 'held'; paymentId: string; docNo: string }
   | { ok: false; code: 'INVALID_AMOUNT' }
   | { ok: false; code: 'ALREADY_SET'; docNo: string }
 
@@ -839,7 +842,21 @@ export async function recordOpeningBalance(
     now?: Date
   },
 ): Promise<OpeningBalanceResult> {
-  if (input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
+  if (input.amount === 0) return { ok: false, code: 'INVALID_AMOUNT' }
+
+  /* A balance carried over can point either way, and the two are different
+     kinds of thing rather than one number with a sign.
+
+     Positive is a receivable: they owed the shop, and it becomes a bill,
+     because a bill is the only thing a payment can be allocated against.
+
+     Negative is a liability: the shop was holding *their* money before any of
+     this started -- an advance, a deposit, an overpayment in the old book --
+     and it becomes a receipt that no allocation points at, which is exactly
+     what `advanceCredit` reads. The argument against storing it as a negative
+     receivable is on that function: "Balance due -490.00" reads as an error in
+     the arithmetic rather than as money the shop has to hand back. */
+  if (input.amount < 0) return recordOpeningAdvance(db, input)
 
   const [existing] = await q(db)
     .select({ docNo: schema.bills.docNo })
@@ -904,7 +921,110 @@ export async function recordOpeningBalance(
     })
   })
 
-  return { ok: true, billId, docNo }
+  return { ok: true, direction: 'owed', billId, docNo }
+}
+
+/** The series an opening advance is numbered in, for a person reading a statement. */
+const OPENING_ADVANCE_PREFIX = 'OA'
+
+/**
+ * The marker a second opening advance is spotted by.
+ *
+ * In `reference` rather than parsed back out of the document number. The
+ * number is `MARK + registerPrefix + '/' + fy + '/' + seq` (`numbering.ts`),
+ * so a `LIKE 'OA%'` misses it by exactly the one leading letter -- which is
+ * how the first version of this shipped a guard that never fired. A column
+ * this code sets and reads, compared with `=`, cannot drift with a format.
+ */
+const OPENING_ADVANCE_REF = 'opening-balance'
+
+/**
+ * Money the shop was already holding for this customer when the books moved.
+ *
+ * A receipt with no allocations, which is precisely what an advance is
+ * everywhere else in this file. Two things differ from an ordinary receipt and
+ * both matter:
+ *
+ * **`method` is `adjustment` and no cash movement is posted.** The money
+ * arrived before ShopOS existed. Putting it in today's drawer would make the
+ * evening count short by exactly this amount, and the cashier would be told
+ * they had lost it.
+ *
+ * **The posting date is the day the old book closed**, not today, so the
+ * statement shows it where it happened.
+ */
+async function recordOpeningAdvance(
+  db: SqlDriver,
+  input: {
+    customerId: string
+    amount: Money
+    asOf?: string
+    note?: string
+    registerId: string
+    registerPrefix?: string
+    actorId: string
+    now?: Date
+  },
+): Promise<OpeningBalanceResult> {
+  const held = Math.abs(input.amount) as Money
+
+  /* raw: `reference` is not on the query builder's path for this table and
+     this is a one-column existence check. See `OPENING_ADVANCE_REF` for why
+     the marker is a column rather than a prefix on the document number. */
+  const existing = await db.get<{ doc_no: string }>(
+    `SELECT doc_no FROM payment_entries
+      WHERE customer_id = ? AND party_type = 'customer'
+        AND docstatus = ? AND reference = ?
+      LIMIT 1`,
+    [input.customerId, SUBMITTED, OPENING_ADVANCE_REF],
+  )
+  if (existing) return { ok: false, code: 'ALREADY_SET', docNo: existing.doc_no }
+
+  const now = input.now ?? new Date()
+  const nowIso = now.toISOString()
+  const postingDate = input.asOf ?? businessDate(now)
+  const paymentId = newId()
+  let docNo = ''
+
+  await db.transaction(async (tx) => {
+    const [at] = await q(tx)
+      .select({ prefix: schema.registers.prefix })
+      .from(schema.registers)
+      .where(eq(schema.registers.id, input.registerId))
+
+    docNo = await nextDocNo(
+      tx, 'payment',
+      input.registerPrefix ?? `${OPENING_ADVANCE_PREFIX}${at?.prefix ?? ''}`,
+      now,
+    )
+
+    await q(tx).insert(schema.paymentEntries).values({
+      id: paymentId,
+      docNo,
+      docstatus: SUBMITTED,
+      partyType: 'customer',
+      customerId: input.customerId,
+      postingDate,
+      method: 'adjustment',
+      amount: held,
+      reference: OPENING_ADVANCE_REF,
+      notes: input.note ?? 'Balance carried over — money already held',
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
+
+    // No `payment_allocations` rows on purpose: what nothing points at is the
+    // advance, and `advanceCredit` reads exactly that.
+
+    await writeAudit(tx, { actorId: input.actorId }, {
+      entity: 'payment_entries', entityId: paymentId, action: 'submit',
+      docstatusTo: SUBMITTED,
+      after: { kind: 'opening_advance', amount: held, posting_date: postingDate },
+    })
+  })
+
+  return { ok: true, direction: 'held', paymentId, docNo }
 }
 
 export type StatementKind =

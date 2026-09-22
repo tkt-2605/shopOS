@@ -580,8 +580,12 @@ function AccountPanel({
 
         {tab === 'statement' && statement && (
           <>
+            {/* The hint belongs under the row, not under one field. A `Field`
+                with a hint is a line taller than one without, and in a
+                `flex-end` row that lifted the From box a whole line above the
+                To box beside it — which is what this looked like until now. */}
             <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-              <Field label="From" hint="Blank means the whole account.">
+              <Field label="From">
                 <input className="input num" type="date" value={from}
                   onChange={(e) => setFrom(e.target.value)} />
               </Field>
@@ -595,6 +599,9 @@ function AccountPanel({
                 setFrom(addDays(today, -30))
                 setTo(today)
               }}>Last 30 days</button>
+            </div>
+            <div className="hint" style={{ marginTop: 6 }}>
+              Blank means the whole account.
             </div>
 
             <table>
@@ -762,8 +769,17 @@ function OpeningBalance({
 
   async function save() {
     if (!chosen) { setError('Choose a customer first.'); return }
+    /* Signed on purpose. A shop moving off a paper book has both kinds of
+       person in it: ones who owe it money, and ones whose money it is
+       holding. Refusing the second used to mean either typing it in as a
+       fake bill -- which makes the shop look as though it sold something it
+       did not -- or leaving it out and charging them again for goods they
+       had already paid for. */
     const value = Money.parseMoney(amount)
-    if (value === null || value <= 0) { setError('Enter an amount greater than zero.'); return }
+    if (value === null || value === 0) {
+      setError('Enter an amount. Put a minus in front of it if the shop is holding their money.')
+      return
+    }
 
     const result = await recordOpeningBalance(db, {
       customerId: chosen.id,
@@ -777,16 +793,22 @@ function OpeningBalance({
       setError(
         result.code === 'ALREADY_SET'
           ? `${chosen.name} already has an opening balance (${result.docNo}). Cancel that first from the Bills screen.`
-          : 'Enter an amount greater than zero.',
+          : 'Enter an amount. Put a minus in front of it if the shop is holding their money.',
       )
       return
     }
-    await onDone(`${result.docNo} — ${chosen.name} opens owing ${Money.formatWithSymbol(value)}.`)
+
+    const size = Money.formatWithSymbol(Math.abs(value) as never)
+    await onDone(
+      result.direction === 'owed'
+        ? `${result.docNo} — ${chosen.name} opens owing ${size}.`
+        : `${result.docNo} — the shop opens holding ${size} of ${chosen.name}'s.`,
+    )
   }
 
   return (
     <Modal
-      title="What they already owed"
+      title="What was owed before"
       onClose={onClose}
       footer={<>
         <button className="btn" onClick={onClose}>Cancel</button>
@@ -832,12 +854,21 @@ function OpeningBalance({
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label="Amount owed">
-          <input className="input num" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <Field label="Amount">
+          <input className="input num" value={amount} placeholder="0.00"
+            onChange={(e) => setAmount(e.target.value)} />
         </Field>
         <Field label="As at" hint="Blank means today.">
           <input className="input num" type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} />
         </Field>
+      </div>
+
+      {/* Said in the form, not in a validation message afterwards. A minus
+          sign nobody knows about is a feature nobody uses. */}
+      <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+        A plain amount means <strong>they owed the shop</strong>. Put a minus in front of it
+        — <span className="num">-500</span> — if the shop was already{' '}
+        <strong>holding their money</strong>, from an advance or an overpayment in the old book.
       </div>
 
       <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
