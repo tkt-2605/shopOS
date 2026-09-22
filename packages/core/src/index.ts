@@ -270,6 +270,7 @@ export {
   listSuppliers, supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
   findOrCreateSupplier, supplierPurchases, supplierItems, setSupplierOpening,
 } from './services/suppliers.js'
+export type { SupplierOrder } from './services/suppliers.js'
 export type {
   Supplier, SupplierSummary, SupplierResult, PurchaseLine, SupplierItem, OpeningResult,
 } from './services/suppliers.js'
@@ -333,3 +334,10 @@ export {
 export type {
   CustomerPlan, PlannedCustomer, CustomerRowProblem, CustomerImportResult,
 } from './services/customerImport.js'
+
+export {
+  planSupplierImport, applySupplierImport, exportSuppliers, SUPPLIER_COLUMNS,
+} from './services/supplierImport.js'
+export type {
+  SupplierPlan, PlannedSupplier, SupplierRowProblem,
+} from './services/supplierImport.js'

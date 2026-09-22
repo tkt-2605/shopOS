@@ -1,4 +1,4 @@
-import { eq, ne, and, isNull, isNotNull, desc, count, max, sql } from 'drizzle-orm'
+import { eq, ne, and, isNull, isNotNull, asc, desc, count, max, sql, type SQL } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import type { Money } from '../money.js'
 import { q, schema } from '../db/q.js'
@@ -70,10 +70,29 @@ export async function listSuppliers(db: SqlDriver, includeInactive = false): Pro
   return rows.map(toSupplier)
 }
 
+/**
+ * How the supplier list comes back.
+ *
+ * Decided by the query, the same as `CustomerOrder` -- and for the same
+ * reason, even though this list is rarely long enough for it to bite: a shop
+ * has forty suppliers, not four thousand, but `purchased` and `owed` are both
+ * computed columns, and sorting them in the screen would mean the screen
+ * recomputing money the database already worked out.
+ */
+export type SupplierOrder =
+  /** Alphabetical. The default, and what a picker wants. */
+  | 'name'
+  /** Most owed first -- who to pay. Negative balances last. */
+  | 'owed'
+  /** Most bought from, ever. Who the shop actually depends on. */
+  | 'bought'
+  /** Longest since a delivery. Who has gone quiet. */
+  | 'quietest'
+
 /** The list with what has actually been bought, for the suppliers screen. */
 export async function supplierSummaries(
   db: SqlDriver,
-  opts: { includeArchived?: boolean } = {},
+  opts: { includeArchived?: boolean; order?: SupplierOrder } = {},
 ): Promise<SupplierSummary[]> {
   const rows = await q(db)
     .select({
@@ -99,7 +118,7 @@ export async function supplierSummaries(
     ))
     .where(and(...(opts.includeArchived ? [] : [isNull(schema.suppliers.deletedAt)])))
     .groupBy(schema.suppliers.id)
-    .orderBy(schema.suppliers.name)
+    .orderBy(...supplierOrderFor(opts.order ?? 'name'))
 
   return rows.map((r) => ({
     ...toSupplier(r),
@@ -168,6 +187,34 @@ export async function setSupplierOpening(
   })
 
   return { ok: true, amount: input.amount }
+}
+
+/**
+ * The ORDER BY for a listing order.
+ *
+ * Name is the tiebreak in every case, so two suppliers owed the same amount
+ * do not swap places between one load and the next.
+ */
+function supplierOrderFor(order: SupplierOrder): SQL[] {
+  switch (order) {
+    case 'owed':
+      return [desc(schema.suppliers.openingBalance), asc(schema.suppliers.name)]
+    case 'bought':
+      /* raw: the same per-entry subquery the SELECT sums, because an alias
+         from the projection is not addressable in ORDER BY through the
+         builder. If one changes the other must. */
+      return [
+        desc(sql`COALESCE(SUM((
+          SELECT COALESCE(SUM(CAST(ROUND(i.qty * i.unit_cost / 10000.0) AS INTEGER)), 0)
+            FROM stock_entry_items i WHERE i.entry_id = stock_entries.id)), 0)`),
+        asc(schema.suppliers.name),
+      ]
+    case 'quietest':
+      // Nulls first: a supplier nothing has ever come from is the quietest.
+      return [asc(sql`COALESCE(MAX(stock_entries.posting_date), '')`), asc(schema.suppliers.name)]
+    case 'name':
+      return [asc(schema.suppliers.name)]
+  }
 }
 
 export type SupplierResult =

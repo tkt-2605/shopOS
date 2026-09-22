@@ -3,9 +3,11 @@ import {
   Permissions,
   supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
   setSupplierOpening, Money,
+  type SupplierOrder,
   type SupplierSummary,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { SupplierFile } from '../ui/CatalogueFile'
 import { Card, Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { SupplierWorth } from '../ui/SupplierWorth'
 import { useConfirm } from '../ui/useConfirm'
@@ -54,14 +56,18 @@ export default function Suppliers() {
     await refresh()
   }
   const [showArchived, setShowArchived] = useState(false)
+  /* In the query, not over the rows: `owed` and `bought` are both computed
+     columns, and sorting them here would mean the screen recomputing money
+     the database already worked out. */
+  const [order, setOrder] = useState<SupplierOrder>('name')
   /** The supplier whose carried-over balance is being set, and the typed figure. */
   const [opening, setOpening] = useState<SupplierSummary | null>(null)
   const [openingAmount, setOpeningAmount] = useState('')
   const [openingAsOf, setOpeningAsOf] = useState('')
 
   const refresh = useCallback(async () => {
-    setRows(await supplierSummaries(db, { includeArchived: showArchived }))
-  }, [db, showArchived])
+    setRows(await supplierSummaries(db, { includeArchived: showArchived, order }))
+  }, [db, showArchived, order])
 
   useEffect(() => { void refresh() }, [refresh])
   // And again whenever the other till sends something this list shows.
@@ -136,16 +142,31 @@ export default function Suppliers() {
           add up per vendor instead of scattering across three spellings of the same name.
         </div>
 
-        <label style={{
-          fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 5,
-          alignItems: 'center', marginBottom: 10,
-        }}>
-          <input
-            type="checkbox" checked={showArchived}
-            onChange={(e) => setShowArchived(e.target.checked)}
-          />
-          Show the ones taken off the list
-        </label>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+          <select
+            className="input" style={{ maxWidth: 190 }} value={order}
+            aria-label="Sort the list"
+            onChange={(e) => setOrder(e.target.value as SupplierOrder)}
+          >
+            <option value="name">By name</option>
+            <option value="owed">Most owed first</option>
+            <option value="bought">Most bought from</option>
+            <option value="quietest">Quietest first</option>
+          </select>
+
+          <label style={{
+            fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 5, alignItems: 'center',
+          }}>
+            <input
+              type="checkbox" checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            />
+            Show the ones taken off the list
+          </label>
+
+          <span style={{ flex: 1 }} />
+          {canWrite && <SupplierFile onDone={refresh} />}
+        </div>
 
         <div className="card card-scroll">
           <table>
