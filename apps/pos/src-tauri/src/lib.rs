@@ -30,7 +30,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            /* `paths::data_dir` rather than `app_data_dir` directly, because
+               it is the one place that knows about `--shop`. This line used to
+               reach past it, and a second company started with `--shop` would
+               have put its device identity, backups and attachments in its own
+               folder while still opening the *first* company's database --
+               two sets of books, one file, and no sign anything was wrong
+               until the invoice numbers collided. */
+            let dir = paths::data_dir(&app.handle().clone())
+                .map_err(std::io::Error::other)?;
             std::fs::create_dir_all(&dir)?;
             std::fs::create_dir_all(dir.join("backups"))?;
             std::fs::create_dir_all(dir.join("attachments"))?;
@@ -38,6 +46,9 @@ pub fn run() {
             // The first thing that can write anything down, and therefore the
             // first thing done with a folder to write it in.
             log::open(&dir);
+            if let Some(shop) = paths::shop_slug() {
+                log::write("info", "startup", &format!("running shop \"{shop}\""));
+            }
 
             // Order matters here and nowhere else in the program. A staged
             // restore has to be applied while nothing holds a handle on the
@@ -134,6 +145,7 @@ pub fn run() {
             restore::restore_report,
             restore::restore_abandon,
             version::app_version,
+            version::shops_on_this_machine,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shopos");

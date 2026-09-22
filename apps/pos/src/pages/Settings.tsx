@@ -16,7 +16,7 @@ import {
 } from '../core/backup'
 import { lastRestore, inspectBackup, type RestoreReport, type RestoreCheck } from '../core/restore'
 import { writeDiagnosticsBundle } from '../core/diagnostics'
-import { appVersion, versionLine, type AppVersion } from '../core/version'
+import { appVersion, versionLine, shopLine, type AppVersion } from '../core/version'
 import { Card, Field, Alert } from '../ui/components'
 import { SyncCard } from '../ui/SyncCard'
 import { LicenceCard } from '../ui/LicenceCard'
@@ -773,7 +773,7 @@ export default function Settings() {
           down a phone: "which version are you on" has had no answer until now
           except asking the shopkeeper to find an installer they downloaded. */}
       <div style={{ fontSize: 12, color: 'var(--ink-3)', padding: '2px 2px 8px' }}>
-        ShopOS {versionLine(version)}
+        ShopOS {versionLine(version)}{version?.shop ? ` · ${shopLine(version)}` : ''}
       </div>
 
     </div>

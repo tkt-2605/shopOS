@@ -21,6 +21,8 @@ use crate::db::DbState;
 pub struct AppVersion {
     version: String,
     schema: Option<i64>,
+    /// Which company's books this window has open, or null for the original.
+    shop: Option<String>,
 }
 
 #[tauri::command]
@@ -33,5 +35,18 @@ pub fn app_version(app: AppHandle, db: State<'_, DbState>) -> AppVersion {
            without a database would go missing exactly when somebody is reading
            it down a phone line. */
         schema: db.get().ok().and_then(|d| d.user_version().ok()),
+        /* On the version line on purpose. A person running two companies has
+           two identical windows, and the question "which one am I in" is
+           asked in exactly the situation this line already exists for. */
+        shop: crate::paths::shop_slug(),
     }
+}
+
+/// Which companies this machine has books for, beside the original.
+///
+/// For a screen that offers to open another. Empty on every machine that has
+/// never used `--shop`, which is all of them today.
+#[tauri::command]
+pub fn shops_on_this_machine(app: AppHandle) -> Result<Vec<String>, String> {
+    crate::paths::named_shops(&app)
 }

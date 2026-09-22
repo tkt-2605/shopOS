@@ -13,7 +13,7 @@ import { ChangePassword } from './ui/ChangePassword'
 import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
-import { appVersion, versionLine, type AppVersion } from './core/version'
+import { appVersion, versionLine, shopLine, type AppVersion } from './core/version'
 import { ICONS, BrandMark } from './ui/icons'
 import { AdminGate } from './ui/AdminGate'
 import { CounterGate } from './ui/CounterGate'
@@ -377,6 +377,10 @@ function Login() {
 
 function Shell() {
   const { user, setUser, shopName, registerName } = useCore()
+  /* Which set of books this window has open. Null on every machine that has
+     one company, which is all of them until somebody passes `--shop`. */
+  const [slot, setSlot] = useState<AppVersion | null>(null)
+  useEffect(() => { void appVersion().then(setSlot) }, [])
   const pages = Permissions.visiblePages(user!.permissions)
   const [changingPassword, setChangingPassword] = useState(false)
   const [current, setCurrent] = useState<Page>(
@@ -402,7 +406,14 @@ function Shell() {
           <div className="brand-mark"><BrandMark /></div>
           <div style={{ minWidth: 0 }}>
             <div className="brand-name">{shopName}</div>
-            <div className="brand-sub">{registerName || 'No counter'}</div>
+            <div className="brand-sub">
+              {registerName || 'No counter'}
+              {/* Two companies on one machine are two identical windows. The
+                  shop's own name above usually tells them apart; this is for
+                  when it does not, and for whoever is reading it down a phone
+                  line. Absent entirely on a one-company machine. */}
+              {slot?.shop != null && <> · {shopLine(slot)}</>}
+            </div>
           </div>
         </div>
 

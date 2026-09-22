@@ -24,3 +24,6 @@ __pycache__/
 # and printed bills that name real customers. The procedure says which files are
 # safe to commit; the default is that they are not.
 docs/specs/evidence/layer3-*/
+
+# Virtual tills started by hand for trying two shops against each other.
+tills/

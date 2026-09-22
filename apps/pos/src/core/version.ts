@@ -13,6 +13,14 @@ export interface AppVersion {
   version: string
   /** The migration the database has been brought up to, or null if unreadable. */
   schema: number | null
+  /**
+   * Which company's books this window has open, or null for the original one.
+   *
+   * Null on every machine that has never been started with `--shop`, which is
+   * all of them today. See `paths.rs` for why a second company is a second
+   * database rather than a column.
+   */
+  shop: string | null
 }
 
 export async function appVersion(): Promise<AppVersion | null> {
@@ -30,4 +38,16 @@ export async function appVersion(): Promise<AppVersion | null> {
 export function versionLine(v: AppVersion | null): string {
   if (!v) return 'version unknown'
   return `${v.version} · schema ${v.schema ?? 'unknown'}`
+}
+
+/**
+ * The company this window is billing for, when it is not the original.
+ *
+ * Empty for a single-company machine, which is why this is a separate
+ * function rather than another clause on the version line: a shop with one
+ * set of books must not be shown a word it has no use for, and a shop with
+ * two must be able to tell the windows apart without opening a menu.
+ */
+export function shopLine(v: AppVersion | null): string {
+  return v?.shop == null ? '' : `Books: ${v.shop}`
 }
