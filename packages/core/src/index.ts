@@ -326,3 +326,10 @@ export {
 export type {
   ImportPlan, PlannedRow, ImportResult, ImportAction, RowProblem,
 } from './services/import.js'
+
+export {
+  planCustomerImport, applyCustomerImport, exportCustomers, CUSTOMER_COLUMNS,
+} from './services/customerImport.js'
+export type {
+  CustomerPlan, PlannedCustomer, CustomerRowProblem, CustomerImportResult,
+} from './services/customerImport.js'

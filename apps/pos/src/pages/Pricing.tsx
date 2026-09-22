@@ -4,7 +4,7 @@ import {
   listItemPrices, setItemPrice, removeItemPrice,
   listCustomerPrices, removeCustomerPrice, setCustomerPriceList,
   setCustomerLadder, customerLadderFor, listUnits, perBaseUnit, Ladder,
-  searchProducts, searchCustomers, Money, Quantity, Permissions,
+  searchProducts, searchCustomers, productsByIds, Money, Quantity, Permissions,
   type PriceList, type ItemPrice, type CustomerPrice, type SaleUnit,
   type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
@@ -128,8 +128,20 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
   const [lists, setLists] = useState<PriceList[]>([])
   const [prices, setPrices] = useState<ItemPrice[]>([])
   const [error, setError] = useState<string | null>(null)
+  /**
+   * Every rate in the shop, so the tab answers "what have we set" without
+   * being told which item to look at first. Before this, the only way to find
+   * out whether anything had a special rate was to search items one at a time.
+   */
+  const [everyone, setEveryone] = useState<ItemPrice[]>([])
+  const [look, setLook] = useState('')
 
   const [row, setRow] = useState({ priceListId: '', saleUnit: '', minQty: '', rate: '', from: '', to: '' })
+
+  const loadEveryone = useCallback(async () => {
+    setEveryone(await listItemPrices(db, {}))
+  }, [db])
+  useEffect(() => { void loadEveryone() }, [loadEveryone])
 
   useEffect(() => { void listPriceLists(db).then(setLists) }, [db])
 
@@ -184,17 +196,43 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
     setError(null)
     setRow({ ...row, minQty: '', rate: '', from: '', to: '' })
     setPrices(await listItemPrices(db, { productId: chosen.id }))
+    await loadEveryone()
   }
 
   async function drop(id: string) {
     if (!chosen) return
     await removeItemPrice(db, { actorId: user.id }, id)
     setPrices(await listItemPrices(db, { productId: chosen.id }))
+    await loadEveryone()
   }
 
   /* The search box the results hang from. The list is portalled to the body,
      so this is how it knows where the box is. */
   const box = useRef<HTMLInputElement>(null)
+
+  /** The rates gathered under their item, filtered by the box above. */
+  const byProduct = useMemo(() => {
+    const needle = look.trim().toLowerCase()
+    const matching = needle === ''
+      ? everyone
+      : everyone.filter((r) =>
+        r.productName.toLowerCase().includes(needle)
+        || r.priceListName.toLowerCase().includes(needle))
+
+    const groups = new Map<string, { id: string; name: string; rates: ItemPrice[] }>()
+    for (const rate of matching) {
+      const found = groups.get(rate.productId)
+      if (found) found.rates.push(rate)
+      else groups.set(rate.productId, { id: rate.productId, name: rate.productName, rates: [rate] })
+    }
+    return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [everyone, look])
+
+  /** Opens an item from the list, which knows its id and not its base rate. */
+  const openProduct = useCallback(async (productId: string) => {
+    const [found] = await productsByIds(db, [productId])
+    if (found) await load(found)
+  }, [db, load])
 
   const pick = usePickList({
     count: results.length,
@@ -222,6 +260,55 @@ function ItemPrices({ canWrite }: { canWrite: boolean }) {
           </div>
         </Results>
       </Card>
+
+      {!chosen && (
+        <Card title={`Rates already set — ${everyone.length} across ${byProduct.length} item${byProduct.length === 1 ? '' : 's'}`}>
+          <input
+            className="input" style={{ maxWidth: 380, marginBottom: 10 }}
+            placeholder="Filter by item or price list"
+            value={look} onChange={(e) => setLook(e.target.value)}
+            aria-label="Filter the rates already set"
+          />
+
+          {byProduct.length === 0 ? (
+            <Empty>
+              {everyone.length === 0
+                ? 'No item has a rate of its own yet. Search for one above to give it one.'
+                : 'Nothing matches that.'}
+            </Empty>
+          ) : (
+            <div className="card-scroll" style={{ maxHeight: 460 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Item</th><th>Price list</th><th>Unit</th>
+                    {breaks && <th className="r">From qty</th>}
+                    <th className="r">Rate</th><th>Until</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byProduct.map((group) => group.rates.map((r, i) => (
+                    <tr key={r.id}>
+                      <td>
+                        {i === 0 && (
+                          <button className="btn ghost sm" onClick={() => void openProduct(r.productId)}>
+                            {r.productName}
+                          </button>
+                        )}
+                      </td>
+                      <td>{r.priceListName}</td>
+                      <td>{r.saleUnit}</td>
+                      {breaks && <td className="r num">{r.minQty > 0 ? Quantity.formatQty(r.minQty) : '—'}</td>}
+                      <td className="r"><Rupees value={r.rate} /></td>
+                      <td className="num" style={{ color: 'var(--ink-3)' }}>{r.validTo ?? '—'}</td>
+                    </tr>
+                  )))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
 
       {chosen && (
         <Card title={chosen.name}>
@@ -489,6 +576,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
    * ago by somebody who has left was invisible until it appeared on a bill.
    */
   const [everyone, setEveryone] = useState<CustomerPrice[]>([])
+  const [look, setLook] = useState('')
 
   const loadEveryone = useCallback(async () => {
     setEveryone(await listCustomerPrices(db, {}))
@@ -587,14 +675,21 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
    * rate?" reads in. `listCustomerPrices` already orders within a customer.
    */
   const byCustomer = useMemo(() => {
+    const needle = look.trim().toLowerCase()
+    const matching = needle === ''
+      ? everyone
+      : everyone.filter((r) =>
+        r.customerName.toLowerCase().includes(needle)
+        || r.productName.toLowerCase().includes(needle))
+
     const groups = new Map<string, { id: string; name: string; rates: CustomerPrice[] }>()
-    for (const rate of everyone) {
+    for (const rate of matching) {
       const found = groups.get(rate.customerId)
       if (found) found.rates.push(rate)
       else groups.set(rate.customerId, { id: rate.customerId, name: rate.customerName, rates: [rate] })
     }
     return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))
-  }, [everyone])
+  }, [everyone, look])
 
   const customerPick = usePickList({
     count: results.length,
@@ -627,9 +722,21 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
 
       {!chosen && (
         <Card title={`Special prices — ${everyone.length} across ${byCustomer.length} customer${byCustomer.length === 1 ? '' : 's'}`}>
+          <input
+            className="input" style={{ maxWidth: 380, marginBottom: 10 }}
+            placeholder="Filter by customer or item"
+            value={look} onChange={(e) => setLook(e.target.value)}
+            aria-label="Filter the special prices"
+          />
+
           {byCustomer.length === 0 ? (
-            <Empty>No customer has a price of their own yet. Search for one above to give them one.</Empty>
+            <Empty>
+              {everyone.length === 0
+                ? 'No customer has a price of their own yet. Search for one above to give them one.'
+                : 'Nothing matches that.'}
+            </Empty>
           ) : (
+            <div className="card-scroll" style={{ maxHeight: 460 }}>
             <table>
               <thead>
                 <tr>
@@ -659,6 +766,7 @@ function CustomerRates({ canWrite }: { canWrite: boolean }) {
                 )))}
               </tbody>
             </table>
+            </div>
           )}
         </Card>
       )}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Permissions, searchCustomers, createCustomer, updateCustomer, customerByPhone,
+  type CustomerOrder,
   archiveCustomer, restoreCustomer,
   loadCustomer, STATES, stateName, stateFromGstin,
   type CustomerListItem, type CustomerConflict, type SaveCustomerResult,
@@ -10,6 +11,7 @@ import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { CustomerWorth } from '../ui/CustomerWorth'
 import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
+import { CustomerFile } from '../ui/CatalogueFile'
 
 /**
  * Who the shop sells to.
@@ -56,14 +58,18 @@ export default function Customers() {
   const [confirmUi, ask] = useConfirm()
   const [draft, setDraft] = useState<Draft | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
+  /* Decided by the database, not by sorting the rows: this list stops at two
+     hundred names, so sorting what came back sorts an arbitrary two hundred
+     of a larger book. */
+  const [order, setOrder] = useState<CustomerOrder>('name')
   /** Who already answers to the number being typed, said before the save. */
   const [clash, setClash] = useState<CustomerConflict | null>(null)
   /** Off by default: an archived customer is one the shop has finished with. */
   const [showArchived, setShowArchived] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRows(await searchCustomers(db, term, 200, { includeArchived: showArchived }))
-  }, [db, term, showArchived])
+    setRows(await searchCustomers(db, term, 200, { includeArchived: showArchived, order }))
+  }, [db, term, showArchived, order])
 
   /**
    * A customer who has stopped coming.
@@ -204,7 +210,17 @@ export default function Customers() {
           />
           Show archived
         </label>
+        <select
+          className="input" style={{ maxWidth: 180 }} value={order}
+          aria-label="Sort the list"
+          onChange={(e) => setOrder(e.target.value as CustomerOrder)}
+        >
+          <option value="name">By name</option>
+          <option value="owing">Most owed first</option>
+          <option value="oldest">Quietest first</option>
+        </select>
         <span style={{ flex: 1 }} />
+        {canWrite && <CustomerFile onDone={refresh} />}
         {canCreate && (
           <button className="btn primary" onClick={() => { setProblem(null); setClash(null); setDraft({ ...BLANK }) }}>
             New customer
