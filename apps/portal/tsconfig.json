@@ -1,0 +1,33 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "types": [
+      "node"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@shopos/core": [
+        "../../packages/core/src/index.ts"
+      ],
+      "@shopos/core/node": [
+        "../../packages/core/src/db/node-driver.ts"
+      ],
+      "@shopos/core/migrations": [
+        "../../packages/core/src/db/migrations.ts"
+      ],
+      "@shopos/core/licence": [
+        "../../packages/core/src/domain/licence.ts"
+      ],
+      "@shopos/core/config": [
+        "../../packages/core/src/config/licensing.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts"
+  ]
+}

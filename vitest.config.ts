@@ -21,6 +21,16 @@ export default defineConfig({
       },
       {
         test: {
+          name: 'portal',
+          include: ['apps/portal/test/**/*.test.ts'],
+          environment: 'node',
+          /* Binds a real port and signs real Ed25519 keys per case; the
+             default 5 s is tight once a suite does both. */
+          testTimeout: 20_000,
+        },
+      },
+      {
+        test: {
           name: 'bench',
           include: ['tools/*/test/**/*.test.ts'],
           environment: 'node',
