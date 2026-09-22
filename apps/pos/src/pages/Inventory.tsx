@@ -18,6 +18,7 @@ import { useConfirm } from '../ui/useConfirm'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
 import { usePickList, Results } from '../ui/PickList'
 import { useShopChanged } from '../core/useShopChanged'
+import { CatalogueFile } from '../ui/CatalogueFile'
 
 interface BarcodeDraft {
   barcode: string
@@ -426,6 +427,7 @@ export default function Inventory() {
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{rows.length} items</span>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>
+        {canWrite && <CatalogueFile onDone={refresh} />}
         {canWrite && <button className="btn primary" onClick={() => setDraft({ ...BLANK })}>New product</button>}
       </div>
 

@@ -505,13 +505,11 @@ export async function gstExceptions(db: SqlDriver, range: DateRange): Promise<Gs
 }
 
 /** RFC 4180: a field containing a comma, quote or newline is quoted, quotes doubled. */
-export function toCsv(headers: string[], rows: (string | number)[][]): string {
-  const escape = (v: string | number): string => {
-    const s = String(v)
-    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  return [headers, ...rows].map((r) => r.map(escape).join(',')).join('\r\n') + '\r\n'
-}
+/* Moved to `domain/csv.ts`, beside the reader, and re-exported here so that
+   every `Reports.toCsv` caller is unchanged. The two halves have to agree
+   about quoting and line endings, and the way to be sure of that is to keep
+   them in one file with the tests that round-trip them. */
+export { toCsv } from '../domain/csv.js'
 
 /**
  * Gross margin.

@@ -318,3 +318,11 @@ export type {
 export { describeSchema } from './db/describe.js'
 export type { SchemaDescription, TableShape, ColumnShape } from './db/describe.js'
 export { renderSchemaDoc } from './db/schemaDoc.js'
+
+export { parseCsv, parseCsvRecords, toCsv, normaliseHeader } from './domain/csv.js'
+export {
+  planImport, applyImport, exportCatalogue, IMPORT_COLUMNS,
+} from './services/import.js'
+export type {
+  ImportPlan, PlannedRow, ImportResult, ImportAction, RowProblem,
+} from './services/import.js'
