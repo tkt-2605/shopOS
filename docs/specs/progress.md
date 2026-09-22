@@ -1006,7 +1006,7 @@ Licensing, the updater's rules and the portal are **done** — Row 14, and
 | The updater's state machine and the drawer rule | done |
 | `.github/workflows/ci.yml` | **not started** |
 | `.github/workflows/release.yml` | **not started**, and waits on the certificate |
-| The Settings licence card | **not started** — `entitlement()` is what it calls |
+| The Settings licence card | done — paste in, copy out, ten tests against a real signature |
 | `tauri-plugin-updater` wired in | **waits on the keypair and the repo name** |
 | An SMS channel | **waits on DLT registration** |
 
