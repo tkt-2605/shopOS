@@ -98,6 +98,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [47, '047_a_place_for_a_fingerprint.sql', 'additive'],
   [48, '048_nothing_to_send_is_not_silence.sql', 'additive'],
   [49, '049_a_sign_in_is_not_a_shop_fact.sql', 'additive'],
+  // Two columns on `suppliers`, both defaulted. An older till reads a row a
+  // newer one wrote and simply does not see them.
+  [50, '050_what_the_shop_owed_before.sql', 'additive'],
 ]
 
 /**

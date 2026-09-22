@@ -1,4 +1,4 @@
-import { eq, gt, and, or, like, inArray, isNull, isNotNull, desc, count, sql, type SQL } from 'drizzle-orm'
+import { eq, gt, and, or, like, inArray, isNull, isNotNull, asc, desc, count, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
@@ -302,36 +302,51 @@ export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerD
 }
 
 /**
+ * How the list comes back.
+ *
+ * `owing` is not a nicety. This query has a `limit`, and the screens that use
+ * it show a page of a larger shop -- so sorting the returned rows afterwards
+ * sorts an arbitrary five hundred of six hundred, and the customer who owes
+ * the most may not be among them. It has to be the database's decision.
+ */
+export type CustomerOrder =
+  /** Alphabetical. What a picker at the counter wants. */
+  | 'name'
+  /** Most owed first, then most held. A collection round. */
+  | 'owing'
+  /** Longest since anything was billed to them. Who has gone quiet. */
+  | 'oldest'
+
+/**
  * The customers a screen should offer.
  *
  * `includeArchived` is for the one screen that can bring them back. Everywhere
  * else -- the counter's picker above all -- an archived customer is gone, which
  * is what archiving them was for.
+ *
+ * Ordered by name unless asked otherwise.
  */
 export async function searchCustomers(
   db: SqlDriver,
   term = '',
   limit = 50,
-  opts: { includeArchived?: boolean } = {},
+  opts: { includeArchived?: boolean; order?: CustomerOrder } = {},
 ): Promise<CustomerListItem[]> {
   const now = new Date().toISOString()
 
-  const rows = await q(db)
-    .select({
-      id: schema.customers.id,
-      code: schema.customers.code,
-      name: schema.customers.name,
-      phone: schema.customers.phone,
-      gstin: schema.customers.gstin,
-      creditLimit: schema.customers.creditLimit,
-      outstanding: sql<Money>`
+  /* Hoisted, because `owing` has to sort by it. Repeating the expression in
+     the ORDER BY would be two copies of a five-line correlated subquery that
+     must agree to the paisa -- and the day they stop agreeing, the list is
+     sorted by one number while showing another. */
+  const outstanding = sql<Money>`
         COALESCE((SELECT SUM(b.credit_total) FROM bills b
                    WHERE b.customer_id = customers.id AND b.docstatus = 1), 0)
       - COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa
                     JOIN payment_entries pe ON pe.id = pa.payment_id AND pe.docstatus = 1
                     JOIN bills b2 ON b2.id = pa.bill_id
-                   WHERE b2.customer_id = customers.id), 0)`,
-      advance: sql<Money>`
+                   WHERE b2.customer_id = customers.id), 0)`
+
+  const advance = sql<Money>`
         MAX(0,
           COALESCE((SELECT SUM(pe.amount) FROM payment_entries pe
                      WHERE pe.customer_id = customers.id AND pe.party_type = 'customer'
@@ -343,7 +358,18 @@ export async function searchCustomers(
         - COALESCE((SELECT SUM(pe3.amount) FROM payment_entries pe3
                      WHERE pe3.customer_id = customers.id AND pe3.party_type = 'customer'
                        AND pe3.docstatus = 1 AND pe3.direction = 'out'), 0)
-        )`,
+        )`
+
+  const rows = await q(db)
+    .select({
+      id: schema.customers.id,
+      code: schema.customers.code,
+      name: schema.customers.name,
+      phone: schema.customers.phone,
+      gstin: schema.customers.gstin,
+      creditLimit: schema.customers.creditLimit,
+      outstanding,
+      advance,
       loyaltyPoints: sql<number>`
         COALESCE((SELECT SUM(le.points - le.consumed) FROM loyalty_entries le
                    WHERE le.customer_id = customers.id AND le.cancelled_at IS NULL
@@ -356,10 +382,36 @@ export async function searchCustomers(
       ...(opts.includeArchived ? [] : [isNull(schema.customers.deletedAt)]),
       ...matchingCustomer(term),
     ))
-    .orderBy(schema.customers.name)
+    .orderBy(...orderFor(opts.order ?? 'name', outstanding, advance))
     .limit(limit)
 
   return rows.map((r) => ({ ...r, archived: r.deletedAt !== null }))
+}
+
+/**
+ * The ORDER BY for a listing order.
+ *
+ * Name is the tiebreak in every case, so two customers owing the same amount
+ * do not swap places between one load and the next -- a list that reorders
+ * itself under somebody's finger is how the wrong row gets tapped.
+ */
+function orderFor(order: CustomerOrder, owed: SQL<Money>, held: SQL<Money>): SQL[] {
+  switch (order) {
+    case 'owing':
+      /* Most owed first, then whoever the shop is holding most for. Both are
+         loose ends and both belong at the top; owing money is the more
+         pressing of the two, so it leads. */
+      return [desc(owed), desc(held), asc(schema.customers.name)]
+    case 'oldest':
+      /* raw: the last bill's date, which is not a column on this table. */
+      return [
+        asc(sql`COALESCE((SELECT MAX(b3.posting_date) FROM bills b3
+                           WHERE b3.customer_id = customers.id AND b3.docstatus = 1), '')`),
+        asc(schema.customers.name),
+      ]
+    case 'name':
+      return [asc(schema.customers.name)]
+  }
 }
 
 /**

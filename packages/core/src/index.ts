@@ -145,7 +145,7 @@ export {
 export type {
   BillFilter, BillStatusFilter,
   ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem, CustomerDetail,
-  BillListItem, BillDetail, BillDetailItem,
+  BillListItem, BillDetail, BillDetailItem, CustomerOrder,
 } from './repos/catalog.js'
 
 export { isFirstRun, firstRun, seedDemoData } from './services/seed.js'
@@ -268,9 +268,11 @@ export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind } fr
 
 export {
   listSuppliers, supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
-  findOrCreateSupplier, supplierPurchases, supplierItems,
+  findOrCreateSupplier, supplierPurchases, supplierItems, setSupplierOpening,
 } from './services/suppliers.js'
-export type { Supplier, SupplierSummary, SupplierResult, PurchaseLine, SupplierItem } from './services/suppliers.js'
+export type {
+  Supplier, SupplierSummary, SupplierResult, PurchaseLine, SupplierItem, OpeningResult,
+} from './services/suppliers.js'
 
 export {
   createDocument, submitDocument, cancelDocument, listDocuments, loadDocument,

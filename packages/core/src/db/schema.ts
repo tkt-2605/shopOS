@@ -266,6 +266,10 @@ export const suppliers = sqliteTable('suppliers', {
   gstin: text(),
   address: text(),
   isActive: integer('is_active').default(1).notNull(),
+  /** What the shop owed them when the books moved. Negative: they hold ours. */
+  openingBalance: money('opening_balance').default(ZERO).notNull(),
+  /** The day the old book closed. Null means nobody has ever said. */
+  openingAsOf: text('opening_as_of'),
   rev: integer().default(1).notNull(),
   originId: text('origin_id'),
   createdAt: text('created_at').notNull(),

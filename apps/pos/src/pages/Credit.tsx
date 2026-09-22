@@ -4,7 +4,7 @@ import {
   Permissions, totalOutstandingAll, applyAdvance, refundAdvance,
   listCustomerPayments, cancelPayment, writeOff, recordOpeningBalance, businessDate, addDays,
   type CustomerListItem, type CustomerStatementRow, type CustomerPayment, type CustomerAccount,
-  type OutstandingTotal,
+  type OutstandingTotal, type CustomerOrder,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees, Stat } from '../ui/components'
@@ -63,6 +63,16 @@ export default function Credit() {
   /* A statement is not only for people who owe. A customer who has paid up still
      wants the page — often more so, because it is the proof they have. */
   const [who, setWho] = useState<'owing' | 'everyone'>('owing')
+  /**
+   * Which end of the list to start at.
+   *
+   * Decided by the database, not by sorting the rows after they arrive: this
+   * list stops at `PAGE`, so sorting what came back sorts an arbitrary five
+   * hundred of six hundred, and the customer who owes the most may not be
+   * among them. That is the failure that looks right on every screen you can
+   * check it on.
+   */
+  const [order, setOrder] = useState<CustomerOrder>('owing')
   const [opening, setOpening] = useState<CustomerListItem | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -81,7 +91,7 @@ export default function Credit() {
 
   const refresh = useCallback(async () => {
     const [all, shopWide, howMany] = await Promise.all([
-      searchCustomers(db, '', PAGE),
+      searchCustomers(db, '', PAGE, { order }),
       totalOutstandingAll(db),
       countCustomers(db),
     ])
@@ -93,7 +103,7 @@ export default function Credit() {
     setCustomers(all.filter((c) => c.outstanding > 0 || c.advance > 0))
     setBook(shopWide)
     setKnown(howMany)
-  }, [db])
+  }, [db, order])
 
   useEffect(() => { void refresh() }, [refresh])
   // And again whenever the other till sends something this list shows.
@@ -188,6 +198,17 @@ export default function Credit() {
         <input className="input" style={{ maxWidth: 340 }}
           placeholder="Search by name, phone or customer code"
           value={term} onChange={(e) => setTerm(e.target.value)} id="credit-search" />
+
+        <select
+          className="input" style={{ maxWidth: 190 }} value={order}
+          aria-label="Sort the list"
+          onChange={(e) => setOrder(e.target.value as CustomerOrder)}
+        >
+          <option value="owing">Most owed first</option>
+          <option value="name">By name</option>
+          <option value="oldest">Quietest first</option>
+        </select>
+
         <span style={{ flex: 1 }} />
         {canTake && (
           <button className="btn" onClick={() => setOpening(everyone[0] ?? null)} disabled={everyone.length === 0}>

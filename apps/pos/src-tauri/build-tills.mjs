@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds three release binaries of the POS app, one per till config, and
+// Builds one release binary of the POS app per till config, and
 // copies each one out before the next build overwrites target/release. Each
 // config only changes `identifier` (which is what Tauri's app_data_dir keys
 // on) and window placement, so every till keeps its own shop.db and its own
@@ -16,7 +16,9 @@ const appRoot = join(srcTauri, '..')
 // its own -- apps/pos/src-tauri/target is a decoy left by rust-analyzer.
 const workspaceRoot = join(srcTauri, '..', '..', '..')
 const exeName = 'shopos-pos.exe'
-const tills = [1, 2, 3]
+const tills = process.argv.slice(2).length > 0
+  ? process.argv.slice(2).map(Number)
+  : [1, 2, 3, 4]
 
 for (const n of tills) {
   console.log(`\n=== Building till ${n} ===`)
@@ -46,4 +48,4 @@ for (const n of tills) {
   console.log(`till ${n} -> ${join(outDir, exeName)}`)
 }
 
-console.log('\nAll three built. Each is a standalone exe under target/tills/till-N/.')
+console.log(`\nBuilt till ${tills.join(', till ')}. Each is a standalone exe under target/tills/till-N/.`)

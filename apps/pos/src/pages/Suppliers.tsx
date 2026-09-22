@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Permissions,
   supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
+  setSupplierOpening, Money,
   type SupplierSummary,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -35,7 +36,28 @@ export default function Suppliers() {
      screen is one of them going stale. */
   const [viewing, setViewing] = useState<SupplierSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  async function saveOpening() {
+    if (!opening) return
+    const value = Money.parseMoney(openingAmount.trim() === '' ? '0' : openingAmount)
+    if (value === null) { setError('That amount is not a number.'); return }
+
+    const result = await setSupplierOpening(db, { actorId: user.id }, {
+      supplierId: opening.id,
+      amount: value,
+      asOf: openingAsOf.trim() === '' ? null : openingAsOf.trim(),
+    })
+    if (!result.ok) { setError('That supplier is no longer here.'); return }
+
+    setError(null)
+    setOpening(null)
+    await refresh()
+  }
   const [showArchived, setShowArchived] = useState(false)
+  /** The supplier whose carried-over balance is being set, and the typed figure. */
+  const [opening, setOpening] = useState<SupplierSummary | null>(null)
+  const [openingAmount, setOpeningAmount] = useState('')
+  const [openingAsOf, setOpeningAsOf] = useState('')
 
   const refresh = useCallback(async () => {
     setRows(await supplierSummaries(db, { includeArchived: showArchived }))
@@ -130,7 +152,8 @@ export default function Suppliers() {
             <thead>
               <tr>
                 <th>Supplier</th><th>Phone</th><th>GSTIN</th>
-                <th className="r">Deliveries</th><th>Last</th><th className="r">Bought</th><th />
+                <th className="r">Deliveries</th><th>Last</th><th className="r">Bought</th>
+                <th className="r">Carried over</th><th />
               </tr>
             </thead>
             <tbody>
@@ -152,7 +175,28 @@ export default function Suppliers() {
                   <td className="r num">{s.entryCount}</td>
                   <td style={{ color: 'var(--ink-3)' }}>{s.lastPurchase ?? 'Never'}</td>
                   <td className="r">{s.purchased > 0 ? <Rupees value={s.purchased} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}</td>
+                  {/* Never asked and answered-zero read the same in a figure,
+                      so the dash is for the first and a plain 0 for the
+                      second. A shop that has said "we owed them nothing" has
+                      said something. */}
+                  <td className="r" title={s.openingAsOf ? `As at ${s.openingAsOf}` : 'Nobody has said'}>
+                    {s.openingAsOf === null
+                      ? <span style={{ color: 'var(--ink-3)' }}>—</span>
+                      : <Rupees value={s.openingBalance} />}
+                  </td>
                   <td className="r" style={{ whiteSpace: 'nowrap' }}>
+                    {canWrite && (
+                      <button
+                        className="btn ghost sm"
+                        onClick={() => {
+                          setOpening(s)
+                          setOpeningAmount(s.openingAsOf === null ? '' : Money.format(s.openingBalance))
+                          setOpeningAsOf(s.openingAsOf ?? '')
+                        }}
+                      >
+                        Carried over
+                      </button>
+                    )}
                     {canWrite && (
                       <button
                         className="btn ghost sm"
@@ -172,11 +216,46 @@ export default function Suppliers() {
                   </td>
                 </tr>
               ))}
-              {rows.length === 0 && <tr><td colSpan={7}><Empty>No suppliers yet</Empty></td></tr>}
+              {rows.length === 0 && <tr><td colSpan={8}><Empty>No suppliers yet</Empty></td></tr>}
             </tbody>
           </table>
         </div>
       </Card>
+
+      {opening && (
+        <Modal
+          title={`What the shop owed ${opening.name}`}
+          onClose={() => setOpening(null)}
+          footer={<>
+            <button className="btn" onClick={() => setOpening(null)}>Cancel</button>
+            <button className="btn primary" onClick={() => void saveOpening()}>Record it</button>
+          </>}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Field label="Amount">
+              <input className="input num" value={openingAmount} placeholder="0.00"
+                onChange={(e) => setOpeningAmount(e.target.value)} />
+            </Field>
+            <Field label="As at">
+              <input className="input num" type="date" value={openingAsOf}
+                onChange={(e) => setOpeningAsOf(e.target.value)} />
+            </Field>
+          </div>
+
+          {/* Said in the form rather than in an error afterwards. A minus sign
+              nobody knows about is a feature nobody uses. */}
+          <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+            A plain amount means <strong>the shop owed them</strong> when the books moved.
+            Put a minus in front of it — <span className="num">-3000</span> — if they were
+            already holding the shop's money, from an advance paid or an overpayment in the
+            old book.
+          </div>
+
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
+            This is a figure you can correct, not a document. Purchases will build on it.
+          </div>
+        </Modal>
+      )}
 
       {editing && (
         <Modal

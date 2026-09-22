@@ -3,7 +3,8 @@ import type { SqlDriver } from '../db/driver.js'
 import type { Money } from '../money.js'
 import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
-import { writeAudit } from '../integrity/audit.js'
+import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import { businessDate } from '../dates.js'
 import { SUBMITTED } from '../integrity/docstatus.js'
 
 /**
@@ -25,6 +26,15 @@ export interface Supplier {
 }
 
 export interface SupplierSummary extends Supplier {
+  /**
+   * What the shop owed them when the books moved, and the day they closed.
+   *
+   * Positive: the shop owed them. Negative: they are holding the shop's
+   * money -- an advance paid, or an overpayment in the old book. Null `asOf`
+   * means nobody has ever said, which is not the same as having said zero.
+   */
+  openingBalance: Money
+  openingAsOf: string | null
   entryCount: number
   lastPurchase: string | null
   purchased: Money
@@ -40,6 +50,12 @@ const supplierShape = {
   gstin: schema.suppliers.gstin,
   address: schema.suppliers.address,
   isActive: schema.suppliers.isActive,
+}
+
+/** The two carried by the summary and not by the picker. */
+const openingShape = {
+  openingBalance: schema.suppliers.openingBalance,
+  openingAsOf: schema.suppliers.openingAsOf,
 }
 
 export async function listSuppliers(db: SqlDriver, includeInactive = false): Promise<Supplier[]> {
@@ -62,6 +78,7 @@ export async function supplierSummaries(
   const rows = await q(db)
     .select({
       ...supplierShape,
+      ...openingShape,
       deletedAt: schema.suppliers.deletedAt,
       entryCount: count(schema.stockEntries.id),
       lastPurchase: max(schema.stockEntries.postingDate),
@@ -86,11 +103,71 @@ export async function supplierSummaries(
 
   return rows.map((r) => ({
     ...toSupplier(r),
+    openingBalance: r.openingBalance,
+    openingAsOf: r.openingAsOf,
     entryCount: r.entryCount,
     lastPurchase: r.lastPurchase,
     purchased: r.purchased,
     archived: r.deletedAt !== null,
   }))
+}
+
+export type OpeningResult =
+  | { ok: true; amount: Money }
+  | { ok: false; code: 'NO_SUPPLIER' }
+
+/**
+ * What the shop already owed this supplier before any of this started.
+ *
+ * A figure on the supplier rather than a document, because there is no
+ * purchase invoice for it to be -- `050_what_the_shop_owed_before.sql` carries
+ * the argument and the cost.
+ *
+ * Unlike the customer side there is no `ALREADY_SET`: this is a field, and
+ * correcting a number somebody typed wrong is the ordinary case rather than
+ * an error. The correction is audited, which is the whole of the trail until
+ * Phase 5 gives suppliers a ledger.
+ *
+ * Zero is a real answer and is stored as one -- a shop saying "we owed them
+ * nothing" has said something, and `openingAsOf` is what tells that apart
+ * from never having been asked.
+ */
+export async function setSupplierOpening(
+  db: SqlDriver,
+  ctx: AuditContext,
+  input: { supplierId: string; amount: Money; asOf?: string | null },
+): Promise<OpeningResult> {
+  const [before] = await q(db)
+    .select({
+      openingBalance: schema.suppliers.openingBalance,
+      openingAsOf: schema.suppliers.openingAsOf,
+    })
+    .from(schema.suppliers)
+    .where(eq(schema.suppliers.id, input.supplierId))
+
+  if (!before) return { ok: false, code: 'NO_SUPPLIER' }
+
+  const asOf = input.asOf ?? businessDate()
+
+  await db.transaction(async (tx) => {
+    await q(tx).update(schema.suppliers)
+      .set({
+        openingBalance: input.amount,
+        openingAsOf: asOf,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(schema.suppliers.id, input.supplierId))
+
+    await writeAudit(tx, ctx, {
+      entity: 'suppliers',
+      entityId: input.supplierId,
+      action: 'update',
+      before: { opening_balance: before.openingBalance, opening_as_of: before.openingAsOf },
+      after: { opening_balance: input.amount, opening_as_of: asOf },
+    })
+  })
+
+  return { ok: true, amount: input.amount }
 }
 
 export type SupplierResult =
