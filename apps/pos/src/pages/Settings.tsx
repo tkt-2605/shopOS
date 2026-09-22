@@ -19,6 +19,7 @@ import { writeDiagnosticsBundle } from '../core/diagnostics'
 import { appVersion, versionLine, type AppVersion } from '../core/version'
 import { Card, Field, Alert } from '../ui/components'
 import { SyncCard } from '../ui/SyncCard'
+import { LicenceCard } from '../ui/LicenceCard'
 import { RestorePanel } from '../ui/RestorePanel'
 
 type Theme = 'daylight' | 'khata' | 'night'
@@ -239,6 +240,8 @@ export default function Settings() {
       <SetupCard />
 
       <SyncCard />
+
+      <LicenceCard />
 
       <Card title="Appearance">
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>

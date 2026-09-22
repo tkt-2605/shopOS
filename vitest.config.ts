@@ -42,7 +42,19 @@ export default defineConfig({
       {
         plugins: [react()],
         resolve: {
-          alias: { '@shopos/core': new URL('./packages/core/src/index.ts', import.meta.url).pathname },
+          /* The subpaths as well as the root. A screen may not import the node
+             driver -- `vite.config.ts` aliases better-sqlite3 to an empty
+             module so a stray one fails at build time -- but a *test* of a
+             screen wants a real migrated database rather than a mock of one,
+             and that is the only way to get a licence signature checked by the
+             code that will really check it. */
+          alias: {
+            '@shopos/core/node': new URL('./packages/core/src/db/node-driver.ts', import.meta.url).pathname,
+            '@shopos/core/migrations': new URL('./packages/core/src/db/migrations.ts', import.meta.url).pathname,
+            '@shopos/core/licence': new URL('./packages/core/src/domain/licence.ts', import.meta.url).pathname,
+            '@shopos/core/config': new URL('./packages/core/src/config/licensing.ts', import.meta.url).pathname,
+            '@shopos/core': new URL('./packages/core/src/index.ts', import.meta.url).pathname,
+          },
         },
         test: {
           name: 'pos',
