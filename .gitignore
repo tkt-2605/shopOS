@@ -31,3 +31,10 @@ tills/
 # Scratch that keeps getting swept into commits.
 docs/specs.zip
 *.stackdump
+
+# The vendor sales record. Never in the repo: billing.md calls it the only
+# record of what has been sold, and it is not the code.
+portal.db
+portal.db-journal
+portal.db-wal
+portal.db-shm
