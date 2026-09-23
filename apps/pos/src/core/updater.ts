@@ -25,7 +25,7 @@ import { logEvent } from './log'
  *
  * **To drop the real one in**, in this order:
  *
- * 1. `npm run portal -- keygen` is *not* this key. Run `npx tauri signer
+ * 1. `cli.ts keygen` is *not* this key. Run `npx tauri signer
  *    generate` for the updater's own keypair and back the private half up
  *    twice; it cannot be recovered and losing it means no till in the field
  *    can ever be updated again.

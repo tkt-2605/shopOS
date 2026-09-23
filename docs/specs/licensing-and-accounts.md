@@ -164,7 +164,7 @@ Five things. Each is one named function or one constant.
 ### 1. The licence signing key — `packages/core/src/config/licensing.ts`
 
 ```
-npm run portal -- keygen
+npx tsx apps/portal/src/cli.ts keygen
 ```
 
 Prints a `kid`, a public key and a private key. The public key goes into
@@ -172,9 +172,26 @@ Prints a `kid`, a public key and a private key. The public key goes into
 the portal's environment and into two backups, and nowhere else. A build that
 could sign a licence is a build that can mint itself one.
 
-`LICENCE_KEYS` is empty today, which is the honest placeholder: verification
-returns `NOT_CONFIGURED`, which names the actual problem. A fake 32 bytes would
-return `BAD_SIGNATURE` and send somebody looking for an attacker.
+**Run it directly, not as `npm run portal -- keygen`.** npm parses every
+unrecognised `--flag` as one of its own settings and drops it, keeping the
+value behind it, so `issue --shop <id> --tier cloud` arrives as
+`issue <id> cloud` and the CLI reports the argument you just typed as missing.
+It survives from a POSIX shell and not from PowerShell, which is worse than a
+consistent failure would be.
+
+`LICENCE_KEYS` now carries a real key. Empty was the honest placeholder before
+it did — verification returned `NOT_CONFIGURED`, which names the actual
+problem, where a fake 32 bytes would return `BAD_SIGNATURE` and send somebody
+looking for an attacker.
+
+There is a third way to get this wrong and it is the one that happened: the
+updater's minisign key pasted into `LICENCE_KEYS`. Both are keypairs, both
+print base64, and both call the field a public key. The tell is the length —
+32 bytes for Ed25519, 114 for minisign — and the symptom is a build that
+answers `licensingConfigured() = true` while refusing every genuine licence
+with `NOT_CONFIGURED`. `licencePlaceholders.test.ts` now checks the byte count
+and calls `importKey`, because a string in the right place is not the right
+string.
 
 ### 2. `PORTAL_BASE_URL` — same file
 

@@ -226,7 +226,7 @@ disables the route entirely rather than weakening it.
 ## The CLI matters more than the routes at first
 
 ```
-npm run portal -- pay --shop <id> --amount 500000 --ref <upi-ref>
+npx tsx apps/portal/src/cli.ts pay --shop <id> --amount 500000 --ref <upi-ref>
 ```
 
 One command: records the payment, extends the period, issues the licence, prints

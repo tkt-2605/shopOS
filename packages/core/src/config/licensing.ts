@@ -22,7 +22,7 @@ import type { SigningKey } from '../domain/licence.js'
  *
  * | Value | Where it comes from | Blocks |
  * |---|---|---|
- * | `LICENCE_KEYS` | `npm run portal -- keygen` — the public half | verifying any licence |
+ * | `LICENCE_KEYS` | `cli.ts keygen` — the public half | verifying any licence |
  * | `PORTAL_BASE_URL` | the VPS and domain, Phase 6 | fetching a renewal |
  * | `UPDATE_FEED_URL` | the GitHub owner/repo, decision 3 in progress.md | the updater |
  *
@@ -53,7 +53,7 @@ import type { SigningKey } from '../domain/licence.js'
  * fail with `BAD_SIGNATURE`, which reads like a forgery and sends somebody
  * looking for an attacker instead of for this file.
  *
- *     npm run portal -- keygen --kid shopos-2027
+ *     npx tsx apps/portal/src/cli.ts keygen --kid shopos-2027
  *     # publicKey goes here; privateKey goes in SHOPOS_LICENCE_KEY
  */
 export const LICENCE_KEYS: readonly SigningKey[] = [

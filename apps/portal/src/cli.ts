@@ -9,10 +9,22 @@ import { serve } from './server.js'
 /**
  * The portal from a terminal.
  *
- *   npm run portal -- keygen
- *   npm run portal -- issue --shop <id> --tier cloud --paid-through 2027-03-31
- *   npm run portal -- show --shop <id>
- *   npm run portal -- serve --port 8787
+ *   npx tsx apps/portal/src/cli.ts keygen
+ *   npx tsx apps/portal/src/cli.ts issue --shop <id> --tier cloud --paid-through 2027-03-31
+ *   npx tsx apps/portal/src/cli.ts show --shop <id>
+ *   npx tsx apps/portal/src/cli.ts serve --port 8787
+ *
+ * ## Not `npm run portal --`, and this cost an evening
+ *
+ * From PowerShell, `npm run portal -- issue --shop <id> --tier cloud` reaches
+ * this file as `issue <id> cloud`. npm parses every unrecognised `--name` as
+ * one of its own config settings and drops it, keeping the value that followed
+ * it — so `flag('shop')` returns null and the command dies claiming the
+ * argument that was plainly typed is missing. The values are all still there,
+ * in order, which is what makes it look like a bug in here.
+ *
+ * `npm run portal -- keygen --kid x` happens to survive from a POSIX shell,
+ * which is worse than if it never worked: it teaches the wrong form.
  *
  * `keygen` is the first thing anybody runs and the only one that matters
  * before there is a paying shop: its public half goes in
@@ -106,13 +118,17 @@ switch (command) {
 
   default:
     process.stdout.write([
-      'portal <command>',
+      'npx tsx apps/portal/src/cli.ts <command>',
       '',
       '  keygen [--kid <name>]                       a new signing keypair',
       '  issue --shop <id> [--tier <t>]              sign a licence',
       '        [--paid-through YYYY-MM-DD] [--tills n]',
       '  show --shop <id>                            the shop\'s current licence',
       '  serve [--port 8787]                         run the HTTP service',
+      '',
+      'Run it directly, not through `npm run portal --`: npm swallows every',
+      '--flag and passes only the values, so a correct command line arrives',
+      'here missing the arguments it will then say are required.',
       '',
     ].join('\n'))
     if (command !== undefined) process.exit(1)
