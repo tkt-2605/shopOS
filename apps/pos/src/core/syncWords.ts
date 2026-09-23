@@ -42,6 +42,13 @@ const REFUSALS: Readonly<Record<string, string>> = {
   ANOTHER_TILL_IS_ASKING:
     'Another machine is already asking to join that shop. Finish or refuse '
     + 'that one first — two at once is how the wrong till gets let in.',
+  /* Not a fault and not a breakage, so it must not read like one. The other
+     till is working perfectly; it is on the one-counter plan. */
+  NEEDS_MULTI_TILL:
+    'That shop is on the one-counter plan, so it cannot take a second till '
+    + 'yet. Nothing is wrong with either machine — the counter already there '
+    + 'goes on working exactly as before. Settings, Licence on that till shows '
+    + 'the shop id to quote when you ask us for the multi-counter plan.',
   UNKNOWN_PEER: 'The other till does not know this one. Pair them again.',
   BAD_SIGNATURE: 'The other till would not accept this one. Pair them again.',
   NOT_READY:

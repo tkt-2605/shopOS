@@ -193,12 +193,37 @@ describe('the rules that do not need a key', () => {
     }
   })
 
-  it('gates nothing a till does on its own', () => {
-    /* The list is the guarantee. Anything a shop needs to take money -- a
-       bill, a receipt, a print, a backup, the LAN -- must never appear here,
-       and this test is what an addition has to get past. */
+  it('gates nothing a shop needs to take money', () => {
+    /* The list is the guarantee, and this test is what an addition has to get
+       past. It used to read "anything a shop needs to take money -- a bill, a
+       receipt, a print, a backup, **the LAN** -- must never appear here", and
+       `multiTill` is the LAN clause being deliberately broken.
+
+       The clause was two promises wearing one sentence. The first is that a
+       shop can always bill, print and keep its own books, and it is untouched:
+       nothing below is reachable from a counter taking money. The second was
+       that two tills always talk, and that one is now sold -- but only the
+       *introduction* is sold. `multiTillGate.test.ts` holds the line that
+       matters: tills already paired go on merging through a lapse, through a
+       removed code, for ever. What a shop bought it keeps.
+
+       A sixth entry needs the same argument made out loud. If it cannot be,
+       it does not belong here. */
     expect([...GATED].sort()).toEqual(
-      ['branches', 'cloudPeer', 'diagnosticsUpload', 'phoneView'],
+      ['branches', 'cloudPeer', 'diagnosticsUpload', 'multiTill', 'phoneView'],
     )
+  })
+
+  it('never gates a bill, a print, a backup or a report', () => {
+    /* Stated as a list of words rather than left implicit, so that adding
+       `printing` or `backup` to GATED fails here with the reason attached
+       rather than passing because somebody updated the array above. */
+    for (const forbidden of [
+      'bill', 'billing', 'print', 'printing', 'backup', 'report', 'reports',
+      'gst', 'tax', 'stock', 'credit', 'customers', 'sync', 'syncing', 'lan',
+    ]) {
+      expect(GATED as readonly string[], `${forbidden} must never be gated`)
+        .not.toContain(forbidden)
+    }
   })
 })

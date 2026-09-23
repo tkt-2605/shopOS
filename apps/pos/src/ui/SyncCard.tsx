@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   listPeers,
-  offerPairing, withdrawPairing,
+  offerPairing, withdrawPairing, entitled,
   recentConflicts, acknowledgeConflicts,
   quarantinedRecords, acknowledgeQuarantine,
   forgetPeer,
@@ -80,6 +80,22 @@ export function SyncCard() {
    */
   async function addATill() {
     setError(null)
+
+    /* Asked here so the answer arrives before the port opens and before a code
+       is minted, rather than after somebody has typed one into the other
+       machine and been refused there. `letThemIn` asks again and is the check
+       that actually holds; this one exists so the refusal reaches the person
+       standing at the till that can do something about it. */
+    if (!await entitled(db, 'multiTill')) {
+      setError(
+        'This shop is on the one-counter plan. The counter you are on is '
+        + 'unaffected and goes on working exactly as it does now — adding a '
+        + 'second one is what needs the multi-counter plan. Settings, Licence '
+        + 'has this shop’s id to quote when you ask us for it.',
+      )
+      return
+    }
+
     try {
       if (serving === null) {
         // No port: the one this machine had last time, so an address a peer

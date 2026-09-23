@@ -9,6 +9,7 @@ import {
 } from '@shopos/core'
 import { openDatabase } from '@shopos/core/node'
 import { MIGRATIONS } from '@shopos/core/migrations'
+import { BENCH_KEYS, licenseBenchShop } from './licence.js'
 import { asTill, installTillContext, type TillContext } from './context.js'
 
 /**
@@ -153,6 +154,10 @@ export async function startTill(opts: TillOptions): Promise<Till> {
       )
       registerId = await makeRegister(db, opts.registerPrefix, opts.label, adminId)
       context.registerId = registerId
+      /* A bench shop is a shop that has other tills, so it is on a plan that
+         allows them. Without this `letThemIn` refuses every pairing and no
+         convergence run gets started. */
+      await licenseBenchShop(db)
     }
   })
 
@@ -179,7 +184,7 @@ export async function startTill(opts: TillOptions): Promise<Till> {
             // who called, and the port they say they answer on.
             remoteAddress: callerAddress(req),
             listenPort: Number.isFinite(advertised) ? advertised : null,
-          })
+          }, undefined, { keys: BENCH_KEYS })
           send(res, answer.status, answer.body)
         } catch (err) {
           send(res, 500, JSON.stringify({ code: 'SERVER_ERROR', message: String(err) }))

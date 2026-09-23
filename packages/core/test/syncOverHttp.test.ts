@@ -10,6 +10,7 @@ import { encodeAuth, sign, forgetNonces } from '../src/services/syncAuth.js'
 import { setDeviceId, deviceId } from '../src/device.js'
 import { getSetting } from '../src/services/bootstrap.js'
 import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
+import { TEST_KEYS, licenseTill } from './licenceHelper.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -55,7 +56,7 @@ async function serve(id: string, db: SqlDriver): Promise<{ server: Server; url: 
             path: req.url ?? '/',
             body,
             auth: (req.headers['x-shopos-auth'] as string | undefined) ?? null,
-          })
+          }, undefined, { keys: TEST_KEYS })
           res.writeHead(answer.status, { 'content-type': 'application/json' })
           res.end(answer.body)
         } catch (err) {
@@ -79,6 +80,10 @@ beforeEach(async () => {
   joinerRegister = null
 
   const fx = await freshDb()
+  /* Till A is the shop, and the shop is on the multi-counter plan. Without it
+     `letThemIn` refuses the pair and every test below fails at the handshake
+     rather than at the thing it is about. */
+  await licenseTill(fx.db)
   const a = await serve(TILL_A, fx.db)
   host = { id: TILL_A, db: fx.db, fx, ...a }
 

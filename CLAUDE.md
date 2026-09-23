@@ -36,9 +36,12 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 ## Working agreements
 
 - `npm test` from the root runs every project -- core, the app, the portal and
-  both benches (1,944 tests). Types: `npm run typecheck`, which covers all five.
-- A licence never stops a shop billing. It gates only what costs the vendor
-  money per shop per month, and that list is asserted in a test. Everything
+  both benches (1,954 tests). Types: `npm run typecheck`, which covers all five.
+- A licence never stops a shop billing. It gates what the vendor sells and
+  never anything a shop needs to take money, and that list is asserted in a
+  test. `multiTill` gates **adding** a till and never **syncing** with one
+  already added -- a lapse that stopped sync would leave two counters taking
+  money that never merged, which is worse than any unpaid invoice. Everything
   unconfigured fails closed and names the file to edit -- `NOT_CONFIGURED`,
   never `BAD_SIGNATURE`. See `docs/specs/licensing-and-accounts.md`.
 - Staff sign in at the till with a username and a password, offline. Phone and

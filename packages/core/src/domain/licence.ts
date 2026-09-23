@@ -33,7 +33,7 @@
  * new until the last licence issued under the old one has expired.
  */
 
-export const TIERS = ['single', 'cloud', 'branches'] as const
+export const TIERS = ['single', 'multi', 'cloud', 'branches'] as const
 export type Tier = (typeof TIERS)[number]
 
 export function isTier(value: string): value is Tier {
@@ -190,22 +190,55 @@ export function stateOf(
 /**
  * The things a licence actually gates.
  *
- * Every one of them costs the vendor money per shop per month, which is the
- * test for belonging on this list. Nothing a till does with its own disk, its
- * own printer or the shop's own LAN is here, and nothing that would change a
- * number on a bill.
+ * The old test for belonging on this list was "it costs the vendor money per
+ * shop per month". `multiTill` fails that test and is here anyway, which is a
+ * deliberate change and is worth the paragraph.
+ *
+ * ## Why `multiTill` is on the list
+ *
+ * The four features below it are Phase 6 and Phase 7 and **none of them is
+ * built**, so until now a licence gated nothing that existed — there was
+ * literally no product to sell. A second counter is built, works, and is the
+ * thing a shopkeeper can see the value of; off-site backup is a hard sell to a
+ * one-counter chemist. It also prices by shop size, which is the intent.
+ *
+ * So the honest statement of the rule is now: **a licence gates what the
+ * vendor chooses to sell, and never anything a shop needs to take money.** The
+ * second half is the one that was never negotiable and still is not.
+ *
+ * ## What `multiTill` must never mean
+ *
+ * It gates **adding** a till, never **syncing** with one already added. That
+ * distinction is the whole safety of it. Billing does not stop when a licence
+ * lapses — it must not, it is the first rule — so a lapse that stopped sync
+ * would leave a shop with two counters taking money that never merged, and
+ * nobody would notice for weeks. Stock, credit and every report would be wrong
+ * on both machines. That is far worse than an unpaid invoice.
+ *
+ * So the gate sits on the door, not the wire: `letThemIn` in `syncServer.ts`
+ * and the "Add a till" button. `serveIfPaired`, `syncWith`, `handleFetch` and
+ * `handleOffer` are never asked. A shop that lapses keeps every till it has,
+ * working exactly as before, and simply cannot add the next one.
  */
-export const GATED = ['cloudPeer', 'phoneView', 'diagnosticsUpload', 'branches'] as const
+export const GATED = [
+  'multiTill', 'cloudPeer', 'phoneView', 'diagnosticsUpload', 'branches',
+] as const
 export type GatedFeature = (typeof GATED)[number]
 
 const NEEDS: Record<GatedFeature, Tier> = {
+  multiTill: 'multi',
   cloudPeer: 'cloud',
   phoneView: 'cloud',
   diagnosticsUpload: 'cloud',
   branches: 'branches',
 }
 
-const RANK: Record<Tier, number> = { single: 0, cloud: 1, branches: 2 }
+/**
+ * The ladder. A tier gets everything below it, so `cloud` includes
+ * `multiTill`: a shop big enough to want its books off-site certainly has more
+ * than one counter, and charging twice for that would read as sharp practice.
+ */
+const RANK: Record<Tier, number> = { single: 0, multi: 1, cloud: 2, branches: 3 }
 
 /**
  * Whether a shop in this state may use a gated feature.

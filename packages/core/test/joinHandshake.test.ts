@@ -10,6 +10,7 @@ import { askToJoin, pollJoin, pairedPeers, SyncHttpError } from '../src/services
 import { setDeviceId, deviceId } from '../src/device.js'
 import { forgetNonces } from '../src/services/syncAuth.js'
 import { freshDb, emptyDb, type Fixture } from './helpers.js'
+import { TEST_KEYS, licenseTill } from './licenceHelper.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -46,7 +47,7 @@ async function serve(id: string, db: SqlDriver): Promise<{ server: Server; url: 
             auth: (req.headers['x-shopos-auth'] as string | undefined) ?? null,
             remoteAddress: '127.0.0.1',
             listenPort: Number(req.headers['x-shopos-port']) || null,
-          })
+          }, undefined, { keys: TEST_KEYS })
           res.writeHead(answer.status, { 'content-type': 'application/json' })
           res.end(answer.body)
         } finally {
@@ -64,6 +65,10 @@ beforeEach(async () => {
   forgetNonces()
   withdrawPairing()
   const fx = await freshDb()
+  /* The shop that already exists is on the multi-counter plan. Without it
+     `letThemIn` refuses every join, which is the gate working and is not what
+     this file is about. */
+  await licenseTill(fx.db)
   host = { db: fx.db, fx, ...(await serve(HOST, fx.db)) }
   joinerDb = await emptyDb()
   // Every `askToJoin` below is this machine asking.

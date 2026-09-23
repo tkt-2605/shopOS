@@ -153,6 +153,20 @@ export async function resumeServing(db: SqlDriver): Promise<ServeInfo | null> {
  * none stays closed, and `SyncCard` opens the port for as long as it takes to
  * add one.
  */
+/*
+ * **Never gated on the licence, and that is load-bearing.**
+ *
+ * `multiTill` gates adding a till. It must not gate answering one, and this is
+ * the function where the difference would be easiest to get wrong: a licence
+ * check here reads like "no plan, no second till", and what it would actually
+ * do is stop a shop that already has three counters from answering any of
+ * them. Billing would carry on — it always does — so the shop would take money
+ * on every till and merge none of it, and find out weeks later when the stock
+ * and the credit book disagreed on every machine.
+ *
+ * A peer with a secret was let in when the shop was entitled to let it in.
+ * Nothing takes that back.
+ */
 export async function serveIfPaired(db: SqlDriver): Promise<ServeInfo | null> {
   /* Already open, which is a webview reload under a listener that outlived it.
      Re-attend and leave the port where it is. */

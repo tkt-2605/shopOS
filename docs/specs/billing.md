@@ -68,9 +68,28 @@ later changes who calls `record()` and nothing downstream.
 
 | Tier | What it adds | Suggested |
 |---|---|---|
-| `single` | nothing gated — the whole till, LAN sync, backups | ₹X / year |
+| *no licence* | one counter: the whole till, GST, stock, credit, reports, backups | free |
+| `single` | nothing over the free tier yet. A paid customer on one counter | ₹W / year |
+| `multi` | **adding** more counters, and LAN sync between them | ₹X / year |
 | `cloud` | off-site replica, phone view, diagnostics upload | ₹Y / year |
 | `branches` | per-branch stock and transfers | ₹Z / year |
+
+The tiers are a ladder, so `cloud` includes `multi`. A shop paying to keep its
+books off-site certainly has more than one counter, and charging twice for that
+reads as sharp practice.
+
+**The free tier is the absence of a code, not a code that says `single`.** No
+licence means `state: 'none'`, which already refuses every gated feature — so
+free users need nothing issued, nothing supported and nothing renewed. `single`
+exists for the shop that pays for one counter, which mostly means a shop that
+wants an invoice from you.
+
+**`multi` gates the introduction, never the conversation.** Tills already
+paired go on syncing through a lapse, through a removed code, for ever. That is
+held by `multiTillGate.test.ts` and the reasoning is above `GATED` in
+`domain/licence.ts`: billing never stops, so a lapse that stopped sync would
+leave a shop taking money on two counters that no longer merged, with nothing
+on either screen to say so. What a shop bought, it keeps.
 
 **Yearly, not monthly.** Three reasons: a kirana shop thinks about software the
 way it thinks about a shop licence renewal; one collection a year beats twelve

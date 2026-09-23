@@ -6,10 +6,12 @@ import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 import { deviceId } from '../device.js'
 import { newId } from '../ids.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
+import type { SigningKey } from '../domain/licence.js'
 import { applyBatch, changedHere, collectChanges } from './sync.js'
 import { seedFeedWithEverything, feedHead } from './changefeed.js'
 import { resolveDeviceRegister } from './registers.js'
 import { getSetting } from './bootstrap.js'
+import { entitled } from './licence.js'
 import {
   constantTimeEquals, mintPairingCode, mintSecret, verify, myFingerprint,
 } from './syncAuth.js'
@@ -240,12 +242,26 @@ export function pairingOnOffer(now = clock.now()): string | null {
   return offered.expiresAt > now ? offered.code : null
 }
 
+/**
+ * What the answering side needs told rather than looked up.
+ *
+ * Only the licence keys, and only so that a test can pair two tills. The build
+ * ships one real public key and no test can mint a token for it, so without
+ * this seam every sync test would have to carry the production *private* key —
+ * which is the one thing that must never be in this repository.
+ */
+export interface SyncServerOptions {
+  /** Defaults to the build's own `LICENCE_KEYS`. Tests pass their own. */
+  keys?: readonly SigningKey[]
+}
+
 export async function handleSyncRequest(
   db: SqlDriver,
   request: SyncRequest,
   now = clock.now(),
+  opts: SyncServerOptions = {},
 ): Promise<SyncResponse> {
-  if (request.path === '/pair') return handlePair(db, request, now)
+  if (request.path === '/pair') return handlePair(db, request, now, opts)
 
   const auth = await verify(
     request.auth, request.path, request.body,
@@ -305,6 +321,7 @@ async function handlePair(
   db: SqlDriver,
   request: SyncRequest,
   now: number,
+  opts: SyncServerOptions,
 ): Promise<SyncResponse> {
   const asked = parse<{
     code?: string; deviceId?: string; label?: string; requestId?: string
@@ -320,7 +337,7 @@ async function handlePair(
      hold it: a till asking to come in, that till asking whether it may yet, and
      the old way — a till that was read a code. */
   if (typeof asked.requestId === 'string') {
-    return await pollingAJoin(db, request, asked.requestId.trim(), theirDevice, now)
+    return await pollingAJoin(db, request, asked.requestId.trim(), theirDevice, now, opts)
   }
   if (typeof asked.code !== 'string') {
     return askingToJoin(theirDevice, asked.label ?? null, now)
@@ -336,7 +353,7 @@ async function handlePair(
   if (!constantTimeEquals(live.code, given)) return refuse(403, 'WRONG_CODE')
 
   return await letThemIn(
-    db, request, theirDevice, asked.label ?? null, mintSecret(), now,
+    db, request, theirDevice, asked.label ?? null, mintSecret(), now, opts,
     typeof asked.fingerprint === 'string' ? asked.fingerprint : null,
   )
 }
@@ -388,6 +405,7 @@ async function pollingAJoin(
   requestId: string,
   theirDevice: string,
   now: number,
+  opts: SyncServerOptions,
 ): Promise<SyncResponse> {
   const live = pending
   /* Answering about somebody else's request would tell a stranger on the wifi
@@ -403,7 +421,7 @@ async function pollingAJoin(
      that a reply lost on the way back is a poll that can be repeated rather
      than a shop holding half a pairing. */
   live.secret ??= mintSecret()
-  return await letThemIn(db, request, theirDevice, live.label, live.secret, now)
+  return await letThemIn(db, request, theirDevice, live.label, live.secret, now, opts)
 }
 
 /**
@@ -417,9 +435,23 @@ async function letThemIn(
   label: string | null,
   secret: string,
   now: number,
+  opts: SyncServerOptions,
   /** Kept and never consulted. Migration 047 says why it is taken now. */
   fingerprint: string | null = null,
 ): Promise<SyncResponse> {
+  /* The one place a till becomes a peer, whichever way it got here, and so the
+     one place the multi-till plan is checked. The button on the other screen
+     checks too, and that check is the one a person sees — but a UI gate is a
+     suggestion to anyone who can post to this port, and this is the row that
+     matters.
+
+     Deliberately *not* checked anywhere rows move: `handleHello`, `handleFetch`
+     and `handleOffer` never ask. A lapsed shop keeps every till it has and
+     goes on merging, because billing never stops and two counters that take
+     money without merging would corrupt the books in a way nobody notices for
+     weeks. See the note above GATED in `domain/licence.ts`. */
+  if (!await entitled(db, 'multiTill', opts)) return refuse(403, 'NEEDS_MULTI_TILL')
+
   /* The address, here, at the one moment both tills are certainly talking.
      Without it the joining till is recorded as a peer that cannot be reached,
      which reads on every later screen as a till that is paired and quiet. */

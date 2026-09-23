@@ -23,24 +23,61 @@ rule that makes the rest of the design simple: because nothing has to be
 blocked, nothing has to be enforced, and the whole licensing system is allowed
 to fail open.
 
-What a licence gates is the four things that cost the vendor money per shop
-per month:
+What a licence gates:
 
 | Gated | Needs |
 |---|---|
+| `multiTill` | multi |
 | `cloudPeer` | cloud |
 | `phoneView` | cloud |
 | `diagnosticsUpload` | cloud |
 | `branches` | branches |
 
-That list is asserted in `licencePlaceholders.test.ts`, so adding a fifth
-entry means changing a test that says out loud what the list is for. A bill, a
-print, a backup, the LAN, a report — none of them can ever appear on it.
+That list is asserted in `licencePlaceholders.test.ts`, so adding a sixth entry
+means changing a test that says out loud what the list is for. A bill, a print,
+a backup, a report — none of them can ever appear on it.
 
-Over-running the till count is the same shape: `overTillLimit` returns *how
-many over*, and nothing turns that number into a refusal. A shop that opens a
-fourth counter on a Saturday has not done anything wrong; it has done
-something to invoice for on Monday.
+### `multiTill` broke the old rule on purpose
+
+The rule used to be "it gates only what costs the vendor money per shop per
+month". A second counter costs the vendor nothing — it is peer to peer, on the
+shop's own wire. It is gated anyway, and the honest statement is now: **a
+licence gates what the vendor sells, and never anything a shop needs to take
+money.**
+
+The reason is that the four features above are Phase 6 and Phase 7 and none of
+them is built, so a licence gated nothing that existed and there was no product
+to sell. A second counter is built, works, and is the thing a shopkeeper can
+see the value of.
+
+### What it must never mean
+
+**It gates adding a till. It never gates syncing with one already added.**
+
+Billing does not stop when a licence lapses — it must not, it is the first rule
+— so a lapse that stopped sync would leave a shop taking money on two counters
+that never merged. Neither screen would say anything, because a peer that has
+gone quiet looks like a peer that has gone quiet. Weeks later the stock, the
+credit book and every report in between are wrong on both machines, and nobody
+connects that to a renewal date.
+
+So the gate sits on the door and not the wire:
+
+| Checked | Never checked |
+|---|---|
+| `letThemIn` (`syncServer.ts`) — the one place a till becomes a peer | `serveIfPaired` — answering peers already known |
+| "Add a till" in `SyncCard` — so the refusal reaches the person | `syncWith`, `handleFetch`, `handleOffer` — rows moving |
+
+The UI check is the one a person sees; the `letThemIn` check is the one that
+holds, because a UI gate is a suggestion to anyone who can post to the port.
+`multiTillGate.test.ts` holds both halves, and its most important test is
+`keeps a shop that has lapsed running`.
+
+Over-running the till count is a different shape and deliberately toothless:
+`overTillLimit` returns *how many over*, and nothing turns that number into a
+refusal. `tills` in the payload stays advisory — any paid plan is unlimited
+counters. A shop that opens a fourth counter on a Saturday has not done
+anything wrong; it has done something to talk about on Monday.
 
 ---
 
