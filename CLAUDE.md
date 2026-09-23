@@ -36,7 +36,7 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 ## Working agreements
 
 - `npm test` from the root runs every project -- core, the app, the portal and
-  both benches (1,942 tests). Types: `npm run typecheck`, which covers all five.
+  both benches (1,944 tests). Types: `npm run typecheck`, which covers all five.
 - A licence never stops a shop billing. It gates only what costs the vendor
   money per shop per month, and that list is asserted in a test. Everything
   unconfigured fails closed and names the file to edit -- `NOT_CONFIGURED`,
