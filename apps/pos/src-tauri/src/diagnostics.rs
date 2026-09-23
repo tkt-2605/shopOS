@@ -47,7 +47,7 @@ use crate::paths::{self, DB_FILE};
 /// Everything not on this list is reported as set-or-not with its length, which
 /// is enough to answer "is a hook configured and roughly how long is it"
 /// without carrying the value itself.
-const SAFE_SETTINGS: [&str; 6] = [
+const SAFE_SETTINGS: [&str; 7] = [
     "thermal_printer",
     "backup_folder",
     "ui_density",
@@ -56,6 +56,12 @@ const SAFE_SETTINGS: [&str; 6] = [
     // A date and a count; the sort of thing a support call opens with.
     "stock_checked_at",
     "stock_drift",
+    // The latest instant this machine has ever seen. Not a secret, and it is
+    // the answer to "why does the licence say it ran out last year" — a flat
+    // CMOS battery reads as a date before every date in the database.
+    // Withheld, it would arrive as `<redacted, length 24>`, which tells a
+    // support engineer that a timestamp exists and nothing about what it says.
+    "clock_high_water",
 ];
 
 /// Audit rows carried. Enough to cover the morning a problem appeared, small

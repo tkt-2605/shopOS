@@ -301,7 +301,7 @@ POST /v1/licences               issue one (admin token)
 GET  /v1/shops/:id/tills        counters seen in the last 30 days (owner only)
 ```
 
-No framework and no dependency: nine routes, and `handle` is a function from
+No framework and no dependency: eight routes, and `handle` is a function from
 request to response that the tests call directly. `server.ts` binds it to
 `node:http` and is the only file that would change to put it somewhere else.
 
@@ -320,5 +320,11 @@ knows its own origin.
 - The portal has no account → shop linkage flow yet; `shops.account_id` exists
   and `GET /v1/shops/:id/tills` reads it, but nothing writes it except a test.
   That is Phase 6's `POST /v1/shops/:id/cloud`.
-- The licence card in Settings is not built. `entitlement()` and
-  `installToken()` are what it will call.
+- `PORTAL_BASE_URL` has no call sites. Nothing in the till ever fetches
+  `GET /v1/licence/:shopId`, so copy-paste is the only way a licence travels.
+  That is not an oversight waiting to be tidied: a till reaching the portal is
+  blocked by the same two things as the cloud tier — the path allowlist at
+  `sync_client.rs:39`, and `crates/shopos-net` having no TLS at all. It
+  unblocks with Phase 6 Stage 5 and not before.
+- The OAuth helpers — `beginOAuth`, `linkIdentity`, `accountForIdentity` — have
+  no routes. The seam is built and nothing calls through it.

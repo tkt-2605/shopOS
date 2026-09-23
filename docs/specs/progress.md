@@ -9,7 +9,7 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,841 TypeScript tests** passing and **none skipped**,
+State of the tree: **1,942 TypeScript tests** passing and **none skipped**,
 across 146 files, **122 Rust tests** passing with a clean build, typecheck clean
 across core, app, the portal and both bench packages, the app bundling clean, and
 Layer 2 of the test bench green in Docker. Schema at **49**.
@@ -812,7 +812,7 @@ version:
   a reason to close a shop.
 - **`apps/portal`** is new: owner accounts by phone and a six-digit code,
   licence issuing, and the routes a till and a phone will use. No framework
-  and no dependency — nine routes and `node:http`.
+  and no dependency — eight routes and `node:http`.
 - **OTP delivery is a seam.** Telegram's Gateway API is written and needs only
   a token; SMS and WhatsApp are placeholders with the paperwork each one needs
   written above it. The portal always sends *its own* code rather than letting

@@ -87,15 +87,29 @@ vi.mock('../src/core/exportFile', () => ({
 const core: { db: SqlDriver | null; user: { id: string } | null } = { db: null, user: { id: 'u1' } }
 vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core }))
 
+/* The machine's own store, which is where the clock high-water mark lives. The
+   real one talks to Tauri; what matters here is that the card reads the same
+   store `witnessClock` writes to, so a wrong clock can reach the screen. */
+const machine = new Map<string, string>()
+vi.mock('../src/core/device', () => ({
+  deviceStore: () => ({
+    has: (key: string) => machine.get(key) ?? null,
+    put: async (key: string, value: string) => { machine.set(key, value); return true },
+  }),
+}))
+
 const { LicenceCard } = await import('../src/ui/LicenceCard')
 
-async function freshTill(shopId = 'shop-1'): Promise<SqlDriver> {
+async function freshTill(shopId: string | null = 'shop-1'): Promise<SqlDriver> {
   const db = openMemoryDatabase()
   await migrate(db, MIGRATIONS)
-  await db.execute(
-    'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)',
-    ['shop_id', shopId, new Date().toISOString()],
-  )
+  // null on purpose: a till part-way through setting up has no shop id yet.
+  if (shopId !== null) {
+    await db.execute(
+      'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)',
+      ['shop_id', shopId, new Date().toISOString()],
+    )
+  }
   return db
 }
 
@@ -115,13 +129,13 @@ async function paste(code: string) {
 }
 
 const opened: SqlDriver[] = []
-beforeEach(() => { clipboard.length = 0; saved = null })
+beforeEach(() => { clipboard.length = 0; saved = null; machine.clear() })
 afterEach(async () => {
   cleanup()
   for (const db of opened.splice(0)) await db.close()
 })
 
-async function till(shopId = 'shop-1'): Promise<SqlDriver> {
+async function till(shopId: string | null = 'shop-1'): Promise<SqlDriver> {
   const db = await freshTill(shopId)
   opened.push(db)
   return db
@@ -136,6 +150,78 @@ describe('a till with no licence', () => {
        as a warning that something is broken, the card is wrong. */
     expect(screen.getByText(/counter works without one/i)).toBeTruthy()
     expect(screen.queryByLabelText("This shop's licence code")).toBeNull()
+  })
+})
+
+describe('the shop id', () => {
+  /**
+   * The id `portal issue --shop <id>` needs. It was minted at setup, read in
+   * five places in the code and shown in none, so issuing a licence to a real
+   * shop began with reading a `settings` row over somebody's shoulder.
+   */
+
+  it('is on screen before anything has been bought', async () => {
+    /* With no licence, which is the only state the shop is in when it is
+       about to buy one. Showing it only once a code is installed would put it
+       exactly where it is not needed. */
+    await show(await till('019402f1-7c3a-7bd2-9e11-4a1c8f0d5b62'))
+
+    expect(screen.getByText('No licence code on this till')).toBeTruthy()
+    const box = screen.getByLabelText("This shop's id") as HTMLInputElement
+    expect(box.value).toBe('019402f1-7c3a-7bd2-9e11-4a1c8f0d5b62')
+  })
+
+  it('copies exactly, with nothing round it', async () => {
+    /* It gets pasted into a command line. A stray newline makes
+       `--shop <id>` name a shop that does not exist, and the licence that
+       comes back is refused as WRONG_SHOP by the till that asked for it. */
+    await show(await till('019402f1-7c3a-7bd2-9e11-4a1c8f0d5b62'))
+
+    const button = await screen.findByRole('button', { name: 'Copy the id' })
+    await act(async () => { fireEvent.click(button) })
+
+    expect(clipboard).toEqual(['019402f1-7c3a-7bd2-9e11-4a1c8f0d5b62'])
+  })
+
+  it('saves to its own file, not over the licence', async () => {
+    await show(await till('shop-1'))
+
+    const button = await screen.findByRole('button', { name: 'Save the id to a file' })
+    await act(async () => { fireEvent.click(button) })
+
+    expect(saved).toEqual({ filename: 'shopos-shop-id.txt', contents: 'shop-1' })
+  })
+
+  it('says so when this till has not been set up', async () => {
+    /* A real state, not a bug: `sync.ts` lets a till with no shop id join any
+       shop. An empty box would read as something broken. */
+    await show(await till(null))
+
+    expect(screen.getByText(/finish setting up this till first/i)).toBeTruthy()
+    expect(screen.queryByLabelText("This shop's id")).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy the id' })).toBeNull()
+  })
+})
+
+describe('the clock', () => {
+  it('warns when this machine is set before a date it has already seen', async () => {
+    /* The whole point of wiring the device store into the card. Until it was,
+       `clockUnreliable` was hard-false and this sentence could never appear,
+       however wrong the machine's date was. */
+    const ahead = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString()
+    machine.set('clock_high_water', ahead)
+
+    await show(await till())
+
+    expect(screen.getByText(/date looks wrong/i)).toBeTruthy()
+  })
+
+  it('says nothing when the machine has seen no later date', async () => {
+    machine.set('clock_high_water', new Date(Date.now() - 60_000).toISOString())
+
+    await show(await till())
+
+    expect(screen.queryByText(/date looks wrong/i)).toBeNull()
   })
 })
 

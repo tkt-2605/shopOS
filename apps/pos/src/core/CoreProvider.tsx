@@ -7,7 +7,7 @@ import {
 } from '@shopos/core'
 import {
   DEVICE_LOCAL_KEYS, chooseRegister, chosenRegister, deviceSetting,
-  establishDevice, recordStranded, setDeviceSetting,
+  deviceStore, establishDevice, recordStranded,
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
@@ -21,7 +21,7 @@ import {
   isFirstRun, firstRun, seedDemoData, applyUpgrades, login, pairWith, askToJoin, pollJoin,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister, claimIfUnclaimed,
   renewClaim,
-  moveSettingsToDevice, resetSyncState,
+  moveSettingsToDevice, resetSyncState, witnessClock,
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
@@ -218,6 +218,14 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
        in afterwards. */
     await establishDevice()
 
+    /* The latest instant this machine has ever seen, recorded on the machine
+       rather than in the shop's database — replicating it would let the till
+       with the furthest-wrong clock poison every other till's idea of the time.
+       Here rather than later because a start is exactly the moment worth
+       witnessing, and it touches no table, so it does not wait on `migrate`.
+       Never throws: a machine that cannot record the date still sells. */
+    await witnessClock(deviceStore())
+
     /* Every migration, as it commits. An upgrade is the most dangerous thing
        this program does to a shop's data and it used to happen in silence: if a
        till came back wrong after an update there was no way to tell which
@@ -255,10 +263,7 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
  * `moveSettingsToDevice` where it is tested.
  */
 async function adoptDeviceSettings(db: SqlDriver): Promise<void> {
-  const { stranded } = await moveSettingsToDevice(db, DEVICE_LOCAL_KEYS, {
-    has: deviceSetting,
-    put: setDeviceSetting,
-  })
+  const { stranded } = await moveSettingsToDevice(db, DEVICE_LOCAL_KEYS, deviceStore())
   // Left in the shared table on purpose; the next start tries again. Recorded
   // rather than only logged, because what the shopkeeper actually sees when this
   // fails is a till that printed somewhere else and stopped backing up.

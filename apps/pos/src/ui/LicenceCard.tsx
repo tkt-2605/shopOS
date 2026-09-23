@@ -4,6 +4,7 @@ import {
   UNLICENSED, type Entitlement,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
+import { deviceStore } from '../core/device'
 import { licenceLine, clockLine, installProblem, prettyDate, tierName, type LicenceLine } from '../core/licenceWords'
 import { copyText } from '../core/clipboard'
 import { saveFile } from '../core/exportFile'
@@ -29,6 +30,17 @@ import { useConfirm } from './useConfirm'
  * it. A card that can only swallow codes turns each of those into a database
  * question.
  *
+ * ## The shop id, which has to be here
+ *
+ * A licence is issued to one shop, and `portal issue --shop <id>` needs that
+ * id before a code can exist at all. It is minted once in `bootstrap.ts` and
+ * read in five places in the code — and until this card showed it, in none on
+ * screen. Which meant selling a licence to a real shop began with somebody
+ * remoting in to read a `settings` row.
+ *
+ * So it is shown **always**, including with no licence installed. That is
+ * precisely the moment it is needed: before anything has been bought.
+ *
  * ## What it never does
  *
  * It does not gate anything. There is no state of this card in which the
@@ -44,17 +56,22 @@ export function LicenceCard() {
 
   const [state, setState] = useState<Entitlement>(UNLICENSED)
   const [code, setCode] = useState<string | null>(null)
+  const [shopId, setShopId] = useState<string | null>(null)
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<LicenceLine | null>(null)
   const [said, setSaid] = useState('')
 
   const reload = useCallback(async () => {
-    setState(await entitlement(db))
+    /* With the device store, so `clockUnreliable` is actually computed. Without
+       it the answer is hard-false and `clockLine` below can never say anything
+       — which is what this card did until the witness was wired up. */
+    setState(await entitlement(db, { device: deviceStore() }))
     const held = await storedToken(db)
     /* The stored string, not the parsed token: what a person has to paste
        somewhere else is the code exactly as it arrived. */
     setCode(held === null ? null : (await rawToken(db)))
+    setShopId(await shopIdOf(db))
   }, [db])
 
   useEffect(() => { void reload() }, [reload])
@@ -96,6 +113,19 @@ export function LicenceCard() {
     say(result.ok ? `Saved to ${result.path}` : result.message)
   }, [code, say])
 
+  const copyId = useCallback(async () => {
+    if (shopId === null) return
+    say(await copyText(shopId) ? 'Shop id copied.' : 'Could not reach the clipboard.')
+  }, [shopId, say])
+
+  const saveId = useCallback(async () => {
+    if (shopId === null) return
+    /* A file as well as the clipboard, because the machine that has the id is
+       often not the machine the message gets sent from. */
+    const result = await saveFile('shopos-shop-id.txt', shopId)
+    say(result.ok ? `Saved to ${result.path}` : result.message)
+  }, [shopId, say])
+
   const remove = useCallback(async () => {
     const yes = await ask({
       title: 'Remove this licence code?',
@@ -122,6 +152,36 @@ export function LicenceCard() {
       </Alert>
 
       {clock !== '' && <Alert kind="warn">{clock}</Alert>}
+
+      <Field
+        label="This shop's id"
+        hint="Tell us this when you buy or renew a licence. A licence is issued to one shop."
+      >
+        {shopId === null ? (
+          /* A real state, not a bug: `sync.ts` lets a till with no shop id join
+             any shop, so a till part-way through setting up has not got one.
+             Saying so beats an empty box somebody reads as broken. */
+          <div className="hint">Not set up yet — finish setting up this till first.</div>
+        ) : (
+          <>
+            <input
+              readOnly
+              value={shopId}
+              className="num"
+              aria-label="This shop's id"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <div className="row" style={{ gap: 8, marginTop: 8 }}>
+              <button type="button" className="btn" onClick={() => { void copyId() }}>
+                Copy the id
+              </button>
+              <button type="button" className="btn" onClick={() => { void saveId() }}>
+                Save the id to a file
+              </button>
+            </div>
+          </>
+        )}
+      </Field>
 
       {state.problem === null && state.state !== 'none' && (
         <div className="row" style={{ gap: 24, marginTop: 12 }}>
@@ -204,6 +264,14 @@ export function LicenceCard() {
 async function rawToken(db: Parameters<typeof entitlement>[0]): Promise<string | null> {
   const row = await db.get<{ value: string }>(
     'SELECT value FROM settings WHERE key = ?', ['licence_token'],
+  )
+  return row?.value ?? null
+}
+
+/** Which shop this is, as `portal issue --shop` and the licence both mean it. */
+async function shopIdOf(db: Parameters<typeof entitlement>[0]): Promise<string | null> {
+  const row = await db.get<{ value: string }>(
+    'SELECT value FROM settings WHERE key = ?', ['shop_id'],
   )
   return row?.value ?? null
 }
