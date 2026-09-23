@@ -241,6 +241,17 @@ const NEEDS: Record<GatedFeature, Tier> = {
 const RANK: Record<Tier, number> = { single: 0, multi: 1, cloud: 2, branches: 3 }
 
 /**
+ * Where a tier sits on the ladder, for a caller that has to pick between two.
+ *
+ * Exported so that nothing outside this file writes the ranking down a second
+ * time. A duplicated ladder is one that drifts the day a tier is inserted in
+ * the middle, and it drifts silently: both copies still compile.
+ */
+export function tierRank(tier: Tier): number {
+  return RANK[tier]
+}
+
+/**
  * Whether a shop in this state may use a gated feature.
  *
  * `grace` says yes. That is the whole point of a grace period: the month the
@@ -251,6 +262,30 @@ export function allows(
 ): boolean {
   if (entitlement.state === 'none' || entitlement.state === 'lapsed') return false
   return RANK[entitlement.tier] >= RANK[NEEDS[feature]]
+}
+
+/**
+ * The same question asked of a shop holding several licences.
+ *
+ * A shop can hold more than one because the things it buys have different
+ * clocks. A second counter costs the vendor nothing to keep running, so it is
+ * sold once and never expires. The cloud costs money every month, so it
+ * recurs. One token cannot say both: it carries one `tier` and one
+ * `paidThrough`.
+ *
+ * Held in one token, the consequence was that a shop which bought the counter
+ * outright and later let its cloud subscription lapse **lost the counter it
+ * had paid for** — because a lapsed token allows nothing, whatever its tier.
+ * That is the kind of thing a shopkeeper tells other shopkeepers about.
+ *
+ * So each purchase is its own signed code and this is an `any`. A lapsed code
+ * contributes nothing and takes nothing away, because it was never what the
+ * other code was resting on.
+ */
+export function allowsAny(
+  grants: readonly { tier: Tier; state: LicenceState }[], feature: GatedFeature,
+): boolean {
+  return grants.some((grant) => allows(grant, feature))
 }
 
 /**

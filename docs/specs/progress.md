@@ -9,7 +9,7 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
-State of the tree: **1,954 TypeScript tests** passing and **none skipped**,
+State of the tree: **1,969 TypeScript tests** passing and **none skipped**,
 across 146 files, **122 Rust tests** passing with a clean build, typecheck clean
 across core, app, the portal and both bench packages, the app bundling clean, and
 Layer 2 of the test bench green in Docker. Schema at **49**.

@@ -4,7 +4,7 @@ import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { businessDate } from '../dates.js'
 import type { DeviceStore } from './deviceSettings.js'
 import {
-  verifyToken, readTokenUnverified, stateOf, allows, overTillLimit,
+  verifyToken, readTokenUnverified, stateOf, allowsAny, overTillLimit, tierRank,
   GRACE_DAYS, type LicenceToken, type LicenceState, type Tier,
   type GatedFeature, type SigningKey, type VerifyFailure,
 } from '../domain/licence.js'
@@ -49,7 +49,35 @@ const HIGH_WATER = 'clock_high_water'
 /** How far behind its own high-water mark a clock may be before it is doubted. */
 export const CLOCK_SLACK_MS = 24 * 60 * 60 * 1000
 
+/**
+ * One licence a shop holds.
+ *
+ * A shop holds a set of these rather than one, because what it buys has two
+ * different clocks: a second counter is bought once and never expires, the
+ * cloud recurs every year. `allowsAny` in `domain/licence.ts` carries the
+ * argument for why that cannot be one token.
+ */
+export interface Grant {
+  tier: Tier
+  state: LicenceState
+  /** Business date, or null for perpetual. */
+  paidThrough: string | null
+  graceUntil: string | null
+  tills: number
+  /** The shop the code names. Every grant here names this one. */
+  shopId: string
+  /** The code exactly as it was pasted, for showing and copying back out. */
+  raw: string
+}
+
 export interface Entitlement {
+  /**
+   * Every licence on this till that verified and names this shop, newest
+   * paste last. This is the truth; the fields under it are conveniences
+   * derived from it for a screen that wants one headline.
+   */
+  grants: readonly Grant[]
+  /** The best grant currently in force, or `single`/`none` when there is none. */
   tier: Tier
   state: LicenceState
   /** Business date, or null for perpetual and for no licence at all. */
@@ -74,7 +102,7 @@ export interface Entitlement {
 
 /** A shop with no licence at all. The till works; the paid services do not. */
 export const UNLICENSED: Entitlement = {
-  tier: 'single', state: 'none', paidThrough: null, graceUntil: null,
+  grants: [], tier: 'single', state: 'none', paidThrough: null, graceUntil: null,
   tills: 1, clockUnreliable: false, shopId: null, problem: null,
 }
 
@@ -102,47 +130,106 @@ export async function entitlement(
   const keys = opts.keys ?? LICENCE_KEYS
   const clockUnreliable = opts.device === undefined ? false : clockLooksWrong(opts.device, now)
 
-  const raw = await getSetting(db, TOKEN)
-  if (raw === null || raw.trim() === '') return { ...UNLICENSED, clockUnreliable }
+  const codes = await storedCodes(db)
+  if (codes.length === 0) return { ...UNLICENSED, clockUnreliable }
 
-  const verified = await verifyToken(raw, keys)
-  if (!verified.ok) {
-    return {
-      ...UNLICENSED,
-      clockUnreliable,
-      shopId: readTokenUnverified(raw)?.shopId ?? null,
-      problem: verified.code,
-    }
-  }
-
-  const token = verified.token
   const mine = await getSetting(db, 'shop_id')
-  /* A licence for another shop is a restored backup or a copied code, and it
-     entitles this shop to nothing. It is kept rather than deleted so the
-     screen can say whose it is. */
-  if (mine !== null && token.shopId !== mine) {
-    return { ...UNLICENSED, clockUnreliable, shopId: token.shopId, problem: 'WRONG_SHOP' }
+  const today = businessDate(now)
+  const graceDays = opts.graceDays ?? GRACE_DAYS
+
+  const grants: Grant[] = []
+  let problem: Entitlement['problem'] = null
+  let problemShop: string | null = null
+
+  for (const raw of codes) {
+    const verified = await verifyToken(raw, keys)
+    if (!verified.ok) {
+      /* The first thing wrong, kept so the screen can say it. Later codes are
+         still read: one bad paste must not hide a licence that is fine. */
+      problem ??= verified.code
+      problemShop ??= readTokenUnverified(raw)?.shopId ?? null
+      continue
+    }
+
+    const token = verified.token
+    /* A licence for another shop is a restored backup or a copied code, and it
+       entitles this shop to nothing. It is kept rather than deleted so the
+       screen can say whose it is. */
+    if (mine !== null && token.shopId !== mine) {
+      problem ??= 'WRONG_SHOP'
+      problemShop ??= token.shopId
+      continue
+    }
+
+    const { state, graceUntil } = stateOf(token, today, graceDays)
+    grants.push({
+      tier: token.tier,
+      state,
+      paidThrough: token.paidThrough,
+      graceUntil,
+      tills: token.tills,
+      shopId: token.shopId,
+      raw,
+    })
   }
 
-  const { state, graceUntil } = stateOf(token, businessDate(now), opts.graceDays ?? GRACE_DAYS)
+  if (grants.length === 0) {
+    return { ...UNLICENSED, clockUnreliable, shopId: problemShop, problem }
+  }
 
+  const best = headline(grants)
   return {
-    tier: token.tier,
-    state,
-    paidThrough: token.paidThrough,
-    graceUntil,
-    tills: token.tills,
+    grants,
+    tier: best.tier,
+    state: best.state,
+    paidThrough: best.paidThrough,
+    graceUntil: best.graceUntil,
+    /* The most any one licence paid for, not the sum. Two codes are two
+       purchases of different things, not two bundles of counters. */
+    tills: Math.max(...grants.map((g) => g.tills)),
     clockUnreliable,
-    shopId: token.shopId,
-    problem: null,
+    shopId: best.shopId,
+    problem,
   }
+}
+
+/**
+ * The one grant a screen should lead with.
+ *
+ * The best that is actually in force, so a shop holding a perpetual
+ * multi-counter licence and a cloud one that ran out reads as what it is —
+ * still licensed — rather than as lapsed. When nothing is in force it falls
+ * back to the highest-ranked grant anyway, because then "ran out" is exactly
+ * what the shop needs to be told.
+ */
+function headline(grants: readonly Grant[]): Grant {
+  const live = grants.filter((g) => g.state === 'active' || g.state === 'grace')
+  const from = live.length > 0 ? live : grants
+  return from.reduce((best, g) => (tierRank(g.tier) > tierRank(best.tier) ? g : best), from[0]!)
 }
 
 /** Whether a gated feature may be used. See `domain/licence.ts` for the list. */
 export async function entitled(
   db: SqlDriver, feature: GatedFeature, opts: EntitlementOptions = {},
 ): Promise<boolean> {
-  return allows(await entitlement(db, opts), feature)
+  /* Asked of every grant, not of the headline. A shop holding a perpetual
+     multi-counter code and a cloud code that ran out is still entitled to the
+     counter, and asking only the best one would take it away. */
+  return allowsAny((await entitlement(db, opts)).grants, feature)
+}
+
+/**
+ * The codes on this till, in the order they were pasted.
+ *
+ * Stored newline-separated in the one setting. A licence code is base64url
+ * and a dot, so a newline can never appear inside one and needs no escaping —
+ * and a single code is just a list of one, which is why a till that was
+ * holding one before this existed reads correctly with no migration.
+ */
+export async function storedCodes(db: SqlDriver): Promise<string[]> {
+  const raw = await getSetting(db, TOKEN)
+  if (raw === null) return []
+  return raw.split('\n').map((line) => line.trim()).filter((line) => line !== '')
 }
 
 export type InstallResult =
@@ -179,7 +266,23 @@ export async function installToken(
     const before = await getSetting(tx, TOKEN)
     const now = (opts.now ?? new Date()).toISOString()
 
-    await setSetting(tx, TOKEN, trimmed, now)
+    /* Added to what is there, not put in its place — a shop can hold a
+       perpetual multi-counter licence and a cloud one that renews yearly, and
+       pasting the renewal must not throw the perpetual one away.
+
+       One exception: a code for a tier already held replaces that one, because
+       that is what a renewal is. Keeping both would leave last year's date on
+       the card next to this year's with nothing to say which is meant. */
+    const others: string[] = []
+    for (const code of await storedCodes(tx)) {
+      if (code === trimmed) continue
+      const existing = readTokenUnverified(code)
+      if (existing !== null && existing.tier === token.tier) continue
+      others.push(code)
+    }
+    const next = [...others, trimmed]
+
+    await setSetting(tx, TOKEN, next.join('\n'), now)
     await setSetting(tx, INSTALLED_AT, now, now)
 
     await writeAudit(tx, ctx, {
@@ -202,27 +305,56 @@ export async function installToken(
  * Removing one costs the shop only the paid services, which is why it does
  * not need a confirmation dialog the way the destructive actions do.
  */
-export async function removeToken(db: SqlDriver, ctx: AuditContext): Promise<void> {
+export async function removeToken(
+  db: SqlDriver, ctx: AuditContext,
+  /** One code, or every code when it is left out. */
+  code?: string,
+): Promise<void> {
   await db.transaction(async (tx) => {
     const before = await getSetting(tx, TOKEN)
     if (before === null) return
 
-    await forgetSetting(tx, TOKEN)
-    await forgetSetting(tx, INSTALLED_AT)
+    const wanted = code?.trim()
+    const left = wanted === undefined
+      ? []
+      : (await storedCodes(tx)).filter((held) => held !== wanted)
+
+    /* Nothing matched, so nothing happened. Said explicitly rather than
+       falling through to writing the same list back, which would leave an
+       audit row claiming a licence was removed when none was. */
+    if (wanted !== undefined && left.length === (await storedCodes(tx)).length) return
+
+    if (left.length === 0) {
+      await forgetSetting(tx, TOKEN)
+      await forgetSetting(tx, INSTALLED_AT)
+    } else {
+      await setSetting(tx, TOKEN, left.join('\n'), new Date().toISOString())
+    }
+
     await writeAudit(tx, ctx, {
       entity: 'licence',
-      entityId: readTokenUnverified(before)?.shopId ?? 'unknown',
+      entityId: readTokenUnverified(wanted ?? before)?.shopId ?? 'unknown',
       action: 'delete',
-      before: { token: before },
-      after: null,
+      before: { token: wanted ?? before },
+      after: left.length === 0 ? null : { remaining: left.length },
     })
   })
 }
 
-/** The stored token as typed, for the licence card and the diagnostics bundle. */
+/**
+ * The best token on this till, parsed and unverified.
+ *
+ * Singular, and kept singular, because its two callers — the diagnostics
+ * bundle and `tillOverage` — both want one answer rather than a list. Which
+ * one: the highest tier held, since that is the one that describes what the
+ * shop bought. `storedCodes` is there for anything that needs all of them.
+ */
 export async function storedToken(db: SqlDriver): Promise<LicenceToken | null> {
-  const raw = await getSetting(db, TOKEN)
-  return raw === null ? null : readTokenUnverified(raw)
+  const parsed = (await storedCodes(db))
+    .map(readTokenUnverified)
+    .filter((token): token is LicenceToken => token !== null)
+  if (parsed.length === 0) return null
+  return parsed.reduce((best, t) => (tierRank(t.tier) > tierRank(best.tier) ? t : best), parsed[0]!)
 }
 
 /** How many tills the shop is running over what it has paid for. Never blocks. */

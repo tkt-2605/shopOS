@@ -27,3 +27,7 @@ docs/specs/evidence/layer3-*/
 
 # Virtual tills started by hand for trying two shops against each other.
 tills/
+
+# Scratch that keeps getting swept into commits.
+docs/specs.zip
+*.stackdump

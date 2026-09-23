@@ -35,12 +35,36 @@ export function prettyDate(iso: string | null): string {
 
 const TIER_NAME: Record<string, string> = {
   single: 'One counter',
+  multi: 'More counters',
   cloud: 'Cloud',
   branches: 'Branches',
 }
 
 export function tierName(tier: string): string {
   return TIER_NAME[tier] ?? tier
+}
+
+/**
+ * What one licence in the list says about itself, in a few words.
+ *
+ * A shop can hold more than one, with different clocks: the counters were
+ * bought once and do not expire, the cloud renews. So "does not expire" has to
+ * be sayable next to a date, on the same card, without either looking wrong.
+ */
+export function grantLine(
+  grant: { tier: string; state: string; paidThrough: string | null; graceUntil: string | null },
+): string {
+  if (grant.state === 'active') {
+    return grant.paidThrough === null
+      ? 'Bought outright. Does not expire.'
+      : `Paid to ${prettyDate(grant.paidThrough)}.`
+  }
+  if (grant.state === 'grace') {
+    return `Ran out ${prettyDate(grant.paidThrough)}. Still working until `
+      + `${prettyDate(grant.graceUntil)}.`
+  }
+  if (grant.state === 'lapsed') return `Ran out ${prettyDate(grant.paidThrough)}.`
+  return ''
 }
 
 /**

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   entitlement, installToken, removeToken, storedToken,
-  UNLICENSED, type Entitlement,
+  UNLICENSED, type Entitlement, type Grant,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { deviceStore } from '../core/device'
-import { licenceLine, clockLine, installProblem, prettyDate, tierName, type LicenceLine } from '../core/licenceWords'
+import {
+  licenceLine, clockLine, installProblem, tierName, grantLine, type LicenceLine,
+} from '../core/licenceWords'
 import { copyText } from '../core/clipboard'
 import { saveFile } from '../core/exportFile'
 import { Card, Field, Alert } from './components'
@@ -113,6 +115,10 @@ export function LicenceCard() {
     say(result.ok ? `Saved to ${result.path}` : result.message)
   }, [code, say])
 
+  const copyOne = useCallback(async (grant: Grant) => {
+    say(await copyText(grant.raw) ? 'Code copied.' : 'Could not reach the clipboard.')
+  }, [say])
+
   const copyId = useCallback(async () => {
     if (shopId === null) return
     say(await copyText(shopId) ? 'Shop id copied.' : 'Could not reach the clipboard.')
@@ -126,15 +132,18 @@ export function LicenceCard() {
     say(result.ok ? `Saved to ${result.path}` : result.message)
   }, [shopId, say])
 
-  const remove = useCallback(async () => {
+  const remove = useCallback(async (grant: Grant) => {
     const yes = await ask({
-      title: 'Remove this licence code?',
+      title: `Remove the ${tierName(grant.tier).toLowerCase()} code?`,
+      /* Names the one being removed, because a shop can hold more than one and
+         "remove this licence" beside a list of two says nothing about which. */
       message: 'The counter is unaffected — billing, printing and backups all carry '
-        + 'on. The cloud features stop until a code is pasted again.',
+        + 'on. Only what this code paid for stops, and only until it is pasted '
+        + 'again. Any other code on this till is untouched.',
       confirmLabel: 'Remove it',
     })
     if (!yes) return
-    await removeToken(db, { actorId: user?.id ?? null })
+    await removeToken(db, { actorId: user?.id ?? null }, grant.raw)
     await reload()
     say('Licence removed.')
   }, [db, user, ask, reload, say])
@@ -183,23 +192,44 @@ export function LicenceCard() {
         )}
       </Field>
 
-      {state.problem === null && state.state !== 'none' && (
-        <div className="row" style={{ gap: 24, marginTop: 12 }}>
-          <Field label="Plan"><div>{tierName(state.tier)}</div></Field>
-          <Field label="Counters paid for">
-            <div>{state.tills}</div>
-          </Field>
-          {state.paidThrough !== null && (
-            <Field label={state.state === 'active' ? 'Paid to' : 'Ran out'}>
-              <div>{prettyDate(state.paidThrough)}</div>
-            </Field>
-          )}
-        </div>
+      {state.grants.length > 0 && (
+        <Field
+          label={state.grants.length === 1 ? 'What this shop has' : 'What this shop has bought'}
+          hint="Each code is one thing bought. They are kept separately because they
+                do not all run out at the same time — some never do."
+        >
+          {state.grants.map((grant) => (
+            <div
+              key={grant.raw}
+              className="row"
+              style={{ gap: 12, alignItems: 'baseline', marginBottom: 10 }}
+            >
+              <div style={{ minWidth: 140 }}><strong>{tierName(grant.tier)}</strong></div>
+              {/* The sentence only when there is more than one. With a single
+                  licence the alert above has already said it, and the same
+                  words twice on one card reads as a mistake. */}
+              <div className="hint" style={{ flex: 1 }}>
+                {state.grants.length > 1 ? grantLine(grant) : ''}
+              </div>
+              <button type="button" className="btn" onClick={() => { void copyOne(grant) }}>
+                Copy
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                aria-label={`Remove the ${tierName(grant.tier)} code`}
+                onClick={() => { void remove(grant) }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </Field>
       )}
 
       {code !== null && (
         <Field
-          label="This shop's code"
+          label={state.grants.length > 1 ? 'All of them, as one block' : "This shop's code"}
           hint="Needed to set up another counter while sync is down, or if we ask for it."
         >
           <textarea
@@ -210,17 +240,20 @@ export function LicenceCard() {
             onFocus={(e) => e.currentTarget.select()}
           />
           <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            <button type="button" className="btn" onClick={() => { void copy() }}>Copy</button>
-            <button type="button" className="btn" onClick={() => { void save() }}>Save to a file</button>
-            <div className="spacer" />
-            <button type="button" className="btn ghost" onClick={() => { void remove() }}>Remove</button>
+            <button type="button" className="btn" onClick={() => { void copy() }}>
+              Copy all
+            </button>
+            <button type="button" className="btn" onClick={() => { void save() }}>
+              Save to a file
+            </button>
           </div>
         </Field>
       )}
 
       <Field
-        label={code === null ? 'Paste a licence code' : 'Replace it with a new code'}
-        hint="Renewals arrive as a code. Pasting a newer one replaces this."
+        label="Paste a licence code"
+        hint="Added to what is already here. A renewal replaces the one it renews;
+              anything else is kept alongside."
       >
         <textarea
           value={typed}

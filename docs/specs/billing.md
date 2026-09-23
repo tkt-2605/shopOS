@@ -78,6 +78,39 @@ The tiers are a ladder, so `cloud` includes `multi`. A shop paying to keep its
 books off-site certainly has more than one counter, and charging twice for that
 reads as sharp practice.
 
+### Two clocks, and why a shop holds more than one code
+
+**`multi` is bought once. `cloud` recurs.** That is not a pricing whim, it is
+the old rule about where the vendor's costs are: a second counter is peer to
+peer on the shop's own wire and costs nothing to keep running, so it is sold
+outright and issued with `paidThrough: null`. The cloud costs money every
+month, so it is a subscription with a date.
+
+One token cannot say both — it carries one `tier` and one `paidThrough`. Held
+in one token, a shop that bought the counter outright and later let its cloud
+subscription lapse **lost the counter it had paid for**, because a lapsed token
+allows nothing whatever its tier. That is the kind of thing a shopkeeper tells
+other shopkeepers about.
+
+So a till holds a *set* of codes and entitlement is the union — `allowsAny` in
+`domain/licence.ts`. A lapsed code contributes nothing and takes nothing away.
+`twoClocks.test.ts` holds it, and the test that matters is `keeps what was
+bought outright when the subscription lapses`.
+
+Practically, at the CLI:
+
+```
+# sold once, never expires
+npx tsx apps/portal/src/cli.ts issue --shop <id> --tier multi
+
+# renewed every year
+npx tsx apps/portal/src/cli.ts issue --shop <id> --tier cloud --paid-through 2027-03-31
+```
+
+Two codes, both pasted, both kept. Pasting a second `cloud` code replaces the
+first, because that is what a renewal is; pasting a `multi` code beside it
+leaves both.
+
 **The free tier is the absence of a code, not a code that says `single`.** No
 licence means `state: 'none'`, which already refuses every gated feature — so
 free users need nothing issued, nothing supported and nothing renewed. `single`

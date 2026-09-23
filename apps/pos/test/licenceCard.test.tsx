@@ -234,7 +234,11 @@ describe('importing a code', () => {
 
     expect(await screen.findByText('Cloud licence')).toBeTruthy()
     expect(screen.getByText('Paid to 31 March 2027.')).toBeTruthy()
-    expect(screen.getByText('3')).toBeTruthy()
+    /* The licence is listed as a thing the shop has bought, with its own
+       Remove. There is no longer a "counters paid for" figure: any paid plan
+       is unlimited counters, so printing the number would be a limit that
+       does not exist. */
+    expect(screen.getByRole('button', { name: 'Remove the Cloud code' })).toBeTruthy()
 
     // And it really landed, not just in the component's head.
     const row = await db.get<{ value: string }>(
@@ -301,7 +305,20 @@ describe('exporting it again', () => {
        re-encoded token would be a different string and would not verify. */
     expect(box.value).toBe(code)
 
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copy' })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copy all' })) })
+    expect(clipboard).toEqual([code])
+  })
+
+  it('copies one licence on its own, for a shop holding more than one', async () => {
+    /* The per-licence button. A shop can hold a perpetual counter licence and
+       a cloud subscription, and "send me your code" means one of them. */
+    await show(await till())
+    const code = await sign(licence())
+    await paste(code)
+
+    const button = await screen.findByRole('button', { name: 'Copy' })
+    await act(async () => { fireEvent.click(button) })
+
     expect(clipboard).toEqual([code])
   })
 
@@ -329,7 +346,7 @@ describe('the round trip', () => {
 
     const box = await screen.findByLabelText("This shop's licence code") as HTMLTextAreaElement
     const carried = box.value
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copy' })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copy all' })) })
 
     cleanup()
 
@@ -353,9 +370,12 @@ describe('removing it', () => {
     await show(db)
     await paste(await sign(licence()))
 
-    const removeButton = await screen.findByRole('button', { name: 'Remove' })
+    const removeButton = await screen.findByRole('button', { name: 'Remove the Cloud code' })
     await act(async () => { fireEvent.click(removeButton) })
 
+    /* Names the one being removed. Beside a list of two, "remove this licence"
+       says nothing about which. */
+    expect(screen.getByText(/Remove the cloud code\?/i)).toBeTruthy()
     expect(screen.getByText(/counter is unaffected/i)).toBeTruthy()
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))

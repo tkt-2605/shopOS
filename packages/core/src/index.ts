@@ -296,7 +296,7 @@ export type { BillPricingContext } from './repos/pricing.js'
 
 export {
   TIERS, isTier, GRACE_DAYS, GATED, verifyToken, readTokenUnverified, stateOf,
-  allows, overTillLimit, encodePayload, toBase64Url, fromBase64Url,
+  allows, allowsAny, tierRank, overTillLimit, encodePayload, toBase64Url, fromBase64Url,
 } from './domain/licence.js'
 export type {
   Tier, LicenceToken, LicenceState, GatedFeature, SigningKey,
@@ -304,10 +304,12 @@ export type {
 } from './domain/licence.js'
 
 export {
-  entitlement, entitled, installToken, removeToken, storedToken, tillOverage,
-  witnessClock, UNLICENSED, CLOCK_SLACK_MS,
+  entitlement, entitled, installToken, removeToken, storedToken, storedCodes,
+  tillOverage, witnessClock, UNLICENSED, CLOCK_SLACK_MS,
 } from './services/licence.js'
-export type { Entitlement, EntitlementOptions, InstallResult } from './services/licence.js'
+export type {
+  Entitlement, EntitlementOptions, InstallResult, Grant,
+} from './services/licence.js'
 
 export {
   canInstall, dueForCheck, updateWords, CHECK_EVERY_MS,
