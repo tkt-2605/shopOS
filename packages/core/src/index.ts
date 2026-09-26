@@ -36,6 +36,7 @@ export {
 } from './services/sync.js'
 export { onTillAhead, isAheadOfUs, type TillAhead } from './services/sync.js'
 export { adoptRestoredIdentity, type Adopted } from './services/sync.js'
+export { NeedsTls, assertSafeToSpeak, onThisNetwork } from './services/sync/reach.js'
 export { syncWith, syncUntilDone, collectChanges, applyBatch, changedHere, listPeers, pruneAcknowledged, REPLICATED_TABLES, type SyncTransport, type PeerHello, type SyncResult, type ContestedChange } from './services/sync.js'
 export { decideRow, decideDeletion, type MergeInput, type MergeDecision, type MergeReason, type Versioned, type Side } from './domain/merge.js'
 export * as HtmlTemplate from './domain/htmlTemplate.js'

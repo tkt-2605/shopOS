@@ -126,6 +126,7 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [58, '058_what_a_movement_was_worth.sql', 'additive'],
   [59, '059_a_submitted_document_is_final.sql', 'additive'],
   [60, '060_whose_shelf_count.sql', 'additive'],
+  [61, '061_a_peer_that_does_not_come_back.sql', 'additive'],
 ]
 
 /**

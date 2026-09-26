@@ -1098,17 +1098,40 @@ that fails on the code before it.
   refusal says it is this till's view; the lockfile carries the portal, so
   `npm ci` works; `reportsParity` finds its snapshot on Linux.
 
-Open from the same review, deliberately not done here:
+The four things left open by that review were closed on 27 September:
 
-- **Pairing digits need a commitment.** A machine in the middle sees the
-  joining till's key before choosing the one it shows it, so it can grind keys
-  until six digits match. The fix is one side sending a hash of its key first,
-  which is a change to the pairing exchange.
-- **Cloud-tier items:** the wire does not carry a row's true origin, so a hub
-  sends everything one hop too far; a paired peer that is never reached (a phone,
-  a cloud replica) pins the feed; cloud sync must be TLS with the fingerprint
-  pinned; a Turso replica must sit behind `SyncTransport`, not its own
-  replication.
+- **Pairing digits carry a commitment.** The joining till sends a SHA-256 of
+  its key, hears the shop's key, and only then shows its own, which the shop
+  checks before working out digits (`keyCommitment`). A machine in the middle
+  must fix both keys before it can know the digits, so it is left with one
+  guess in a million per attempt. A first turn that carries the key itself is
+  refused, which means a joining till from before this cannot pair -- nothing
+  is released, so nothing in the field is affected.
+- **Plain HTTP stops at the shop's router.** A peer address that is not
+  private, loopback or link-local is spoken to over HTTPS or not at all, asked
+  before a byte is sent (`sync/reach.ts`). Written before there is a cloud
+  peer so the first one cannot be added the easy way.
+- **A peer that stops coming back no longer pins the feed.** Pruning leaves
+  out a peer unheard for thirty days (`FEED_LEASE_MS`); migration 061 records
+  how far the feed was pruned, and a peer asking from below it is sent the
+  whole shop again. A delete it missed cannot be sent -- the row is gone -- so
+  it keeps a draft the rest of the shop threw out. A fetch now counts as
+  contact, so a phone that only pulls is not mistaken for one gone quiet.
+- **The true-origin item was wrong.** In a star -- every till to one hub,
+  which is the plan -- the feed's "arrived from" is exactly enough and nothing
+  echoes; the extra hop is a triangle's, and there it is an identical row that
+  writes nothing. `aHubInTheMiddle.test.ts` holds the star to it, and holds a
+  Turso database to being a `SqlDriver` that syncs as a peer, never through
+  libSQL's own replication.
+
+Still open, found while doing the above:
+
+- **The typed-code pairing sends the code and the key in the clear.** A
+  machine in the middle can relay both. The fix is to send a proof made with
+  the code rather than the code, and to show digits on that path too; it is
+  the fallback for a network where discovery finds nothing, so it is second.
+- Everything under "Verification a person has to do", including the
+  multi-till checks added to `hand-checks.md`.
 
 ## Left that is not code
 

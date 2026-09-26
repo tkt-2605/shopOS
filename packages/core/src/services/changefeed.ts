@@ -290,8 +290,24 @@ export async function seedFeedWithEverything(db: SqlDriver): Promise<number> {
  * never learns about, and nothing afterwards will mention it again.
  */
 export async function pruneFeed(db: SqlDriver, upTo: number): Promise<number> {
-  // raw: how many rows were forgotten is the answer, and the proxy the typed
-  // queries go over does not carry a row count back.
-  const result = await db.execute(`DELETE FROM change_feed WHERE seq <= ?`, [upTo])
-  return result.rowsAffected
+  return db.transaction(async (tx) => {
+    // raw: how many rows were forgotten is the answer, and the proxy the typed
+    // queries go over does not carry a row count back.
+    const result = await tx.execute(`DELETE FROM change_feed WHERE seq <= ?`, [upTo])
+    /* Written down, so a peer that asks from below it is known to have missed
+       something. Migration 061. */
+    await q(tx).update(schema.syncState)
+      .set({ prunedThrough: sql`MAX(${schema.syncState.prunedThrough}, ${upTo})` })
+      .where(eq(schema.syncState.id, 1))
+    return result.rowsAffected
+  })
+}
+
+/** How far this feed has been pruned. 0 when never. */
+export async function prunedThrough(db: SqlDriver): Promise<number> {
+  const [row] = await q(db)
+    .select({ at: schema.syncState.prunedThrough })
+    .from(schema.syncState)
+    .where(eq(schema.syncState.id, 1))
+  return row?.at ?? 0
 }

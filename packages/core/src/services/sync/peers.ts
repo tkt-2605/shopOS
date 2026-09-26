@@ -1,4 +1,4 @@
-import { eq, count, min } from 'drizzle-orm'
+import { eq, count, min, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { REPLICATED } from '../../domain/replicaShape.js'
@@ -138,18 +138,35 @@ export async function listPeers(db: SqlDriver): Promise<PeerHealth[]> {
 }
 
 /**
- * Drops feed entries every known peer has confirmed receiving.
+ * How long a peer can go unheard before it stops holding the feed back.
  *
- * The lowest `my_cursor` across all peers, and not a row further: an entry
- * dropped before a till that has been switched off for a fortnight has seen it
- * is a change that machine never learns about, and nothing will mention it
- * again. A shop with no peers prunes nothing, which is correct — it has nobody
- * to have told.
+ * Long enough that a till switched off for a holiday, or a fortnight's repair,
+ * is not affected at all. A peer past it is not forgotten -- it keeps its
+ * secret and its counter -- it only stops pinning the feed, and if it does come
+ * back it is sent the whole shop again. See migration 061.
  */
-export async function pruneAcknowledged(db: SqlDriver): Promise<number> {
+export const FEED_LEASE_MS = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * Drops feed entries every peer still in touch has confirmed receiving.
+ *
+ * The lowest `my_cursor` across those peers, and not a row further: an entry
+ * dropped before a till that has been switched off for a fortnight has seen it
+ * is a change that machine never learns about. A shop with no peers prunes
+ * nothing, which is correct — it has nobody to have told.
+ *
+ * A peer not heard from within `FEED_LEASE_MS` is left out of the minimum. One
+ * phone in a drawer used to pin every till's feed for the life of the shop;
+ * now it pins it for a month, and `collectChanges` sends it everything if it
+ * returns. With every peer past the lease nothing is pruned: there is nobody
+ * left whose progress means anything.
+ */
+export async function pruneAcknowledged(db: SqlDriver, now = clock.now()): Promise<number> {
+  const since = new Date(now - FEED_LEASE_MS).toISOString()
   const [row] = await q(db)
     .select({ safe: min(schema.syncPeers.myCursor), peers: count() })
     .from(schema.syncPeers)
+    .where(sql`COALESCE(${schema.syncPeers.lastAgreedAt}, ${schema.syncPeers.createdAt}) >= ${since}`)
   if (!row || row.peers === 0 || row.safe === null) return 0
   return pruneFeed(db, row.safe)
 }

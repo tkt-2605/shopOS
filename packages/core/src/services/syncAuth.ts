@@ -316,11 +316,32 @@ export async function agreeSecret(
  * thousand tries, each one a shopkeeper pressing Refuse -- which is not so: it
  * sees the joining till's key before it has to choose the one it shows that
  * till, so it can try keys offline until the digits match, and ten thousand
- * key pairs is a moment's work. Six makes that a million, which is a cost and
- * not a wall. The wall is a commitment -- one side sends a hash of its key
- * before it sees the other's, as Bluetooth numeric comparison does -- and that
- * is a change to the pairing exchange, recorded in `progress.md`.
+ * key pairs is a moment's work. Six makes that a million, and the wall is
+ * `keyCommitment`: the joining till is bound to its key before it sees the
+ * shop's, so neither side's key can be chosen to fit, and a machine in the
+ * middle is left with one guess in a million per attempt -- each attempt a
+ * shopkeeper looking at two numbers that do not match.
  */
+/**
+ * What a joining till sends before its key: a SHA-256 of it.
+ *
+ * The digits a person compares only prove anything if neither side could pick
+ * its key after seeing the other's. The joining till used to send its key
+ * first, so a machine in the middle -- posing as the shop -- saw it before
+ * choosing the key it showed back, and could try keys until the digits
+ * matched. Now the joining till sends this, hears the shop's key, and only then
+ * shows its own, which the shop checks against this. Bluetooth's numeric
+ * comparison and ZRTP do the same thing for the same reason.
+ */
+export async function keyCommitment(publicKey: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(publicKey))
+  return hex(new Uint8Array(digest))
+}
+
+export function isKeyCommitment(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
 export async function comparisonDigits(joinerKey: string, hostKey: string): Promise<string> {
   const digest = new Uint8Array(await globalThis.crypto.subtle.digest(
     'SHA-256', new TextEncoder().encode(`${joinerKey}|${hostKey}`),

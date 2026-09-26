@@ -860,6 +860,8 @@ export const changeFeed = sqliteTable('change_feed', {
 export const syncState = sqliteTable('sync_state', {
   id: integer().primaryKey(),
   applying: integer().default(0).notNull(),
+  /** How far this till's own feed has been pruned. Migration 061. */
+  prunedThrough: integer('pruned_through').default(0).notNull(),
 })
 
 export const syncPeers = sqliteTable('sync_peers', {

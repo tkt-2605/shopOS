@@ -2,7 +2,7 @@ import { eq, ne, and, isNotNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { deviceId, replacedDevice } from '../device.js'
-import { myFingerprint } from './syncAuth.js'
+import { myFingerprint, keyCommitment } from './syncAuth.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import type { PeerHello, SyncTransport } from './sync.js'
 import {
@@ -13,6 +13,7 @@ import { LISTEN_PORT_HEADER } from './syncServer.js'
 import { clock } from '../clock.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
+import { assertSafeToSpeak } from './sync/reach.js'
 
 /**
  * The side of a sync that asks.
@@ -76,6 +77,7 @@ export function httpTransport(
     const body = JSON.stringify(payload)
     const signed = await sign(peer.secret, me, path, body)
 
+    assertSafeToSpeak(peer.baseUrl)
     const response = await fetchImpl(`${peer.baseUrl}${path}`, {
       method: 'POST',
       headers: {
@@ -177,6 +179,7 @@ export async function pairWith(
   if (me === null) throw new Error('This machine does not know which machine it is')
   const key = await pairingKey()
 
+  assertSafeToSpeak(baseUrl)
   const response = await fetchImpl(`${baseUrl}/pair`, {
     method: 'POST',
     headers: {
@@ -269,6 +272,13 @@ async function rememberTheShop(
  */
 let joining: PairingKey | null = null
 
+/**
+ * The shop's key as it was heard *before* this till showed its own. Every later
+ * answer must carry the same one: a key that changed after ours was shown is a
+ * key chosen to fit it. See `keyCommitment`.
+ */
+let heard: string | null = null
+
 async function joiningKey(): Promise<PairingKey> {
   joining ??= await pairingKey()
   return joining
@@ -301,12 +311,25 @@ export async function askToJoin(
   const me = deviceId()
   if (me === null) throw new Error('This machine does not know which machine it is')
 
-  const answer = await knock(baseUrl, { deviceId: me, label, ...succeeding() }, await joiningKey(), fetchImpl, self)
+  const key = await joiningKey()
+  /* Two turns. First a commitment to our key, which the shop answers with its
+     own; then our key, which the shop checks against the commitment and only
+     then works out its digits from. The order is the security: neither side
+     could choose its key after seeing the other's. */
+  heard = null
+  const asked = await knock(
+    baseUrl, { deviceId: me, label, commitment: await keyCommitment(key.publicKey), ...succeeding() },
+    key, fetchImpl, self, false,
+  )
   /* A shop that answers the very first knock with ALLOWED is not one this
      asked — there has been nobody to press anything yet. Treated as the
      protocol being wrong rather than as a pairing. */
-  if (answer.state === 'ALLOWED') throw new SyncHttpError(502, 'MALFORMED')
-  return answer
+  if (asked.state === 'ALLOWED') throw new SyncHttpError(502, 'MALFORMED')
+  if (asked.state !== 'PENDING') return asked
+
+  const shown = await knock(baseUrl, { deviceId: me, requestId: asked.requestId, ...succeeding() }, key, fetchImpl, self)
+  if (shown.state === 'ALLOWED') throw new SyncHttpError(502, 'MALFORMED')
+  return shown
 }
 
 /** "May I yet?" — the same conversation, asked again until it has an answer. */
@@ -343,7 +366,10 @@ async function knock(
   key: PairingKey,
   fetchImpl: typeof fetch,
   self: SelfAddress,
+  /** False only for the first turn, which commits to the key without it. */
+  showKey = true,
 ): Promise<Knocked> {
+  assertSafeToSpeak(baseUrl)
   const response = await fetchImpl(`${baseUrl}/pair`, {
     method: 'POST',
     headers: {
@@ -352,7 +378,7 @@ async function knock(
         ? { [LISTEN_PORT_HEADER]: String(self.listenPort) }
         : {}),
     },
-    body: JSON.stringify({ ...body, publicKey: key.publicKey }),
+    body: JSON.stringify(showKey ? { ...body, publicKey: key.publicKey } : body),
   })
 
   const text = await response.text()
@@ -366,6 +392,12 @@ async function knock(
       if (typeof said.requestId !== 'string' || !isPairingPublicKey(said.publicKey)) {
         throw new SyncHttpError(502, 'MALFORMED')
       }
+      if (!showKey) {
+        heard = said.publicKey
+        // No digits yet: the shop has not seen our key, and neither have we shown it.
+        return { state: 'PENDING', requestId: said.requestId, digits: '' }
+      }
+      if (heard === null || said.publicKey !== heard) throw new SyncHttpError(502, 'KEY_CHANGED')
       /* The digits are worked out here from the two keys, not read off the
          answer. A machine in the middle chooses what it sends; it cannot make
          these match the shop's screen without the shop's key. */
@@ -375,7 +407,9 @@ async function knock(
       }
     case 'REFUSED': joining = null; return { state: 'REFUSED' }
     case 'LAPSED': joining = null; return { state: 'LAPSED' }
-    case 'ALLOWED': return { state: 'ALLOWED', full: await agreed(said, key) }
+    case 'ALLOWED':
+      if (heard === null || said.publicKey !== heard) throw new SyncHttpError(502, 'KEY_CHANGED')
+      return { state: 'ALLOWED', full: await agreed(said, key) }
     default: throw new SyncHttpError(502, 'MALFORMED')
   }
 }
