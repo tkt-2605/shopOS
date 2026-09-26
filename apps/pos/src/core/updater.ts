@@ -3,7 +3,7 @@ import {
   type AvailableUpdate, type UpdateSource, type UpdateStage, type InstallRefusal,
 } from '@shopos/core'
 import type { SqlDriver } from '@shopos/core'
-import { UPDATE_FEED_URL } from '@shopos/core/config'
+import { invoke } from '@tauri-apps/api/core'
 import { logEvent } from './log'
 
 /**
@@ -13,33 +13,15 @@ import { logEvent } from './log'
  * there. This is the part that has a platform under it: a source backed by
  * Tauri's updater plugin, and a loop that checks at start and once a day.
  *
- * ## The plugin is not wired yet, on purpose
+ * ## Only a release build updates itself
  *
- * `tauri-plugin-updater` is not in `src-tauri/Cargo.toml` and
- * `tauri.conf.json` carries a placeholder endpoint and no public key, because
- * neither the signing keypair nor the GitHub owner/repo has been decided --
- * rows 2 and 3 of *Left that is not code* in `docs/specs/progress.md`. Until
- * they are, `tauriUpdateSource` reports "no update feed" rather than
- * pretending, and everything around it -- the state machine, the drawer
- * check, the words in the sidebar -- is real and tested.
- *
- * **To drop the real one in**, in this order:
- *
- * 1. `cli.ts keygen` is *not* this key. Run `npx tauri signer
- *    generate` for the updater's own keypair and back the private half up
- *    twice; it cannot be recovered and losing it means no till in the field
- *    can ever be updated again.
- * 2. Add `tauri-plugin-updater = "2"` to `src-tauri/Cargo.toml`, and
- *    `.plugin(tauri_plugin_updater::Builder::new().build())` in `lib.rs`.
- * 3. Put the public half in `tauri.conf.json` under `plugins.updater.pubkey`,
- *    and the release URL in `endpoints`.
- * 4. Set `UPDATE_FEED_URL` in `packages/core/src/config/licensing.ts`.
- * 5. At the call site, hand `tauriUpdateSource` the plugin and `relaunch`:
- *    `tauriUpdateSource(await import('@tauri-apps/plugin-updater'),
- *    (await import('@tauri-apps/plugin-process')).relaunch)`.
- *
- * Step 5 is one line and this file does not otherwise change, which is the
- * point of it being written this way.
+ * The feed and the key that checks it are not in `tauri.conf.json`. They are
+ * merged in by `release.yml` from the repository's settings, so the one place
+ * to change them is there, and a build made anywhere else -- `tauri dev`, CI,
+ * an installer made by hand for a Sandbox -- has no feed at all. Rust registers
+ * the plugin only when it was given one and answers `updates_enabled`;
+ * `updateSourceForThisBuild` asks that before it loads the plugin, and a build
+ * that says no gets `noUpdates()`, which is also what every test gets.
  */
 
 /** What the Tauri plugin exposes, narrowed to what this uses. */
@@ -59,28 +41,19 @@ interface UpdaterPlugin {
 }
 
 /**
- * The real source, once the plugin is there.
+ * The source backed by the plugin.
  *
- * Written against the plugin's shape rather than importing it, so that this
- * file compiles and the app bundles with the crate absent. The import becomes
- * real at step 5 above.
+ * Written against the plugin's shape rather than importing it, so the tests
+ * can hand it a stand-in and a build without the plugin never loads it.
  */
 export function tauriUpdateSource(
-  plugin?: UpdaterPlugin,
-  /** Supplied at step 2 as `tauri-plugin-process`'s `relaunch`. */
-  relaunch: (() => Promise<void>) | null = null,
+  plugin: UpdaterPlugin,
+  relaunch: () => Promise<void>,
 ): UpdateSource {
   let pending: Awaited<ReturnType<UpdaterPlugin['check']>> = null
 
   return {
     async check(): Promise<AvailableUpdate | null> {
-      if (plugin === undefined || UPDATE_FEED_URL === null) {
-        /* Not an error and not shown to anybody. A build with no feed is a
-           build that is never updated, which is exactly what an unsigned
-           Sandbox build and every test run should be. */
-        return null
-      }
-
       const found = await plugin.check()
       pending = found
       if (found === null) return null
@@ -111,20 +84,38 @@ export function tauriUpdateSource(
     },
 
     /**
-     * Restarts into the staged build.
+     * Runs the downloaded installer, then restarts into the new build.
      *
-     * `downloadAndInstall` above has already written the installer; the
-     * relaunch is what picks it up. `tauri-plugin-process` arrives with
-     * `tauri-plugin-updater` at step 2, and until then there is nothing
-     * staged to restart into, so this says so rather than reaching for a
-     * module that is not installed.
+     * On Windows the installer usually closes the app itself; the relaunch
+     * is for when it does not.
      */
     async install(): Promise<void> {
-      if (relaunch === null || pending === null) throw new Error('the updater plugin is not wired in yet')
+      if (pending === null) throw new Error('nothing downloaded to install')
       // Only here, which `apply` reaches after it has checked no bill is open.
       await pending.install()
       await relaunch()
     },
+  }
+}
+
+/**
+ * The source for whatever build this is.
+ *
+ * Anything that goes wrong asking -- no Tauri under the page, a command this
+ * binary does not have -- is a build that does not update, never an error on
+ * a screen: a till that cannot update is a till that is working.
+ */
+export async function updateSourceForThisBuild(): Promise<UpdateSource> {
+  try {
+    if (!(await invoke<boolean>('updates_enabled'))) return noUpdates()
+    const [plugin, process] = await Promise.all([
+      import('@tauri-apps/plugin-updater'),
+      import('@tauri-apps/plugin-process'),
+    ])
+    return tauriUpdateSource(plugin, process.relaunch)
+  } catch (cause) {
+    logEvent('info', 'updater', `no update source: ${String(cause)}`)
+    return noUpdates()
   }
 }
 

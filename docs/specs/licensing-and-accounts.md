@@ -236,13 +236,16 @@ Null until there is a domain. Every caller treats null as "there is no
 portal", which is the same code path as "the portal is unreachable" — a shop
 on a dead line — and so is already the tested path rather than a new one.
 
-### 3. The updater — `apps/pos/src-tauri/updater.example.json`
+### 3. The updater — repository settings, merged in by `release.yml`
 
-`tauri-plugin-updater` is not a dependency and `tauri.conf.json` has no
-`plugins.updater` section, because neither the updater keypair nor the GitHub
-owner/repo has been decided (rows 2 and 3 of *Left that is not code* in
-`progress.md`). The example file has the block to merge and the six steps, in
-order. Step 6 is one line at the call site.
+`tauri-plugin-updater` is wired in, but `tauri.conf.json` has no
+`plugins.updater` section, on purpose: the feed and the public key are
+repository settings (`RELEASE_REPO` or `UPDATE_FEED_URL`, and `UPDATER_PUBKEY`)
+that `tools/release.ts config` merges into a release build and nothing else.
+Rust registers the plugin only when a build carries that section and its
+identifier is `com.shopos.pos`, so `tauri dev`, CI, the demo and the four test
+tills never look for an update. There is no `UPDATE_FEED_URL` constant in core
+any more: one source of truth for the feed, the build's own config.
 
 Everything around the plugin is real and tested: the state machine, the
 once-a-day check, the progress reporting, the words in the sidebar, and the

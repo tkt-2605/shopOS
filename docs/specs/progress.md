@@ -948,7 +948,7 @@ checked.
 **Item 4 is two thirds tested and the last third is named.** Zero tax stored
 under composition is `taxScheme.test.ts:198`; *Bill of Supply* and the Rule 49
 sentence are `rule46.test.ts:272` and `taxScheme.test.ts:46`. The **GST tab
-being hidden is not tested.** `chargesTax()` — the rule it turns on — is;
+being hidden was not tested** (it is now: `reportsGstTab.test.tsx`, closed 26 September). `chargesTax()` — the rule it turns on — is;
 `Reports.tsx` reading it is not, and neither is the effect at `Reports.tsx:88`
 that moves a shopkeeper off the tax tab if they switch to composition while
 standing on it. That is a screen-wiring gap of exactly the shape the log's
@@ -996,24 +996,32 @@ proof of this phase, not this phase's.
 
 ### Phase 4 — getting it onto a shop's PC
 
-Licensing, the updater's rules and the portal are **done** — Row 14, and
-`licensing-and-accounts.md` has the argument. What is left:
+**Code complete, 26 September.** Licensing, the updater's rules and the portal
+were Row 14; CI, the release pipeline and the plugin followed. What is left is
+the owner's settings and a first tag:
 
 | Item | State |
 |---|---|
 | `licence.ts`, entitlement, the clock witness | done |
 | `apps/portal` — accounts, OTP, issuing, routes | done |
 | The updater's state machine and the drawer rule | done |
-| `.github/workflows/ci.yml` | **not started** |
-| `.github/workflows/release.yml` | **not started**, and waits on the certificate |
+| `.github/workflows/ci.yml` | done — tests and typecheck on Ubuntu; `cargo test --workspace` on Linux and Windows; an unsigned installer kept 14 days |
+| `.github/workflows/release.yml` | done — tag check, CI, an updater-signed build, `latest.json`, a **draft** release on the public `RELEASE_REPO`. Runs unsigned until there is a certificate (`WINDOWS_SIGN_COMMAND`). Never run: it needs the settings at its top |
 | The Settings licence card | done — paste in, copy out, ten tests against a real signature |
-| `tauri-plugin-updater` wired in | **waits on the keypair and the repo name** |
+| `tauri-plugin-updater` wired in | done — registered only when the build carries a feed and is `com.shopos.pos`; the till built by the release overlay was started headless and migrated |
 | An SMS channel | **waits on DLT registration** |
 
-The three placeholders are placeholders because of decisions nobody has made
-yet, not because of work nobody has done: the signing key, the update feed
-URL and the portal URL are each one constant in
-`packages/core/src/config/licensing.ts`.
+The update feed is no longer a constant in `licensing.ts`: it is the release
+build's own config, written by `tools/release.ts config` from the repository
+settings, so there is one place it lives. `PORTAL_BASE_URL` is still a
+constant, and still null until Phase 6.
+
+Not built from `update-rollout.md` yet: the migration lint, the richer
+manifest and rollout percentages, channels, and the two safety backups.
+
+Before the first tag, `ci.yml` has never run on Windows. The Tauri crate's
+tests have only been run on Linux, and a Windows-only failure would show up
+on the first push there.
 
 ### Phase 5 (~15 days), Phase 6 (~12 days), Phase 7
 
@@ -1142,9 +1150,9 @@ These are the owner's, and nothing in the next four weeks is blocked on them.
 
 | # | Item | Blocks | Lead time |
 |---|---|---|---|
-| 1 | OV code-signing certificate | the signed release, Phase 4 | 1–3 weeks |
+| 1 | OV code-signing certificate | nothing now — **deferred by the owner** (26 Sep); installs show SmartScreen's warning until then | 1–3 weeks |
 | 2 | Updater keypair | the first release, permanently | 1 hour |
-| 3 | GitHub owner/repo name | the updater endpoint URL | a decision |
+| 3 | A public release repo (`RELEASE_REPO`) and the settings at the top of `release.yml` | the first release; the feed URL is baked into every till | a decision |
 | 4 | Whether TRT is GST-registered | what Settings should say | a decision |
 
 Row 4 no longer blocks anything. It was raised from the fixture, which turns out
@@ -1200,8 +1208,8 @@ above.
 
 And one gap the audit turned up, which is code rather than a check:
 
-- [ ] a test that the GST tab is hidden under composition — `chargesTax()` is
-      tested, `Reports.tsx` reading it is not
+- [x] a test that the GST tab is hidden under composition —
+      `apps/pos/test/reportsGstTab.test.tsx`, which fails with the filter removed
 
 From Phase 3, which is code complete. These are the four that a terminal
 genuinely cannot do — each needs a machine broken in a particular way:

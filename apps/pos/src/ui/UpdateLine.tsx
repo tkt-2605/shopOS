@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateSource, UpdateStage } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
-import { createUpdater, tauriUpdateSource, type Updater } from '../core/updater'
+import { createUpdater, updateSourceForThisBuild, type Updater } from '../core/updater'
 
 /**
  * The one line in the sidebar about a new version, and the button to take it.
@@ -12,8 +12,8 @@ import { createUpdater, tauriUpdateSource, type Updater } from '../core/updater'
  * and says why not in the same line. Never a dialog: an update is not a thing
  * to interrupt a sale for.
  *
- * Until the updater plugin and its feed exist (`updater.ts` lists the steps),
- * the source reports nothing available and this line stays empty.
+ * A build with no update feed -- every build but a release -- finds nothing
+ * and this line stays empty.
  */
 export function UpdateLine({ source }: { source?: UpdateSource }) {
   const { db } = useCore()
@@ -22,16 +22,25 @@ export function UpdateLine({ source }: { source?: UpdateSource }) {
   const [words, setWords] = useState('')
 
   useEffect(() => {
-    const made = createUpdater({ db, source: source ?? tauriUpdateSource() })
-    updater.current = made
-    const off = made.onChange((next) => {
-      setStage(next)
-      setWords(made.words())
-      // A found update is fetched straight away: fetching never blocks a sale.
-      if (next.stage === 'available') void made.fetch()
+    let made: Updater | null = null
+    let off = () => {}
+    let gone = false
+
+    void (source ? Promise.resolve(source) : updateSourceForThisBuild()).then((found) => {
+      if (gone) return
+      made = createUpdater({ db, source: found })
+      updater.current = made
+      const it = made
+      off = it.onChange((next) => {
+        setStage(next)
+        setWords(it.words())
+        // A found update is fetched straight away: fetching never blocks a sale.
+        if (next.stage === 'available') void it.fetch()
+      })
+      void it.poll(true)
     })
-    void made.poll(true)
-    return () => { off(); made.stop(); updater.current = null }
+
+    return () => { gone = true; off(); made?.stop(); updater.current = null }
   }, [db, source])
 
   if (words === '') return null

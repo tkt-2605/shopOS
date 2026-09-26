@@ -38,3 +38,4 @@ portal.db
 portal.db-journal
 portal.db-wal
 portal.db-shm
+apps/pos/src-tauri/tauri.release.json

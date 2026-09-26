@@ -34,8 +34,10 @@ answer is "the counter keeps working".
 
 ### 2 — the updater key, concretely
 
-- Generated once, never regenerated. The public half is committed in
-  `tauri.conf.json`; the private half **never** enters the repository.
+- Generated once, never regenerated. The public half goes in the repository
+  variable `UPDATER_PUBKEY` and the private half and its passphrase in the
+  secrets `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD`; `release.yml` merges the
+  public half into the build. The private half **never** enters the repository.
 - Backed up to two places the owner controls — not one, and not a place that
   syncs to a machine that might be reinstalled.
 - Also needed: the passphrase, stored separately from the key.
@@ -44,9 +46,9 @@ answer is "the counter keeps working".
 
 | # | Item | Why |
 |---|---|---|
-| 4 | **GitHub repository and Actions** | CI runs on every push from Phase 4. A private repo is fine. |
-| 5 | **GitHub secrets** | The CA's signing credentials and the updater private key. Only after rows 1 and 2. |
-| 6 | **A Windows machine that can run Windows Sandbox** | Layer 3 of the test bench is a written procedure run by hand: install, update, restore, power cut. Windows 11 Home supports Sandbox; it needs enabling in Windows Features. |
+| 4 | **GitHub repository and Actions** | CI runs on every push. The source repo can stay private, but tills download updates without logging in, so releases go to a second, **public** repo (`RELEASE_REPO`) — a new repo with only a README is enough. |
+| 5 | **GitHub settings** | The list is at the top of `.github/workflows/release.yml`: `RELEASE_REPO`, `UPDATER_PUBKEY`, `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`), `RELEASE_TOKEN`. The CA's credentials later, when there is a certificate. |
+| 6 | **A Windows machine that can run Windows Sandbox** | Layer 3 of the test bench is a written procedure run by hand: install, update, restore, power cut. Sandbox needs Windows 10/11 **Pro** (or Enterprise/Education) with it enabled in Windows Features; Home does not have it, so on Home use a VM (VirtualBox or Hyper-V) instead. |
 | 7 | **A second PC or VM on the same Wi-Fi** | The two-till claims are asserted in the bench on one machine, but "the app still pairs over Wi-Fi" is a hand check that needs two real machines once per phase that touches sync. |
 | 8 | **A shop willing to be the first install** | Not before the log file (Phase 3), the updater and the signed build (Phase 4) all exist. An unsigned build with no log file at a stranger's shop is a visit per bug. |
 
@@ -82,7 +84,7 @@ touches any of them.
 | Decision | Where it bites | Default if undecided |
 |---|---|---|
 | The name on the certificate | Phase 4, before ordering | Proprietor's name |
-| GitHub owner/repo name | Phase 4 — it is baked into the updater endpoint URL in `tauri.conf.json`, and changing it later strands installed tills | — |
+| The public release repo (`RELEASE_REPO`), or a feed on your own domain (`UPDATE_FEED_URL`) | Phase 4 — the feed URL is baked into every installer `release.yml` builds, and changing it later strands installed tills | — |
 | Price per tier | Phase 4's portal issues tokens against tiers; the tiers exist in code regardless | — |
 | Which shop is the first install | Phase 4 sign-off | — |
 

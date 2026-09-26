@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { webcrypto } from 'node:crypto'
 import {
-  LICENCE_KEYS, PORTAL_BASE_URL, UPDATE_FEED_URL, licensingConfigured,
+  LICENCE_KEYS, PORTAL_BASE_URL, licensingConfigured,
 } from '../src/config/licensing.js'
 import { verifyToken, stateOf, allows, GATED, encodePayload, type LicenceToken } from '../src/domain/licence.js'
 import { entitlement, entitled, installToken } from '../src/services/licence.js'
@@ -56,11 +56,12 @@ describe('the key that is actually there', () => {
     }
   })
 
-  it('still has no portal and no update feed', () => {
-    /* Both are decisions, not code. Null is the tested path -- every caller
-       treats it as "unreachable", which a shop on a dead line already is. */
+  it('still has no portal', () => {
+    /* A decision, not code. Null is the tested path -- every caller treats it
+       as "unreachable", which a shop on a dead line already is. The update
+       feed used to sit beside it; it is the release build's config now, set
+       from the repository's settings by release.yml. */
     expect(PORTAL_BASE_URL).toBeNull()
-    expect(UPDATE_FEED_URL).toBeNull()
   })
 
   it('tells an out-of-date till apart from a forgery', async () => {

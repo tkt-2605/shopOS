@@ -36,7 +36,7 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 ## Working agreements
 
 - `npm test` from the root runs every project -- core, the app, the portal and
-  both benches (2,148 tests). Types: `npm run typecheck`, which covers all five.
+  both benches (2,168 tests). Types: `npm run typecheck`, which covers all five.
 - A licence never stops a shop billing. It gates what the vendor sells and
   never anything a shop needs to take money, and that list is asserted in a
   test. `multiTill` gates **adding** a till and never **syncing** with one
@@ -67,9 +67,11 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 `progress.md` for where it has got to and why. That file is the one to read
 first: it carries the findings and the arguments, not only the state.
 
-Phases 0, 1, 2 and 3 are done, on branch `phase-2-foundations`, not merged and
-nothing released. Phase 4 is next: CI, the updater, licensing and the portal
-skeleton, all of which are buildable and testable unsigned.
+Phases 0, 1, 2 and 3 are done and merged; nothing is released. Phase 4 is
+code complete: `ci.yml`, `release.yml` (`tools/release.ts` does its steps), the
+updater plugin, licensing and the portal. What is left is the owner's: the
+updater key, a public release repository, and the repository settings
+`release.yml` lists at its top. The code-signing certificate is deferred.
 
 ## Design canvas
 

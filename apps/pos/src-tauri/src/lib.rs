@@ -17,6 +17,7 @@ mod printing;
 mod restore;
 mod sync_client;
 mod sync_server;
+mod updater;
 mod version;
 
 use tauri::Manager;
@@ -30,8 +31,18 @@ pub fn run() {
        of a panic here is an icon that does nothing when it is double-clicked. */
     log::install_panic_hook();
 
-    tauri::Builder::default()
+    let context = tauri::generate_context!();
+    let updates = updater::configured(&context.config().identifier, &context.config().plugins.0);
+
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init());
+    if updates {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
+        .manage(updater::Updates(updates))
         .setup(|app| {
             /* `paths::data_dir` rather than `app_data_dir` directly, because
                it is the one place that knows about `--shop`. This line used to
@@ -195,8 +206,9 @@ pub fn run() {
             restore::restore_abandon,
             version::app_version,
             version::shops_on_this_machine,
+            updater::updates_enabled,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running shopos");
 }
 

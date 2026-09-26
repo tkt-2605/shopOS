@@ -13,17 +13,17 @@ yet except where "Today" says so.
 |---|---|---|
 | When to check, when it is safe to install | Built and tested: 24 h check, `canInstall` refuses while a cash session is open, no forced update | `packages/core/src/services/update.ts`, `test/update.test.ts` |
 | Platform half | Written against the Tauri updater plugin's shape; download and install are separate calls | `apps/pos/src/core/updater.ts` |
-| Mounted in the app | **No.** Nothing calls `createUpdater`, so no sidebar line and no Install button | — |
-| Updater plugin | **Not installed** (no crate, no npm package, no capability). crates.io and npm are blocked on this machine | `src-tauri/Cargo.toml`, `capabilities/main.json` |
-| Feed URL | `UPDATE_FEED_URL = null`, pinned by a test | `core/src/config/licensing.ts`, `licencePlaceholders.test.ts:63` |
-| Updater config | Example only, with a v1 `active` key and a github.com endpoint | `src-tauri/updater.example.json` |
-| Version number | Literal `0.1.0` in three places | `tauri.conf.json`, `Cargo.toml`, `apps/pos/package.json` |
+| Mounted in the app | Yes: `UpdateLine` in the sidebar, source chosen by `updateSourceForThisBuild()` | `apps/pos/src/ui/UpdateLine.tsx` |
+| Updater plugin | Installed (crate, npm package, `updater:default` + `process:allow-restart`). Registered only when the build carries a feed and the identifier is `com.shopos.pos` | `src-tauri/src/updater.rs`, `lib.rs` |
+| Feed URL | One source: the release build's config, from the repo variables `RELEASE_REPO` / `UPDATE_FEED_URL`. The core constant is gone | `tools/release.ts config` |
+| Updater config | Written at release time to `src-tauri/tauri.release.json` (git-ignored); refuses a non-https feed or a key that is not minisign | `tools/release.ts`, `test/release.test.ts` |
+| Version number | One: `apps/pos/package.json`; `tauri.conf.json` reads it by path, `Cargo.toml` is `0.0.0`; `release.yml` refuses a tag that differs | `tools/release.ts check` |
 | Mixed schemas between tills | Built: each side checks the other's floor; unknown columns are trimmed | `sync.ts:194-206`, `syncServer.ts:498-521, 595`, `schema-skew.test.ts` |
 | Schema floor | `MIN_PEER_SCHEMA_VERSION` = 33 (last breaking migration is 032); head is 50 | `db/migrationKinds.ts`, `db/schemaVersion.ts` |
 | Backup before migrating | **None.** The daily backup runs after `migrate()` | `CoreProvider.tsx` `startOnce()` |
 | Downgrade | Impossible once migrated (`SchemaTooNewError`) | `db/migrate.ts` |
-| CI / release pipeline | Only a nightly bench workflow; no `ci.yml`, no `release.yml`, no tags | `.github/workflows/` |
-| Code signing | Not set up; CA not chosen | — |
+| CI / release pipeline | `ci.yml` (tests, typecheck, cargo test on Linux and Windows, unsigned installer artifact) and `release.yml` (tag check, CI, updater-signed build, `latest.json`, **draft** release on the public `RELEASE_REPO`). No migration lint yet, no channels or rollout percentages | `.github/workflows/` |
+| Code signing | Deferred by the owner (2026-09-26). `release.yml` takes `WINDOWS_SIGN_COMMAND` when there is one | — |
 | Vendor sees versions | Portal has `devices.version`, but no till ever calls the portal | `apps/portal/src/store.ts` |
 
 ## Principles

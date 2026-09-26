@@ -1,0 +1,127 @@
+# A tag vX.Y.Z becomes a draft release that tills can update from once it is
+# published -- and not before: GitHub's "latest" skips drafts, so nothing
+# reaches a shop until a person has tried the installer and pressed Publish.
+#
+# Repository settings it needs (Settings -> Secrets and variables -> Actions):
+#
+#   variables  RELEASE_REPO     owner/repo tills download from. It must be
+#                               public: this repository is private, and a till
+#                               cannot log in to fetch latest.json. A new
+#                               public repo with just a README is enough.
+#              UPDATER_PUBKEY   the public half from `npx tauri signer generate`
+#              UPDATE_FEED_URL  optional: a feed on your own domain instead
+#              WINDOWS_SIGN_COMMAND
+#                               optional, once there is a certificate: the CA's
+#                               command, with %1 for the file. Its credentials
+#                               go in secrets and in the build step's env.
+#   secrets    TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#              RELEASE_TOKEN    a fine-grained token with Contents: write on
+#                               RELEASE_REPO only
+#
+# The feed and the key are baked into the installer, so a till built by this
+# checks exactly that feed for the rest of its life. `tools/release.ts config`
+# refuses a feed that is not https and a key that is not the updater's.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_REPO: ${{ vars.RELEASE_REPO }}
+  UPDATER_PUBKEY: ${{ vars.UPDATER_PUBKEY }}
+  UPDATE_FEED_URL: ${{ vars.UPDATE_FEED_URL }}
+  WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+
+jobs:
+  preflight:
+    name: tag and settings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: the tag is the app's version
+        run: npx tsx tools/release.ts check "$GITHUB_REF_NAME"
+      - name: the settings are all there
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
+        run: |
+          npx tsx tools/release.ts config
+          if [ "$HAS_SIGNING_KEY" != true ]; then
+            echo "::error::secret TAURI_SIGNING_PRIVATE_KEY is not set; without it no till can accept this update"
+            exit 1
+          fi
+          if [ "$RELEASE_REPO" != "$GITHUB_REPOSITORY" ] && [ "$HAS_RELEASE_TOKEN" != true ]; then
+            echo "::error::secret RELEASE_TOKEN is not set; it is needed to publish to $RELEASE_REPO"
+            exit 1
+          fi
+
+  ci:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: installer, signature and latest.json
+    needs: ci
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npx tsx tools/release.ts config
+
+      - name: build
+        working-directory: apps/pos
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --config src-tauri/tauri.release.json
+
+      - run: npx tsx tools/release.ts manifest "$GITHUB_REF_NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shopos-${{ github.ref_name }}
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
+            target/release/bundle/nsis/latest.json
+          if-no-files-found: error
+
+      - name: draft release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        working-directory: target/release/bundle/nsis
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          installer="ShopOS_${version}_x64-setup.exe"
+          flags=(--draft --title "ShopOS $GITHUB_REF_NAME")
+          # A beta tag is a prerelease, which "latest" also skips.
+          if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --repo "$RELEASE_REPO" "${flags[@]}" \
+            --notes "Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA::12}. A draft: no till sees it until it is published. Try the installer in Windows Sandbox first." \
+            "$installer" "$installer.sig" latest.json

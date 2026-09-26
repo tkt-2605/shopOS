@@ -4,7 +4,7 @@ import type { SigningKey } from '../domain/licence.js'
  * The deployment's own values. **This is the file you edit when you have real
  * ones**, and it is the only file you edit.
  *
- * `LICENCE_KEYS` is real. The other two are still placeholders, and that is
+ * `LICENCE_KEYS` is real. `PORTAL_BASE_URL` is still a placeholder, and that is
  * deliberate and checked: `licencePlaceholders.test.ts` pins the shape of
  * whatever this file is in, because the failure mode of a half-configured
  * licensing system is that it silently trusts nothing *and says everything is
@@ -24,7 +24,6 @@ import type { SigningKey } from '../domain/licence.js'
  * |---|---|---|
  * | `LICENCE_KEYS` | `cli.ts keygen` — the public half | verifying any licence |
  * | `PORTAL_BASE_URL` | the VPS and domain, Phase 6 | fetching a renewal |
- * | `UPDATE_FEED_URL` | the GitHub owner/repo, decision 3 in progress.md | the updater |
  *
  * The private half of the signing key never appears in this repository, in
  * this file or in any build. It lives in the portal's environment and in the
@@ -68,15 +67,6 @@ export const LICENCE_KEYS: readonly SigningKey[] = [
  * a dead line -- and so is already the tested path rather than a new one.
  */
 export const PORTAL_BASE_URL: string | null = null
-
-/**
- * Where the updater looks for `latest.json`.
- *
- * Null until the GitHub owner/repo is decided. The updater treats null the
- * same way it treats an unreachable feed: it says the till is up to date as
- * far as it can tell, and it never blocks anything.
- */
-export const UPDATE_FEED_URL: string | null = null
 
 /** Whether this build has everything it needs to verify a licence. */
 export function licensingConfigured(): boolean {
