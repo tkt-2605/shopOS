@@ -167,7 +167,8 @@ Open draft bills do not block, because they are already autosaved.
   This also covers a USB install and a second company book opened later.
 - Both kinds are "safety" backups: never pruned by the daily rule, last 3 kept.
 - If the backup fails, still migrate, because the shop must bill. Turn the
-  Backups card and the top-bar dot red.
+  Backups card and the top-bar dot red. **Decided by the owner (2026-09-26):
+  warn, never block.**
 
 ### 9. Rollback runbook
 
@@ -184,7 +185,23 @@ restore, and the runbook must say so. Rehearse it once by hand in Layer 3.
 
 - **Additive release:** tills update on their own schedule and keep syncing.
 - **Breaking release:** the two sides refuse each other until both are updated.
-  To make that survivable:
+  **Decided by the owner (2026-09-26), and built:**
+  - The till that is behind keeps billing and viewing everything, but a red
+    banner on every screen says it is out of sync with the shop until it is
+    updated, since when, and which versions are involved. Its bills cross once
+    it is updated, as after a day with the network down.
+  - It stops asking the newer till: only an update on that machine changes the
+    answer, and an update restarts the app. Nothing is exchanged in the
+    meantime; the refusal happens at `hello`, before a row moves.
+  - It learns this from both ends: its own round, or the newer till's `hello`
+    (which now carries the caller's version) when it is the one being asked.
+    The record is kept on the machine and belongs to the build that found it,
+    so updating clears it by itself. See `sync/versionGap.ts` and
+    `apps/pos/src/core/outOfDate.ts`.
+  - The newer till goes on asking, and its Other tills screen names the other
+    till as the one to update rather than saying "update them both".
+
+  Still to do, to make it survivable:
   - Hello, pairing and batch answers carry `appVersion`. `sync_peers` stores
     `their_schema`, `their_app_version` and `their_version_at`. That is an
     additive migration with the usual three parts plus `schema.ts` and
@@ -295,8 +312,8 @@ and 12 need the certificate and the domain. Step 13 needs the portal hosted.
    releases go to a separate public repo or to object storage?
 2. Which CA, and is the certificate in the proprietor's name or the firm's
    (Udyam or GST)?
-3. If the pre-migration backup fails, warn (plan's default, because the shop
-   must bill) or block?
+3. ~~If the pre-migration backup fails, warn or block?~~ Warn (owner,
+   2026-09-26).
 4. For a breaking release, does the owner confirm once (replicated) or on each
    till? Is it restricted to shop close?
 5. Rollout pace: beta 100%, then stable 10, 50 and 100 over about a week? Is

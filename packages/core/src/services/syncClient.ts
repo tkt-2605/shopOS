@@ -11,6 +11,8 @@ import {
 } from './syncAuth.js'
 import { LISTEN_PORT_HEADER } from './syncServer.js'
 import { clock } from '../clock.js'
+import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
+import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 
 /**
  * The side of a sync that asks.
@@ -101,7 +103,11 @@ export function httpTransport(
   }
 
   return {
-    hello: () => ask<PeerHello>('/hello', {}),
+    /* Our version, so a till we ask that is behind us learns it is. A build
+       from before this sends nothing and the far side reads nothing into it. */
+    hello: () => ask<PeerHello>('/hello', {
+      schemaVersion: EXPECTED_SCHEMA_VERSION, minPeerSchema: MIN_PEER_SCHEMA_VERSION,
+    }),
     fetch: (since, limit) => ask<ChangeBatch>('/fetch', { since, limit }),
     offer: (batch) => ask<{ upTo: number }>('/offer', batch),
   }

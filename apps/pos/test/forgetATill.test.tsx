@@ -31,6 +31,9 @@ vi.mock('@shopos/core', async (real) => ({
   forgetPeer: async (_db: unknown, id: string) => { forgotten = id },
 }))
 
+let caughtUp: string | null = null
+vi.mock('../src/core/outOfDate', () => ({ caughtUpWith: async (id: string) => { caughtUp = id } }))
+
 vi.mock('../src/core/syncLoop', () => ({
   runOnce: async () => [],
   onSyncRound: () => () => {},
@@ -139,6 +142,9 @@ describe('a till that is gone', () => {
     await answer(true)
 
     expect(forgotten, 'the second row, not the first').toBe('the-other-one')
+    /* And a till that is gone is not one this till is out of date with: the
+       banner it raised would otherwise stay until an update nobody needs. */
+    expect(caughtUp).toBe('the-other-one')
   })
 
   it('says it happened, rather than the row merely vanishing', async () => {
@@ -169,5 +175,26 @@ describe('what the card shows about a peer', () => {
     peers = [peer({ behind: null })]
     await show()
     expect(screen.getByText('Back counter').closest('tr')?.textContent).toContain('?')
+  })
+
+  it('does not call a till that answered and refused "not answering"', async () => {
+    /* Found on a real pair on different versions: the row said "not
+       answering" about a till replying every time, which sends somebody to
+       look at a network that is fine. */
+    peers = [peer({ lastError: 'PEER_OUTDATED' })]
+    await show()
+    const row = screen.getByText('Back counter').closest('tr')?.textContent
+    expect(row).toContain('needs update')
+    expect(row).not.toContain('not answering')
+
+    cleanup()
+    peers = [peer({ lastError: 'UNKNOWN_PEER' })]
+    await show()
+    expect(screen.getByText('Back counter').closest('tr')?.textContent).toContain('refused')
+
+    cleanup()
+    peers = [peer({ lastError: 'connection timed out' })]
+    await show()
+    expect(screen.getByText('Back counter').closest('tr')?.textContent).toContain('not answering')
   })
 })

@@ -72,6 +72,18 @@ describe('the one-line sync status', () => {
     expect(said.text).not.toContain('Cannot reach')
   })
 
+  it('names the till to update when the two are on different versions, without calling it a refusal', () => {
+    /* Either side may be the one refusing, so "Back Counter refused." was wrong
+       half the time. What the person needs is which machine to update. */
+    const older = syncStatus([peer({ lastError: 'PEER_OUTDATED' })], NOW)
+    expect(older.tone).toBe('warn')
+    expect(older.text).toContain('Back Counter: That till is on an older ShopOS')
+    expect(older.text).not.toContain('refused.')
+
+    const newer = syncStatus([peer({ lastError: 'THIS_TILL_OUTDATED' })], NOW)
+    expect(newer.text).toContain('Update this machine')
+  })
+
   it('tells a refusal from a socket error by its shape', () => {
     // Both live in `last_error`. Anything the protocol refuses with is shouted
     // in snake case; anything a socket says is a sentence.

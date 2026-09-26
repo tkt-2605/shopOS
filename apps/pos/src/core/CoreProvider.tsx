@@ -15,6 +15,7 @@ import { runStockCheck, startMaintenanceTimer } from './maintenance'
 import { serveIfPaired, servingOn } from './syncHost'
 import { syncFetch } from './syncFetch'
 import { startSyncLoop, stopSyncLoop, runOnce, nudgeSync } from './syncLoop'
+import { watchForTillsAhead } from './outOfDate'
 import { nudgingDriver } from './nudgingDriver'
 import { serializingDriver } from './writeLock'
 import {
@@ -176,6 +177,9 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     let stopBackupTimer: (() => void) | null = null
     let stopMaintenance: (() => void) | null = null
+    /* Before anything can talk to another till, so the first hello from a
+       newer one is written down. */
+    const stopWatching = watchForTillsAhead()
 
     void (async () => {
       try {
@@ -250,6 +254,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       stopSyncLoop()
       stopBackupTimer?.()
       stopMaintenance?.()
+      stopWatching()
     }
   }, [])
 

@@ -1,5 +1,5 @@
 import type { PeerHealth } from '@shopos/core'
-import { explainRefusal, looksLikeARefusal, CLOCKS_WORTH_MENTIONING_MS } from './syncWords'
+import { explainRefusal, looksLikeARefusal, isVersionGap, CLOCKS_WORTH_MENTIONING_MS } from './syncWords'
 
 /**
  * The one question, and its one answer.
@@ -49,7 +49,11 @@ export function syncStatus(
   if (refused !== undefined) {
     return {
       tone: 'warn',
-      text: `${naming(refused)} refused. ${explainRefusal(refused.lastError!)}`,
+      /* A version gap is not the other till saying no: either side may be the
+         one refusing, and the sentence says which one to update. */
+      text: isVersionGap(refused.lastError!)
+        ? `${naming(refused)}: ${explainRefusal(refused.lastError!)}`
+        : `${naming(refused)} refused. ${explainRefusal(refused.lastError!)}`,
     }
   }
 

@@ -20,6 +20,13 @@ const REFUSALS: Readonly<Record<string, string>> = {
     'The two tills are running different versions of ShopOS. Update them both '
     + 'before they exchange anything — this is refused rather than risked, because '
     + 'a half-understood row is worse than no row.',
+  PEER_OUTDATED:
+    'That till is on an older ShopOS than this one and has to be updated. Until '
+    + 'it is, the two exchange nothing; both go on billing, and it all crosses '
+    + 'once that till has the same version as this one.',
+  THIS_TILL_OUTDATED:
+    'This till is on an older ShopOS than that one. Update this machine; until '
+    + 'then the two exchange nothing, and this till has stopped asking.',
   DIFFERENT_SHOP:
     'That till has a shop of its own. Two tills set up separately cannot be '
     + 'merged: each has its own staff, counters and price list under the same names. '
@@ -128,6 +135,11 @@ export const CLOCKS_WORTH_MENTIONING_MS = 2.5 * 60 * 1000
  * `ECONNREFUSED`, which is precisely a till that did not answer. The protocol's
  * codes are a closed set, so the closed set is what this asks.
  */
+/** The two refusals that are a version gap: one till has to be updated. */
+export function isVersionGap(error: string): boolean {
+  return error === 'PEER_OUTDATED' || error === 'THIS_TILL_OUTDATED'
+}
+
 export function looksLikeARefusal(error: string): boolean {
   const code = error.trim()
   return code in REFUSALS || /^HTTP_\d{3}$/.test(code)

@@ -10,6 +10,7 @@ import { clock } from '../../clock.js'
 import { applyBatch } from './apply.js'
 import { BATCH, changedHere, collectChanges } from './collect.js'
 import { rememberPeer } from './peers.js'
+import { isAheadOfUs, noteTillAhead } from './versionGap.js'
 import type { PeerHello, SyncResult, SyncTransport } from './types.js'
 
 /**
@@ -52,7 +53,8 @@ export async function syncWith(
       mine: EXPECTED_SCHEMA_VERSION, theirs: hello.schemaVersion,
     }
   }
-  if (EXPECTED_SCHEMA_VERSION < theirFloor) {
+  if (isAheadOfUs(theirFloor)) {
+    if (hello.deviceId) noteTillAhead(hello.deviceId, hello.schemaVersion, theirFloor)
     return {
       ok: false, code: 'SCHEMA_MISMATCH', behind: 'mine',
       mine: EXPECTED_SCHEMA_VERSION, theirs: hello.schemaVersion,

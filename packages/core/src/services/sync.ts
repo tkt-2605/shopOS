@@ -23,6 +23,7 @@
 export type { ContestedChange, PeerHello, SyncResult, SyncTransport } from './sync/types.js'
 export { changedHere, collectChanges } from './sync/collect.js'
 export { syncUntilDone, syncWith } from './sync/round.js'
+export { isAheadOfUs, noteTillAhead, onTillAhead, type TillAhead } from './sync/versionGap.js'
 export { applyBatch } from './sync/apply.js'
 export type { MergeOutcome } from './sync/apply.js'
 export {

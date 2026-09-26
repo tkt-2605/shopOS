@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { syncWith } from '../src/services/sync.js'
+import { syncWith, onTillAhead, type TillAhead } from '../src/services/sync.js'
+import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
+import { MIN_PEER_SCHEMA_VERSION } from '../src/db/migrationKinds.js'
 import {
   handleSyncRequest, offerPairing, withdrawPairing, pairingOnOffer, PAIRING_WINDOW_MS,
 } from '../src/services/syncServer.js'
@@ -263,6 +265,64 @@ describe('syncing across the wire', () => {
     )
     expect(again?.rev).toBe(first?.rev)
     expect(await joiner.db.query(`SELECT id FROM products WHERE id = ?`, [id])).toHaveLength(1)
+  })
+})
+
+describe('a till too old for the other one', () => {
+  /** Signs and sends a hello with the body a till on another build would send. */
+  async function helloFrom(till: Till, to: Till, body: object): Promise<number> {
+    const peer = (await pairedPeers(till.db))[0]!
+    const text = JSON.stringify(body)
+    const signed = await as(till, () => sign(peer.secret, till.id, '/hello', text))
+    const response = await fetch(`${to.url}/hello`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-shopos-auth': encodeAuth(signed) },
+      body: text,
+    })
+    return response.status
+  }
+
+  it('learns it is behind when a newer till asks it, though it never dials anybody', async () => {
+    await pairThem()
+    const heard: TillAhead[] = []
+    const off = onTillAhead((a) => heard.push(a))
+    try {
+      expect(await helloFrom(joiner, host, {
+        schemaVersion: EXPECTED_SCHEMA_VERSION + 2, minPeerSchema: EXPECTED_SCHEMA_VERSION + 1,
+      })).toBe(200)
+    } finally { off() }
+    expect(heard).toEqual([{
+      peer: TILL_B, theirs: EXPECTED_SCHEMA_VERSION + 2,
+      theirFloor: EXPECTED_SCHEMA_VERSION + 1, mine: EXPECTED_SCHEMA_VERSION,
+    }])
+  })
+
+  it('reads nothing into a till on the same build, or one that says nothing', async () => {
+    await pairThem()
+    const heard: TillAhead[] = []
+    const off = onTillAhead((a) => heard.push(a))
+    try {
+      await helloFrom(joiner, host, { schemaVersion: EXPECTED_SCHEMA_VERSION, minPeerSchema: MIN_PEER_SCHEMA_VERSION })
+      await helloFrom(joiner, host, {})
+      /* One version ahead across an additive migration is not behind: the two
+         still talk, and nothing needs saying. */
+      await helloFrom(joiner, host, { schemaVersion: EXPECTED_SCHEMA_VERSION + 1, minPeerSchema: MIN_PEER_SCHEMA_VERSION })
+    } finally { off() }
+    expect(heard).toEqual([])
+  })
+
+  it('learns it from its own round when it is the one asking', async () => {
+    await pairThem()
+    const heard: TillAhead[] = []
+    const off = onTillAhead((a) => heard.push(a))
+    const peer = (await pairedPeers(joiner.db))[0]!
+    const real = httpTransport(peer)
+    const newer = { ...real, hello: async () => ({ ...(await real.hello()), schemaVersion: EXPECTED_SCHEMA_VERSION + 3, minPeerSchema: EXPECTED_SCHEMA_VERSION + 3 }) }
+    try {
+      const round = await as(joiner, () => syncWith(joiner.db, newer, joinerRegister))
+      expect(round.ok === false && round.code === 'SCHEMA_MISMATCH' && round.behind).toBe('mine')
+    } finally { off() }
+    expect(heard.map((a) => [a.peer, a.theirs])).toEqual([[TILL_A, EXPECTED_SCHEMA_VERSION + 3]])
   })
 })
 

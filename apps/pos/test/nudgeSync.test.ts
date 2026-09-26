@@ -45,6 +45,7 @@ vi.mock('../src/core/syncHost', () => ({
   lookAround: async () => [],
 }))
 vi.mock('../src/core/device', () => ({ chosenRegister: () => 'a-counter' }))
+vi.mock('../src/core/outOfDate', () => ({ caughtUpWith: async () => undefined }))
 vi.mock('../src/core/log', () => ({ logEvent: vi.fn(), describe: String }))
 vi.mock('../src/core/syncFetch', () => ({ syncFetch: vi.fn() }))
 

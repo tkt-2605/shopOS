@@ -11,9 +11,12 @@ import {
 import { runOnce, onSyncRound } from '../core/syncLoop'
 import { syncNotice } from '../core/syncNotice'
 import { syncStatus, ago } from '../core/syncStatus'
-import { explain, explainRefusal, explainQuarantine } from '../core/syncWords'
+import { explain, explainRefusal, explainQuarantine, isVersionGap, looksLikeARefusal } from '../core/syncWords'
 import { startServing, stopServing, servingOn, type ServeInfo } from '../core/syncHost'
 import { useCore } from '../core/CoreProvider'
+import { chosenRegister } from '../core/device'
+import { takeCounter } from '../core/counters'
+import { caughtUpWith } from '../core/outOfDate'
 import { Card, Alert } from './components'
 import { useConfirm } from './useConfirm'
 
@@ -35,7 +38,7 @@ import { useConfirm } from './useConfirm'
  */
 
 export function SyncCard() {
-  const { db, shop } = useCore()
+  const { db, shop, registerId, reloadRegister } = useCore()
   const [confirmUi, ask] = useConfirm()
   const [serving, setServing] = useState<ServeInfo | null>(null)
   const [code, setCode] = useState<string | null>(null)
@@ -96,6 +99,16 @@ export function SyncCard() {
       return
     }
 
+    /* This till has been billing on the shop's first counter without ever
+       being asked, which is right while it is the only one. The moment another
+       till is let in it stops guessing -- two tills on one guess mint the same
+       invoice numbers -- so the counter it is on is written down now, while it
+       is still the only till, and claimed where the new one will see it. */
+    if (chosenRegister() === null && registerId !== '') {
+      await takeCounter(db, registerId)
+      await reloadRegister()
+    }
+
     try {
       if (serving === null) {
         // No port: the one this machine had last time, so an address a peer
@@ -152,6 +165,8 @@ export function SyncCard() {
 
     setError(null)
     await forgetPeer(db, peer.deviceId)
+    // A till that is gone is not one this till is out of date with any more.
+    await caughtUpWith(peer.deviceId)
     setNotice(`${who} has been forgotten.`)
     await refresh()
   }
@@ -271,7 +286,12 @@ export function SyncCard() {
                           ? <span className="badge ok">talking</span>
                           : (
                             <span title={p.lastError}>
-                              <span className="badge">not answering</span>
+                              {/* Answering and refusing is not "not answering":
+                                  that sends somebody to check a network that works. */}
+                              <span className={looksLikeARefusal(p.lastError) ? 'badge warn' : 'badge'}>
+                                {isVersionGap(p.lastError) ? 'needs update'
+                                  : looksLikeARefusal(p.lastError) ? 'refused' : 'not answering'}
+                              </span>
                               <span style={{ fontSize: 12, color: 'var(--ink-3)', marginLeft: 7 }}>
                                 last agreed {ago(p.lastAgreedAt)}
                               </span>

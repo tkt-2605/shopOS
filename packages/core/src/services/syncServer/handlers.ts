@@ -15,6 +15,7 @@ import {
 import { clock } from '../../clock.js'
 import { askingToJoin, letThemIn, offered, pollingAJoin, withdrawPairing } from './pairing.js'
 import { currentServingRegister } from './serving.js'
+import { isAheadOfUs, noteTillAhead } from '../sync/versionGap.js'
 import {
   type SyncRequest, type SyncResponse, type SyncServerOptions, ok, parse, peerAddressFrom, refuse,
 } from './wire.js'
@@ -74,7 +75,7 @@ export async function handleSyncRequest(
 
 async function route(db: SqlDriver, request: SyncRequest, them: string): Promise<SyncResponse> {
   switch (request.path) {
-    case '/hello': return handleHello(db, them)
+    case '/hello': return handleHello(db, them, request)
     case '/fetch': return handleFetch(db, request, them)
     case '/offer': return handleOffer(db, request, them)
     default: return refuse(404, 'NO_SUCH_REQUEST')
@@ -154,7 +155,16 @@ async function handlePair(
   )
 }
 
-async function handleHello(db: SqlDriver, them: string): Promise<SyncResponse> {
+async function handleHello(db: SqlDriver, them: string, request: SyncRequest): Promise<SyncResponse> {
+  /* A newer till asking an older one. It refuses the round at its end; this is
+     how the older till -- which may never dial anybody -- finds out it is the
+     one that has to be updated. */
+  const asker = parse<{ schemaVersion?: unknown; minPeerSchema?: unknown }>(request.body)
+  if (asker !== null && typeof asker.schemaVersion === 'number') {
+    const floor = typeof asker.minPeerSchema === 'number' ? asker.minPeerSchema : asker.schemaVersion
+    if (isAheadOfUs(floor)) noteTillAhead(them, asker.schemaVersion, floor)
+  }
+
   const [row] = await q(db)
     .select({ theirCursor: schema.syncPeers.theirCursor })
     .from(schema.syncPeers)

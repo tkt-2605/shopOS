@@ -3,6 +3,7 @@ import {
   serveAs, rememberAddress, SyncHttpError, type SqlDriver,
 } from '@shopos/core'
 import { chosenRegister } from './device'
+import { caughtUpWith } from './outOfDate'
 import { logEvent } from './log'
 import { servingOn, lookAround } from './syncHost'
 import { syncFetch } from './syncFetch'
@@ -222,6 +223,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
           }
           state.set(peer.deviceId, { quietUntil: 0, backoff: 0 })
           await recordAttempt(db, peer.deviceId, null)
+          await caughtUpWith(peer.deviceId)
           /* Never silent. A round that set a record aside is the one case
              where everything looks like it worked and the two tills genuinely
              differ, so it is written down even though nothing failed. */
@@ -252,14 +254,24 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
           /* A refusal is not a network failure and backing off would be wrong:
              a schema mismatch is fixed by updating a till, and until somebody
              does, saying so every round is the correct amount of noise. */
-          await recordAttempt(db, peer.deviceId, round.code)
+          /* Which till is out of date, because the fix is on one machine and
+             the sentence has to name it. */
+          const code = round.code !== 'SCHEMA_MISMATCH' ? round.code
+            : round.behind === 'mine' ? 'THIS_TILL_OUTDATED' : 'PEER_OUTDATED'
+          /* This till is the old one: only updating it changes the answer, and
+             an update restarts the app, so there is nothing to gain by asking
+             again before then. The banner is saying so on every screen. */
+          if (code === 'THIS_TILL_OUTDATED') {
+            state.set(peer.deviceId, { quietUntil: Number.POSITIVE_INFINITY, backoff: 0 })
+          }
+          await recordAttempt(db, peer.deviceId, code)
           /* Recorded against the peer for the Settings screen, and written down
              as well. `recordAttempt` keeps the latest state; the log keeps the
              sequence, which is what answers "since when". */
-          logEvent('warn', 'sync', `${peer.deviceId} refused us: ${round.code}`)
+          logEvent('warn', 'sync', `${peer.deviceId} refused us: ${code}`)
           reports.push({
             peer: peer.deviceId, ok: false, received: 0, sent: 0,
-            contested: 0, quarantined: 0, error: round.code,
+            contested: 0, quarantined: 0, error: code,
           })
         }
       } catch (err) {
