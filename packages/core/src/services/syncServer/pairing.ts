@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { EXPECTED_SCHEMA_VERSION } from '../../db/schemaVersion.js'
@@ -78,6 +78,8 @@ interface PendingJoin {
    *  after it. A reply that goes missing must leave the joining till able to
    *  ask again rather than holding half a pairing. */
   secret: string | null
+  /** See `letThemIn`. */
+  replaces: string | null
 }
 
 let pending: PendingJoin | null = null
@@ -167,6 +169,8 @@ export async function askingToJoin(
   label: string | null,
   joinerKey: string,
   now: number,
+  /** The identity this till had before a restore, if it says so. */
+  replaces: string | null = null,
 ): Promise<SyncResponse> {
   if (!expectingAJoin(now)) return refuse(403, 'NO_PAIRING_OFFERED')
 
@@ -202,6 +206,7 @@ export async function askingToJoin(
     joinerKey,
     hostKey,
     secret: null,
+    replaces,
   }
   announce()
   return pendingAnswer(pending)
@@ -244,6 +249,7 @@ export async function pollingAJoin(
   live.secret ??= await agreeSecret(live.hostKey, live.joinerKey, live.joinerKey, live.hostKey.publicKey)
   return await letThemIn(
     db, request, theirDevice, live.label, live.secret, live.hostKey.publicKey, now, opts,
+    null, live.replaces,
   )
 }
 
@@ -263,6 +269,15 @@ export async function letThemIn(
   opts: SyncServerOptions,
   /** Kept and never consulted. Migration 047 says why it is taken now. */
   fingerprint: string | null = null,
+  /**
+   * The identity the joining till had before it was restored from a backup.
+   * A restore gives a machine a new id (see `restore.rs`), and a till that
+   * already knew the old one should swap it for the new rather than keep a
+   * peer that will never answer again -- which pins the change feed and reads
+   * as a counter that has gone quiet. Honoured only when it names a peer this
+   * till holds.
+   */
+  replaces: string | null = null,
 ): Promise<SyncResponse> {
   /* The one place a till becomes a peer, whichever way it got here, and so the
      one place the multi-till plan is checked. The button on the other screen
@@ -275,7 +290,11 @@ export async function letThemIn(
      goes on merging, because billing never stops and two counters that take
      money without merging would corrupt the books in a way nobody notices for
      weeks. See the note above GATED in `domain/licence.ts`. */
-  if (!await entitled(db, 'multiTill', opts)) return refuse(403, 'NEEDS_MULTI_TILL')
+  /* Taking the place of a till this shop already has is not adding one, so
+     the multi-till plan is not asked: a lapse must never stop a restored
+     counter getting back in step with the till beside it. */
+  const succeeding = replaces !== null && await isPeer(db, replaces)
+  if (!succeeding && !await entitled(db, 'multiTill', opts)) return refuse(403, 'NEEDS_MULTI_TILL')
 
   /* The address, here, at the one moment both tills are certainly talking.
      Without it the joining till is recorded as a peer that cannot be reached,
@@ -308,6 +327,8 @@ export async function letThemIn(
      what has changed since migration 021 -- on a shop that had been selling for
      a year, two rows. Without this, pairing succeeds, syncing succeeds, and
      nothing arrives. */
+  if (succeeding) await handOver(db, replaces, theirDevice)
+
   await seedFeedWithEverything(db)
 
   return ok({
@@ -322,5 +343,30 @@ export async function letThemIn(
     shopId: await getSetting(db, 'shop_id'),
     schemaVersion: EXPECTED_SCHEMA_VERSION,
     minPeerSchema: MIN_PEER_SCHEMA_VERSION,
+  })
+}
+
+async function isPeer(db: SqlDriver, id: string): Promise<boolean> {
+  const [row] = await q(db)
+    .select({ id: schema.syncPeers.deviceId })
+    .from(schema.syncPeers)
+    .where(eq(schema.syncPeers.deviceId, id))
+  return row !== undefined
+}
+
+/**
+ * The old identity's counters pass to the new one, and the old peer goes.
+ *
+ * Its change-feed entries stay, still marked as having come from the old id --
+ * which is what sends them to the new one: the bills that till rang up between
+ * its backup and its restore are the ones it no longer has.
+ */
+async function handOver(db: SqlDriver, was: string, now: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const at = clock.iso()
+    await q(tx).update(schema.registers)
+      .set({ claimedBy: now, claimedAt: at, updatedAt: at })
+      .where(eq(schema.registers.claimedBy, was))
+    await q(tx).delete(schema.syncPeers).where(eq(schema.syncPeers.deviceId, was))
   })
 }

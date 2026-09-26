@@ -1,7 +1,7 @@
 import { eq, ne, and, isNotNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
-import { deviceId } from '../device.js'
+import { deviceId, replacedDevice } from '../device.js'
 import { myFingerprint } from './syncAuth.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import type { PeerHello, SyncTransport } from './sync.js'
@@ -193,6 +193,7 @@ export async function pairWith(
       // Symmetric, so that when there is one to send neither side has to be
       // the one that was upgraded first.
       fingerprint: myFingerprint(),
+      ...succeeding(),
     }),
   })
 
@@ -300,7 +301,7 @@ export async function askToJoin(
   const me = deviceId()
   if (me === null) throw new Error('This machine does not know which machine it is')
 
-  const answer = await knock(baseUrl, { deviceId: me, label }, await joiningKey(), fetchImpl, self)
+  const answer = await knock(baseUrl, { deviceId: me, label, ...succeeding() }, await joiningKey(), fetchImpl, self)
   /* A shop that answers the very first knock with ALLOWED is not one this
      asked — there has been nobody to press anything yet. Treated as the
      protocol being wrong rather than as a pairing. */
@@ -319,7 +320,7 @@ export async function pollJoin(
   const me = deviceId()
   if (me === null) throw new Error('This machine does not know which machine it is')
 
-  const answer = await knock(baseUrl, { deviceId: me, requestId }, await joiningKey(), fetchImpl, self)
+  const answer = await knock(baseUrl, { deviceId: me, requestId, ...succeeding() }, await joiningKey(), fetchImpl, self)
   /* The key is kept after being let in, not dropped: if this answer was lost
      on the way back, the till asks again, and asking with a new key would be
      a different conversation that the shop turns away. */
@@ -422,4 +423,13 @@ export async function rememberAddress(
   await q(db).update(schema.syncPeers)
     .set({ address: baseUrl })
     .where(eq(schema.syncPeers.deviceId, peerDeviceId))
+}
+
+/**
+ * Whose place this till is taking, when it has been restored from a backup.
+ * See `setReplacedDevice`; absent on every ordinary pairing.
+ */
+function succeeding(): { replaces?: string } {
+  const was = replacedDevice()
+  return was === null ? {} : { replaces: was }
 }

@@ -4,6 +4,7 @@ import {
 } from '@shopos/core'
 import { chosenRegister } from './device'
 import { caughtUpWith } from './outOfDate'
+import { caughtUpAfterRestore } from './restoreHold'
 import { logEvent } from './log'
 import { servingOn, lookAround } from './syncHost'
 import { syncFetch } from './syncFetch'
@@ -224,6 +225,8 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
           state.set(peer.deviceId, { quietUntil: 0, backoff: 0 })
           await recordAttempt(db, peer.deviceId, null)
           await caughtUpWith(peer.deviceId)
+          // Everything the other till had for this one has arrived.
+          if (!round.more) await caughtUpAfterRestore()
           /* Never silent. A round that set a record aside is the one case
              where everything looks like it worked and the two tills genuinely
              differ, so it is written down even though nothing failed. */

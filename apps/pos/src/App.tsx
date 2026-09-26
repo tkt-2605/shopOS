@@ -7,6 +7,7 @@ import { JoinShop } from './ui/JoinShop'
 import { lookAround, type FoundTill } from './core/syncHost'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
 import { OutOfDateBanner } from './ui/OutOfDateBanner'
+import { RestoreHoldBanner } from './ui/RestoreHoldBanner'
 import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
 import { ChangePassword } from './ui/ChangePassword'
@@ -370,6 +371,7 @@ function Shell() {
             and nobody goes to Settings to find that out. */}
         <DeviceTroubleBanner />
         <OutOfDateBanner />
+        <RestoreHoldBanner />
         {/* Also on every screen, and for the same reason turned around: the
             person who has to say yes is standing at this till looking at the
             counter, while the person adding one is at the other machine. A

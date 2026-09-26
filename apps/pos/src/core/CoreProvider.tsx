@@ -10,6 +10,7 @@ import {
   deviceStore, establishDevice, recordStranded,
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
+import { settleRestore } from './restoreHold'
 import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
 import { runStockCheck, startMaintenanceTimer } from './maintenance'
 import { serveIfPaired, servingOn } from './syncHost'
@@ -131,6 +132,9 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
     await resetSyncState(db)
 
     await adoptDeviceSettings(db)
+    /* A till restored from its own backup, taking up where it left off. After
+       the migrations, because a backup can be older than this build. */
+    await settleRestore(db)
     const needsSetup = await isFirstRun(db)
     // A shop that upgrades into a new screen should find it there, without the
     // owner's own permission choices being reset to make room for it.

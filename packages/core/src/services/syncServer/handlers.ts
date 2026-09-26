@@ -115,7 +115,7 @@ async function handlePair(
 ): Promise<SyncResponse> {
   const asked = parse<{
     code?: string; deviceId?: string; label?: string; requestId?: string
-    fingerprint?: string; publicKey?: string
+    fingerprint?: string; publicKey?: string; replaces?: string
   }>(request.body)
   if (asked === null) return refuse(400, 'MALFORMED')
 
@@ -135,7 +135,7 @@ async function handlePair(
     return await pollingAJoin(db, request, asked.requestId.trim(), theirDevice, joinerKey, now, opts)
   }
   if (typeof asked.code !== 'string') {
-    return await askingToJoin(theirDevice, asked.label ?? null, joinerKey, now)
+    return await askingToJoin(theirDevice, asked.label ?? null, joinerKey, now, replacesOf(asked.replaces, theirDevice))
   }
 
   const live = offered
@@ -152,6 +152,7 @@ async function handlePair(
   return await letThemIn(
     db, request, theirDevice, asked.label ?? null, secret, ours.publicKey, now, opts,
     typeof asked.fingerprint === 'string' ? asked.fingerprint : null,
+    replacesOf(asked.replaces, theirDevice),
   )
 }
 
@@ -288,4 +289,11 @@ export async function handleOffer(
     ))
 
   return ok({ upTo: batch.upTo })
+}
+
+/** A `replaces` worth passing on: a string, and not the joining till itself. */
+function replacesOf(value: unknown, theirDevice: string): string | null {
+  if (typeof value !== 'string') return null
+  const id = value.trim()
+  return id === '' || id === theirDevice ? null : id
 }

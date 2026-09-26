@@ -1,7 +1,7 @@
 export * as Money from './money.js'
 export * as Quantity from './quantity.js'
 export { newId, derivedId, timestampOf } from './ids.js'
-export { setDeviceId, setDeviceIdSource, deviceId } from './device.js'
+export { setDeviceId, setDeviceIdSource, deviceId, setReplacedDevice, replacedDevice } from './device.js'
 export { isStateCode } from './domain/states.js'
 export { GSTIN_SHAPE, isGstin, stateFromGstin, resolveCustomerState } from './domain/gstin.js'
 export { clock, setClock } from './clock.js'
@@ -35,6 +35,7 @@ export {
   type QuarantinedRecord,
 } from './services/sync.js'
 export { onTillAhead, isAheadOfUs, type TillAhead } from './services/sync.js'
+export { adoptRestoredIdentity, type Adopted } from './services/sync.js'
 export { syncWith, syncUntilDone, collectChanges, applyBatch, changedHere, listPeers, pruneAcknowledged, REPLICATED_TABLES, type SyncTransport, type PeerHello, type SyncResult, type ContestedChange } from './services/sync.js'
 export { decideRow, decideDeletion, type MergeInput, type MergeDecision, type MergeReason, type Versioned, type Side } from './domain/merge.js'
 export * as HtmlTemplate from './domain/htmlTemplate.js'

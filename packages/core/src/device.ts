@@ -50,3 +50,18 @@ export function setDeviceIdSource(fn: (() => string | null) | null): void {
 export function deviceId(): string | null {
   return source ? source() : current
 }
+
+/**
+ * The identity this machine had before its database was restored, while the
+ * other tills may still know it by that name. Told to a till it pairs with, so
+ * that till swaps the old peer for this one rather than keeping both.
+ */
+let replaced: string | null = null
+
+export function setReplacedDevice(id: string | null): void {
+  replaced = id === null ? null : (id.trim() || null)
+}
+
+export function replacedDevice(): string | null {
+  return replaced
+}

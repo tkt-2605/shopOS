@@ -14,6 +14,7 @@ import { usePickList, Results } from '../ui/PickList'
 import { useConfirm } from '../ui/useConfirm'
 import { totalsLinesOf, shortOf } from './billing/cart'
 import { submitMessage } from './billing/submitMessage'
+import { restoreHold, restoreHoldMessage } from '../core/restoreHold'
 import { TabStrip } from './billing/TabStrip'
 import { CartTable } from './billing/CartTable'
 import { TotalsPanel } from './billing/TotalsPanel'
@@ -226,6 +227,16 @@ export default function Billing() {
     submitting.current = true
     setBusy(true)
     const fail = (error: string) => tabs.patch((cart) => ({ ...cart, error }))
+
+    /* Before a number is taken. The banner above says the same and carries
+       the way on; see `restoreHold.ts`. */
+    const hold = restoreHold()
+    if (hold !== null) {
+      submitting.current = false
+      setBusy(false)
+      fail(restoreHoldMessage(hold))
+      return
+    }
 
     let result: Awaited<ReturnType<typeof submitBill>>
     let billId: string
