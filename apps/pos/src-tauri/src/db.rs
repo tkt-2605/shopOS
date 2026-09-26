@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
@@ -82,6 +82,18 @@ pub enum FailureKind {
     Locked,
     /// Permissions, a missing folder, a disconnected drive.
     Io,
+    /// A restore was staged, and putting it in place did not finish.
+    ///
+    /// Its own kind because the database on disk is not the answer to "what
+    /// is this shop's data" until somebody decides: opening whatever happens
+    /// to be at `shop.db` -- or creating an empty one because nothing is --
+    /// would let the counter bill into a file that the next start replaces.
+    /// The message says where both copies are.
+    RestoreIncomplete,
+    /// `--shop` or `SHOPOS_SHOP` named a shop in a way that cannot be a
+    /// folder. Nothing was opened, because the alternative was opening the
+    /// original shop's books under a shortcut meant for another company.
+    InvalidShop,
 }
 
 /// The database, or the reason there isn't one.
@@ -92,6 +104,13 @@ pub enum FailureKind {
 /// and it would be held across a long merge, which is exactly when the screen
 /// most wants to ask what is going on.
 pub struct DbState(pub Result<Db, StartupFailure>);
+
+impl StartupFailure {
+    /// A failure found before there was a database to try, for `setup()`.
+    pub fn before_opening(kind: FailureKind, message: String, db_path: &std::path::Path) -> Self {
+        StartupFailure { message, db_path: db_path.display().to_string(), kind }
+    }
+}
 
 impl DbState {
     /// The prefix is a contract with `tauri-driver.ts`, which turns it into a
@@ -190,7 +209,7 @@ impl Db {
     /// migrations up to 28 sitting on a shop database still at 27 is a real
     /// state, and it is the one worth seeing on a screen.
     pub fn user_version(&self) -> Result<i64, String> {
-        let inner = lock(self)?;
+        let inner = lock(self);
         inner
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -207,7 +226,7 @@ impl Db {
     /// leftover temp from a crash break the *next* backup rather than the one
     /// that failed — so callers clear the target first.
     pub fn vacuum_into(&self, target: &std::path::Path) -> Result<(), String> {
-        let inner = lock(self)?;
+        let inner = lock(self);
         if inner.active_tx.is_some() {
             return Err("cannot back up while a transaction is open".into());
         }
@@ -231,20 +250,19 @@ impl Db {
     /// decision, so a screen keeps working during a long merge -- and this is a
     /// read.
     pub(crate) fn read_with<T>(&self, f: impl FnOnce(&Connection) -> T) -> Result<T, String> {
-        let inner = lock(self)?;
+        let inner = lock(self);
         Ok(f(&inner.conn))
     }
 
     pub fn has_open_transaction(&self) -> bool {
-        lock(self).map(|inner| inner.active_tx.is_some()).unwrap_or(true)
+        lock(self).active_tx.is_some()
     }
 
     pub fn start_watchdog(&self) {
         let inner = Arc::clone(&self.0);
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(1));
-            let Ok(mut guard) = inner.lock() else { return };
-            sweep(&mut guard);
+            sweep(&mut lock_inner(&inner));
         });
     }
 
@@ -253,7 +271,7 @@ impl Db {
     /// `budget_ms` is what the caller believes this piece of work is worth
     /// waiting for. Absent means a bill.
     pub fn begin(&self, budget_ms: Option<u64>) -> Result<String, String> {
-        let mut inner = lock(self)?;
+        let mut inner = lock(self);
         if inner.active_tx.is_some() {
             return Err("a transaction is already open".into());
         }
@@ -263,7 +281,7 @@ impl Db {
             .conn
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| e.to_string())?;
-        let token = uuid_v4();
+        let token = crate::ids::uuid_v4();
         inner.active_tx = Some(ActiveTx {
             token: token.clone(),
             started: Instant::now(),
@@ -278,7 +296,7 @@ impl Db {
     /// layer is plumbing, and what this does when a COMMIT fails is a rule that
     /// wants a test around it.
     pub fn end(&self, token: &str, commit: bool) -> Result<(), String> {
-        let mut inner = lock(self)?;
+        let mut inner = lock(self);
         assert_token(&inner, token)?;
         let statement = if commit { "COMMIT" } else { "ROLLBACK" };
         let result = inner.conn.execute_batch(statement).map_err(|e| e.to_string());
@@ -327,31 +345,80 @@ impl Db {
     /// transaction sees uncommitted rows, which is a real cost and a much
     /// smaller one than the screen going blank.
     pub fn execute(&self, sql: &str, params: &[Json]) -> Result<ExecResult, String> {
-        let inner = lock(self)?;
+        let mut inner = lock(self);
         if inner.active_tx.is_some() {
             return Err("a transaction is open".into());
         }
-        run_execute(&inner.conn, sql, params)
+        refuse_control(sql, false)?;
+        let result = run_execute(&inner.conn, sql, params);
+        settle(&mut inner).and(result)
     }
 
     /// A read, transaction or no transaction. See `execute` for why the two are
     /// treated differently.
+    ///
+    /// **Only a read.** This path used to run whatever it was handed, so an
+    /// `INSERT` sent as a query went straight past the guard on `execute` --
+    /// and during a merge it joined the merge's transaction and shared its
+    /// fate, which is the exact bug that guard was written to close. SQLite
+    /// knows whether a prepared statement can write, so it is asked.
     pub fn query(&self, sql: &str, params: &[Json]) -> Result<Vec<Json>, String> {
-        let inner = lock(self)?;
-        run_query(&inner.conn, sql, params)
+        let mut inner = lock(self);
+        refuse_control(sql, false)?;
+        let result = run_query(&inner.conn, sql, params, Access::ReadOnly);
+        settle(&mut inner).and(result)
     }
 
     /// The same read, as rows of values in the order the SELECT names them.
     pub fn query_values(&self, sql: &str, params: &[Json]) -> Result<Vec<Vec<Json>>, String> {
-        let inner = lock(self)?;
-        run_query_values(&inner.conn, sql, params)
+        let mut inner = lock(self);
+        refuse_control(sql, false)?;
+        let result = run_query_values(&inner.conn, sql, params, Access::ReadOnly);
+        settle(&mut inner).and(result)
+    }
+
+    /// A statement inside the transaction `token` names. Writes are fine here --
+    /// this is the work the transaction was opened for -- but ending the
+    /// transaction is `end`'s job, never a string's.
+    pub fn tx_query(&self, token: &str, sql: &str, params: &[Json]) -> Result<Vec<Json>, String> {
+        let mut inner = lock(self);
+        assert_token(&inner, token)?;
+        refuse_control(sql, true)?;
+        let result = run_query(&inner.conn, sql, params, Access::Any);
+        settle(&mut inner).and(result)
+    }
+
+    pub fn tx_query_values(&self, token: &str, sql: &str, params: &[Json]) -> Result<Vec<Vec<Json>>, String> {
+        let mut inner = lock(self);
+        assert_token(&inner, token)?;
+        refuse_control(sql, true)?;
+        let result = run_query_values(&inner.conn, sql, params, Access::Any);
+        settle(&mut inner).and(result)
+    }
+
+    pub fn tx_execute(&self, token: &str, sql: &str, params: &[Json]) -> Result<ExecResult, String> {
+        let mut inner = lock(self);
+        assert_token(&inner, token)?;
+        refuse_control(sql, true)?;
+        let result = run_execute(&inner.conn, sql, params);
+        settle(&mut inner).and(result)
+    }
+
+    /// Rolls back whatever is open, tracked or not. See `sql_abandon_tx`.
+    pub fn abandon(&self) -> bool {
+        let mut inner = lock(self);
+        let was = inner.active_tx.is_some() || !inner.conn.is_autocommit();
+        if !inner.conn.is_autocommit() {
+            let _ = inner.conn.execute_batch("ROLLBACK");
+        }
+        inner.active_tx = None;
+        was
     }
 
     /// One watchdog tick, for a test that cannot wait a second per assertion.
     #[cfg(test)]
     fn sweep_now(&self) -> bool {
-        let Ok(mut guard) = self.0.lock() else { return false };
-        sweep(&mut guard)
+        sweep(&mut lock(self))
     }
 }
 
@@ -365,8 +432,101 @@ fn sweep(guard: &mut Inner) -> bool {
     let budget = tx.budget;
     let _ = guard.conn.execute_batch("ROLLBACK");
     guard.active_tx = None;
-    eprintln!("shopos: rolled back a transaction left open past {budget:?}");
+    /* To the log and not to stderr, which a release build does not have. A
+       watchdog rollback is a bill that did not save, and "why did that bill
+       vanish" is a question that arrives days later, by phone. */
+    crate::log::write(
+        "warn",
+        "db",
+        &format!("rolled back a transaction left open past {budget:?}"),
+    );
     true
+}
+
+/// Which statements end or start a transaction when sent as text.
+///
+/// A transaction is opened and closed by `begin` and `end`, which keep
+/// `active_tx` in step with the connection. `COMMIT` sent through
+/// `sql_tx_execute` ended the transaction behind the tracker's back: the token
+/// stayed "open", the watchdog later rolled back nothing, and the next `begin`
+/// was refused for fifteen seconds. `BEGIN` sent through `sql_execute` was
+/// worse -- an untracked transaction that every later write silently joined.
+///
+/// Inside a token, `SAVEPOINT`, `RELEASE` and `ROLLBACK TO` are the merge's own
+/// tools and stay allowed: they nest inside the transaction and cannot end it.
+/// Outside one, all of them are refused, because a `SAVEPOINT` with nothing
+/// open *starts* a transaction.
+///
+/// Read off the first keyword, after any comments. `settle` below is the
+/// backstop for whatever this misses, and it cannot miss: it asks SQLite.
+fn refuse_control(sql: &str, inside_token: bool) -> Result<(), String> {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, tail)| tail);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, tail)| tail);
+        } else {
+            break;
+        }
+    }
+    let mut words = rest
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_uppercase);
+    let first = words.next().unwrap_or_default();
+
+    let refused = match first.as_str() {
+        "BEGIN" | "COMMIT" | "END" => true,
+        "ROLLBACK" => {
+            // `ROLLBACK [TRANSACTION] TO x` undoes to a savepoint and leaves
+            // the transaction open; plain `ROLLBACK` ends it.
+            let to = match words.next().as_deref() {
+                Some("TRANSACTION") => words.next().as_deref() == Some("TO"),
+                Some("TO") => true,
+                _ => false,
+            };
+            !(inside_token && to)
+        }
+        "SAVEPOINT" | "RELEASE" => !inside_token,
+        _ => false,
+    };
+    if refused {
+        return Err(format!(
+            "{first} is not sent as SQL here; transactions are opened and closed with sql_tx_begin and sql_tx_end"
+        ));
+    }
+    Ok(())
+}
+
+/// Checks that the connection and the tracker agree about whether a
+/// transaction is open, and puts them back in step if not.
+///
+/// SQLite's own answer, `is_autocommit`, cannot be fooled by a statement
+/// `refuse_control` failed to recognise, and it also catches the case no
+/// string check could: a statement inside a token that made SQLite roll the
+/// whole transaction back by itself -- a full disk, an I/O error. Either way
+/// the tracker and the connection disagree, and every later call would be
+/// built on the disagreement. So whatever is open is rolled back, the tracker
+/// is cleared, and the caller is told.
+fn settle(inner: &mut Inner) -> Result<(), String> {
+    let open = !inner.conn.is_autocommit();
+    let tracked = inner.active_tx.is_some();
+    if open == tracked {
+        return Ok(());
+    }
+    if open {
+        let _ = inner.conn.execute_batch("ROLLBACK");
+    }
+    inner.active_tx = None;
+    let said = if open {
+        "that statement opened a transaction nothing was tracking, so it was rolled back"
+    } else {
+        "the transaction ended without sql_tx_end, so it is no longer open"
+    };
+    crate::log::write("warn", "db", said);
+    Err(said.to_string())
 }
 
 /// What the caller asked for, brought inside the bounds.
@@ -445,14 +605,65 @@ fn explain(kind: FailureKind, err: &rusqlite::Error) -> String {
             "Another program is holding this till's database open. \
              Close any other copy of ShopOS and try again. ({detail})"
         ),
-        FailureKind::Io => format!(
+        // The last two are decided before SQLite is asked anything, and carry
+        // their own sentences; `classify` never answers with them.
+        FailureKind::Io | FailureKind::RestoreIncomplete | FailureKind::InvalidShop => format!(
             "This till's database could not be opened. ({detail})"
         ),
     }
 }
 
-fn lock(db: &Db) -> Result<std::sync::MutexGuard<'_, Inner>, String> {
-    db.0.lock().map_err(|_| "database lock poisoned".to_string())
+fn lock(db: &Db) -> MutexGuard<'_, Inner> {
+    lock_inner(&db.0)
+}
+
+/// The connection, whether or not the last holder panicked.
+///
+/// A poisoned lock used to be permanent: every later call answered "database
+/// lock poisoned" until the till was restarted, so one panic in one command
+/// turned into a counter that could not bill. What the panic might have left
+/// behind is a transaction half-way through, and that has a known cure -- roll
+/// it back and forget the token, which is what the watchdog would have done
+/// anyway. The connection itself is SQLite's, and a Rust panic cannot tear it.
+fn lock_inner(mutex: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            if !guard.conn.is_autocommit() {
+                let _ = guard.conn.execute_batch("ROLLBACK");
+            }
+            guard.active_tx = None;
+            mutex.clear_poison();
+            crate::log::write(
+                "warn",
+                "db",
+                "a command panicked holding the database; rolled back what it had open",
+            );
+            guard
+        }
+    }
+}
+
+/// Whether a query path may run a statement that writes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    ReadOnly,
+    Any,
+}
+
+fn prepare<'c>(
+    conn: &'c Connection,
+    sql: &str,
+    access: Access,
+) -> Result<rusqlite::CachedStatement<'c>, String> {
+    let stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
+    if access == Access::ReadOnly && !stmt.readonly() {
+        return Err(
+            "that statement writes, and a write outside a transaction goes through sql_execute".into(),
+        );
+    }
+    Ok(stmt)
 }
 
 fn bind(params: &[Json]) -> Result<Vec<SqlValue>, String> {
@@ -486,9 +697,9 @@ fn to_json(value: ValueRef<'_>) -> Json {
     }
 }
 
-fn run_query(conn: &Connection, sql: &str, params: &[Json]) -> Result<Vec<Json>, String> {
+fn run_query(conn: &Connection, sql: &str, params: &[Json], access: Access) -> Result<Vec<Json>, String> {
     let bound = bind(params)?;
-    let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
+    let mut stmt = prepare(conn, sql, access)?;
     let columns: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();
 
     let rows = stmt
@@ -518,9 +729,14 @@ fn run_query(conn: &Connection, sql: &str, params: &[Json]) -> Result<Vec<Json>,
 /// Turning `preserve_order` on would also work, until an upgrade somewhere in
 /// the dependency graph turned it off again with nothing going red. Asking
 /// SQLite for positions cannot drift.
-fn run_query_values(conn: &Connection, sql: &str, params: &[Json]) -> Result<Vec<Vec<Json>>, String> {
+fn run_query_values(
+    conn: &Connection,
+    sql: &str,
+    params: &[Json],
+    access: Access,
+) -> Result<Vec<Vec<Json>>, String> {
     let bound = bind(params)?;
-    let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
+    let mut stmt = prepare(conn, sql, access)?;
     let count = stmt.column_count();
 
     let rows = stmt
@@ -538,7 +754,7 @@ fn run_query_values(conn: &Connection, sql: &str, params: &[Json]) -> Result<Vec
 
 fn run_execute(conn: &Connection, sql: &str, params: &[Json]) -> Result<ExecResult, String> {
     let bound = bind(params)?;
-    let mut stmt = conn.prepare_cached(sql).map_err(|e| e.to_string())?;
+    let mut stmt = prepare(conn, sql, Access::Any)?;
     let rows_affected = stmt
         .execute(rusqlite::params_from_iter(bound))
         .map_err(|e| e.to_string())?;
@@ -555,12 +771,20 @@ fn assert_token(inner: &Inner, token: &str) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+/* `async`, every one of them. A plain command runs on the main thread, so a
+   read that took two seconds -- a report over a year of bills, a query stuck
+   behind a merge holding the lock -- froze the window for two seconds, with
+   the cursor spinning over a counter that looked dead. As `async` they run on
+   the async runtime's workers and queue on the connection's own lock, which is
+   where the waiting belongs. The TypeScript driver awaits each call before the
+   next, so running them off the main thread does not reorder anything. */
+
+#[tauri::command(async)]
 pub fn sql_query(db: State<'_, DbState>, sql: String, params: Vec<Json>) -> Result<Vec<Json>, String> {
     db.get()?.query(&sql, &params)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sql_query_values(
     db: State<'_, DbState>,
     sql: String,
@@ -569,53 +793,47 @@ pub fn sql_query_values(
     db.get()?.query_values(&sql, &params)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sql_execute(db: State<'_, DbState>, sql: String, params: Vec<Json>) -> Result<ExecResult, String> {
     db.get()?.execute(&sql, &params)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sql_tx_begin(db: State<'_, DbState>, budget_ms: Option<u64>) -> Result<String, String> {
     db.get()?.begin(budget_ms)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sql_tx_query(
     db: State<'_, DbState>,
     token: String,
     sql: String,
     params: Vec<Json>,
 ) -> Result<Vec<Json>, String> {
-    let inner = lock(db.get()?)?;
-    assert_token(&inner, &token)?;
-    run_query(&inner.conn, &sql, &params)
+    db.get()?.tx_query(&token, &sql, &params)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sql_tx_query_values(
     db: State<'_, DbState>,
     token: String,
     sql: String,
     params: Vec<Json>,
 ) -> Result<Vec<Vec<Json>>, String> {
-    let inner = lock(db.get()?)?;
-    assert_token(&inner, &token)?;
-    run_query_values(&inner.conn, &sql, &params)
+    db.get()?.tx_query_values(&token, &sql, &params)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sql_tx_execute(
     db: State<'_, DbState>,
     token: String,
     sql: String,
     params: Vec<Json>,
 ) -> Result<ExecResult, String> {
-    let inner = lock(db.get()?)?;
-    assert_token(&inner, &token)?;
-    run_execute(&inner.conn, &sql, &params)
+    db.get()?.tx_execute(&token, &sql, &params)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sql_tx_end(db: State<'_, DbState>, token: String, commit: bool) -> Result<(), String> {
     db.get()?.end(&token, commit)
 }
@@ -627,38 +845,15 @@ pub fn sql_tx_end(db: State<'_, DbState>, token: String, commit: bool) -> Result
 /// still open at that moment is orphaned by definition. The watchdog would clear
 /// it within fifteen seconds, but the till should not fail to open in the
 /// meantime — which is exactly what a reload mid-save used to cause.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sql_abandon_tx(db: State<'_, DbState>) -> Result<bool, String> {
-    let mut inner = lock(db.get()?)?;
-    if inner.active_tx.is_none() {
-        return Ok(false);
-    }
-    let _ = inner.conn.execute_batch("ROLLBACK");
-    inner.active_tx = None;
-    Ok(true)
+    Ok(db.get()?.abandon())
 }
 
-/// Copies the live database to a path the shopkeeper chooses.
-#[tauri::command]
-pub fn backup_database(db: State<'_, DbState>, target: String) -> Result<(), String> {
-    db.get()?.vacuum_into(std::path::Path::new(&target))
-}
-
-fn uuid_v4() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("system randomness unavailable");
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
-}
+/* There was a `backup_database(target)` here, which ran VACUUM INTO on any
+   path the webview named -- a UNC path to another machine included -- and
+   nothing in the app called it any more. Every backup goes through
+   `backup_write_zip`, which names its file inside the backups folder. */
 
 #[cfg(test)]
 mod tests {
@@ -669,7 +864,7 @@ mod tests {
     /// this regresses is somebody editing `configure` for a test fixture.
     #[test]
     fn opens_fully_synchronous() {
-        let dir = std::env::temp_dir().join(format!("shopos-db-{}", uuid_v4()));
+        let dir = std::env::temp_dir().join(format!("shopos-db-{}", crate::ids::uuid_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = Db::open(&dir.join("shop.db")).unwrap();
 
@@ -822,7 +1017,7 @@ mod tests {
     }
 
     fn scratch() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("shopos-open-{}", uuid_v4()));
+        let dir = std::env::temp_dir().join(format!("shopos-open-{}", crate::ids::uuid_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1091,6 +1286,122 @@ mod tests {
             1,
             "and the write that followed it is really there"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── What each path is allowed to run ───────────────────────────────────
+
+    /// The guard on `execute` was the whole fix for writes joining a merge,
+    /// and the query path walked straight round it.
+    #[test]
+    fn a_write_sent_as_a_read_is_refused() {
+        let (dir, db) = a_till();
+
+        let said = db.query("INSERT INTO note (text) VALUES ('sneaked')", &[]).unwrap_err();
+        assert!(said.contains("writes"), "{said}");
+        assert!(db.query_values("DELETE FROM note", &[]).is_err());
+
+        // And during a merge, which is when it did the damage.
+        db.begin(Some(90_000)).unwrap();
+        assert!(db.query("UPDATE note SET text = 'x'", &[]).is_err());
+        assert!(db.has_open_transaction(), "refusing it must not disturb the merge");
+        db.abandon();
+
+        assert!(db.query("SELECT text FROM note", &[]).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The reads `describe.ts` and `migrate.ts` make through the query path.
+    /// If SQLite ever counted these as writes the app could not start.
+    #[test]
+    fn the_pragmas_the_core_reads_are_still_reads() {
+        let (dir, db) = a_till();
+        for sql in [
+            "PRAGMA user_version",
+            "PRAGMA table_info(note)",
+            "PRAGMA foreign_key_list(note)",
+            "PRAGMA index_list(note)",
+            "SELECT name FROM sqlite_master WHERE type = 'table'",
+        ] {
+            assert!(db.query(sql, &[]).is_ok(), "{sql} should be allowed as a read");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_transaction_is_never_opened_or_closed_by_a_string() {
+        let (dir, db) = a_till();
+
+        // Outside a token, none of them: a SAVEPOINT with nothing open starts
+        // a transaction that nothing is tracking.
+        for sql in ["BEGIN", "begin immediate", "SAVEPOINT s", "RELEASE s", "COMMIT", "END", "ROLLBACK"] {
+            assert!(db.execute(sql, &[]).is_err(), "{sql} should be refused");
+        }
+        assert!(db.query("/* hidden */ -- and again\n BEGIN", &[]).is_err());
+        assert!(!db.has_open_transaction());
+
+        // Inside one, the merge's own savepoints are fine and ending it is not.
+        let token = db.begin(None).unwrap();
+        db.tx_execute(&token, "SAVEPOINT record", &[]).unwrap();
+        db.tx_execute(&token, "INSERT INTO note (text) VALUES ('kept')", &[]).unwrap();
+        db.tx_execute(&token, "ROLLBACK TO record", &[]).unwrap();
+        db.tx_execute(&token, "ROLLBACK TRANSACTION TO record", &[]).unwrap();
+        db.tx_execute(&token, "RELEASE record", &[]).unwrap();
+        for sql in ["COMMIT", "END TRANSACTION", "ROLLBACK", "ROLLBACK TRANSACTION", "BEGIN"] {
+            assert!(db.tx_execute(&token, sql, &[]).is_err(), "{sql} should be refused inside a token");
+            assert!(db.has_open_transaction(), "{sql} must not have ended it");
+        }
+        db.tx_execute(&token, "INSERT INTO note (text) VALUES ('committed')", &[]).unwrap();
+        db.end(&token, true).unwrap();
+
+        assert_eq!(db.query("SELECT text FROM note", &[]).unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Whatever the keyword check misses, SQLite does not.
+    #[test]
+    fn a_connection_that_disagrees_with_the_tracker_is_put_back_in_step() {
+        let (dir, db) = a_till();
+
+        // Open, and nothing tracking it.
+        lock(&db).conn.execute_batch("BEGIN").unwrap();
+        let said = db.query("SELECT 1", &[]).unwrap_err();
+        assert!(said.contains("rolled back"), "{said}");
+        assert!(lock(&db).conn.is_autocommit());
+        assert!(db.execute("INSERT INTO note (text) VALUES ('after')", &[]).is_ok());
+
+        // Tracked, and not open any more.
+        let token = db.begin(None).unwrap();
+        lock(&db).conn.execute_batch("COMMIT").unwrap();
+        assert!(db.tx_query(&token, "SELECT 1", &[]).is_err());
+        assert!(!db.has_open_transaction(), "the tracker must stop claiming a transaction");
+        assert!(db.begin(None).is_ok(), "and the next one must be allowed to start");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// One command panicking used to leave the till answering "database lock
+    /// poisoned" to everything until somebody restarted it.
+    #[test]
+    fn a_panic_while_holding_the_database_does_not_stop_the_till() {
+        let (dir, db) = a_till();
+        db.begin(None).unwrap();
+        lock(&db).conn.execute_batch("INSERT INTO note (text) VALUES ('half a bill')").unwrap();
+
+        let shared = Arc::clone(&db.0);
+        let _ = std::thread::spawn(move || {
+            let _held = shared.lock().unwrap();
+            panic!("a command panicked with the database held");
+        })
+        .join();
+        assert!(db.0.is_poisoned());
+
+        assert!(!db.has_open_transaction(), "what the panic left open is rolled back");
+        assert!(db.execute("INSERT INTO note (text) VALUES ('next bill')", &[]).is_ok());
+        let rows = db.query("SELECT text FROM note", &[]).unwrap();
+        assert_eq!(rows.len(), 1, "only the write after the recovery: {rows:?}");
+        assert!(!db.0.is_poisoned());
 
         std::fs::remove_dir_all(&dir).ok();
     }

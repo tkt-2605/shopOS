@@ -6,7 +6,7 @@ import { createBill, submitBill } from '../src/services/billing.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
 import { businessDate } from '../src/dates.js'
-import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
+import { freshDb, makeProduct, makeCustomer, type Fixture, editingSubmitted } from './helpers.js'
 
 /**
  * What a customer is worth, and what a supplier has been charging.
@@ -190,7 +190,8 @@ describe('what a supplier sends', () => {
     if (!s.ok) throw new Error(s.code)
 
     await receive(cheap, 10, rupees(90), s.supplierId)
-    await fx.db.execute(`UPDATE stock_entries SET posting_date = '2026-01-01'`)
+    await editingSubmitted(fx.db, 'stock_entries', () =>
+      fx.db.execute(`UPDATE stock_entries SET posting_date = '2026-01-01'`))
     await receive(cheap, 10, rupees(95), s.supplierId)
 
     const [rice] = await supplierItems(fx.db, s.supplierId)

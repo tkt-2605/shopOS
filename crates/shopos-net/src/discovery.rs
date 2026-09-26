@@ -90,13 +90,43 @@ pub struct Found {
     pub port: u16,
 }
 
+/// How long to keep trying for the discovery port before saying it is taken.
+///
+/// A responder that has just been told to stop is parked in `recv_from` for up
+/// to its 500 ms read timeout before it notices and lets the port go. Turning
+/// sync off and on again inside that window -- which is exactly what somebody
+/// does when it "is not working" -- used to find the port still held, fail to
+/// bind, and say nothing at all: the till answered HTTP and was invisible to
+/// every other till looking for it.
+const BIND_RETRY: Duration = Duration::from_secs(1);
+
 /// Answers the shout, for as long as the flag says to.
 ///
-/// Returns immediately; the work is on its own thread. The flag is the same one
-/// the HTTP listener uses, so discovery and answering start and stop together
-/// and there is no state where one is on without the other.
-pub fn respond_while(announcement: Announcement, stop: Arc<AtomicBool>) {
-    let _ = respond_on(DISCOVERY_PORT, announcement, stop);
+/// Returns once it is listening; the work is on its own thread. The flag is the
+/// same one the HTTP listener uses, so discovery and answering start and stop
+/// together and there is no state where one is on without the other.
+///
+/// A port that stays taken is an error the caller is handed, not one dropped
+/// here: a till nobody can find should be able to say why.
+pub fn respond_while(announcement: Announcement, stop: Arc<AtomicBool>) -> Result<u16, String> {
+    respond_retrying(DISCOVERY_PORT, announcement, stop, BIND_RETRY)
+}
+
+/// `respond_on`, trying again for up to `retry` while the port is held.
+pub fn respond_retrying(
+    port: u16,
+    announcement: Announcement,
+    stop: Arc<AtomicBool>,
+    retry: Duration,
+) -> Result<u16, String> {
+    let started = Instant::now();
+    loop {
+        match respond_on(port, announcement.clone(), Arc::clone(&stop)) {
+            Ok(bound) => return Ok(bound),
+            Err(_) if started.elapsed() < retry => std::thread::sleep(Duration::from_millis(100)),
+            Err(why) => return Err(why),
+        }
+    }
 }
 
 /// The same, on a port of the caller's choosing, waiting until it is listening.
@@ -376,6 +406,37 @@ mod tests {
         asking.set_read_timeout(Some(Duration::from_millis(600))).unwrap();
         let _ = asking.send_to(PROBE, ("127.0.0.1", port));
         assert!(asking.recv_from(&mut buffer).is_err());
+    }
+
+    /// The port is held by a responder that has been told to stop and has not
+    /// noticed yet. Starting again inside that window must wait, not fail.
+    #[test]
+    fn waits_for_a_port_that_is_about_to_be_let_go() {
+        let holder = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let releasing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(holder);
+        });
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let bound = respond_retrying(port, announcement(), Arc::clone(&stop), Duration::from_secs(3));
+        releasing.join().unwrap();
+        assert_eq!(bound, Ok(port));
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    /// And a port that stays taken is said, not swallowed.
+    #[test]
+    fn says_so_when_the_port_stays_taken() {
+        let holder = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = holder.local_addr().unwrap().port();
+
+        let started = Instant::now();
+        let refused = respond_retrying(port, announcement(), Arc::new(AtomicBool::new(false)), Duration::from_millis(300));
+        assert!(refused.unwrap_err().contains(&port.to_string()));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(holder);
     }
 
     #[test]

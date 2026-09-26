@@ -156,7 +156,7 @@ describe('planning an import', () => {
 describe('applying one', () => {
   it('creates what it said it would', async () => {
     const plan = await planImport(fx.db, 'name,hsn,tax,unit,rate\r\nRice,1006,5,kg,120\r\n')
-    expect(await applyImport(fx.db, ctx, plan)).toEqual({ created: 1, updated: 0, skipped: 0 })
+    expect(await applyImport(fx.db, ctx, plan)).toEqual({ created: 1, updated: 0, skipped: 0, stocked: 0, stockIgnored: 0 })
 
     const row = await fx.db.get<{ name: string; tax_rate_bp: number; base_rate: number }>(
       'SELECT name, tax_rate_bp, base_rate FROM products',
@@ -182,7 +182,7 @@ describe('applying one', () => {
 
   it('skips the rows the plan refused', async () => {
     const plan = await planImport(fx.db, 'name,tax\r\nRice,5\r\nBad,999\r\n')
-    expect(await applyImport(fx.db, ctx, plan)).toEqual({ created: 1, updated: 0, skipped: 1 })
+    expect(await applyImport(fx.db, ctx, plan)).toEqual({ created: 1, updated: 0, skipped: 1, stocked: 0, stockIgnored: 0 })
     expect(await fx.db.query('SELECT id FROM products')).toHaveLength(1)
   })
 
@@ -263,5 +263,80 @@ describe('the round trip', () => {
 
     await applyImport(fx.db, ctx, plan)
     expect(await exportCatalogue(fx.db)).toBe(file)
+  })
+})
+
+describe('a name that a spreadsheet would run', () => {
+  it('is written as text, and an amount is left an amount', () => {
+    const csv = toCsv(['name', 'balance'], [['=HYPERLINK("http://x")', '-500.00'], ['@SUM(A1)', 12], ['-cmd|x', '-1,23,456.50']])
+    const [, first, second, third] = parseCsv(csv)
+    expect(first).toEqual([`'=HYPERLINK("http://x")`, '-500.00'])
+    expect(second).toEqual([`'@SUM(A1)`, '12'])
+    expect(third).toEqual([`'-cmd|x`, '-1,23,456.50'])
+  })
+
+  it('reads back as it was written, so an export and an import agree', () => {
+    const csv = toCsv(['name'], [['+Plus Pen'], ['-minus ruler'], ['Plain']])
+    expect(parseCsvRecords(csv).rows.map((r) => r.values['name'])).toEqual(['+Plus Pen', '-minus ruler', 'Plain'])
+  })
+})
+
+describe('opening stock on the way in', () => {
+  it('is recorded for a new item, and left alone on one the shop already has', async () => {
+    const fx = await freshDb()
+    try {
+      const existing = await makeProduct(fx.db, { name: 'Pencil HB' })
+      const plan = await planImport(fx.db, 'name,rate,openingqty\nEraser,5,40\nPencil HB,4,100\n')
+      const result = await applyImport(fx.db, { actorId: fx.adminId }, plan)
+      expect(result).toMatchObject({ created: 1, updated: 1, stocked: 1, stockIgnored: 1 })
+
+      const stock = await fx.db.query<{ name: string; qty: number }>(
+        `SELECT p.name, COALESCE(s.qty_on_hand, 0) AS qty FROM products p
+           LEFT JOIN product_stock s ON s.product_id = p.id ORDER BY p.name`,
+      )
+      expect(stock.find((r) => r.name === 'Eraser')?.qty).toBe(40 * 10_000)
+      expect(stock.find((r) => r.name === 'Pencil HB')?.qty ?? 0).toBe(0)
+      expect(existing).toBeTruthy()
+    } finally {
+      await fx.db.close()
+    }
+  })
+
+  it('refuses a negative opening quantity', async () => {
+    const fx = await freshDb()
+    try {
+      const plan = await planImport(fx.db, 'name,openingqty\nGlue,-3\n')
+      expect(plan.rows[0]?.problem).toBe('BAD_QTY')
+    } finally {
+      await fx.db.close()
+    }
+  })
+})
+
+describe('the same file on two tills', () => {
+  it('creates the same items, so the merge joins them rather than doubling the catalogue', async () => {
+    /* Two tills importing one supplier's list while apart used to mint two ids
+       per item. Nothing refused it -- an import leaves `code` empty -- and the
+       shop had every item twice. */
+    const other = await freshDb()
+    try {
+      const csv = 'name,barcode,rate\r\nRice 5kg,8901234567890,120\r\nDal,,90\r\n'
+      await applyImport(fx.db, ctx, await planImport(fx.db, csv))
+      await applyImport(other.db, { actorId: other.adminId }, await planImport(other.db, csv))
+
+      const ids = async (db: typeof fx.db) => (await db.query<{ id: string }>(
+        `SELECT id FROM products WHERE name IN ('Rice 5kg', 'Dal') ORDER BY name`)).map((r) => r.id)
+      expect(await ids(other.db)).toEqual(await ids(fx.db))
+    } finally {
+      await other.db.close()
+    }
+  })
+
+  it('still imports an item whose derived id is already taken here', async () => {
+    const csv = 'name,rate\r\nDal,90\r\n'
+    await applyImport(fx.db, ctx, await planImport(fx.db, csv))
+    await fx.db.execute(`UPDATE products SET name = 'Toor Dal' WHERE name = 'Dal'`)
+    const again = await applyImport(fx.db, ctx, await planImport(fx.db, csv))
+    expect(again.created).toBe(1)
   })
 })

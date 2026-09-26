@@ -14,6 +14,9 @@ import { MERGE_BUDGET_MS } from '../src/db/driver.js'
 import { applyBatch } from '../src/services/sync.js'
 import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
 
+/** One id for a crafted record's `rowId` and its row's key, which a merge now holds to agreeing. */
+const ROW_ID = newId()
+
 /**
  * Stands in for src-tauri/src/db.rs: one connection, one transaction at a time,
  * guarded by a token. Mirroring the token rules here is what makes this a test of
@@ -228,10 +231,10 @@ describe('what a transaction is allowed to take', () => {
       schemaVersion: EXPECTED_SCHEMA_VERSION,
       records: [{
         table: 'customers',
-        rowId: newId(),
+        rowId: ROW_ID,
         op: 'upsert',
         row: {
-          id: newId(), code: null, name: 'Someone', phone: null, email: null, gstin: null,
+          id: ROW_ID, code: null, name: 'Someone', phone: null, email: null, gstin: null,
           address: null, state_code: '33', price_list_id: null, credit_limit: 0,
           credit_enforcement: 'hard', is_active: 1, rev: 1, origin_id: null,
           created_at: '2026-03-01T10:00:00.000Z', updated_at: '2026-03-01T10:00:00.000Z',

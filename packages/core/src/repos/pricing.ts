@@ -6,7 +6,7 @@ import { qty, QTY_SCALE, type Qty } from '../quantity.js'
 import { resolvePrice } from '../domain/pricing.js'
 import type { PriceCandidates, PriceTier, ResolvedPrice } from '../domain/pricing.js'
 import { isOn } from '../services/features.js'
-import { getSetting, DEFAULT_PRICE_LIST } from '../services/bootstrap.js'
+import { getSetting, DEFAULT_PRICE_LIST } from '../services/settings.js'
 
 export interface PricingContext {
   productId: string
@@ -188,6 +188,7 @@ async function baseUnitsPer(
     .where(and(
       eq(schema.productUnits.productId, productId),
       eq(schema.productUnits.saleUnit, saleUnit),
+      isNull(schema.productUnits.deletedAt),
     ))
   return row?.baseUnits ?? qty(QTY_SCALE)
 }
@@ -290,6 +291,7 @@ export async function resolveSaleUnit(db: SqlDriver, productId: string, saleUnit
       .where(and(
         eq(schema.productUnits.productId, productId),
         eq(schema.productUnits.saleUnit, saleUnit),
+        isNull(schema.productUnits.deletedAt),
       ))
     if (row) return row
   }

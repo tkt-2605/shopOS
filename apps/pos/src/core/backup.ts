@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting, setDeviceSetting } from './device'
 import { logEvent } from './log'
 import {
-  Backup, backupDatabase, attachmentsToCarry, CARRY_WINDOW_DAYS,
+  Backup, attachmentsToCarry, CARRY_WINDOW_DAYS,
   type BackupFile, type BackupEntry, type SqlDriver,
 } from '@shopos/core'
 
@@ -69,17 +69,18 @@ export async function copyBackup(name: string, destination: string): Promise<Cop
   }
 }
 
+/**
+ * Always an archive. The bare v1 `.db` format went through `backup_database`,
+ * which wrote to any path it was handed and which nothing in the app used any
+ * more; it is gone from Rust, and `backup_write_zip` refuses any other name
+ * with a sentence rather than this module inventing one.
+ */
 export async function takeBackup(
   name: string,
   now = new Date(),
   attachments: string[] = [],
 ): Promise<void> {
-  if (name.endsWith('.zip')) {
-    await invoke('backup_write_zip', { name, now: now.toISOString(), attachments })
-    return
-  }
-  // A caller can still ask for the bare v1 format; nothing in the app does.
-  await backupDatabase(invoke, await backupPath(name))
+  await invoke('backup_write_zip', { name, now: now.toISOString(), attachments })
 }
 
 /**
@@ -99,8 +100,15 @@ export interface HookResult {
   output: string
 }
 
-export async function runHook(command: string, name: string): Promise<HookResult> {
-  return invoke<HookResult>('run_backup_hook', { command, name })
+/**
+ * Runs the carry-off command saved on this machine against one backup.
+ *
+ * Only the backup's name crosses to Rust. The command itself is read there,
+ * from `device.json`, so that `run_backup_hook` cannot be handed an arbitrary
+ * shell line by anything that reaches `invoke`.
+ */
+export async function runHook(name: string): Promise<HookResult> {
+  return invoke<HookResult>('run_backup_hook', { name })
 }
 
 /**
@@ -163,7 +171,16 @@ export function lastHookRun(): HookRun | null {
 export async function recordHookRun(command: string, name: string): Promise<HookRun> {
   let run: HookRun
   try {
-    const result = await runHook(command, name)
+    /* Rust runs the command saved in `device.json`, not this string. The
+       Settings field saves on blur, and pressing Test is what blurs it — so
+       the save may still be in flight. Saving here first means the run is of
+       the command the screen is showing, and never of the one before it. */
+    const wanted = command.trim()
+    if (wanted !== (deviceSetting(HOOK_SETTING) ?? '').trim()
+      && !(await setDeviceSetting(HOOK_SETTING, wanted))) {
+      throw new Error('The command was not saved on this machine, so it was not run.')
+    }
+    const result = await runHook(name)
     run = { ...result, at: new Date().toISOString() }
   } catch (err) {
     run = {

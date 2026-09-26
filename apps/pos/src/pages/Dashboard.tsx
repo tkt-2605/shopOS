@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Money, Quantity, businessDate, totalOutstandingAll, type SqlDriver } from '@shopos/core'
+import {
+  Money, Quantity, Reports, businessDate, addDays, totalOutstandingAll, lowStock, type SqlDriver,
+} from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { lastStockCheck, type StockCheck } from '../core/maintenance'
 import { Stat, Card, Empty, Alert, Rupees } from '../ui/components'
@@ -67,11 +69,7 @@ export default function Dashboard() {
 async function load(db: SqlDriver): Promise<Snapshot> {
   const today = businessDate()
 
-  const sales = await db.get<{ total: number; n: number }>(
-    `SELECT COALESCE(SUM(grand_total), 0) AS total, COUNT(*) AS n
-       FROM bills WHERE docstatus = 1 AND posting_date = ?`,
-    [today],
-  )
+  const sales = await Reports.daySales(db, today)
 
   /* The same figure the Credit page shows, from the same function.
    *
@@ -82,20 +80,13 @@ async function load(db: SqlDriver): Promise<Snapshot> {
    * and no way for a shopkeeper to tell which was the real one. */
   const credit = await totalOutstandingAll(db)
 
-  const low = await db.query<{ name: string; qty: number; base_unit: string }>(
-    `SELECT p.name, COALESCE(ps.qty_on_hand, 0) AS qty, p.base_unit
-       FROM products p LEFT JOIN product_stock ps ON ps.product_id = p.id
-      WHERE p.is_active = 1 AND p.deleted_at IS NULL AND p.is_stock_tracked = 1
-        AND COALESCE(ps.qty_on_hand, 0) < ?
-      ORDER BY qty LIMIT 12`,
-    [Quantity.fromUnits(10)],
-  )
+  const low = await lowStock(db, { below: Quantity.fromUnits(10), limit: 12 })
 
   return {
-    todaySales: sales?.total ?? 0,
-    todayBills: sales?.n ?? 0,
+    todaySales: sales.total,
+    todayBills: sales.bills,
     outstanding: credit.total,
-    lowStock: low.map((r) => ({ name: r.name, qty: r.qty, unit: r.base_unit })),
+    lowStock: low,
     /* Read, not computed.
      *
      * This line used to be `(await recomputeStock(db)).length` — a replay of
@@ -110,11 +101,11 @@ async function load(db: SqlDriver): Promise<Snapshot> {
 
 /** "today", "yesterday", or the date — enough to place it, no more. */
 function whenChecked(at: string): string {
-  const day = at.slice(0, 10)
+  // `at` is a UTC timestamp; the day it names is the shop's, not Greenwich's.
+  const day = businessDate(new Date(at))
   const today = businessDate()
   if (day === today) return 'today'
-  const yesterday = new Date(Date.parse(`${today}T12:00:00Z`) - 86_400_000).toISOString().slice(0, 10)
-  return day === yesterday ? 'yesterday' : day
+  return day === addDays(today, -1) ? 'yesterday' : day
 }
 
 export { Money }

@@ -17,8 +17,8 @@
     }
   },
   "salesByDay": {
-    "hash": "241f122f647a0b98",
-    "rows": 365,
+    "hash": "7161c37cbf69484f",
+    "rows": 366,
     "first": [
       {
         "date": "2025-09-16",
@@ -50,15 +50,6 @@
     ],
     "last": [
       {
-        "date": "2026-09-13",
-        "bills": 76,
-        "discount": 0,
-        "tax": 2247430,
-        "total": 29620900,
-        "returns": 0,
-        "net": 29620900
-      },
-      {
         "date": "2026-09-14",
         "bills": 76,
         "discount": 0,
@@ -75,6 +66,15 @@
         "total": 12645400,
         "returns": 0,
         "net": 12645400
+      },
+      {
+        "date": "2026-09-20",
+        "bills": 0,
+        "discount": 0,
+        "tax": 0,
+        "total": 0,
+        "returns": 3853190,
+        "net": -3853190
       }
     ]
   },

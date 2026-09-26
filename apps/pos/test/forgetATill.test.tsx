@@ -49,6 +49,7 @@ const { SyncCard } = await import('../src/ui/SyncCard')
 
 function peer(over: Partial<PeerHealth> = {}): PeerHealth {
   return {
+    needsPairing: false,
     deviceId: '2222bbbb-2222-4222-8222-222222222222',
     label: 'Back counter',
     lastAgreedAt: new Date().toISOString(),

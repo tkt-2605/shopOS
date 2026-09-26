@@ -15,14 +15,17 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::archive;
 use crate::db::DbState;
+use crate::files::{self, Temp};
 use crate::paths::{self, DB_FILE};
 
 const MARKER: &str = "RESTORE.json";
 const STAGED: &str = "pending.db";
+/// Where the live database waits while its replacement moves in.
+const PREVIOUS: &str = "previous.db";
 
 /// Tables only ShopOS creates. A file with none of them is somebody's holiday
 /// photographs renamed, not a backup.
@@ -47,6 +50,12 @@ pub struct Marker {
 pub struct Report {
     pub restored: Option<Marker>,
     pub error: Option<String>,
+    /// The database at `shop.db` is not safe to open: a swap was started and
+    /// neither finished nor fully undone, or it was undone and the marker still
+    /// says to try again. `setup()` reads this and opens nothing. Not sent to
+    /// the webview, which learns the same thing from `startup_status`.
+    #[serde(skip)]
+    pub incomplete: bool,
 }
 
 pub struct LastRestore(pub Report);
@@ -203,7 +212,7 @@ fn examine(file: &Path, supported: i64) -> Check {
     check
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_inspect(app: tauri::AppHandle, name: String, supported: i64) -> Result<Check, String> {
     let backups = paths::backups_dir(&app)?;
     let source = paths::in_backups(&backups, &name)?;
@@ -212,7 +221,7 @@ pub fn restore_inspect(app: tauri::AppHandle, name: String, supported: i64) -> R
     }
 
     let work = paths::work_dir(&app)?;
-    let scratch = archive::Temp(work.join("inspect.db"));
+    let scratch = Temp(work.join("inspect.db"));
     paths::remove_if_present(&scratch.0)?;
 
     let file = materialise(&source, &scratch.0)?;
@@ -231,10 +240,42 @@ pub fn restore_inspect(app: tauri::AppHandle, name: String, supported: i64) -> R
 
 // ── Staging one, and finishing it on the next start ────────────────────────
 
+/// Where the copy of the current data goes, checked before anything is taken.
+///
+/// The name arrives from the webview, and it used to be trusted as far as
+/// "is it a backup name": so it could name *any* backup -- yesterday's archive,
+/// or the very file being restored -- and the line after it deleted whatever
+/// was there to make room. A restore that named its own source as the safety
+/// copy deleted the backup it was about to restore from.
+///
+/// So it must be the safety shape, must not be the source, and must not exist.
+/// An existing file is refused rather than replaced: two restores inside one
+/// minute is a person who can wait a minute, and the alternative is throwing
+/// away the previous safety copy, which may be the only record of the day.
+fn safety_path(backups: &Path, source_name: &str, safety_name: &str) -> Result<PathBuf, String> {
+    if paths::backup_kind(safety_name) != Some(paths::Kind::Safety) {
+        return Err(format!("\"{safety_name}\" is not a name for a safety copy"));
+    }
+    if safety_name == source_name {
+        return Err("The safety copy cannot have the same name as the backup being restored.".into());
+    }
+    let path = paths::in_backups(backups, safety_name)?;
+    if path.exists() {
+        return Err(format!(
+            "A safety copy called {safety_name} is already in the backups folder. Nothing was changed -- \
+             wait a minute and try again."
+        ));
+    }
+    Ok(path)
+}
+
 /// Validates, parks a copy of the current data, stages the replacement and
 /// restarts. Everything before the marker is written is undone by doing nothing;
 /// everything after it is finished by the next start.
-#[tauri::command]
+///
+/// `async` so the copy of the database, which on a big shop is seconds, does
+/// not freeze the window it was started from.
+#[tauri::command(async)]
 pub fn restore_begin(
     app: tauri::AppHandle,
     db: State<'_, DbState>,
@@ -253,7 +294,7 @@ pub fn restore_begin(
     if !source.exists() {
         return Err(format!("{name} is no longer there"));
     }
-    let safety_path = paths::in_backups(&backups, &safety_name)?;
+    let safety = safety_path(&backups, &name, &safety_name)?;
 
     let work = paths::work_dir(&app)?;
     let staging = restore_dir(&dir);
@@ -263,7 +304,7 @@ pub fn restore_begin(
     let staged = staging.join(STAGED);
     paths::remove_if_present(&staged)?;
 
-    let scratch = archive::Temp(work.join("restore.db"));
+    let scratch = Temp(work.join("restore.db"));
     paths::remove_if_present(&scratch.0)?;
     let candidate = materialise(&source, &scratch.0)?;
 
@@ -277,8 +318,7 @@ pub fn restore_begin(
     // The pre-restore copy is itself a VACUUM INTO, not a file copy: under WAL
     // the main file alone is stale by whatever the log still holds, and this is
     // the only copy the owner has if the restore turns out to be the wrong one.
-    paths::remove_if_present(&safety_path)?;
-    db.get()?.vacuum_into(&safety_path)?;
+    db.get()?.vacuum_into(&safety)?;
 
     // Photographs go in before the database, and outside the marker, because they
     // are content-addressed and additive: writing them twice is the same as
@@ -290,27 +330,107 @@ pub fn restore_begin(
         archive::extract_attachments(&source, &photos)?;
     }
 
-    std::fs::copy(&candidate, &staged).map_err(|e| format!("Could not stage the restore: {e}"))?;
+    /* On the disk, not merely in the cache, before the marker says it is ready.
+       The marker is the commit: once it exists the next start *will* move the
+       live database aside and put this file in its place. A power cut that
+       kept the marker and lost the tail of this file would be a restore of
+       half a database, carried out faithfully. */
+    files::copy_durably(&candidate, &staged).map_err(|e| format!("Could not stage the restore: {e}"))?;
 
     let marker = Marker { source: name, safety: safety_name, staged_at: now };
     let json = serde_json::to_vec_pretty(&marker).map_err(|e| e.to_string())?;
-    // Written last. Until this exists, nothing above has changed the live data.
-    std::fs::write(staging.join(MARKER), json)
+    // Written last, and whole or not at all. Until this exists, nothing above
+    // has changed the live data.
+    files::write_durably(&staging.join(MARKER), &json)
         .map_err(|e| format!("Could not record the restore: {e}"))?;
 
     drop(scratch);
     app.restart()
 }
 
+/// How a file is moved, so a test can make one move fail.
+type Rename<'a> = &'a mut dyn FnMut(&Path, &Path) -> std::io::Result<()>;
+
+/// The files a swap touches, named once.
+struct Swap {
+    live: PathBuf,
+    live_wal: PathBuf,
+    live_shm: PathBuf,
+    staged: PathBuf,
+    /// The live database, parked while its replacement moves in. Inside the
+    /// staging folder, so the commit that deletes the folder deletes it too.
+    previous: PathBuf,
+    /// Its write-ahead log, parked beside it under the name SQLite would look
+    /// for. A log is only meaningful next to the database it belongs to.
+    previous_wal: PathBuf,
+}
+
+impl Swap {
+    fn in_dir(dir: &Path) -> Swap {
+        let staging = restore_dir(dir);
+        Swap {
+            live: dir.join(DB_FILE),
+            live_wal: dir.join(format!("{DB_FILE}-wal")),
+            live_shm: dir.join(format!("{DB_FILE}-shm")),
+            staged: staging.join(STAGED),
+            previous: staging.join(PREVIOUS),
+            previous_wal: staging.join(format!("{PREVIOUS}-wal")),
+        }
+    }
+
+    /// Puts a parked database back where it was, if it is parked and nothing
+    /// has taken its place. The one step every way out of a failed swap -- and
+    /// every way of abandoning one -- must take before the staging folder is
+    /// deleted, or the folder takes the shop's data with it.
+    fn put_back(&self, rename: Rename<'_>) -> std::io::Result<()> {
+        if !self.previous.exists() || self.live.exists() {
+            return Ok(());
+        }
+        if self.previous_wal.exists() {
+            rename(&self.previous_wal, &self.live_wal)?;
+        }
+        rename(&self.previous, &self.live)
+    }
+}
+
 /// Finishes a staged restore. Called from `setup()` before the database is
 /// opened — the one point in the program with no handle on it.
 pub fn apply_pending(dir: &Path) -> Report {
+    apply_with(dir, &mut |from, to| std::fs::rename(from, to))
+}
+
+/// The swap, as a sequence of renames that can each be undone.
+///
+/// It used to delete `shop.db` and its log first and then rename the backup
+/// into place. When the rename failed -- a scanner holding the file, a full
+/// disk -- the shop was left with no database at all, and `Db::open` then
+/// created an empty one. Every bill, every customer and every stock figure
+/// gone, and the till cheerfully open for business on a blank file.
+///
+/// Now nothing is deleted until the new database is in place. The live file
+/// and its log are *moved* into the staging folder; the backup moves in; and
+/// only then does deleting the staging folder commit it. Any step that fails
+/// moves the old files back. If even that fails, the start stops with
+/// `incomplete` set, the message names where the data is, and nothing opens
+/// until a person has decided -- which is the only safe answer when the file
+/// at `shop.db` is not known to be the shop.
+///
+/// Every state a crash can leave behind is one this function finishes on the
+/// next start:
+///
+/// * marker, backup staged, live in place: the ordinary case, do the swap;
+/// * marker, backup staged, live parked: stopped half-way, carry on;
+/// * marker, nothing staged, live parked *and* in place: the swap finished and
+///   the commit did not, so commit.
+fn apply_with(dir: &Path, rename: Rename<'_>) -> Report {
     let staging = restore_dir(dir);
+    let swap = Swap::in_dir(dir);
 
     let Ok(text) = std::fs::read_to_string(staging.join(MARKER)) else {
         // No marker means nothing was ever committed, so whatever else is in
-        // there is rubbish from an abandoned attempt.
-        if staging.exists() {
+        // there is rubbish from an abandoned attempt -- once a parked database,
+        // if there is somehow one, is back where it belongs.
+        if staging.exists() && swap.put_back(rename).is_ok() {
             let _ = std::fs::remove_dir_all(&staging);
         }
         return Report::default();
@@ -319,54 +439,105 @@ pub fn apply_pending(dir: &Path) -> Report {
     let marker: Marker = match serde_json::from_str(&text) {
         Ok(m) => m,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&staging);
+            if swap.put_back(rename).is_ok() {
+                let _ = std::fs::remove_dir_all(&staging);
+            }
             return Report {
-                restored: None,
                 error: Some(format!(
                     "A restore was interrupted and could not be finished ({e}). Nothing was changed."
                 )),
+                ..Report::default()
             };
         }
     };
 
-    let staged = staging.join(STAGED);
-    if !staged.exists() {
+    if !swap.staged.exists() {
+        if swap.previous.exists() && swap.live.exists() {
+            // The swap happened and the commit did not. Commit.
+            let _ = std::fs::remove_dir_all(&staging);
+            return Report { restored: Some(marker), ..Report::default() };
+        }
+        if swap.put_back(rename).is_err() {
+            return stuck(&swap, &marker, "the backup went missing half-way through the restore");
+        }
         let _ = std::fs::remove_dir_all(&staging);
         return Report {
-            restored: None,
             error: Some(
                 "A restore was interrupted before the backup was ready. Nothing was changed.".into(),
             ),
+            ..Report::default()
         };
     }
 
-    // The write-ahead log and the shared-memory file belong to the database being
-    // replaced. Leaving either beside a different database corrupts it.
-    for suffix in ["", "-wal", "-shm"] {
-        let path = dir.join(format!("{DB_FILE}{suffix}"));
-        if let Err(e) = paths::remove_if_present(&path) {
+    if swap.live.exists() && swap.previous.exists() {
+        // Two candidates for "the shop's data before the restore", and no way
+        // to tell from here which is right. A person decides.
+        return stuck(&swap, &marker, "both the database and a parked copy of it are present");
+    }
+
+    // 1. The live database steps aside, with its log. Nothing is deleted.
+    if swap.live.exists() {
+        if let Err(e) = rename(&swap.live, &swap.previous) {
             return Report {
-                restored: None,
                 error: Some(format!(
-                    "{e} — the restore has not been applied. Close anything else using ShopOS and start it again."
+                    "The restore could not start ({e}): something else has this shop's database open. \
+                     Nothing was changed. Close anything else using ShopOS and start it again, or \
+                     cancel the pending restore to carry on with the data as it is."
                 )),
+                incomplete: true,
+                ..Report::default()
             };
         }
     }
+    let parked = (|| {
+        if swap.live_wal.exists() {
+            rename(&swap.live_wal, &swap.previous_wal)?;
+        }
+        // The shared-memory file is an index over the log, rebuilt on open.
+        // Left beside a different database it describes the wrong file.
+        match std::fs::remove_file(&swap.live_shm) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        // 2. The backup moves in.
+        rename(&swap.staged, &swap.live)
+    })();
 
-    if let Err(e) = std::fs::rename(&staged, dir.join(DB_FILE)) {
+    if let Err(e) = parked {
+        // 3a. Undo, so the shop is as it was.
+        if swap.put_back(rename).is_err() {
+            return stuck(&swap, &marker, &e.to_string());
+        }
         return Report {
-            restored: None,
             error: Some(format!(
-                "The backup could not be put in place ({e}). Your data from before the restore is in your backups as {}.",
-                marker.safety
+                "The backup could not be put in place ({e}). Your data is back as it was before the \
+                 restore. Start ShopOS again to try once more, or cancel the pending restore to carry on \
+                 without it."
             )),
+            incomplete: true,
+            ..Report::default()
         };
     }
 
-    // Deleting the marker is the commit.
+    // 3b. Deleting the marker, and the parked database with it, is the commit.
     let _ = std::fs::remove_dir_all(&staging);
-    Report { restored: Some(marker), error: None }
+    Report { restored: Some(marker), ..Report::default() }
+}
+
+/// A swap that could not be finished *or* undone. Nothing opens; the message
+/// says where every copy is.
+fn stuck(swap: &Swap, marker: &Marker, why: &str) -> Report {
+    Report {
+        error: Some(format!(
+            "A restore could not be finished or undone ({why}). Nothing has been deleted. Your data \
+             from before the restore is at {}, and a copy of it is in your backups as {}. Cancel the \
+             pending restore to put it back, or call for help before doing anything else.",
+            swap.previous.display(),
+            marker.safety
+        )),
+        incomplete: true,
+        ..Report::default()
+    }
 }
 
 /// What happened on the way in, so the Settings screen can say so.
@@ -375,13 +546,50 @@ pub fn restore_report(state: State<'_, LastRestore>) -> Report {
     state.0.clone()
 }
 
+/// Throws away a staged restore, first putting back a database the restore
+/// had parked, if it had parked one. Deleting the staging folder without that
+/// step would delete the shop.
+fn abandon(dir: &Path) -> Result<(), String> {
+    let staging = restore_dir(dir);
+    if !staging.exists() {
+        return Ok(());
+    }
+    let swap = Swap::in_dir(dir);
+    if swap.previous.exists() && swap.live.exists() && swap.staged.exists() {
+        return Err(format!(
+            "Both {} and {} are present, so there is no safe way to tell which is this shop's data. \
+             Nothing was removed.",
+            swap.live.display(),
+            swap.previous.display()
+        ));
+    }
+    swap.put_back(&mut |from, to| std::fs::rename(from, to))
+        .map_err(|e| format!("Could not put {} back: {e}", swap.previous.display()))?;
+    std::fs::remove_dir_all(&staging).map_err(|e| e.to_string())
+}
+
 /// Throws away a staged restore that has not been applied yet. Reachable from
 /// the failure screen, which is where someone who staged the wrong file lands.
-#[tauri::command]
+///
+/// Only from the copy of ShopOS that owns the folder. A second window, turned
+/// away at the door, shows the same failure screen with the same button, and
+/// pressing it there would reach into the first window's restore.
+#[tauri::command(async)]
 pub fn restore_abandon(app: tauri::AppHandle) -> Result<(), String> {
-    let staging = restore_dir(&paths::data_dir(&app)?);
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
+    if app.try_state::<crate::instance::Instance>().is_none() {
+        return Err("Another copy of ShopOS has this shop open; cancel the restore from that one.".into());
+    }
+    let dir = paths::data_dir(&app)?;
+    let staged = restore_dir(&dir).exists();
+    abandon(&dir)?;
+
+    /* From the failure screen, where a restore that would not finish has kept
+       the database closed, cancelling it is only half the way out: this run
+       decided at startup not to open anything, and reloading the window asks
+       the same run again. Starting afresh opens the shop's own data, which is
+       what the person who pressed "cancel" is waiting to see. */
+    if staged && app.state::<DbState>().0.is_err() {
+        app.restart();
     }
     Ok(())
 }
@@ -598,5 +806,171 @@ mod tests {
         let said = check.warning.expect("an empty backup must warn");
         assert!(said.contains("no bills"), "{said}");
         assert!(said.contains("empty shop"), "{said}");
+    }
+
+    // ── When the swap itself goes wrong ────────────────────────────────────
+
+    /// A rename that fails the first `times` it is asked to move something to
+    /// `into`, and works like any other after that.
+    fn failing_into(into: PathBuf, mut times: usize) -> impl FnMut(&Path, &Path) -> std::io::Result<()> {
+        move |from: &Path, to: &Path| {
+            if to == into && times > 0 {
+                times -= 1;
+                Err(std::io::Error::other("the disk said no"))
+            } else {
+                std::fs::rename(from, to)
+            }
+        }
+    }
+
+    /* The bug this section exists for: the live database and its log were
+       deleted first, the rename of the backup then failed, and `Db::open`
+       created an empty database in the gap. A till open for business on a
+       blank file, with every bill gone. */
+    #[test]
+    fn a_backup_that_will_not_move_in_leaves_the_shop_as_it_was() {
+        let dir = a_shop("rename-fails");
+        stage(&dir, b"the backup", true);
+
+        let report = apply_with(&dir, &mut failing_into(dir.join(DB_FILE), 1));
+
+        assert!(report.incomplete, "the start must stop rather than open something");
+        assert!(report.restored.is_none());
+        let said = report.error.expect("the screen has to say why");
+        assert!(said.contains("back as it was"), "{said}");
+
+        // The live database and its log are back, untouched.
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"the live database");
+        assert_eq!(std::fs::read(dir.join(format!("{DB_FILE}-wal"))).unwrap(), b"log");
+        // And the restore is still staged, so starting again tries again.
+        assert!(restore_dir(&dir).join(MARKER).exists());
+        assert!(restore_dir(&dir).join(STAGED).exists());
+
+        let again = apply_pending(&dir);
+        assert!(again.error.is_none() && !again.incomplete, "{:?}", again.error);
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"the backup");
+    }
+
+    /// Worse: the backup will not move in, and the old database will not move
+    /// back either. Nothing may open, nothing may be deleted, and cancelling
+    /// has to put the shop back.
+    #[test]
+    fn a_swap_that_cannot_be_undone_stops_the_start_and_cancelling_puts_it_back() {
+        let dir = a_shop("undo-fails");
+        stage(&dir, b"the backup", true);
+
+        // Everything into `shop.db` fails: the backup going in, and the old
+        // database coming back.
+        let report = apply_with(&dir, &mut failing_into(dir.join(DB_FILE), usize::MAX));
+        assert!(report.incomplete);
+        let said = report.error.unwrap();
+        assert!(said.contains(PREVIOUS), "the message must say where the data is: {said}");
+        assert!(said.contains("before-restore-2026-09-13-0905.db"), "{said}");
+
+        // Nothing at shop.db for Db::open to mistake for the shop, and the
+        // shop's data parked, not deleted.
+        assert!(!dir.join(DB_FILE).exists());
+        assert_eq!(std::fs::read(restore_dir(&dir).join(PREVIOUS)).unwrap(), b"the live database");
+
+        abandon(&dir).unwrap();
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"the live database");
+        assert_eq!(std::fs::read(dir.join(format!("{DB_FILE}-wal"))).unwrap(), b"log");
+        assert!(!restore_dir(&dir).exists());
+    }
+
+    /// Power lost after the live database was parked and before the backup
+    /// moved in. The next start finishes the job.
+    #[test]
+    fn a_swap_interrupted_half_way_is_finished_on_the_next_start() {
+        let dir = a_shop("half-way");
+        stage(&dir, b"the backup", true);
+        let staging = restore_dir(&dir);
+        std::fs::rename(dir.join(DB_FILE), staging.join(PREVIOUS)).unwrap();
+
+        let report = apply_pending(&dir);
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert!(report.restored.is_some());
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"the backup");
+        assert!(!staging.exists());
+    }
+
+    /// Power lost after the swap and before the commit.
+    #[test]
+    fn a_swap_that_finished_without_its_commit_is_committed() {
+        let dir = a_shop("uncommitted");
+        stage(&dir, b"the backup", true);
+        let staging = restore_dir(&dir);
+        std::fs::rename(dir.join(DB_FILE), staging.join(PREVIOUS)).unwrap();
+        std::fs::rename(staging.join(STAGED), dir.join(DB_FILE)).unwrap();
+
+        let report = apply_pending(&dir);
+        assert!(report.error.is_none() && report.restored.is_some());
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"the backup");
+        assert!(!staging.exists());
+    }
+
+    /// Cancelling an ordinary staged restore is still just throwing it away.
+    #[test]
+    fn cancelling_a_restore_that_never_started_leaves_the_live_database_alone() {
+        let dir = a_shop("cancel");
+        stage(&dir, b"the backup", true);
+        abandon(&dir).unwrap();
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"the live database");
+        assert!(!restore_dir(&dir).exists());
+    }
+
+    /// The real thing rather than an injected failure: another program with
+    /// the live database open, no sharing, which is what an antivirus scanner
+    /// mid-scan looks like to Windows.
+    #[cfg(windows)]
+    #[test]
+    fn a_database_held_by_another_program_is_not_replaced_and_says_so() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = a_shop("held");
+        stage(&dir, b"the backup", true);
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(dir.join(DB_FILE))
+            .unwrap();
+
+        let report = apply_pending(&dir);
+        assert!(report.incomplete);
+        assert!(report.error.unwrap().contains("Nothing was changed"));
+        drop(held);
+
+        assert_eq!(std::fs::read(dir.join(DB_FILE)).unwrap(), b"the live database");
+        assert!(restore_dir(&dir).join(MARKER).exists(), "still staged, to try again");
+    }
+
+    // ── The safety copy's name ─────────────────────────────────────────────
+
+    #[test]
+    fn the_safety_copy_must_be_new_and_must_not_be_the_backup_itself() {
+        let dir = a_shop("safety-name");
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        std::fs::write(backups.join("shop-2026-09-12.zip"), b"yesterday").unwrap();
+        std::fs::write(backups.join("before-restore-2026-09-13-0900.db"), b"earlier").unwrap();
+
+        // Any backup name used to do: this one would have deleted yesterday's
+        // archive to make room.
+        assert!(safety_path(&backups, "shop-2026-09-11.zip", "shop-2026-09-12.zip").is_err());
+        // Restoring a safety copy must not name itself as the next one.
+        assert!(safety_path(
+            &backups,
+            "before-restore-2026-09-13-0900.db",
+            "before-restore-2026-09-13-0900.db"
+        )
+        .is_err());
+        // An existing safety copy is refused rather than replaced.
+        assert!(safety_path(&backups, "shop-2026-09-12.zip", "before-restore-2026-09-13-0900.db").is_err());
+        assert_eq!(std::fs::read(backups.join("before-restore-2026-09-13-0900.db")).unwrap(), b"earlier");
+
+        assert_eq!(
+            safety_path(&backups, "shop-2026-09-12.zip", "before-restore-2026-09-13-0905.db").unwrap(),
+            backups.join("before-restore-2026-09-13-0905.db")
+        );
     }
 }

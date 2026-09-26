@@ -13,7 +13,9 @@ import type { FailureKind } from '../src/core/CoreProvider'
  * them.
  */
 
-const ALL: FailureKind[] = ['corrupt', 'locked', 'io', 'schema_too_new', 'schema_unversioned', 'other']
+const ALL: FailureKind[] = [
+  'corrupt', 'locked', 'io', 'restore_incomplete', 'invalid_shop', 'schema_too_new', 'schema_unversioned', 'other',
+]
 
 describe('a till that will not open', () => {
   it('always shows a way out, whatever went wrong', () => {
@@ -81,5 +83,21 @@ describe('a till that will not open', () => {
     /* `schema_unversioned` and `other` deliberately share one, having nothing
        specific to say; every other reason is its own sentence. */
     expect(distinct.size).toBe(ALL.length - 1)
+  })
+})
+
+describe('the two ways of not starting that open nothing at all', () => {
+  it('says a restore that did not finish lost nothing, and how to go back', () => {
+    const said = advice('restore_incomplete')
+    expect(said.restore).toBe('offered')
+    expect(said.says).toMatch(/Nothing has been lost/)
+    expect(said.says).toMatch(/Cancel a pending restore/)
+  })
+
+  it('points at the shortcut, not at a backup, for a shop name that cannot exist', () => {
+    const said = advice('invalid_shop')
+    expect(said.restore).toBe('last')
+    expect(said.says).toMatch(/shortcut/)
+    expect(said.says).toMatch(/Do not restore a backup/)
   })
 })

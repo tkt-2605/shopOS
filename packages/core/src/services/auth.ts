@@ -9,6 +9,17 @@ import { loadPermissions, type PermissionSet } from '../integrity/permissions.js
 
 const COST = 10
 
+/**
+ * A real hash at `COST`, compared against when the username does not exist so
+ * that an unknown name takes as long to refuse as a wrong password.
+ *
+ * It has to be well formed. bcryptjs answers a malformed hash at once without
+ * hashing anything -- the placeholder this replaces was 59 characters, so an
+ * unknown name was refused in a millisecond and a real one in eighty, which is
+ * the difference the comparison exists to hide.
+ */
+const TIMING_HASH = '$2b$10$XP4LmzqCjw6Fd7rdX4pvYOC.r20r88wPMQ1.MeSQuavmZGee35Qt.'
+
 export interface SessionUser {
   id: string
   username: string
@@ -87,13 +98,15 @@ export async function login(
     .where(eq(schema.users.username, input.username.trim().toLowerCase()))
 
   if (!user) {
-    await bcrypt.compare(input.password, '$2b$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv')
+    await bcrypt.compare(input.password, TIMING_HASH)
     return { ok: false, code: 'INVALID_CREDENTIALS' }
   }
 
-  if (user.isActive === 0) return { ok: false, code: 'ACCOUNT_DISABLED' }
-
   const matches = await bcrypt.compare(input.password, user.passwordHash)
+
+  // After the password, not before: said first, it tells anyone at the counter
+  // which usernames exist, and costs them nothing to learn.
+  if (matches && user.isActive === 0) return { ok: false, code: 'ACCOUNT_DISABLED' }
 
   if (!matches) {
     /* Counted, never acted on. A shop with one till and one owner has no
@@ -109,6 +122,11 @@ export async function login(
          it -- last-writer-wins on a counter settles three guesses here and two
          there at three, never five. Since 049 each till counts its own and the
          Staff screen adds them up. */
+      /* No session row means this machine could not say which machine it is.
+         Then the shared column is the fallback, on purpose: a till that
+         cannot identify itself still has somebody typing wrong passwords at
+         it, and a badge reading zero while an account is guessed at is worse
+         than the occasional conflict. `aSignInIsNotShopNews.test.ts` holds it. */
       const session = await sessionRow(tx, user.id, nowIso)
       if (session === null) {
         await q(tx).update(schema.users)

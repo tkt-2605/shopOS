@@ -201,6 +201,8 @@ export const productUnits = sqliteTable('product_units', {
   originId: text('origin_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+  /** Taken off the item (056). */
+  deletedAt: text('deleted_at'),
 })
 
 export const priceLists = sqliteTable('price_lists', {
@@ -398,6 +400,7 @@ export const bills = sqliteTable('bills', {
     foreignColumns: [table.id],
     name: 'bills_amended_from_bills_id_fk'
   })),
+  index('idx_bills_amended_from').on(table.amendedFrom),
 ])
 
 export const billItems = sqliteTable('bill_items', {
@@ -466,6 +469,7 @@ export const salesReturns = sqliteTable('sales_returns', {
     foreignColumns: [table.id],
     name: 'sales_returns_amended_from_sales_returns_id_fk'
   })),
+  index('idx_sales_returns_date').on(table.postingDate),
 ])
 
 export const salesReturnItems = sqliteTable('sales_return_items', {
@@ -484,6 +488,7 @@ export const salesReturnItems = sqliteTable('sales_return_items', {
   taxRateBp: integer('tax_rate_bp').default(0).notNull(),
 }, (table) => [
   index('idx_sales_return_items_return').on(table.returnId),
+  index('idx_sales_return_items_bill_item').on(table.billItemId),
 ])
 
 export const paymentEntries = sqliteTable('payment_entries', {
@@ -513,6 +518,7 @@ export const paymentEntries = sqliteTable('payment_entries', {
     foreignColumns: [table.id],
     name: 'payment_entries_amended_from_payment_entries_id_fk'
   })),
+  index('idx_payment_entries_date').on(table.postingDate),
 ])
 
 export const paymentAllocations = sqliteTable('payment_allocations', {
@@ -546,6 +552,7 @@ export const stockEntries = sqliteTable('stock_entries', {
     foreignColumns: [table.id],
     name: 'stock_entries_amended_from_stock_entries_id_fk'
   })),
+  index('idx_stock_entries_date').on(table.postingDate),
 ])
 
 export const stockEntryItems = sqliteTable('stock_entry_items', {
@@ -554,7 +561,9 @@ export const stockEntryItems = sqliteTable('stock_entry_items', {
   productId: text('product_id').notNull().references(() => products.id),
   qty: qtyCol().notNull(),
   unitCost: money('unit_cost').default(ZERO).notNull(),
-})
+}, (table) => [
+  index('idx_stock_entry_items_entry').on(table.entryId),
+])
 
 export const stockLedger = sqliteTable('stock_ledger', {
   id: text().primaryKey().notNull(),
@@ -567,9 +576,14 @@ export const stockLedger = sqliteTable('stock_ledger', {
   voucherId: text('voucher_id').notNull(),
   createdBy: text('created_by').references(() => users.id),
   createdAt: text('created_at').notNull(),
+  /** What the movement was worth, signed, in paise (058). The rate is derived from it. */
+  valueChange: money('value_change'),
+  /** The till that posted it, whose shelf count `balance_qty` is (060). */
+  deviceId: text('device_id'),
 }, (table) => [
   index('idx_stock_ledger_voucher').on(table.voucherType, table.voucherId),
   index('idx_stock_ledger_product').on(table.productId, table.postingDate),
+  index('idx_stock_ledger_made').on(table.productId, table.id),
 ])
 
 export const productStock = sqliteTable('product_stock', {
@@ -589,8 +603,13 @@ export const loyaltyEntries = sqliteTable('loyalty_entries', {
   expiresAt: text('expires_at'),
   cancelledAt: text('cancelled_at'),
   createdAt: text('created_at').notNull(),
+  rev: integer().default(1).notNull(),
+  updatedAt: text('updated_at'),
+  /** What the entry was worth when earned; `points` is that less returns (053). */
+  earned: integer(),
 }, (table) => [
   index('idx_loyalty_entries_customer').on(table.customerId, table.expiresAt),
+  index('idx_loyalty_entries_bill').on(table.billId),
 ])
 
 export const loyaltyRedemptions = sqliteTable('loyalty_redemptions', {
@@ -604,6 +623,7 @@ export const loyaltyRedemptions = sqliteTable('loyalty_redemptions', {
   restored: integer().default(0).notNull(),
 }, (table) => [
   index('idx_loyalty_redemptions_bill').on(table.billId),
+  index('idx_loyalty_redemptions_entry').on(table.loyaltyEntryId),
 ])
 
 export const auditLog = sqliteTable('audit_log', {
@@ -689,6 +709,8 @@ export const productBarcodes = sqliteTable('product_barcodes', {
   rev: integer().default(1).notNull(),
   originId: text('origin_id'),
   createdAt: text('created_at').notNull(),
+  /** Taken off the item (056). A removal is an edit, so it merges like one. */
+  deletedAt: text('deleted_at'),
 }, (table) => [
   index('idx_product_barcodes_product').on(table.productId),
   uniqueIndex('idx_product_barcodes_code').on(table.barcode),
@@ -801,6 +823,21 @@ export const billFulfilments = sqliteTable('bill_fulfilments', {
 }, (table) => [
   index('idx_bill_fulfilments_document').on(table.documentId),
   index('idx_bill_fulfilments_bill').on(table.billId),
+  index('idx_bill_fulfilments_document_item').on(table.documentItemId),
+])
+
+/** What a quotation or purchase order line became, one row per conversion (054). */
+export const documentFulfilments = sqliteTable('document_fulfilments', {
+  id: text().primaryKey().notNull(),
+  documentId: text('document_id').notNull().references(() => documents.id),
+  documentItemId: text('document_item_id').notNull().references(() => documentItems.id),
+  qty: qtyCol().notNull(),
+  targetKind: text('target_kind').notNull(),
+  targetId: text('target_id'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_document_fulfilments_item').on(table.documentItemId),
+  index('idx_document_fulfilments_document').on(table.documentId),
 ])
 
 export const changeFeed = sqliteTable('change_feed', {

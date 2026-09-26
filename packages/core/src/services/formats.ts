@@ -2,7 +2,7 @@ import { eq, and, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
-import { getSetting, setSetting } from './bootstrap.js'
+import { getSetting, setSetting } from './settings.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import {
   STANDARD_FOR, channelOf, checkFormat, withEveryBlock,

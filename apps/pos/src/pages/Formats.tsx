@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  DocFormat as Fmt, HtmlTemplate as Tpl, Receipt, buildInvoiceHtml,
-  listFormats, saveFormat, deleteFormat, chooseFormat, chosenFormatId,
-  type Block, type PaperSize, type StoredFormat, type FormatProblem,
-  type ReceiptDoc, type TemplateProblem,
+  DocFormat as Fmt, HtmlTemplate as Tpl, Receipt, buildInvoiceHtml, listFormats, saveFormat,
+  deleteFormat, chooseFormat, chosenFormatId, type Block, type PaperSize, type StoredFormat,
+  type FormatProblem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Alert, Field, Empty } from '../ui/components'
 import { useShopChanged } from '../core/useShopChanged'
+import { BlockOptions } from './formats/BlockOptions'
+import { TemplateEditor } from './formats/TemplateEditor'
+import { type Draft, KIND_LABELS, PRINTABLE, draftOf, problemText, sampleDoc, templateProblemText } from './formats/draft'
 
 /**
  * Designing what gets printed.
@@ -23,124 +25,6 @@ import { useShopChanged } from '../core/useShopChanged'
  * a shopkeeper can be asked to make these choices without burning a test roll
  * after each one.
  */
-
-/** A believable bill, so the preview shows the shape rather than empty columns. */
-function sampleDoc(shop: ReceiptDoc['shop']): ReceiptDoc {
-  const money = (rupees: number) => Math.round(rupees * 100) as ReceiptDoc['subtotal']
-  const qty = (units: number) => Math.round(units * 10_000) as ReceiptDoc['items'][number]['qty']
-
-  return {
-    shop,
-    docNo: 'INV/MR/26-27/00023',
-    postingDate: new Date().toISOString().slice(0, 10),
-    cashier: 'admin',
-    customerName: 'Sri Vidya School',
-    items: [
-      { name: 'A4 Copier Paper 500 sheets', qty: qty(2), saleUnit: 'ream', rate: money(340), lineTotal: money(680) },
-      { name: 'Ball Pen Blue', qty: qty(12), saleUnit: 'piece', rate: money(10), lineTotal: money(120), mrp: money(12) },
-    ],
-    subtotal: money(800),
-    discount: money(0),
-    taxableTotal: money(677.97),
-    cgst: money(61.01),
-    sgst: money(61.01),
-    igst: money(0),
-    grandTotal: money(800),
-    payments: [{ method: 'cash', amount: money(800) }],
-    pointsEarned: 8,
-    pointsBalance: 120,
-  }
-}
-
-function problemText(problem: FormatProblem, paper: Fmt.PaperSize): string {
-  switch (problem.code) {
-    case 'NAME_REQUIRED': return 'Give the format a name, so it can be told apart in the list.'
-    case 'NOTHING_ON': return 'Every block is switched off, which would print a blank slip.'
-    case 'NO_ITEMS_BLOCK':
-      return 'Switch the items block on. A receipt with no items on it is a total on a piece of paper.'
-    case 'NOT_IMPLEMENTED':
-      return `${Fmt.BLOCK_LABEL[problem.kind]} is not ready on this paper. ${Fmt.notYet(problem.kind, paper) ?? ''}`
-    case 'TEMPLATE_ON_ROLL':
-      return 'A till roll is sent to the printer as plain characters — there is no HTML anywhere '
-        + 'in that path, so a page written here could never print on it. Clear the HTML, or put '
-        + 'this format back on a sheet.'
-    case 'TEMPLATE':
-      return templateProblemText(problem.problem)
-  }
-}
-
-/**
- * What is wrong with the shop's own markup, in the shop's own terms.
- *
- * Every one of these names the thing to fix rather than the rule that was
- * broken. A person who has just pasted their letterhead in wants to know which
- * line to change.
- */
-function templateProblemText(problem: TemplateProblem): string {
-  switch (problem.code) {
-    case 'EMPTY':
-      return 'There is no HTML in the box. Start from the built-in design, or switch back to blocks.'
-    case 'UNKNOWN_TOKEN':
-      return `There is no {{${problem.name}}}. Check it against the list of tokens below — a `
-        + 'misspelt one would print as a blank space on every bill.'
-    case 'UNKNOWN_SECTION':
-      return `{{#${problem.name}}} is not a section. The two that repeat are {{#items}} and {{#payments}}.`
-    case 'UNCLOSED':
-      return `{{#${problem.name}}} was opened and never closed. Add {{/${problem.name}}}.`
-    case 'UNOPENED':
-      return `{{/${problem.name}}} closes something that was never opened.`
-    case 'TOKEN_OUT_OF_SECTION':
-      return `{{${problem.name}}} belongs to one line, so it only means something between `
-        + `{{#${problem.section}}} and {{/${problem.section}}}.`
-    case 'SCRIPT':
-      return 'This page carries a script, and a bill never runs one. Remove the <script>, the '
-        + 'frame, or the javascript: link — it is refused rather than quietly stripped out, '
-        + 'because cleaning up markup is a game you only have to lose once.'
-    case 'HANDLER':
-      return `${problem.name}="…" is a script written a different way. Remove it.`
-    case 'OFF_DEVICE':
-      return `This page fetches ${problem.url} from the internet. The shop has to be able to `
-        + 'print with the line down, so everything on a bill has to already be on this machine. '
-        + 'Upload the logo on the Settings screen and use {{shop.logo}} instead.'
-  }
-}
-
-/**
- * Everything this product can print through a format.
- *
- * A format declares which of them it is for, and that declaration is what the
- * print path looks for — so a sheet ticked for quotations is found when a
- * quotation is printed and not otherwise.
- */
-const PRINTABLE = ['bill', 'quotation', 'sales_order', 'purchase_order'] as const
-
-const KIND_LABELS: Record<string, string> = {
-  bill: 'Bills',
-  quotation: 'Quotations',
-  sales_order: 'Sales orders',
-  purchase_order: 'Purchase orders',
-}
-
-interface Draft {
-  id: string | null
-  name: string
-  paper: PaperSize
-  kinds: string[]
-  blocks: Block[]
-  /** The shop's own HTML for a sheet; null means the blocks lay it out. */
-  template: string | null
-}
-
-function draftOf(format: StoredFormat): Draft {
-  return {
-    id: format.id,
-    name: format.name,
-    paper: format.paper,
-    kinds: format.kinds,
-    blocks: format.blocks,
-    template: format.template ?? null,
-  }
-}
 
 export function Formats() {
   const { db, shop } = useCore()
@@ -339,7 +223,9 @@ export function Formats() {
               <button
                 key={f.id}
                 type="button"
-                className={`pickable ${f.id === draft.id ? 'on' : ''}`}
+                className="pickable"
+                // What the side list is styled by. A class of `on` was set here and nothing drew it.
+                aria-current={f.id === draft.id}
                 onClick={() => { setDraft(draftOf(f)); setSaved(draftOf(f)); setProblems([]); setNote('') }}
               >
                 <span>{f.name}</span>
@@ -443,14 +329,14 @@ export function Formats() {
               <div className="segment">
                 <button
                   type="button"
-                  aria-selected={!usingTemplate}
+                  aria-pressed={!usingTemplate}
                   onClick={() => patch({ template: null })}
                 >
                   Blocks
                 </button>
                 <button
                   type="button"
-                  aria-selected={usingTemplate}
+                  aria-pressed={usingTemplate}
                   onClick={() => patch({ template: draft.template ?? Tpl.STARTER_TEMPLATE })}
                 >
                   My own HTML
@@ -585,159 +471,6 @@ export function Formats() {
           </>
         )}
       </Card>
-    </div>
-  )
-}
-
-/** Only the blocks that have something to set say anything here. */
-function BlockOptions({ block, onChange }: {
-  block: Block
-  onChange: (opts: Fmt.BlockOpts) => void
-}) {
-  switch (block.kind) {
-    case 'title':
-      return (
-        <Field label="Words across the top">
-          <input
-            className="input"
-            value={block.opts?.label ?? ''}
-            placeholder="TAX INVOICE"
-            onChange={(e) => onChange({ ...block.opts, label: e.target.value })}
-          />
-        </Field>
-      )
-
-    case 'text':
-      return (
-        <div className="block-opts">
-          <Field label="Your line">
-            <input
-              className="input"
-              value={block.opts?.body ?? ''}
-              placeholder="Queries: {{shop.phone}}"
-              onChange={(e) => onChange({ ...block.opts, body: e.target.value })}
-            />
-          </Field>
-          <p className="block-note">
-            {Fmt.TOKENS.map((t) => `{{${t.token}}}`).join('  ')}
-          </p>
-        </div>
-      )
-
-    case 'space':
-      return (
-        <Field label="Blank lines">
-          <input
-            className="input num"
-            type="number"
-            min={1}
-            max={6}
-            value={block.opts?.lines ?? 1}
-            onChange={(e) => onChange({ ...block.opts, lines: Number(e.target.value) })}
-          />
-        </Field>
-      )
-
-    default:
-      return null
-  }
-}
-
-/**
- * The box a shop writes its own invoice in.
- *
- * Three ways in, because the three kinds of shop that want this arrive
- * differently: one presses "Start from the built-in design" and moves things
- * around; one has a letterhead somebody already made and imports the file; one
- * knows exactly what they want and types it. The token list is on the screen
- * rather than in a manual, because a name that has to be looked up elsewhere is
- * a name that gets guessed.
- */
-function TemplateEditor({ value, onChange }: {
-  value: string
-  onChange: (template: string) => void
-}) {
-  const file = useRef<HTMLInputElement>(null)
-  const [showTokens, setShowTokens] = useState(false)
-
-  async function importFile(chosen: File | undefined) {
-    if (!chosen) return
-    /* Read here rather than kept as a path: the file is the shop's starting
-       point, not a link. A template that read off the disk at print time would
-       print nothing the day somebody tidied their Downloads folder. */
-    onChange(await chosen.text())
-  }
-
-  return (
-    <div className="template-editor">
-      <div className="template-tools">
-        <button type="button" className="btn sm" onClick={() => onChange(Tpl.STARTER_TEMPLATE)}>
-          Start from the built-in design
-        </button>
-        <button type="button" className="btn sm" onClick={() => file.current?.click()}>
-          Import an HTML file…
-        </button>
-        <input
-          ref={file}
-          type="file"
-          accept=".html,.htm,text/html"
-          hidden
-          onChange={(e) => {
-            void importFile(e.target.files?.[0])
-            // Cleared, so choosing the same file twice in a row still fires.
-            e.target.value = ''
-          }}
-        />
-        <span style={{ flex: 1 }} />
-        <button type="button" className="btn ghost sm" onClick={() => setShowTokens((on) => !on)}>
-          {showTokens ? 'Hide the tokens' : 'What can I put in it?'}
-        </button>
-      </div>
-
-      <textarea
-        className="input template-source"
-        spellCheck={false}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Paste your invoice HTML here, or start from the built-in design."
-      />
-
-      <p className="block-note">
-        Plain HTML and CSS. The page size, its margins and the page breaks are
-        already set for you, so what you write is the invoice itself. Scripts,
-        frames and anything fetched off the internet are refused — a bill has to
-        print the same with the line down.
-      </p>
-
-      {showTokens && (
-        <div className="token-list">
-          {Tpl.TEMPLATE_TOKENS.map((t) => (
-            <div key={t.token} className="token-row">
-              <code>{`{{${t.token}}}`}</code>
-              <span>
-                {t.means}
-                {t.section && <em> — only inside {`{{#${t.section}}}`}</em>}
-              </span>
-            </div>
-          ))}
-          <div className="token-row">
-            <code>{'{{#items}} … {{/items}}'}</code>
-            <span>Repeats once for every line on the bill.</span>
-          </div>
-          <div className="token-row">
-            <code>{'{{#payments}} … {{/payments}}'}</code>
-            <span>Repeats once for every way it was paid.</span>
-          </div>
-          <div className="token-row">
-            <code>{'{{#if customer.gstin}} … {{/if}}'}</code>
-            <span>Prints what is between them only when that token has something in it.</span>
-          </div>
-          <div className="token-row">
-            <code>{'{{^if customer.gstin}} … {{/if}}'}</code>
-            <span>The opposite — only when it is empty. For a fallback line.</span>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

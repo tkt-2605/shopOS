@@ -327,6 +327,8 @@ function money(
 
   const negative = opts.signed === true && cleaned.startsWith('-')
   const value = parseMoney(negative ? cleaned.slice(1) : cleaned)
-  if (value === null) return 'bad'
+  // Below zero after the one sign allowed for is a second minus, or a minus
+  // where none is allowed: a credit limit of -500 is not a limit.
+  if (value === null || value < 0) return 'bad'
   return (negative ? -value : value) as Money
 }

@@ -1,5 +1,6 @@
 import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
+import { businessDate } from '../dates.js'
 
 /**
  * Price resolution, in strict order:
@@ -66,7 +67,10 @@ export interface ResolvedPrice {
 }
 
 export function resolvePrice(candidates: PriceCandidates, quantity: Qty, on: Date = new Date()): ResolvedPrice {
-  const asOf = on.toISOString()
+  // A window is a span of the shop's calendar days, inclusive at both ends --
+  // the date picker stores `YYYY-MM-DD`. Comparing a UTC timestamp against that
+  // dropped the last day entirely and opened the first one at 05:30 IST.
+  const asOf = businessDate(on)
   const breaks = candidates.quantityBreaks !== false
   const bestTier = breaks ? tierForQty : firstTier
 
@@ -120,8 +124,8 @@ function firstTier(tiers: PriceTier[] | undefined, _quantity: Qty, asOf: string)
 }
 
 function isValid(from: string | null | undefined, to: string | null | undefined, asOf: string): boolean {
-  if (from && asOf < from) return false
-  if (to && asOf > to) return false
+  if (from && asOf < from.slice(0, 10)) return false
+  if (to && asOf > to.slice(0, 10)) return false
   return true
 }
 

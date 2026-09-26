@@ -13,9 +13,33 @@ function randomBytes(length: number): Uint8Array {
   return bytes
 }
 
+/* The last id minted, for `newId`'s ordering guarantee. */
+let lastMs = -1n
+let lastBytes: Uint8Array | null = null
+
+/**
+ * A new id, and one that sorts after every id this process minted before it.
+ *
+ * The timestamp alone does not give that: two ids in the same millisecond had
+ * random tails, and so sorted in either order. The stock ledger is replayed in
+ * id order -- the one order every till holding the same rows agrees on, which
+ * local `rowid` is not -- so within a millisecond the next id is the last one
+ * plus one (RFC 9562 section 6.2, method 2), and a clock that steps backwards
+ * keeps the last timestamp rather than going back with it.
+ */
 export function newId(): string {
-  const ts = BigInt(Date.now())
-  const bytes = randomBytes(16)
+  let ts = BigInt(Date.now())
+  let bytes: Uint8Array
+
+  if (ts <= lastMs && lastBytes !== null && increment(lastBytes)) {
+    ts = lastMs
+    bytes = lastBytes
+  } else {
+    if (ts <= lastMs) ts = lastMs + 1n
+    bytes = randomBytes(16)
+  }
+  lastMs = ts
+  lastBytes = bytes.slice()
 
   bytes[0] = Number((ts >> 40n) & 0xffn)
   bytes[1] = Number((ts >> 32n) & 0xffn)
@@ -26,8 +50,54 @@ export function newId(): string {
 
   bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x70
   bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80
+  lastBytes = bytes.slice()
 
   return format(bytes)
+}
+
+/** How far ahead of this machine's clock another till's id is believed. */
+const OBSERVE_AHEAD_MS = 7n * 24n * 60n * 60n * 1000n
+
+/**
+ * Moves this process's id clock past an id minted elsewhere, so the next
+ * `newId` sorts after it -- the receive step of a hybrid logical clock.
+ *
+ * A till whose clock runs ahead mints ids in this till's future. Anything
+ * ordered by id then needs this till's next id to land after those, not
+ * before; its wall clock alone would put it before. Ids that are not UUIDv7
+ * are ignored, as are ones behind the clock already.
+ */
+export function observeId(id: string, now = Date.now()): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7/i.test(id)) return
+  const ms = BigInt(`0x${id.slice(0, 8)}${id.slice(9, 13)}`)
+  /* Followed only within a week of this machine's clock. A till an hour or a
+     day out is a shop PC with a flat CMOS battery, and ordering around it is
+     the point; one stamped years ahead is broken, and following it would drag
+     every id this till ever makes into that year for good. Past the bound the
+     order is left to this clock, which costs at worst one product reported
+     adrift until its next merge. */
+  if (ms > BigInt(now) + OBSERVE_AHEAD_MS) return
+  if (ms > lastMs) {
+    lastMs = ms
+    lastBytes = null
+  }
+}
+
+/**
+ * Adds one to the random part of an id in place: bytes 15 down to 9, then the
+ * six free bits of byte 8. False when it would overflow into the variant bits,
+ * which a caller answers by moving to the next millisecond.
+ */
+function increment(bytes: Uint8Array): boolean {
+  for (let i = 15; i >= 9; i--) {
+    const next = (bytes[i] ?? 0) + 1
+    bytes[i] = next & 0xff
+    if (next <= 0xff) return true
+  }
+  const low = ((bytes[8] ?? 0) & 0x3f) + 1
+  if (low > 0x3f) return false
+  bytes[8] = ((bytes[8] ?? 0) & 0xc0) | low
+  return true
 }
 
 /* There was a `newDeviceId()` here, exported and called by nothing. A device

@@ -6,7 +6,7 @@ import {
   pendingJoin, allowJoin, refuseJoin, onJoinRequest, expectingAJoin,
   type JoinRequest,
 } from '../src/services/syncServer.js'
-import { askToJoin, pollJoin, pairedPeers, SyncHttpError } from '../src/services/syncClient.js'
+import { askToJoin, pollJoin, pairedPeers, httpTransport, SyncHttpError } from '../src/services/syncClient.js'
 import { setDeviceId, deviceId } from '../src/device.js'
 import { forgetNonces } from '../src/services/syncAuth.js'
 import { freshDb, emptyDb, type Fixture } from './helpers.js'
@@ -104,13 +104,13 @@ describe('a till asking to be let in', () => {
     expect(pendingJoin()).toBeNull()
   })
 
-  it('waits, and says which two digits to look for', async () => {
+  it('waits, and says which four digits to look for', async () => {
     addingATill()
     const asked = await knock('Back Counter')
 
     expect(asked.state).toBe('PENDING')
     if (asked.state !== 'PENDING') return
-    expect(asked.digits).toMatch(/^\d\d$/)
+    expect(asked.digits).toMatch(/^\d{4}$/)
 
     // And the shop's own screen has the same request, to show beside them.
     const door = pendingJoin()
@@ -241,5 +241,83 @@ describe('a till asking to be let in', () => {
     const code = offerPairing()
     expect(code).toMatch(/^[A-Z0-9]{8}$/)
     expect(expectingAJoin()).toBe(true)
+  })
+})
+
+describe('the secret two tills agree', () => {
+  /** A fetch that keeps a copy of every answer the shop gave. */
+  function recording(seen: string[]): typeof fetch {
+    return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const response = await fetch(input, init)
+      const text = await response.text()
+      seen.push(text)
+      return new Response(text, { status: response.status, headers: response.headers })
+    }) as typeof fetch
+  }
+
+  async function paired(fetchImpl: typeof fetch = fetch) {
+    addingATill()
+    const asked = await askToJoin(host.url, null, fetchImpl, MINE)
+    if (asked.state !== 'PENDING') throw new Error('should be pending')
+    allowJoin(asked.requestId)
+    const done = await pollJoin(joinerDb, host.url, asked.requestId, fetchImpl, MINE)
+    if (done.state !== 'ALLOWED') throw new Error('should be allowed')
+  }
+
+  it('is the same on both tills and never crosses the wire', async () => {
+    /* The Rust review's finding: the secret was sent in the /pair answer, so
+       anybody listening while a till was added could sign requests as it. */
+    const seen: string[] = []
+    await paired(recording(seen))
+
+    const mine = await joinerDb.get<{ secret: string }>('SELECT secret FROM sync_peers')
+    const theirs = await host.db.get<{ secret: string }>('SELECT secret FROM sync_peers')
+    expect(mine?.secret).toMatch(/^[0-9a-f]{64}$/)
+    expect(theirs?.secret).toBe(mine?.secret)
+    for (const body of seen) expect(body).not.toContain(mine!.secret)
+  })
+
+  it('shows different digits on the two screens when a machine sits in the middle', async () => {
+    /* It has to swap both keys to learn a secret, and the digits come from the
+       keys -- the joining till works its own out -- so the person comparing
+       them sees the swap. */
+    const { pairingKey } = await import('../src/services/syncAuth.js')
+    const towardShop = await pairingKey()
+    const towardTill = await pairingKey()
+    const inTheMiddle = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      const response = await fetch(input, { ...init, body: JSON.stringify({ ...sent, publicKey: towardShop.publicKey }) })
+      const answer = JSON.parse(await response.text()) as Record<string, unknown>
+      if (typeof answer['publicKey'] === 'string') answer['publicKey'] = towardTill.publicKey
+      return new Response(JSON.stringify(answer), { status: response.status })
+    }) as typeof fetch
+
+    addingATill()
+    const asked = await askToJoin(host.url, null, inTheMiddle, MINE)
+    if (asked.state !== 'PENDING') throw new Error('should be pending')
+    expect(pendingJoin()?.digits).not.toBe(asked.digits)
+  })
+
+  it('refuses an answer that was altered on the way back', async () => {
+    await paired()
+    const [peer] = await pairedPeers(joinerDb)
+    const altering = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const response = await fetch(input, init)
+      const sealed = JSON.parse(await response.text()) as { reply: string; mac: string }
+      const reply = JSON.parse(sealed.reply) as Record<string, unknown>
+      reply['shopId'] = 'somebody-else'
+      return new Response(JSON.stringify({ ...sealed, reply: JSON.stringify(reply) }), { status: response.status })
+    }) as typeof fetch
+
+    await expect(httpTransport(peer!, altering).hello()).rejects.toMatchObject({ code: 'BAD_REPLY_SIGNATURE' })
+    // Unaltered, the same request is believed.
+    await expect(httpTransport(peer!, fetch).hello()).resolves.toMatchObject({ deviceId: HOST })
+  })
+
+  it('refuses a successful answer that is not signed at all', async () => {
+    await paired()
+    const [peer] = await pairedPeers(joinerDb)
+    const forged = (async () => new Response(JSON.stringify({ deviceId: HOST, schemaVersion: 1 }), { status: 200 })) as typeof fetch
+    await expect(httpTransport(peer!, forged).hello()).rejects.toMatchObject({ code: 'UNSIGNED_REPLY' })
   })
 })

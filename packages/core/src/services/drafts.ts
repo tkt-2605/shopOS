@@ -143,19 +143,26 @@ export async function discardDraft(
   if (!bill) return { ok: true }
   if (bill.docstatus !== DRAFT) return { ok: false, code: 'NOT_A_DRAFT' }
 
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx): Promise<DiscardResult> => {
+    /* Asked again in here, before anything is deleted. A submit that lands
+       between the check above and this transaction would otherwise keep its
+       bill -- the delete below is conditional -- and lose every line under it,
+       because the lines went first and unconditionally. */
+    const [now] = await q(tx)
+      .select({ docstatus: schema.bills.docstatus })
+      .from(schema.bills)
+      .where(eq(schema.bills.id, input.billId))
+    if (!now) return { ok: true }
+    if (now.docstatus !== DRAFT) return { ok: false, code: 'NOT_A_DRAFT' }
+
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'bills', entityId: input.billId, action: 'delete', docstatusFrom: DRAFT,
     })
     await q(tx).delete(schema.billItems).where(eq(schema.billItems.billId, input.billId))
-    /* The docstatus is in the condition and not only in the check above: a
-       submit that lands between the two would otherwise have its bill deleted
-       out from under it. */
     await q(tx).delete(schema.bills)
       .where(and(eq(schema.bills.id, input.billId), eq(schema.bills.docstatus, DRAFT)))
+    return { ok: true }
   })
-
-  return { ok: true }
 }
 
 /**

@@ -5,6 +5,7 @@ import type { Money } from '../money.js'
 import { type Qty, QTY_SCALE } from '../quantity.js'
 import { SUBMITTED } from '../integrity/docstatus.js'
 import type { DateRange } from './reports.js'
+import { deviceId } from '../device.js'
 
 /**
  * One product's life: what came in, what went out, and what it was worth.
@@ -32,9 +33,11 @@ import type { DateRange } from './reports.js'
  */
 const SCALE_AS_REAL = sql.raw(`${QTY_SCALE}.0`)
 
-const ROW_VALUE = sql<Money>`CAST(ROUND(
+/* The stored value since 058; the rate times the quantity, rounded, for a
+   row that arrived from a till below it and was not given one. */
+const ROW_VALUE = sql<Money>`COALESCE(ABS(${schema.stockLedger.valueChange}), CAST(ROUND(
   ABS(${schema.stockLedger.qtyChange}) * ${schema.stockLedger.unitCost} / ${SCALE_AS_REAL}
-) AS INTEGER)`
+) AS INTEGER))`
 
 export interface StockMovement {
   at: string
@@ -53,7 +56,8 @@ export interface StockMovement {
   /** What this movement was worth, or null when the rate is not known. */
   value: Money | null
   /** On hand immediately after, as it was recorded at the time. */
-  balanceQty: Qty
+  /** This till's shelf count after the movement; null for a movement another till posted (060). */
+  balanceQty: Qty | null
   by: string | null
 }
 
@@ -83,10 +87,11 @@ export async function productHistory(
             e.entry_type                       AS entryType,
             l.qty_change                       AS qtyChange,
             l.unit_cost                        AS unitCost,
-            CASE WHEN l.unit_cost IS NULL THEN NULL ELSE
+            CASE WHEN l.value_change IS NOT NULL THEN ABS(l.value_change)
+                 WHEN l.unit_cost IS NULL THEN NULL ELSE
               CAST(ROUND(ABS(l.qty_change) * l.unit_cost / ${QTY_SCALE}.0) AS INTEGER)
             END                                AS value,
-            l.balance_qty                      AS balanceQty,
+            CASE WHEN l.device_id IS NULL OR l.device_id = ? THEN l.balance_qty END AS balanceQty,
             u.username                         AS by
        FROM stock_ledger l
        LEFT JOIN bills          b ON b.id = l.voucher_id
@@ -94,9 +99,9 @@ export async function productHistory(
        LEFT JOIN sales_returns  r ON r.id = l.voucher_id
        LEFT JOIN users          u ON u.id = l.created_by
       WHERE l.product_id = ?
-      ORDER BY l.posting_date DESC, l.rowid DESC
+      ORDER BY l.posting_date DESC, l.id DESC
       LIMIT ?`,
-    [productId, limit],
+    [deviceId() ?? '', productId, limit],
   )
 }
 

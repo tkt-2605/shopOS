@@ -83,8 +83,13 @@ pub struct Identity {
 ///
 /// The Settings screen is where that becomes reachable. Its fields save as they
 /// are changed, so a person moving quickly between the printer and the backup
-/// command has two of these in flight. Tauri answers commands on a thread pool,
-/// so they genuinely overlap.
+/// command has two of these in flight. A plain Tauri command runs on the main
+/// thread, one at a time, which used to serialise them by accident -- and froze
+/// the window for as long as a slow disk took to flush. They are `async` now,
+/// which puts them on the async runtime's worker threads where they genuinely
+/// overlap, and `identity_of` and `setting` are reached from other threads
+/// again. So the ordering is this lock's job, on purpose, rather than the main
+/// thread's by accident.
 ///
 /// A mutex covers this process. It does not cover two copies of the app, which
 /// `write_new`'s `create_new` handles for the one case that matters — minting —
@@ -99,7 +104,7 @@ fn writing() -> std::sync::MutexGuard<'static, ()> {
     WRITING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn device_identity(app: tauri::AppHandle) -> Result<Identity, String> {
     let _guard = writing();
     load_or_mint(&paths::data_dir(&app)?)
@@ -107,7 +112,7 @@ pub fn device_identity(app: tauri::AppHandle) -> Result<Identity, String> {
 
 /// Records which counter this machine bills on. Null forgets the choice, which
 /// is what deactivating the chosen register has to leave behind.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn device_set_register(
     app: tauri::AppHandle,
     register_id: Option<String>,
@@ -118,15 +123,63 @@ pub fn device_set_register(
 
 /// Records one setting about this machine. A null or blank value forgets it
 /// rather than storing an empty string, which would read as "set to nothing".
-#[tauri::command]
+///
+/// The backup hook is the one setting that is a command this machine will run,
+/// so a new one is shown to a person in a Windows dialog and saved only if they
+/// say yes. `run_backup_hook` reads it from here rather than from the webview,
+/// which closed the one-call path; without this, anything able to reach
+/// `invoke` could still save a command and then ask for it to be run. A dialog
+/// the webview does not draw is the part a script in it cannot press.
+///
+/// Cancel answers `DECLINED` and nothing else, so the webview can tell a
+/// person's "no" from a machine that could not write its file.
+#[tauri::command(async)]
 pub fn device_set_setting(
     app: tauri::AppHandle,
     key: String,
     value: Option<String>,
 ) -> Result<Identity, String> {
-    let _guard = writing();
     let dir = paths::data_dir(&app)?;
+    let existing = {
+        let _guard = writing();
+        load_or_mint(&dir)?.settings.get(&key).cloned()
+    };
+    if let Some(command) = needs_confirming(&key, value.as_deref(), existing.as_deref()) {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let yes = app
+            .dialog()
+            .message(format!(
+                "ShopOS will run this command after every backup:\n\n{command}\n\n\
+                 Only save it if you typed it, or somebody you trust set it up."
+            ))
+            .title("Save the backup command?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Save it".into(), "Cancel".into()))
+            .blocking_show();
+        if !yes {
+            return Err(DECLINED.into());
+        }
+    }
+    let _guard = writing();
     put(&dir, &key, value.as_deref())
+}
+
+/// What `device_set_setting` answers when the person pressed Cancel. Matched by
+/// `setDeviceSetting` in `core/device.ts`.
+const DECLINED: &str = "DECLINED";
+
+/// The command to show a person before saving, or None when there is nothing
+/// to ask: a setting that is not the hook, a hook being cleared, or the same
+/// command saved again.
+fn needs_confirming<'a>(key: &str, value: Option<&'a str>, existing: Option<&str>) -> Option<&'a str> {
+    if key != "backup_hook" {
+        return None;
+    }
+    let command = value.map(str::trim).filter(|v| !v.is_empty())?;
+    if existing.map(str::trim) == Some(command) {
+        return None;
+    }
+    Some(command)
 }
 
 fn put(dir: &Path, key: &str, value: Option<&str>) -> Result<Identity, String> {
@@ -176,7 +229,23 @@ fn write_back(dir: &Path, stored: Stored) -> Result<Identity, String> {
 /// This machine's identity, for anything that needs to name it without going
 /// through a Tauri command — discovery announcing which till is answering.
 pub fn identity_of(dir: &Path) -> Result<Identity, String> {
+    let _guard = writing();
     load_or_mint(dir)
+}
+
+/// One setting about this machine, read on this side rather than taken from
+/// the webview.
+///
+/// For the backup hook: the command that runs is the one saved in this file,
+/// not whatever string arrives with the request to run it. Never mints -- a
+/// machine with no identity yet has no settings either, and asking about one
+/// is not a reason to create it.
+pub fn setting(dir: &Path, key: &str) -> Result<Option<String>, String> {
+    let _guard = writing();
+    Ok(read_identity(&dir.join(FILE))?
+        .and_then(|identity| identity.settings.get(key).cloned())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty()))
 }
 
 fn load_or_mint(dir: &Path) -> Result<Identity, String> {
@@ -322,24 +391,9 @@ fn save(path: &Path, stored: &Stored) -> Result<(), String> {
     })
 }
 
-/// UUIDv4. Not the v7 that database ids use: a device id is not a document and
-/// gains nothing from sorting by time, while the minting moment is the one thing
-/// about a machine that is nobody else's business.
+/// A fresh device id. `ids.rs` says why it is a v4.
 fn mint() -> String {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b).expect("system randomness unavailable");
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-
-    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
+    crate::ids::uuid_v4()
 }
 
 /// A name for a person to recognise, never an identifier. Two machines may well
@@ -369,6 +423,20 @@ fn is_device_id(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_a_new_backup_command_is_put_to_a_person() {
+        use super::needs_confirming;
+        assert_eq!(needs_confirming("printer", Some("x"), None), None, "any other setting saves as it did");
+        assert_eq!(needs_confirming("backup_hook", None, Some("old")), None, "clearing it runs nothing");
+        assert_eq!(needs_confirming("backup_hook", Some("  "), None), None, "blank is clearing");
+        assert_eq!(needs_confirming("backup_hook", Some("rclone copy {file} d:"), Some("rclone copy {file} d:")), None);
+        assert_eq!(
+            needs_confirming("backup_hook", Some("calc.exe"), Some("rclone copy {file} d:")),
+            Some("calc.exe"),
+        );
+    }
+
     use super::*;
 
     fn temp(name: &str) -> std::path::PathBuf {
@@ -551,6 +619,23 @@ mod tests {
         let after = load_or_mint(&dir).unwrap();
         assert_eq!(after.register_id.as_deref(), Some("reg-b"));
         assert_eq!(after.settings.len(), 2);
+    }
+
+    /// What the backup hook reads. The command it runs is the one saved here,
+    /// never the one a request carries.
+    #[test]
+    fn a_setting_is_read_back_without_minting_anything() {
+        let dir = temp("setting-read");
+        assert_eq!(setting(&dir, "backup_hook").unwrap(), None);
+        assert!(!dir.join(FILE).exists(), "asking about a setting must not mint an identity");
+
+        put(&dir, "backup_hook", Some("  copy-to-usb.bat {file}  ")).unwrap();
+        assert_eq!(setting(&dir, "backup_hook").unwrap().as_deref(), Some("copy-to-usb.bat {file}"));
+        assert_eq!(setting(&dir, "thermal_printer").unwrap(), None);
+
+        // A damaged file is refused here as it is everywhere else.
+        std::fs::write(dir.join(FILE), "not json").unwrap();
+        assert!(setting(&dir, "backup_hook").is_err());
     }
 
     #[test]

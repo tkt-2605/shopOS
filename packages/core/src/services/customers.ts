@@ -6,7 +6,7 @@ import { type Money, ZERO, paise } from '../money.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { SUBMITTED } from '../integrity/docstatus.js'
 import { isOn } from './features.js'
-import { getSetting } from './bootstrap.js'
+import { getSetting } from './settings.js'
 import { myRegisterPrefix } from './registers.js'
 import { isGstin, resolveCustomerState, stateFromGstin } from '../domain/gstin.js'
 import { isStateCode } from '../domain/states.js'
@@ -342,10 +342,11 @@ async function save(
  * **Why the counter's prefix is in it.** `MAX + 1` is a shop-wide sequence
  * computed from whatever this machine happens to hold, and two tills that are
  * out of touch both hold C0004 as their highest. Both mint C0005, for two
- * different people, and the sync applies both — `customers.code` carries no
- * unique index, so nothing refuses it and nothing reports it. The shop is left
- * with one reference number naming two customers and no sign that it happened,
- * which is a worse outcome than the refusal would have been.
+ * different people. `customers.code` is `UNIQUE`, so the second to arrive is
+ * refused and set aside in quarantine -- and with it every bill and payment
+ * that names that customer, as "parent quarantined". A person served and paid
+ * on one till becomes a row on a screen on the other, which is the outcome a
+ * prefix avoids by never letting the two tills reach for the same number.
  *
  * `doc_no` had this problem and solved it years earlier: `nextDocNo` scopes its
  * sequence by `registers.prefix`, so two tills counting in parallel count in

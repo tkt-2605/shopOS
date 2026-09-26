@@ -324,7 +324,31 @@ export type SubmitCountResult =
  * shelf is empty. Only differences are posted, so a count of two hundred items
  * that finds three wrong writes three ledger rows.
  */
+/** A refusal from inside the transaction, thrown so that everything before it rolls back. */
+class Refused {
+  constructor(readonly result: Extract<SubmitCountResult, { ok: false }>) {}
+}
+
+/**
+ * One transaction for the whole of it: the adjustment entry, its submission and
+ * the sheet's own status. Three used to follow one another, so a refusal at the
+ * second left a draft entry behind on every attempt, and a till that stopped
+ * between the second and the third had moved the stock with the sheet still
+ * open -- submitting it again moved the stock again.
+ */
 export async function submitCount(
+  db: SqlDriver,
+  input: { countId: string; actorId: string; now?: Date },
+): Promise<SubmitCountResult> {
+  try {
+    return await db.transaction((tx) => submitCountIn(tx, input))
+  } catch (err) {
+    if (err instanceof Refused) return err.result
+    throw err
+  }
+}
+
+async function submitCountIn(
   db: SqlDriver,
   input: { countId: string; actorId: string; now?: Date },
 ): Promise<SubmitCountResult> {
@@ -418,10 +442,11 @@ export async function submitCount(
 
   const submitted = await submitStockEntry(db, { entryId: entry.entryId, actorId: input.actorId, now })
   if (!submitted.ok) {
-    return {
+    // Thrown, not returned: the draft entry made above goes with it.
+    throw new Refused({
       ok: false, code: 'WOULD_GO_NEGATIVE',
       productId: submitted.productId, available: submitted.available, change: submitted.change,
-    }
+    })
   }
 
   await db.transaction(async (tx) => {
@@ -460,6 +485,15 @@ export async function submitCount(
  * and the adjustment it produced is reversed the same way any stock entry is.
  */
 export async function cancelCount(
+  db: SqlDriver,
+  input: { countId: string; reason?: string; actorId: string; now?: Date },
+): Promise<{ ok: true }> {
+  // As one, for the reason `submitCount` is: the entry's reversal and the
+  // sheet's status must not be able to come apart.
+  return db.transaction((tx) => cancelCountIn(tx, input))
+}
+
+async function cancelCountIn(
   db: SqlDriver,
   input: { countId: string; reason?: string; actorId: string; now?: Date },
 ): Promise<{ ok: true }> {

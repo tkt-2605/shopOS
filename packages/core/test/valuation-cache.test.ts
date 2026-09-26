@@ -269,3 +269,22 @@ describe('upgrading a shop that already has stock', () => {
     await db.close()
   })
 })
+
+describe('the live cache and the replay agree to the paisa', () => {
+  it('on a sale whose share of the value is not a whole number of paise', async () => {
+    const fx = await freshDb()
+    const p = await makeProduct(fx.db, {})
+    const move = (units: number, cost: number | null) => fx.db.transaction((tx) => postMovement(tx, {
+      productId: p, qtyChange: fromUnits(units), unitCost: cost as Money | null,
+      voucherType: 'probe', voucherId: newId(), postingDate: '2026-01-01',
+    }))
+    // One at 100 and two at 101 is 302 over three. Selling two takes 201.33 of it.
+    await move(1, 100)
+    await move(2, 101)
+    await move(-2, null)
+    // An inflow with no cost comes in at the last cost the ledger holds.
+    await move(1, null)
+    expect(await recomputeStock(fx.db, { productIds: [p] })).toEqual([])
+    await fx.db.close()
+  })
+})

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { collectChanges, applyBatch, recentConflicts } from '../src/services/sync.js'
 import { setDeviceId, deviceId } from '../src/device.js'
 import { newId } from '../src/ids.js'
-import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
+import { freshDb, emptyDb, makeProduct, type Fixture, editingSubmitted } from './helpers.js'
 import type { Row, SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -107,10 +107,10 @@ describe('a bill the other till is still typing into', () => {
     /* A's copy is changed after it was submitted — by whatever route, and the
        merge is not in a position to know which. It carries the later timestamp,
        so it wins every tiebreak there is. */
-    await a.db.execute(
+    await editingSubmitted(a.db, 'bills', () => a.db.execute(
       `UPDATE bills SET grand_total = 99900, subtotal = 99900, updated_at = ? WHERE id = ?`,
       ['2026-09-18T11:00:00.000Z', billId],
-    )
+    ))
 
     await push(a, b)
 
@@ -122,10 +122,10 @@ describe('a bill the other till is still typing into', () => {
 
   it('says so, rather than dropping it quietly', async () => {
     const billId = await billOnBoth()
-    await a.db.execute(
+    await editingSubmitted(a.db, 'bills', () => a.db.execute(
       `UPDATE bills SET grand_total = 99900, updated_at = ? WHERE id = ?`,
       ['2026-09-18T11:00:00.000Z', billId],
-    )
+    ))
 
     await push(a, b)
 
@@ -162,11 +162,29 @@ describe('a bill the other till is still typing into', () => {
   it('still takes a return recorded against it on the other till', async () => {
     const billId = await billOnBoth()
 
-    // A takes one back. The head row is untouched except for its timestamp.
-    await a.db.execute(`UPDATE bill_items SET returned_qty = 10000 WHERE bill_id = ?`, [billId])
+    /* A takes one back: the return itself, and the line's count of what came
+       back. The head row is untouched except for its timestamp. The return is
+       recorded as well as the count because the count is a cache of returns --
+       after a merge it is held to them, and a count with no return behind it
+       is put back to zero. */
+    const billLine = await a.db.get<{ id: string }>(`SELECT id FROM bill_items WHERE bill_id = ?`, [billId])
+    const user = await a.db.get<{ id: string }>(`SELECT id FROM users LIMIT 1`)
+    const returnId = newId()
+    const at = '2026-09-18T11:00:00.000Z'
     await a.db.execute(
-      `UPDATE bills SET updated_at = ? WHERE id = ?`, ['2026-09-18T11:00:00.000Z', billId],
+      `INSERT INTO sales_returns
+         (id, doc_no, docstatus, bill_id, posting_date, refund_total, refund_method, created_by, created_at, updated_at)
+       VALUES (?, 'CFR/2627/00001', 1, ?, '2026-09-18', 10000, 'cash', ?, ?, ?)`,
+      [returnId, billId, user!.id, at, at],
     )
+    const product = await a.db.get<{ product_id: string }>(`SELECT product_id FROM bill_items WHERE id = ?`, [billLine!.id])
+    await a.db.execute(
+      `INSERT INTO sales_return_items (id, return_id, bill_item_id, product_id, qty, base_qty, refund_amount)
+       VALUES (?, ?, ?, ?, 10000, 10000, 10000)`,
+      [newId(), returnId, billLine!.id, product!.product_id],
+    )
+    await a.db.execute(`UPDATE bill_items SET returned_qty = 10000 WHERE bill_id = ?`, [billId])
+    await a.db.execute(`UPDATE bills SET updated_at = ? WHERE id = ?`, [at, billId])
 
     await push(a, b)
 
@@ -182,11 +200,11 @@ describe('a bill the other till is still typing into', () => {
        arriving. A bill still open at this counter is not a record of anything
        yet, and the shop's answer about it is whoever edited it last. */
     const billId = await billOnBoth()
-    await b.db.execute(`UPDATE bills SET docstatus = 0 WHERE id = ?`, [billId])
-    await a.db.execute(
+    await editingSubmitted(b.db, 'bills', () => b.db.execute(`UPDATE bills SET docstatus = 0 WHERE id = ?`, [billId]))
+    await editingSubmitted(a.db, 'bills', () => a.db.execute(
       `UPDATE bills SET grand_total = 25000, updated_at = ? WHERE id = ?`,
       ['2026-09-18T11:00:00.000Z', billId],
-    )
+    ))
 
     await push(a, b)
 

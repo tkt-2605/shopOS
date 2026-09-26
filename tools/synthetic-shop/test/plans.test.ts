@@ -158,18 +158,16 @@ describe('the Audit page, on twenty-one thousand rows', () => {
 
 describe('the stock ledger', () => {
   it('replays one product in order without sorting anything', async () => {
-    /* This is why migration 034 did *not* add the third index the phase asked
-       for. `idx_stock_ledger_product` is `(product_id, posting_date)` and an
-       index's key order ends with the rowid, so `ORDER BY posting_date, rowid`
-       is already a prefix of it. Appending `created_at` would put a column in
-       between and hand this query a sort it does not have.
-
-       If a later migration adds that column, this test is what says so. */
+    /* The ledger is replayed in id order since 052 -- the order every till
+       holding the same rows agrees on, where rowid was only this database's --
+       and `idx_stock_ledger_made` is `(product_id, id)`, so one product's
+       movements come off the index already in that order. A sort here would
+       mean the order and the index have drifted apart. */
     const plan = await planOf(
       (d) => productValuation(d, shop.productIds[3]!),
       reads('stock_ledger'),
     )
-    expect(plan).toContain('USING INDEX idx_stock_ledger_product')
+    expect(plan).toContain('USING INDEX idx_stock_ledger_made')
     expect(plan).not.toContain('TEMP B-TREE')
   })
 })

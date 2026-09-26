@@ -1,12 +1,14 @@
 import { eq, and, isNull, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
-import { newId } from '../ids.js'
+import { newId, derivedId } from '../ids.js'
 import { parseMoney, type Money } from '../money.js'
 import { parseQty, type Qty } from '../quantity.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { parseCsvRecords, toCsv } from '../domain/csv.js'
 import { isHsn } from '../domain/hsn.js'
+import { businessDate } from '../dates.js'
+import { createStockEntry, submitStockEntry } from './stockEntry.js'
 
 /**
  * Getting a shop's catalogue in, from the spreadsheet it already has.
@@ -205,6 +207,18 @@ export interface ImportResult {
   skipped: number
 }
 
+/** The catalogue's result, which alone can carry stock. */
+export interface CatalogueImportResult extends ImportResult {
+  /** New items that came in with stock, posted as one opening entry. */
+  stocked: number
+  /**
+   * Existing items whose opening quantity was left alone. A file exported from
+   * here carries the shop's current count in that column, so posting it again
+   * on the way back in would double the stock of everything in it.
+   */
+  stockIgnored: number
+}
+
 /**
  * Carries out a plan, in one transaction.
  *
@@ -220,16 +234,17 @@ export interface ImportResult {
  */
 export async function applyImport(
   db: SqlDriver, ctx: AuditContext, plan: ImportPlan,
-): Promise<ImportResult> {
+): Promise<CatalogueImportResult> {
   const usable = plan.rows.filter((r) => r.problem === null && r.action !== null)
   const now = new Date().toISOString()
   let created = 0
   let updated = 0
-
+  const opening: { productId: string; qty: Qty }[] = []
+  let stockIgnored = 0
   await db.transaction(async (tx) => {
     for (const row of usable) {
       if (row.action === 'create') {
-        const id = newId()
+        const id = await importedProductId(tx, row.barcode, row.name)
         await q(tx).insert(schema.products).values({
           id,
           name: row.name,
@@ -247,9 +262,10 @@ export async function applyImport(
           after: { name: row.name, base_rate: row.rate ?? 0, source: 'csv import' },
         })
         created += 1
+        if (row.openingQty !== null && row.openingQty > 0) opening.push({ productId: id, qty: row.openingQty })
         continue
       }
-
+      if (row.openingQty !== null && row.openingQty > 0) stockIgnored += 1
       /* Only what the file actually said. `undefined` is "the file was
          silent"; a blank cell parses to null above and lands here as
          undefined, so it is never written. */
@@ -271,9 +287,29 @@ export async function applyImport(
       })
       updated += 1
     }
+
+    /* The column was read, checked, shown on the plan -- and then dropped here,
+       so a shop that imported its catalogue with its stock got the catalogue and
+       none of the stock. Posted as one opening entry, the document a first count
+       is, inside this same transaction: the items and their stock land together
+       or not at all. */
+    if (opening.length > 0) {
+      // A stock entry is signed by a person, and the table holds it to one.
+      if (ctx.actorId === null) throw new Error('opening stock needs somebody signed in to record it')
+      const entry = await createStockEntry(tx, {
+        entryType: 'opening',
+        lines: opening,
+        reference: 'Catalogue import',
+        postingDate: businessDate(),
+        actorId: ctx.actorId,
+      })
+      if (!entry.ok) throw new Error(`the opening stock could not be recorded: ${entry.code}`)
+      const posted = await submitStockEntry(tx, { entryId: entry.entryId, actorId: ctx.actorId })
+      if (!posted.ok) throw new Error(`the opening stock could not be recorded: ${posted.code}`)
+    }
   })
 
-  return { created, updated, skipped: plan.skip }
+  return { created, updated, skipped: plan.skip, stocked: opening.length, stockIgnored }
 }
 
 /**
@@ -329,7 +365,8 @@ function money(raw: string | undefined): Money | null | 'bad' {
   // A file from a wholesaler often carries the symbol and thousands commas.
   const cleaned = text.replace(/[₹,\s]/g, '')
   const value = parseMoney(cleaned)
-  return value === null ? 'bad' : value
+  // A price below zero is not a price.
+  return value === null || value < 0 ? 'bad' : value
 }
 
 function money2(value: Money): string {
@@ -355,5 +392,25 @@ function quantity(raw: string | undefined): Qty | null | 'bad' {
   const text = (raw ?? '').trim()
   if (text === '') return null
   const value = parseQty(text)
-  return value === null ? 'bad' : value
+  // Opening stock is what is on the shelf, which is not below nothing.
+  return value === null || value < 0 ? 'bad' : value
+}
+
+/**
+ * The id an imported product is created under.
+ *
+ * Derived from what the row is -- its barcode, or its name where it has none --
+ * so two tills importing the same file while apart create the same product
+ * rather than two, which the merge then joins into one. A random id would give
+ * the shop every item twice, and nothing would refuse it: `code` is empty on
+ * an import, so no UNIQUE is there to notice.
+ *
+ * A hint and not a key. A name can be changed; if something already holds the
+ * derived id here -- an item renamed and then imported again -- the row gets a
+ * fresh one instead of failing the whole import on a primary key.
+ */
+async function importedProductId(tx: SqlDriver, barcode: string | null, name: string): Promise<string> {
+  const id = await derivedId('products', 'import', barcode?.trim() || name.trim().toLowerCase())
+  const [taken] = await q(tx).select({ id: schema.products.id }).from(schema.products).where(eq(schema.products.id, id))
+  return taken ? newId() : id
 }

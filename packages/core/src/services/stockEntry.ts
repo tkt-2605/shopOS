@@ -3,9 +3,11 @@ import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { type Money, ZERO } from '../money.js'
-import type { Qty } from '../quantity.js'
+import { type Qty, addQty, QTY_ZERO } from '../quantity.js'
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
+import { recheckDocStatus } from '../integrity/transition.js'
+import { businessDate } from '../dates.js'
 import { postMovement, reverseVoucher, currentStock } from './stock.js'
 import { nextDocNo, seriesPrefix } from './numbering.js'
 
@@ -111,7 +113,8 @@ export async function createStockEntry(
 
   const entryId = newId()
   const nowIso = now.toISOString()
-  const postingDate = input.postingDate ?? nowIso.slice(0, 10)
+  // The shop's day. The UTC one filed a delivery booked in at 00:30 against yesterday.
+  const postingDate = input.postingDate ?? businessDate(now)
 
   await db.transaction(async (tx) => {
     await q(tx).insert(schema.stockEntries).values({
@@ -165,11 +168,17 @@ export async function submitStockEntry(
     .from(schema.stockEntryItems)
     .where(eq(schema.stockEntryItems.entryId, input.entryId))
 
+  // Per product, not per line: two lines of six against ten on the shelf each
+  // passed alone and together took it to minus two.
+  const leaving = new Map<string, Qty>()
   for (const line of lines) {
     if (line.qty >= 0) continue
-    const available = await currentStock(db, line.productId)
-    if (available + line.qty < 0) {
-      return { ok: false, code: 'WOULD_GO_NEGATIVE', productId: line.productId, available, change: line.qty }
+    leaving.set(line.productId, addQty(leaving.get(line.productId) ?? QTY_ZERO, line.qty))
+  }
+  for (const [productId, change] of leaving) {
+    const available = await currentStock(db, productId)
+    if (available + change < 0) {
+      return { ok: false, code: 'WOULD_GO_NEGATIVE', productId, available, change }
     }
   }
 
@@ -177,6 +186,7 @@ export async function submitStockEntry(
   let docNo = ''
 
   await db.transaction(async (tx) => {
+    await recheckDocStatus(tx, 'stock_entries', input.entryId, 'stock entry', 'submit')
     docNo = await nextDocNo(tx, 'stock_entry', await seriesPrefix(tx, 'MR'), now)
 
     for (const line of lines) {
@@ -217,6 +227,7 @@ export async function cancelStockEntry(
   const nowIso = now.toISOString()
 
   await db.transaction(async (tx) => {
+    await recheckDocStatus(tx, 'stock_entries', input.entryId, 'stock entry', 'cancel')
     await reverseVoucher(tx, 'stock_entry', input.entryId, entry.postingDate, input.actorId)
     await q(tx).update(schema.stockEntries)
       .set({ docstatus: CANCELLED, updatedAt: nowIso })

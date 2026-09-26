@@ -5,7 +5,10 @@ import { deviceId } from '../device.js'
 import { myFingerprint } from './syncAuth.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import type { PeerHello, SyncTransport } from './sync.js'
-import { encodeAuth, sign } from './syncAuth.js'
+import {
+  encodeAuth, sign, replyIsGenuine, pairingKey, agreeSecret, comparisonDigits, isPairingPublicKey,
+  type PairingKey,
+} from './syncAuth.js'
 import { LISTEN_PORT_HEADER } from './syncServer.js'
 import { clock } from '../clock.js'
 
@@ -83,7 +86,7 @@ export function httpTransport(
       body,
     })
 
-    const text = await response.text()
+    const text = await opened(await response.text(), response.status, peer.secret, signed.nonce)
     if (!response.ok) {
       let code = `HTTP_${response.status}`
       try {
@@ -102,6 +105,32 @@ export function httpTransport(
     fetch: (since, limit) => ask<ChangeBatch>('/fetch', { since, limit }),
     offer: (batch) => ask<{ upTo: number }>('/offer', batch),
   }
+}
+
+/**
+ * The body of an answer, once its signature has checked out.
+ *
+ * Every answer to a signed request comes back signed over its status, its body
+ * and the nonce of the request it answers (`sealed` on the far side). One that
+ * is not, or does not check, is refused -- except a refusal given before the
+ * far side knew who was asking, which it had no secret to sign and which can
+ * do no more than stop this round.
+ */
+async function opened(text: string, status: number, secret: string, nonce: string): Promise<string> {
+  let envelope: { reply?: unknown; mac?: unknown } | null = null
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (parsed !== null && typeof parsed === 'object') envelope = parsed as { reply?: unknown; mac?: unknown }
+  } catch { /* not JSON at all */ }
+
+  if (envelope !== null && typeof envelope.reply === 'string' && typeof envelope.mac === 'string') {
+    if (!await replyIsGenuine(secret, nonce, status, envelope.reply, envelope.mac)) {
+      throw new SyncHttpError(502, 'BAD_REPLY_SIGNATURE')
+    }
+    return envelope.reply
+  }
+  if (status >= 200 && status < 300) throw new SyncHttpError(502, 'UNSIGNED_REPLY')
+  return text
 }
 
 export interface PairOutcome {
@@ -140,6 +169,7 @@ export async function pairWith(
 ): Promise<PairOutcome> {
   const me = deviceId()
   if (me === null) throw new Error('This machine does not know which machine it is')
+  const key = await pairingKey()
 
   const response = await fetchImpl(`${baseUrl}/pair`, {
     method: 'POST',
@@ -153,7 +183,7 @@ export async function pairWith(
         : {}),
     },
     body: JSON.stringify({
-      code: code.trim().toUpperCase(), deviceId: me, label,
+      code: code.trim().toUpperCase(), deviceId: me, label, publicKey: key.publicKey,
       // Symmetric, so that when there is one to send neither side has to be
       // the one that was upgraded first.
       fingerprint: myFingerprint(),
@@ -163,7 +193,7 @@ export async function pairWith(
   const text = await response.text()
   if (!response.ok) throw new SyncHttpError(response.status, codeIn(text, response.status))
 
-  const outcome = agreed(JSON.parse(text) as Record<string, unknown>)
+  const outcome = await agreed(JSON.parse(text) as Record<string, unknown>, key)
   await rememberTheShop(db, baseUrl, outcome)
   return justTheShop(outcome)
 }
@@ -188,13 +218,24 @@ function codeIn(text: string, status: number): string {
   return `HTTP_${status}`
 }
 
-/** What a shop says about itself when it lets a till in, checked before use. */
-function agreed(said: Record<string, unknown> | (Partial<PairOutcome> & { secret?: string })): PairOutcome & { secret: string } {
-  const it = said as PairOutcome & { secret: string }
-  if (typeof it.secret !== 'string' || typeof it.deviceId !== 'string') {
+/**
+ * What a shop says about itself when it lets a till in, checked before use,
+ * with the secret worked out here from its public key and ours. The shop never
+ * sends the secret; a reply that tried to would be ignored.
+ */
+async function agreed(
+  said: Record<string, unknown> | (Partial<PairOutcome> & { publicKey?: string }),
+  mine: PairingKey,
+): Promise<PairOutcome & { secret: string }> {
+  const it = said as PairOutcome & { publicKey?: unknown }
+  if (!isPairingPublicKey(it.publicKey) || typeof it.deviceId !== 'string') {
     throw new SyncHttpError(502, 'MALFORMED')
   }
-  return it
+  const secret = await agreeSecret(mine, it.publicKey, mine.publicKey, it.publicKey)
+  return {
+    deviceId: it.deviceId, label: it.label ?? null, shopId: it.shopId ?? null,
+    schemaVersion: it.schemaVersion, fingerprint: it.fingerprint ?? null, secret,
+  }
 }
 
 async function rememberTheShop(
@@ -211,6 +252,19 @@ async function rememberTheShop(
   await q(db).insert(schema.syncPeers)
     .values({ deviceId: outcome.deviceId, ...peer, createdAt: clock.iso() })
     .onConflictDoUpdate({ target: schema.syncPeers.deviceId, set: peer })
+}
+
+/**
+ * The key this till is asking to join with, kept between asking and being let
+ * in. In memory only: a restart makes a new one, which the shop notices and
+ * shows fresh digits for, and nothing about a pairing half done survives the
+ * process that was doing it.
+ */
+let joining: PairingKey | null = null
+
+async function joiningKey(): Promise<PairingKey> {
+  joining ??= await pairingKey()
+  return joining
 }
 
 export type JoinProgress =
@@ -240,7 +294,7 @@ export async function askToJoin(
   const me = deviceId()
   if (me === null) throw new Error('This machine does not know which machine it is')
 
-  const answer = await knock(baseUrl, { deviceId: me, label }, fetchImpl, self)
+  const answer = await knock(baseUrl, { deviceId: me, label }, await joiningKey(), fetchImpl, self)
   /* A shop that answers the very first knock with ALLOWED is not one this
      asked — there has been nobody to press anything yet. Treated as the
      protocol being wrong rather than as a pairing. */
@@ -259,7 +313,10 @@ export async function pollJoin(
   const me = deviceId()
   if (me === null) throw new Error('This machine does not know which machine it is')
 
-  const answer = await knock(baseUrl, { deviceId: me, requestId }, fetchImpl, self)
+  const answer = await knock(baseUrl, { deviceId: me, requestId }, await joiningKey(), fetchImpl, self)
+  /* The key is kept after being let in, not dropped: if this answer was lost
+     on the way back, the till asks again, and asking with a new key would be
+     a different conversation that the shop turns away. */
   if (answer.state !== 'ALLOWED') return answer
 
   /* The secret is written down before anything is synced, so a pairing that
@@ -276,6 +333,7 @@ type Knocked =
 async function knock(
   baseUrl: string,
   body: Record<string, unknown>,
+  key: PairingKey,
   fetchImpl: typeof fetch,
   self: SelfAddress,
 ): Promise<Knocked> {
@@ -287,24 +345,30 @@ async function knock(
         ? { [LISTEN_PORT_HEADER]: String(self.listenPort) }
         : {}),
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, publicKey: key.publicKey }),
   })
 
   const text = await response.text()
   if (!response.ok) throw new SyncHttpError(response.status, codeIn(text, response.status))
 
   const said = JSON.parse(text) as Partial<PairOutcome> & {
-    state?: string; requestId?: string; digits?: string; secret?: string
+    state?: string; requestId?: string; digits?: string; publicKey?: string
   }
   switch (said.state) {
     case 'PENDING':
-      if (typeof said.requestId !== 'string' || typeof said.digits !== 'string') {
+      if (typeof said.requestId !== 'string' || !isPairingPublicKey(said.publicKey)) {
         throw new SyncHttpError(502, 'MALFORMED')
       }
-      return { state: 'PENDING', requestId: said.requestId, digits: said.digits }
-    case 'REFUSED': return { state: 'REFUSED' }
-    case 'LAPSED': return { state: 'LAPSED' }
-    case 'ALLOWED': return { state: 'ALLOWED', full: agreed(said) }
+      /* The digits are worked out here from the two keys, not read off the
+         answer. A machine in the middle chooses what it sends; it cannot make
+         these match the shop's screen without the shop's key. */
+      return {
+        state: 'PENDING', requestId: said.requestId,
+        digits: await comparisonDigits(key.publicKey, said.publicKey),
+      }
+    case 'REFUSED': joining = null; return { state: 'REFUSED' }
+    case 'LAPSED': joining = null; return { state: 'LAPSED' }
+    case 'ALLOWED': return { state: 'ALLOWED', full: await agreed(said, key) }
     default: throw new SyncHttpError(502, 'MALFORMED')
   }
 }

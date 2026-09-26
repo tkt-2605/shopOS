@@ -87,13 +87,23 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
   useEffect(() => {
     if (stage.at !== 'waiting') return
     let stopped = false
+    /* One question at a time. A reply slower than the interval would otherwise
+       overlap the next ask, and two that both came back ALLOWED arrived twice. */
+    let asking = false
 
     const timer = setInterval(() => {
+      if (asking || stopped) return
+      asking = true
       void (async () => {
         try {
           const answer = await waitToJoinShop(address, stage.requestId)
           if (stopped) return
-          if (answer.state === 'ALLOWED') { await arrived(); return }
+          if (answer.state === 'ALLOWED') { stopped = true; clearInterval(timer); await arrived(); return }
+          /* The digits come from both tills' keys and are worked out here, so
+             keep showing the latest -- the same unless the shop restarted. */
+          if (answer.state === 'PENDING' && answer.digits !== stage.digits) {
+            setStage({ at: 'waiting', requestId: answer.requestId, digits: answer.digits })
+          }
           if (answer.state === 'REFUSED') {
             setError('That till said no.')
             setStage({ at: 'choosing' })
@@ -104,6 +114,8 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
           }
         } catch (err) {
           if (!stopped) { setError(explain(err)); setStage({ at: 'choosing' }) }
+        } finally {
+          asking = false
         }
       })()
     }, 1500)
@@ -153,7 +165,8 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
         <h2 style={{ fontSize: 15, margin: '0 0 4px' }}>Waiting for the other till</h2>
         <p style={{ fontSize: 12.5, color: 'var(--ink-2)', marginTop: 0 }}>
           It is asking whoever is standing there to let this machine in. Check
-          these two digits match the ones on its screen before they say yes.
+          these four digits match the ones on its screen before they say yes.
+          If they do not, stop: something on the network is between the two tills.
         </p>
         <div style={{ fontSize: 44, letterSpacing: 8, fontWeight: 600, margin: '10px 0' }}>
           {stage.digits}

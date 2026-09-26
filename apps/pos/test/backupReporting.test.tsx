@@ -89,6 +89,39 @@ describe('the carry-off command', () => {
     expect(typeof stored?.at).toBe('string')
   })
 
+  /* The command is read in Rust from this machine's settings. Only the backup's
+     name crosses, so `run_backup_hook` cannot be handed a shell line. */
+  it('sends Rust the name of the backup and never the command', async () => {
+    invoke.mockResolvedValue({ ok: true, code: 0, output: '' })
+
+    await recordHookRun('rclone copy {file} gdrive:shopos', '2026-03-04.zip')
+
+    expect(invoke).toHaveBeenCalledWith('run_backup_hook', { name: '2026-03-04.zip' })
+  })
+
+  it('saves the command it is testing before running it', async () => {
+    deviceSettings.set(HOOK_SETTING, 'the old command {file}')
+    invoke.mockResolvedValue({ ok: true, code: 0, output: '' })
+
+    await recordHookRun('  the new command {file} ', '2026-03-04.zip')
+
+    // What Rust will read back is what the screen showed when Test was pressed.
+    expect(deviceSettings.get(HOOK_SETTING)).toBe('the new command {file}')
+  })
+
+  it('does not run anything when the command could not be saved', async () => {
+    const device = await import('../src/core/device')
+    const put = vi.spyOn(device, 'setDeviceSetting').mockResolvedValueOnce(false)
+    invoke.mockResolvedValue({ ok: true, code: 0, output: '' })
+
+    const run = await recordHookRun('a command that will not save', '2026-03-04.zip')
+    put.mockRestore()
+
+    expect(run.ok).toBe(false)
+    expect(run.output).toContain('was not saved')
+    expect(invoke).not.toHaveBeenCalledWith('run_backup_hook', expect.anything())
+  })
+
   it('records a command that could not be run at all', async () => {
     invoke.mockRejectedValue('program not found')
 

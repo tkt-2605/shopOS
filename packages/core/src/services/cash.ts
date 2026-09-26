@@ -6,6 +6,7 @@ import { newId } from '../ids.js'
 import { type Money, ZERO, add, sub, paise } from '../money.js'
 import { DRAFT, SUBMITTED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
+import { recheckDocStatus } from '../integrity/transition.js'
 
 export type CashDirection = 'in' | 'out'
 export type TenderMethod = 'cash' | 'upi' | 'card' | 'credit' | 'loyalty' | 'adjustment'
@@ -140,6 +141,44 @@ export async function sessionSummary(db: SqlDriver, sessionId: string): Promise<
   }
 }
 
+/** One line of a drawer's movements, as the cash counter lists them. */
+export interface SessionMovement {
+  id: string
+  direction: string
+  amount: Money
+  method: string
+  sourceType: string
+  reference: string | null
+  createdAt: string
+}
+
+/**
+ * What went into and out of one drawer, newest first.
+ *
+ * Capped: the counter shows a shift at a glance, and the whole of a busy day
+ * is the report's to show rather than the till's.
+ */
+export async function sessionMovements(
+  db: SqlDriver,
+  sessionId: string,
+  limit = 60,
+): Promise<SessionMovement[]> {
+  return q(db)
+    .select({
+      id: schema.cashMovements.id,
+      direction: schema.cashMovements.direction,
+      amount: schema.cashMovements.amount,
+      method: schema.cashMovements.method,
+      sourceType: schema.cashMovements.sourceType,
+      reference: schema.cashMovements.reference,
+      createdAt: schema.cashMovements.createdAt,
+    })
+    .from(schema.cashMovements)
+    .where(eq(schema.cashMovements.sessionId, sessionId))
+    .orderBy(desc(schema.cashMovements.createdAt))
+    .limit(limit)
+}
+
 export interface CloseSessionResult {
   sessionId: string
   expectedCash: Money
@@ -163,6 +202,7 @@ export async function closeSession(
   const now = (input.now ?? new Date()).toISOString()
 
   await db.transaction(async (tx) => {
+    await recheckDocStatus(tx, 'cash_sessions', input.sessionId, 'cash session', 'submit')
     await q(tx).update(schema.cashSessions)
       .set({
         docstatus: SUBMITTED,
@@ -283,4 +323,44 @@ export async function listSessions(
     variance: r.variance ?? ZERO,
     postingDate: r.closedAt!.slice(0, 10),
   }))
+}
+
+export type PayoutResult =
+  | { ok: true }
+  | { ok: false; code: 'INVALID_AMOUNT' | 'SESSION_CLOSED' }
+
+/**
+ * Money taken out of the drawer for something other than a sale -- tea, a
+ * delivery, petrol.
+ *
+ * The drawer screen used to write the movement itself. That skipped the one
+ * check that matters, whether the drawer is still open -- a payout recorded
+ * against a session already counted and closed changes a count nobody will
+ * make again -- and it left no entry on the history, so cash leaving the drawer
+ * was the one movement of money with no name against it.
+ */
+export async function recordPayout(
+  db: SqlDriver,
+  input: { sessionId: string; amount: Money; reason: string | null; userId: string; now?: Date },
+): Promise<PayoutResult> {
+  if (!Number.isInteger(input.amount) || input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
+  const now = input.now ?? new Date()
+
+  return db.transaction(async (tx): Promise<PayoutResult> => {
+    const [session] = await q(tx)
+      .select({ closedAt: schema.cashSessions.closedAt })
+      .from(schema.cashSessions)
+      .where(eq(schema.cashSessions.id, input.sessionId))
+    if (!session || session.closedAt !== null) return { ok: false, code: 'SESSION_CLOSED' }
+
+    await postCashMovement(tx, {
+      sessionId: input.sessionId, direction: 'out', amount: input.amount,
+      sourceType: 'expense', reference: input.reason?.trim() || null, userId: input.userId, now,
+    })
+    await writeAudit(tx, { actorId: input.userId }, {
+      entity: 'cash_sessions', entityId: input.sessionId, action: 'update',
+      after: { payout: input.amount, reason: input.reason?.trim() || null },
+    })
+    return { ok: true }
+  })
 }

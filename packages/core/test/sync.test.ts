@@ -9,9 +9,14 @@ import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
 import { MIN_PEER_SCHEMA_VERSION } from '../src/db/migrationKinds.js'
 import { changesSince, feedHead, pruneFeed, seedFeedWithEverything } from '../src/services/changefeed.js'
 import { setSetting, getSetting } from '../src/services/bootstrap.js'
-import { createBill } from '../src/services/billing.js'
+import { createBill, submitBill } from '../src/services/billing.js'
+import { postMovement } from '../src/services/stock.js'
+import { createReturn, submitReturn } from '../src/services/returns.js'
+import { createRegister, claimRegister } from '../src/services/registers.js'
+import { rupees } from '../src/money.js'
+import { newId } from '../src/ids.js'
 import { fromUnits } from '../src/quantity.js'
-import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
+import { freshDb, emptyDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 import type { Row, SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -744,3 +749,158 @@ async function raiseBill(till: Till, productId: string): Promise<string> {
     return made.billId
   })
 }
+
+describe('points spent on one till', () => {
+  /**
+   * The schema review's first finding. A loyalty entry had no revision, so a
+   * merge between an edited copy and an untouched one fell through to the last
+   * tiebreak -- the higher device id -- and B is the higher id here. B kept its
+   * copy with nothing spent, the redemption arrived inside its bill anyway, and
+   * the customer could spend the same points again at B.
+   */
+  it('reach the other till, even when that till has the higher device id', async () => {
+    const product = await as(a, async () => {
+      await setSetting(a.db, 'loyalty_program', JSON.stringify({
+        enabled: true, tiers: [{ minSpend: 0, pointsPerHundred: 5 }], expiryDays: 365,
+        pointValue: 100, earnOnCreditPortion: false, minBillForEarn: 0, maxRedeemFractionBp: 10_000,
+      }))
+      const p = await makeProduct(a.db, { baseRate: rupees(500), taxRateBp: 0 })
+      await a.db.transaction((tx) => postMovement(tx, {
+        productId: p, qtyChange: fromUnits(20), voucherType: 'opening', voucherId: newId(), postingDate: '2026-01-01',
+      }))
+      return p
+    })
+    const customer = await makeCustomer(a.db)
+
+    const sell = (redeem: number) => as(a, async () => {
+      const draft = await createBill(a.db, {
+        registerId: a.fx!.seed.registerId, customerId: customer,
+        lines: [{ productId: product, qty: fromUnits(2) }], actorId: a.fx!.adminId,
+      })
+      if (!draft.ok) throw new Error(draft.code)
+      const paid = await submitBill(a.db, {
+        billId: draft.billId,
+        payments: [{ method: 'cash', amount: (draft.grandTotal - rupees(redeem)) as typeof draft.grandTotal }],
+        ...(redeem > 0 ? { redeemPoints: redeem } : {}),
+        actorId: a.fx!.adminId,
+      })
+      if (!paid.ok) throw new Error(paid.code)
+      return draft.billId
+    })
+
+    const earned = await sell(0)
+    await bothWays()
+    const spentOn = async (till: Till) => (await till.db.get<{ consumed: number }>(
+      'SELECT consumed FROM loyalty_entries WHERE bill_id = ?', [earned]))?.consumed
+
+    expect(await spentOn(b)).toBe(0)
+
+    await sell(10)
+    await bothWays()
+
+    expect(await spentOn(a)).toBe(10)
+    expect(await spentOn(b)).toBe(10)
+  })
+})
+
+describe('one bill refunded on two tills while apart', () => {
+  /**
+   * Found by the independent review. A return was numbered in the series of
+   * the *bill's* counter, so two tills refunding against one bill both minted
+   * the same credit note number; after sync each quarantined the other's, and
+   * a refund paid out on one never reached the other.
+   */
+  it('keeps both refunds, each under the till that paid it out', async () => {
+    const { billId, itemId } = await as(a, async () => {
+      const p = await makeProduct(a.db, { baseRate: rupees(100), taxRateBp: 0 })
+      await a.db.transaction((tx) => postMovement(tx, {
+        productId: p, qtyChange: fromUnits(10), voucherType: 'opening', voucherId: newId(), postingDate: '2026-01-01',
+      }))
+      const second = await createRegister(a.db, { name: 'Front Counter', prefix: 'FC', actorId: a.fx!.adminId })
+      if (!second.ok) throw new Error(second.code)
+      await claimRegister(a.db, { registerId: a.fx!.seed.registerId })
+      const draft = await createBill(a.db, {
+        registerId: a.fx!.seed.registerId, lines: [{ productId: p, qty: fromUnits(4) }], actorId: a.fx!.adminId,
+      })
+      if (!draft.ok) throw new Error(draft.code)
+      const paid = await submitBill(a.db, {
+        billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: a.fx!.adminId,
+      })
+      if (!paid.ok) throw new Error(paid.code)
+      const item = await a.db.get<{ id: string }>('SELECT id FROM bill_items WHERE bill_id = ?', [draft.billId])
+      return { billId: draft.billId, itemId: item!.id }
+    })
+    await bothWays()
+    await as(b, async () => {
+      const fc = await b.db.get<{ id: string }>(`SELECT id FROM registers WHERE prefix = 'FC'`)
+      await claimRegister(b.db, { registerId: fc!.id })
+    })
+
+    const refund = (till: Till) => as(till, async () => {
+      const ret = await createReturn(till.db, {
+        billId, lines: [{ billItemId: itemId, qty: fromUnits(1) }], refundMethod: 'cash', actorId: a.fx!.adminId,
+      })
+      if (!ret.ok) throw new Error(ret.code)
+      const done = await submitReturn(till.db, { returnId: ret.returnId, actorId: a.fx!.adminId })
+      if (!done.ok) throw new Error(done.code)
+      return done.docNo
+    })
+    const onA = await refund(a)
+    const onB = await refund(b)
+    expect(onA).not.toBe(onB)
+
+    await bothWays()
+    for (const till of [a, b]) {
+      const setAside = await till.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM sync_quarantine')
+      expect(setAside?.n, 'nothing set aside').toBe(0)
+      const held = await till.db.query<{ doc_no: string }>(
+        'SELECT doc_no FROM sales_returns WHERE docstatus = 1 ORDER BY doc_no')
+      expect(held.map((r) => r.doc_no).sort()).toEqual([onA, onB].sort())
+    }
+  })
+})
+
+describe('the same name made on two tills while apart', () => {
+  it('is set aside with a reason that says what to do', async () => {
+    await bothWays()
+    await as(a, () => createRegister(a.db, { name: 'Counter 2', prefix: 'CA', actorId: a.fx!.adminId }))
+    const user = await b.db.get<{ id: string }>('SELECT id FROM users LIMIT 1')
+    await as(b, () => createRegister(b.db, { name: 'Counter 2', prefix: 'CB', actorId: user!.id }))
+
+    await bothWays()
+    const reasons = [
+      ...await a.db.query<{ reason: string }>('SELECT reason FROM sync_quarantine'),
+      ...await b.db.query<{ reason: string }>('SELECT reason FROM sync_quarantine'),
+    ].map((r) => r.reason)
+    expect(reasons.length).toBeGreaterThan(0)
+    expect(reasons[0]).toMatch(/a counter with the same name .* Rename or remove one/)
+  })
+})
+
+describe('a barcode taken off an item', () => {
+  it('stops scanning on the other till too, and comes back as the same row', async () => {
+    /* Removal is an edit since 056, so it travels and merges like one -- a
+       delete's tombstone could be outlived by a third till, and a barcode
+       brought back that way scans as an item the shop took it off. */
+    const { setBarcodes } = await import('../src/services/barcodes.js')
+    const { productIdForBarcode } = await import('../src/services/barcodes.js')
+    const ctx = { actorId: a.fx!.adminId }
+    const p = await as(a, () => makeProduct(a.db, { name: 'Pen' }))
+    await as(a, () => setBarcodes(a.db, ctx, p, [{ barcode: '8900000000017' }, { barcode: 'OLD-77' }]))
+    await bothWays()
+    expect(await as(b, () => productIdForBarcode(b.db, 'OLD-77'))).toBe(p)
+
+    await as(a, () => setBarcodes(a.db, ctx, p, [{ barcode: '8900000000017' }]))
+    await bothWays()
+    expect(await as(b, () => productIdForBarcode(b.db, 'OLD-77'))).toBeNull()
+    const kept = await b.db.get<{ deleted_at: string | null }>(
+      `SELECT deleted_at FROM product_barcodes WHERE barcode = 'OLD-77'`)
+    expect(kept?.deleted_at).not.toBeNull()
+
+    const before = await a.db.get<{ id: string }>(`SELECT id FROM product_barcodes WHERE barcode = 'OLD-77'`)
+    await as(a, () => setBarcodes(a.db, ctx, p, [{ barcode: '8900000000017' }, { barcode: 'OLD-77' }]))
+    const after = await a.db.get<{ id: string; deleted_at: string | null }>(
+      `SELECT id, deleted_at FROM product_barcodes WHERE barcode = 'OLD-77'`)
+    expect(after).toEqual({ id: before!.id, deleted_at: null })
+  })
+})

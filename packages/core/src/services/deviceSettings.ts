@@ -1,5 +1,5 @@
 import type { SqlDriver } from '../db/driver.js'
-import { getSetting, forgetSetting } from './bootstrap.js'
+import { getSetting, forgetSetting } from './settings.js'
 
 /**
  * Moving a setting out of the shop's table and onto the machine it describes.

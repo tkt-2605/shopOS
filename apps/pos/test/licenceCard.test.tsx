@@ -145,7 +145,7 @@ describe('a till with no licence', () => {
   it('says the counter works anyway', async () => {
     await show(await till())
 
-    expect(screen.getByText('No licence code on this till')).toBeTruthy()
+    expect(screen.getByText('Free plan')).toBeTruthy()
     /* The sentence that stops somebody closing the shop. If this ever reads
        as a warning that something is broken, the card is wrong. */
     expect(screen.getByText(/counter works without one/i)).toBeTruthy()
@@ -166,7 +166,7 @@ describe('the shop id', () => {
        exactly where it is not needed. */
     await show(await till('019402f1-7c3a-7bd2-9e11-4a1c8f0d5b62'))
 
-    expect(screen.getByText('No licence code on this till')).toBeTruthy()
+    expect(screen.getByText('Free plan')).toBeTruthy()
     const box = screen.getByLabelText("This shop's id") as HTMLInputElement
     expect(box.value).toBe('019402f1-7c3a-7bd2-9e11-4a1c8f0d5b62')
   })
@@ -316,7 +316,7 @@ describe('exporting it again', () => {
     const code = await sign(licence())
     await paste(code)
 
-    const button = await screen.findByRole('button', { name: 'Copy' })
+    const button = await screen.findByRole('button', { name: 'Copy the Cloud code' })
     await act(async () => { fireEvent.click(button) })
 
     expect(clipboard).toEqual([code])
@@ -381,8 +381,33 @@ describe('removing it', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
     })
 
-    expect(await screen.findByText('No licence code on this till')).toBeTruthy()
+    expect(await screen.findByText('Free plan')).toBeTruthy()
     const gone = await db.get('SELECT value FROM settings WHERE key = ?', ['licence_token'])
     expect(gone).toBeUndefined()
+  })
+})
+
+describe('what is included', () => {
+  function tagOf(name: string): string {
+    const row = screen.getByText(name).closest('li')!
+    return row.querySelector('.badge')!.textContent ?? ''
+  }
+
+  it('lists the counter as free and a second counter as for sale', async () => {
+    await show(await till())
+
+    expect(tagOf('Billing, printing and returns')).toBe('Free')
+    expect(tagOf('Add another counter')).toBe('With More counters')
+  })
+
+  it('marks a bought feature included, and an unbuilt one as coming', async () => {
+    await show(await till())
+    await paste(await sign(licence()))
+
+    await screen.findByText('Cloud licence')
+    expect(tagOf('Add another counter')).toBe('Included')
+    /* Cloud pays for off-site backup, which does not exist yet. Listing it
+       as included would be selling a shop something it cannot use. */
+    expect(tagOf('Off-site backup')).toBe('Coming')
   })
 })

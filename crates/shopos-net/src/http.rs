@@ -30,23 +30,90 @@
 ///
 /// The bills themselves cross in clear. That is written down here, in the
 /// migration and in the doc rather than implied away.
+///
+/// ── What it refuses before anybody has proved anything ────────────────────
+///
+/// The signature is checked in the webview, after the whole body has arrived
+/// and been handed across. Everything in front of that is reachable by anyone
+/// on the shop's wifi, so it is kept cheap: an unknown path, or a request
+/// other than `/pair` with no signature on it at all, is turned away as soon
+/// as its head has been read -- before a byte of body is accepted and before
+/// the webview is woken. A `/pair` body is a few hundred bytes and is held to
+/// that. A body is read as it arrives rather than allocated up front from
+/// what the header claims. And a request has a deadline as a whole, not only
+/// per read, so a caller trickling one byte every twenty-nine seconds cannot
+/// hold a connection for ever.
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// A batch of two hundred bills with their lines is comfortably inside this.
 /// Anything larger is not a till.
 pub const MAX_BODY: usize = 32 * 1024 * 1024;
 
+/// What a `/pair` body may come to.
+///
+/// A pairing request is a code, a device id, a label and a fingerprint -- a
+/// few hundred bytes -- and it is the one request anybody may send unsigned.
+/// This leaves room for a public key when pairing agrees its secret by key
+/// exchange, and none for anything else.
+pub const MAX_PAIR_BODY: usize = 8 * 1024;
+
 /// A connection that sends nothing is a connection that gets dropped.
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the request line and headers may take to arrive, all of them.
+///
+/// A till sends its head in one packet. Ten seconds is generous for a busy
+/// wifi and short enough that a caller dribbling a header a byte at a time
+/// gives its connection back quickly.
+const HEAD_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long a whole request may take to arrive, head and body.
+///
+/// Per-read timeouts alone never end a connection that keeps sending a byte
+/// just inside each one. This does: every read is given whatever is left of
+/// this, never more.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
+
+/// The most a request line and its headers may come to.
+///
+/// A till's head is a few hundred bytes. Without a ceiling `read_line` reads
+/// until it finds a newline, so a line that never ends -- trickled in faster
+/// than the read timeout -- grows until the till runs out of memory. Anyone on
+/// the shop's wifi can send one, before any signature is looked at.
+pub const MAX_HEAD: u64 = 16 * 1024;
+
+/// How many requests are answered at once.
+///
+/// Each connection is a thread held for up to `REQUEST_DEADLINE`. Unbounded, a
+/// burst of connections that say nothing is a thread apiece until the process
+/// cannot make another, and the till stops. A shop has a handful of tills; a
+/// connection beyond this is closed at once rather than queued.
+pub const MAX_CONNECTIONS: usize = 16;
+
+/// How many of those may come from one address.
+///
+/// Without it one machine could take all sixteen and the other till in the
+/// shop would find the door shut. A till has one round in flight, perhaps two
+/// while a pairing is being polled.
+pub const MAX_PER_PEER: usize = 4;
 
 /// Only the four the protocol has. An unknown path never reaches the answerer,
 /// so a scanner sweeping the shop's network cannot use this to find out
 /// anything except that something is listening.
 pub const PATHS: [&str; 4] = ["/pair", "/hello", "/fetch", "/offer"];
+
+/// The one path that is answered unsigned.
+pub const PAIR_PATH: &str = "/pair";
+
+/// The header a signed request carries its signature in.
+///
+/// Must match what `syncClient.ts` sends and `syncFetch.ts` reads.
+pub const AUTH_HEADER: &str = "x-shopos-auth";
 
 /// The header a till advertises its own listening port in.
 ///
@@ -79,6 +146,32 @@ pub struct Reply {
 impl Reply {
     pub fn refuse(status: u16, code: &str) -> Reply {
         Reply { status, body: format!("{{\"code\":\"{code}\"}}") }
+    }
+}
+
+/// Why a request was turned away before it reached the answerer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Not the HTTP a till sends.
+    Malformed,
+    /// A path the protocol does not have.
+    NoSuchRequest,
+    /// Anything but `/pair` with no signature at all. The code is the one
+    /// `syncAuth.verify` gives a missing header, so a caller hears the same
+    /// thing whichever side said it.
+    Unsigned,
+    /// A body larger than that request can honestly be.
+    TooLarge,
+}
+
+impl Refusal {
+    pub fn reply(&self) -> Reply {
+        match self {
+            Refusal::Malformed => Reply::refuse(400, "MALFORMED"),
+            Refusal::NoSuchRequest => Reply::refuse(404, "NO_SUCH_REQUEST"),
+            Refusal::Unsigned => Reply::refuse(401, "MALFORMED"),
+            Refusal::TooLarge => Reply::refuse(413, "TOO_LARGE"),
+        }
     }
 }
 
@@ -123,6 +216,8 @@ pub fn serve(port: u16, answerer: Arc<dyn Answerer>) -> Result<Bound, String> {
 
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
+    let active = Arc::new(AtomicUsize::new(0));
+    let peers = Peers::default();
 
     std::thread::spawn(move || {
         for incoming in listener.incoming() {
@@ -131,17 +226,82 @@ pub fn serve(port: u16, answerer: Arc<dyn Answerer>) -> Result<Bound, String> {
             }
             match incoming {
                 Ok(stream) => {
+                    // Dropped, which closes it, when either limit is reached. A
+                    // 503 would need a write that can itself be made to wait.
+                    let Some(slot) = Slot::take(&active) else { continue };
+                    let Some(peer) = stream.peer_addr().ok().and_then(|a| peers.take(a.ip())) else {
+                        continue;
+                    };
                     let answerer = Arc::clone(&answerer);
                     std::thread::spawn(move || {
+                        let _held = (slot, peer);
                         let _ = handle(answerer.as_ref(), stream);
                     });
                 }
-                Err(_) => continue,
+                /* A pause rather than straight round again. The errors
+                   `accept` gives are mostly "out of something" -- handles,
+                   memory, buffers -- and retrying at once spins a core at
+                   full tilt on a till that is already short of whatever it
+                   ran out of. */
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
             }
         }
     });
 
     Ok(Bound { port: bound, stop })
+}
+
+/// One of `MAX_CONNECTIONS`, given back when the thread holding it ends --
+/// however it ends, which is why it is a drop and not a line at the bottom.
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    fn take(active: &Arc<AtomicUsize>) -> Option<Slot> {
+        let taken = active
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_CONNECTIONS).then_some(n + 1))
+            .is_ok();
+        taken.then(|| Slot(Arc::clone(active)))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Connections in flight, by the address they came from.
+#[derive(Default, Clone)]
+struct Peers(Arc<Mutex<HashMap<IpAddr, usize>>>);
+
+impl Peers {
+    fn take(&self, ip: IpAddr) -> Option<PeerSlot> {
+        let mut open = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let count = open.entry(ip).or_insert(0);
+        if *count >= MAX_PER_PEER {
+            return None;
+        }
+        *count += 1;
+        Some(PeerSlot { peers: self.clone(), ip })
+    }
+}
+
+/// One of `MAX_PER_PEER`, given back the same way a `Slot` is.
+struct PeerSlot {
+    peers: Peers,
+    ip: IpAddr,
+}
+
+impl Drop for PeerSlot {
+    fn drop(&mut self) {
+        let mut open = self.peers.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = open.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                open.remove(&self.ip);
+            }
+        }
+    }
 }
 
 /// The same, settling for any free port when the wanted one is taken.
@@ -165,43 +325,108 @@ pub fn serve_preferring(port: u16, answerer: Arc<dyn Answerer>) -> Result<Bound,
 }
 
 fn handle(answerer: &dyn Answerer, mut stream: TcpStream) -> std::io::Result<()> {
-    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
-
     let remote = stream.peer_addr().ok().map(|a| a.ip().to_string());
 
-    let request = match read_request(&mut stream, remote) {
-        Ok(Some(request)) => request,
-        Ok(None) => return write_response(&mut stream, 400, "{\"code\":\"MALFORMED\"}"),
-        Err(_) => return Ok(()),
-    };
-
-    if !PATHS.contains(&request.path.as_str()) {
-        return write_response(&mut stream, 404, "{\"code\":\"NO_SUCH_REQUEST\"}");
+    let started = Instant::now();
+    match read_checked(&stream, remote, started + HEAD_DEADLINE, started + REQUEST_DEADLINE) {
+        Ok(Ok(request)) => {
+            let reply = answerer.answer(request);
+            write_response(&mut stream, reply.status, &reply.body)
+        }
+        Ok(Err(refusal)) => {
+            let reply = refusal.reply();
+            write_response(&mut stream, reply.status, &reply.body)?;
+            linger(&mut stream);
+            Ok(())
+        }
+        Err(_) => Ok(()),
     }
+}
 
-    let reply = answerer.answer(request);
-    write_response(&mut stream, reply.status, &reply.body)
+/// Lets a refused caller read its refusal.
+///
+/// A socket closed with unread bytes in it is reset rather than closed, and a
+/// reset can overtake the reply: the caller sees "connection reset" instead of
+/// the 401 that would have told it what was wrong. So the write side is shut,
+/// and a little of whatever is still arriving is read and thrown away -- a
+/// little, and briefly, because this is exactly where a hostile caller would
+/// like to be kept talking.
+fn linger(stream: &mut TcpStream) {
+    let _ = stream.shutdown(Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = std::io::copy(&mut stream.take(64 * 1024), &mut std::io::sink());
+}
+
+/// A socket that will not let a read outlast `deadline`.
+///
+/// Each read is given the smaller of `idle` and whatever is left of the
+/// deadline, so the deadline holds however the bytes are paced.
+pub(crate) struct Timed<'s> {
+    pub(crate) stream: &'s TcpStream,
+    pub(crate) deadline: Instant,
+    /// The longest one read may wait for its first byte.
+    pub(crate) idle: Duration,
+}
+
+impl Read for Timed<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the request took longer than any till's does",
+            ));
+        }
+        self.stream.set_read_timeout(Some(left.min(self.idle)))?;
+        let mut stream = self.stream;
+        stream.read(buf)
+    }
 }
 
 /// Enough HTTP/1.1 for four POSTs carrying JSON, and deliberately not a byte
 /// more. Everything it does not understand is a refusal rather than a guess.
+///
+/// `None` for anything refused; `read_checked` says why.
 pub fn read_request(
     stream: &mut TcpStream,
     remote_address: Option<String>,
 ) -> std::io::Result<Option<Request>> {
-    let mut reader = BufReader::new(stream.try_clone()?);
+    let started = Instant::now();
+    Ok(read_checked(stream, remote_address, started + HEAD_DEADLINE, started + REQUEST_DEADLINE)?.ok())
+}
+
+/// The request, or why it was refused, or an I/O error for a caller that went
+/// away or ran out of time -- which gets no answer at all.
+///
+/// The order is the point. Path and signature are looked at as soon as the
+/// head is in, and the body is only read for a request that has got that far:
+/// an unsigned `/offer` claiming thirty-two megabytes is refused having cost
+/// sixteen kilobytes of head and nothing else.
+pub fn read_checked(
+    stream: &TcpStream,
+    remote_address: Option<String>,
+    head_deadline: Instant,
+    deadline: Instant,
+) -> std::io::Result<Result<Request, Refusal>> {
+    let mut reader = BufReader::new(Timed {
+        stream,
+        deadline: head_deadline.min(deadline),
+        idle: READ_TIMEOUT,
+    });
+    // The head is read through a ceiling; the body has its own, `MAX_BODY`.
+    let mut head = (&mut reader).take(MAX_HEAD);
 
     let mut line = String::new();
-    if reader.read_line(&mut line)? == 0 {
-        return Ok(None);
+    if head.read_line(&mut line)? == 0 || !line.ends_with('\n') {
+        return Ok(Err(Refusal::Malformed));
     }
 
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or_default().to_string();
     let path = parts.next().unwrap_or_default().to_string();
     if method != "POST" || !path.starts_with('/') {
-        return Ok(None);
+        return Ok(Err(Refusal::Malformed));
     }
 
     let mut length: Option<usize> = None;
@@ -210,40 +435,60 @@ pub fn read_request(
 
     loop {
         let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 {
-            return Ok(None);
+        // A line cut off by the ceiling has no newline, and is not a header.
+        if head.read_line(&mut header)? == 0 || !header.ends_with('\n') {
+            return Ok(Err(Refusal::Malformed));
         }
         let header = header.trim_end();
         if header.is_empty() {
             break;
         }
         let Some((name, value)) = header.split_once(':') else {
-            return Ok(None);
+            return Ok(Err(Refusal::Malformed));
         };
         let value = value.trim();
         match name.trim().to_ascii_lowercase().as_str() {
             "content-length" => length = value.parse::<usize>().ok(),
-            "x-shopos-auth" => auth = Some(value.to_string()),
+            AUTH_HEADER => auth = Some(value.to_string()).filter(|v| !v.is_empty()),
             LISTEN_PORT_HEADER => listen_port = value.parse::<u16>().ok(),
             _ => {}
         }
     }
 
+    if !PATHS.contains(&path.as_str()) {
+        return Ok(Err(Refusal::NoSuchRequest));
+    }
+    let pairing = path == PAIR_PATH;
+    if !pairing && auth.is_none() {
+        return Ok(Err(Refusal::Unsigned));
+    }
+
     // No length, no body, no guessing. Chunked encoding is not something a till
     // sends, and accepting it would be a parser nobody needs.
     let Some(length) = length else {
-        return Ok(None);
+        return Ok(Err(Refusal::Malformed));
     };
-    if length > MAX_BODY {
-        return Ok(None);
+    if length > if pairing { MAX_PAIR_BODY } else { MAX_BODY } {
+        return Ok(Err(Refusal::TooLarge));
     }
 
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body)?;
+    /* Read as it arrives, into a buffer that grows with what has actually been
+       sent. It used to be allocated in full from the header -- thirty-two
+       megabytes on the strength of one line of text, sixteen connections at a
+       time, from anybody. */
+    reader.get_mut().deadline = deadline;
+    let mut body = Vec::with_capacity(length.min(64 * 1024));
+    reader.take(length as u64).read_to_end(&mut body)?;
+    if body.len() != length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "the caller went away before the body arrived",
+        ));
+    }
 
     match String::from_utf8(body) {
-        Ok(body) => Ok(Some(Request { path, body, auth, remote_address, listen_port })),
-        Err(_) => Ok(None),
+        Ok(body) => Ok(Ok(Request { path, body, auth, remote_address, listen_port })),
+        Err(_) => Ok(Err(Refusal::Malformed)),
     }
 }
 
@@ -255,6 +500,7 @@ pub fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::i
         403 => "Forbidden",
         404 => "Not Found",
         409 => "Conflict",
+        413 => "Payload Too Large",
         503 => "Service Unavailable",
         _ => "Error",
     };
@@ -265,162 +511,24 @@ pub fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::i
          connection: close\r\n\
          \r\n\
          {body}",
-        body.as_bytes().len()
+        body.len()
     );
     stream.write_all(response.as_bytes())?;
     stream.flush()
 }
 
-/// What a till said when it was asked something.
-#[derive(Debug)]
-pub struct Answer {
-    pub status: u16,
-    pub body: String,
-}
-
-/// How long to wait for a till that is switched off but whose address still
-/// resolves. Short, because a person is watching a spinner while it runs.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The asking half, in Rust rather than in the webview.
-///
-/// The webview cannot make this call itself. The app's CSP takes `connect-src`
-/// from `default-src 'self'`, so a `fetch` aimed at another till is refused
-/// before a packet leaves -- which is the rule the program is built on, that
-/// network code lives here. `syncClient.ts` takes the fetch it uses as an
-/// argument for exactly this reason: the app hands it one that arrives here.
-///
-/// Enough HTTP/1.1 for the four POSTs in `PATHS` and deliberately not a byte
-/// more, which is the same bargain `read_request` makes on the other side.
-pub fn request(
-    address: &str,
-    path: &str,
-    body: &str,
-    auth: Option<&str>,
-    listen_port: Option<u16>,
-) -> Result<Answer, String> {
-    let resolved = address
-        .to_socket_addrs()
-        .map_err(|e| format!("{address} is not an address this machine can use: {e}"))?
-        .next()
-        .ok_or_else(|| format!("{address} is not an address this machine can use"))?;
-
-    let mut stream = TcpStream::connect_timeout(&resolved, CONNECT_TIMEOUT)
-        .map_err(|e| format!("Could not reach {address}: {e}"))?;
-    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
-
-    let mut head = format!(
-        "POST {path} HTTP/1.1\r\n\
-         host: {address}\r\n\
-         content-type: application/json\r\n\
-         content-length: {}\r\n\
-         connection: close\r\n",
-        body.as_bytes().len()
-    );
-    if let Some(auth) = auth {
-        head.push_str(&format!("x-shopos-auth: {auth}\r\n"));
-    }
-    if let Some(port) = listen_port {
-        head.push_str(&format!("{LISTEN_PORT_HEADER}: {port}\r\n"));
-    }
-    head.push_str("\r\n");
-
-    stream
-        .write_all(head.as_bytes())
-        .and_then(|()| stream.write_all(body.as_bytes()))
-        .and_then(|()| stream.flush())
-        .map_err(|e| format!("Could not send to {address}: {e}"))?;
-
-    read_answer(&mut stream).map_err(|e| format!("No answer from {address}: {e}"))
-}
-
-fn read_answer(stream: &mut TcpStream) -> std::io::Result<Answer> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-
-    let mut line = String::new();
-    if reader.read_line(&mut line)? == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "the connection closed before anything was said",
-        ));
-    }
-
-    // "HTTP/1.1 200 OK" -- the middle word is the whole of what matters.
-    let status = line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "not an HTTP reply")
-        })?;
-
-    let mut length: Option<usize> = None;
-    loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 {
-            break;
-        }
-        let header = header.trim_end();
-        if header.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = header.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    /* The far side always sends a length and closes after the body. Reading to
-       the end when it does not is the reply of a till, not of a parser that
-       guesses: `connection: close` is what makes the end unambiguous. */
-    let mut body = Vec::new();
-    match length {
-        Some(length) if length > MAX_BODY => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "the reply is larger than any till sends",
-            ))
-        }
-        Some(length) => {
-            body.resize(length, 0);
-            reader.read_exact(&mut body)?;
-        }
-        None => {
-            reader.take(MAX_BODY as u64).read_to_end(&mut body)?;
-        }
-    }
-
-    let body = String::from_utf8(body)
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "the reply is not text"))?;
-    Ok(Answer { status, body })
-}
-
-/// This machine's address on the shop's network, for a person to read out.
-///
-/// Asking a UDP socket where it would send from is the way to get this without
-/// a crate that enumerates interfaces, and it is the right answer rather than a
-/// clever one: a machine with a wifi card, an ethernet cable and a virtual
-/// adapter has three addresses, and this picks the one the shop's traffic
-/// actually leaves by. No packet is sent — `connect` on UDP only fixes a route.
-pub fn lan_address() -> Option<String> {
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("192.168.1.1:9").ok()?;
-    let address = socket.local_addr().ok()?.ip();
-    if address.is_loopback() || address.is_unspecified() {
-        return None;
-    }
-    Some(address.to_string())
-}
+pub use crate::client::{lan_address, request, Answer};
+#[cfg(test)]
+use crate::client::{literal, read_answer, MAX_REPLY_HEADERS};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
     use std::io::Read;
+    use std::net::TcpListener;
 
-    fn request_from(raw: &str) -> Option<Request> {
+    /// What `read_checked` makes of `raw`, sent whole over a real socket.
+    fn checked(raw: &str) -> Result<Request, Refusal> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let raw = raw.to_string();
@@ -429,14 +537,19 @@ mod tests {
             let mut client = TcpStream::connect(address).unwrap();
             client.write_all(raw.as_bytes()).unwrap();
             client.flush().unwrap();
-            // Held open: read_exact must not race the socket closing.
+            // Held open: the body read must not race the socket closing.
             std::thread::sleep(Duration::from_millis(50));
         });
 
-        let (mut stream, _) = listener.accept().unwrap();
-        let parsed = read_request(&mut stream, None).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let now = Instant::now();
+        let parsed = read_checked(&stream, None, now + HEAD_DEADLINE, now + REQUEST_DEADLINE).unwrap();
         sender.join().unwrap();
         parsed
+    }
+
+    fn request_from(raw: &str) -> Option<Request> {
+        checked(raw).ok()
     }
 
     fn post(path: &str, body: &str, extra: &str) -> String {
@@ -446,10 +559,12 @@ mod tests {
         )
     }
 
+    const SIGNED: &str = "x-shopos-auth: device.1700000000000.abc123.deadbeef\r\n";
+
     #[test]
     fn reads_a_post_with_a_body() {
-        let parsed = request_from(&post("/hello", "{\"a\":1}", "")).unwrap();
-        assert_eq!(parsed.path, "/hello");
+        let parsed = request_from(&post("/pair", "{\"a\":1}", "")).unwrap();
+        assert_eq!(parsed.path, "/pair");
         assert_eq!(parsed.body, "{\"a\":1}");
         assert!(parsed.auth.is_none());
     }
@@ -479,23 +594,40 @@ mod tests {
 
     #[test]
     fn refuses_a_body_with_no_length_rather_than_guessing() {
-        let raw = "POST /hello HTTP/1.1\r\nhost: x\r\n\r\n{\"a\":1}";
-        assert!(request_from(raw).is_none());
+        let raw = format!("POST /hello HTTP/1.1\r\nhost: x\r\n{SIGNED}\r\n{{\"a\":1}}");
+        assert_eq!(checked(&raw).err(), Some(Refusal::Malformed));
     }
 
     #[test]
     fn refuses_a_body_larger_than_any_till_would_send() {
         let raw = format!(
-            "POST /offer HTTP/1.1\r\ncontent-length: {}\r\n\r\n",
+            "POST /offer HTTP/1.1\r\n{SIGNED}content-length: {}\r\n\r\n",
             MAX_BODY + 1
         );
-        assert!(request_from(&raw).is_none());
+        assert_eq!(checked(&raw).err(), Some(Refusal::TooLarge));
     }
 
     #[test]
     fn refuses_a_header_that_is_not_a_header() {
         let raw = "POST /hello HTTP/1.1\r\nthis is not a header\r\ncontent-length: 0\r\n\r\n";
         assert!(request_from(raw).is_none());
+    }
+
+    #[test]
+    fn refuses_a_head_longer_than_any_till_sends() {
+        let padding = "a".repeat(MAX_HEAD as usize);
+        let raw = format!("POST /pair HTTP/1.1\r\nx-padding: {padding}\r\ncontent-length: 0\r\n\r\n");
+        assert!(request_from(&raw).is_none());
+    }
+
+    #[test]
+    fn gives_a_connection_slot_back_when_it_is_done() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let held: Vec<Slot> = (0..MAX_CONNECTIONS).filter_map(|_| Slot::take(&active)).collect();
+        assert_eq!(held.len(), MAX_CONNECTIONS);
+        assert!(Slot::take(&active).is_none());
+        drop(held);
+        assert!(Slot::take(&active).is_some());
     }
 
     #[test]
@@ -510,11 +642,7 @@ mod tests {
             let mut client = TcpStream::connect(address).unwrap();
             client
                 .write_all(
-                    format!(
-                        "POST /offer HTTP/1.1\r\ncontent-length: {}\r\n\r\n",
-                        body.len()
-                    )
-                    .as_bytes(),
+                    format!("POST /offer HTTP/1.1\r\n{SIGNED}content-length: {}\r\n\r\n", body.len()).as_bytes(),
                 )
                 .unwrap();
             for chunk in body.as_bytes().chunks(8192) {
@@ -567,16 +695,14 @@ mod tests {
     fn reads_the_port_a_till_says_it_answers_on() {
         // Without this the till being contacted has no address to record, and a
         // till that has been joined can receive a sync but never start one.
-        let raw = post("/hello", "{}", "x-shopos-port: 7801
-");
+        let raw = post("/pair", "{}", "x-shopos-port: 7801\r\n");
         assert_eq!(request_from(&raw).unwrap().listen_port, Some(7801));
     }
 
     #[test]
     fn treats_a_port_that_is_not_a_port_as_absent() {
         for value in ["0x1", "-1", "99999", "", "seven"] {
-            let raw = post("/hello", "{}", &format!("x-shopos-port: {value}
-"));
+            let raw = post("/pair", "{}", &format!("x-shopos-port: {value}\r\n"));
             let parsed = request_from(&raw).unwrap();
             assert_eq!(parsed.listen_port, None, "{value} should not parse");
         }
@@ -587,11 +713,145 @@ mod tests {
         /* A header is whatever the caller wants it to be. The address has to
            come from the connection, or a till could point the shop's next sync
            at a machine of its choosing. */
-        let raw = post("/hello", "{}", "x-forwarded-for: 10.0.0.1
-");
+        let raw = post("/pair", "{}", "x-forwarded-for: 10.0.0.1\r\n");
         let parsed = request_from(&raw).unwrap();
         assert_eq!(parsed.remote_address, None);
     }
+
+    // ── What is refused before anybody has proved anything ────────────────
+
+    /* Every one of these used to be read in full, handed to the webview, and
+       only then turned away by the signature check. */
+
+    #[test]
+    fn an_unsigned_request_is_refused_before_its_body_is_read() {
+        for path in ["/hello", "/fetch", "/offer"] {
+            assert_eq!(checked(&post(path, "{}", "")).err(), Some(Refusal::Unsigned), "{path}");
+            // An empty signature is no signature.
+            assert_eq!(checked(&post(path, "{}", "x-shopos-auth: \r\n")).err(), Some(Refusal::Unsigned));
+        }
+        // The claim of thirty-two megabytes is never acted on: nothing follows
+        // the head, and it is refused all the same, at once.
+        let raw = format!("POST /offer HTTP/1.1\r\ncontent-length: {MAX_BODY}\r\n\r\n");
+        assert_eq!(checked(&raw).err(), Some(Refusal::Unsigned));
+        // And it says so in the words the webview would have used.
+        assert_eq!(Refusal::Unsigned.reply().status, 401);
+        assert_eq!(Refusal::Unsigned.reply().body, "{\"code\":\"MALFORMED\"}");
+    }
+
+    /// Pairing stays reachable without a signature, because it is the request
+    /// that agrees one.
+    #[test]
+    fn pairing_is_answered_unsigned_and_held_to_the_size_of_a_pairing() {
+        assert!(checked(&post("/pair", "{\"code\":\"ABC-123\"}", "")).is_ok());
+
+        let big = "x".repeat(MAX_PAIR_BODY + 1);
+        assert_eq!(checked(&post("/pair", &big, "")).err(), Some(Refusal::TooLarge));
+        let fits = "x".repeat(MAX_PAIR_BODY);
+        assert!(checked(&post("/pair", &fits, "")).is_ok());
+    }
+
+    #[test]
+    fn an_unknown_path_is_refused_from_its_head_alone() {
+        let raw = format!("POST /admin HTTP/1.1\r\n{SIGNED}content-length: 1000000\r\n\r\n");
+        assert_eq!(checked(&raw).err(), Some(Refusal::NoSuchRequest));
+    }
+
+    /// Slowloris: a byte just inside every read timeout, for ever. The whole
+    /// head has a deadline, and it holds.
+    #[test]
+    fn a_caller_that_trickles_its_head_is_cut_off_at_the_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+
+        let sender = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            let _ = client.write_all(b"POST /pair HTTP/1.1\r\n");
+            while !stopping.load(Ordering::SeqCst) {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let (stream, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(400);
+        let result = read_checked(&stream, None, deadline, started + REQUEST_DEADLINE);
+        stop.store(true, Ordering::SeqCst);
+        sender.join().unwrap();
+
+        assert!(result.is_err(), "a head that never finishes must end in an error");
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    }
+
+    /// The same for a body: the deadline covers the whole request, not each
+    /// read of it.
+    #[test]
+    fn a_caller_that_trickles_its_body_is_cut_off_at_the_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+
+        let sender = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            let _ = client.write_all(format!("POST /offer HTTP/1.1\r\n{SIGNED}content-length: 100000\r\n\r\n").as_bytes());
+            while !stopping.load(Ordering::SeqCst) {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let (stream, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let result = read_checked(&stream, None, started + HEAD_DEADLINE, started + Duration::from_millis(500));
+        stop.store(true, Ordering::SeqCst);
+        sender.join().unwrap();
+
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    }
+
+    /// One machine cannot take every connection the till has.
+    #[test]
+    fn one_address_cannot_hold_every_connection() {
+        let peers = Peers::default();
+        let one: IpAddr = "192.168.1.50".parse().unwrap();
+        let other: IpAddr = "192.168.1.51".parse().unwrap();
+
+        let held: Vec<PeerSlot> = (0..MAX_PER_PEER).filter_map(|_| peers.take(one)).collect();
+        assert_eq!(held.len(), MAX_PER_PEER);
+        assert!(peers.take(one).is_none(), "a fifth from the same machine is turned away");
+        assert!(peers.take(other).is_some(), "while the other till still gets in");
+
+        drop(held);
+        assert!(peers.take(one).is_some(), "and the slots come back when the connections end");
+    }
+
+    /// End to end over a real listener: a flood of unsigned requests is
+    /// answered 401 at the door and never reaches whatever is answering.
+    #[test]
+    fn an_unsigned_request_never_reaches_the_answerer() {
+        let (bound, recorder) = answering(200, "{}");
+        let address = format!("127.0.0.1:{}", bound.port);
+
+        let answer = request(&address, "/offer", "{\"rows\":[]}", None, None).unwrap();
+        assert_eq!(answer.status, 401);
+        assert_eq!(answer.body, "{\"code\":\"MALFORMED\"}");
+        assert!(recorder.seen.lock().unwrap().is_none(), "the webview must not have been woken");
+
+        let answer = request(&address, "/nowhere", "{}", Some("signed"), None).unwrap();
+        assert_eq!(answer.status, 404);
+        bound.stop();
+    }
+
+    // ── The asking half ────────────────────────────────────────────────────
 
     /* The asking half, against the answering one. Both sides are hand-written
        here, so a round trip is the test that matters: a client that agreed with
@@ -646,7 +906,7 @@ mod tests {
         let address = format!("127.0.0.1:{}", bound.port);
         let body = "x".repeat(200_000);
 
-        request(&address, "/offer", &body, None, None).unwrap();
+        request(&address, "/offer", &body, Some("signed"), None).unwrap();
         bound.stop();
 
         let seen = recorder.seen.lock().unwrap();
@@ -674,7 +934,7 @@ mod tests {
         let address = format!("127.0.0.1:{}", closed.local_addr().unwrap().port());
         drop(closed);
 
-        let refused = request(&address, "/hello", "{}", None, None).unwrap_err();
+        let refused = request(&address, "/hello", "{}", Some("signed"), None).unwrap_err();
         assert!(refused.contains(&address), "{refused}");
     }
 
@@ -695,7 +955,7 @@ mod tests {
 
         // And it is a till, not just a bound socket: it answers.
         let address = format!("127.0.0.1:{}", second.port);
-        assert_eq!(request(&address, "/hello", "{}", None, None).unwrap().status, 200);
+        assert_eq!(request(&address, "/hello", "{}", Some("signed"), None).unwrap().status, 200);
 
         first.stop();
         second.stop();
@@ -733,5 +993,90 @@ mod tests {
         let seen = seen.as_ref().unwrap();
         assert_eq!(seen.auth, None);
         assert_eq!(seen.listen_port, None);
+    }
+
+    /// A name would be looked up through a resolver that can block for half a
+    /// minute and has a say in where the bills go. Numbers only.
+    #[test]
+    fn a_till_is_asked_by_number_and_never_by_name() {
+        assert_eq!(literal("192.168.1.20:7801").unwrap(), "192.168.1.20:7801".parse().unwrap());
+        assert_eq!(literal("[::1]:7801").unwrap(), "[::1]:7801".parse().unwrap());
+        // `URL.host` drops a default port.
+        assert_eq!(literal("192.168.1.20").unwrap().port(), 80);
+
+        for name in ["localhost:7801", "till-a:7801", "example.com", "", "192.168.1:7801"] {
+            let said = literal(name).unwrap_err();
+            assert!(said.contains("by its number"), "{name}: {said}");
+        }
+    }
+
+    /// A reply read by `read_answer` from whatever `raw` is.
+    fn answer_from(raw: Vec<u8>) -> std::io::Result<Answer> {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let replier = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.write_all(&raw);
+            let _ = stream.shutdown(Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        });
+        let stream = TcpStream::connect(address).unwrap();
+        let got = read_answer(&stream, Instant::now() + Duration::from_secs(5));
+        replier.join().unwrap();
+        got
+    }
+
+    /* Whatever has the address of a till gets to write the reply, and the
+       asking side used to read its head without any ceiling at all. */
+
+    #[test]
+    fn a_reply_with_a_head_that_never_ends_is_refused() {
+        let mut raw = b"HTTP/1.1 200 OK\r\nx-padding: ".to_vec();
+        raw.extend(vec![b'a'; MAX_HEAD as usize]);
+        assert!(answer_from(raw).is_err());
+    }
+
+    #[test]
+    fn a_reply_with_endless_headers_is_refused() {
+        let mut raw = b"HTTP/1.1 200 OK\r\n".to_vec();
+        for i in 0..(MAX_REPLY_HEADERS + 1) {
+            raw.extend_from_slice(format!("x-{i}: y\r\n").as_bytes());
+        }
+        raw.extend_from_slice(b"content-length: 2\r\n\r\n{}");
+        assert!(answer_from(raw).is_err());
+    }
+
+    #[test]
+    fn a_reply_that_claims_more_than_any_till_sends_is_refused() {
+        let raw = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{{}}", MAX_BODY + 1).into_bytes();
+        assert!(answer_from(raw).is_err());
+        // And one that stops short of what it claimed is not taken as whole.
+        let raw = b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{}".to_vec();
+        assert!(answer_from(raw).is_err());
+    }
+
+    #[test]
+    fn an_ordinary_reply_is_read() {
+        let raw = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"upTo\":41}".to_vec();
+        let answer = answer_from(raw).unwrap();
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.body, "{\"upTo\":41}");
+    }
+
+    /// A far side that says nothing at all is given up on at the deadline.
+    #[test]
+    fn a_reply_that_never_comes_is_given_up_on_at_the_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let silent = std::thread::spawn(move || {
+            let held = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+            drop(held);
+        });
+        let stream = TcpStream::connect(address).unwrap();
+        let started = Instant::now();
+        assert!(read_answer(&stream, started + Duration::from_millis(300)).is_err());
+        assert!(started.elapsed() < Duration::from_millis(1400));
+        silent.join().unwrap();
     }
 }

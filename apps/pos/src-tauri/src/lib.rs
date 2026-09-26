@@ -6,7 +6,10 @@ mod device;
 mod diagnostics;
 mod discovery;
 mod exports;
+mod files;
 mod hook;
+mod ids;
+mod instance;
 mod log;
 mod paths;
 mod pdf;
@@ -36,9 +39,26 @@ pub fn run() {
                have put its device identity, backups and attachments in its own
                folder while still opening the *first* company's database --
                two sets of books, one file, and no sign anything was wrong
-               until the invoice numbers collided. */
-            let dir = paths::data_dir(&app.handle().clone())
-                .map_err(std::io::Error::other)?;
+               until the invoice numbers collided.
+
+               A `--shop` that is there and unusable is the one failure here
+               with no folder to write anything in. It is carried to the
+               screen like any other, and nothing is opened: the alternative
+               was opening the original shop's books under a shortcut meant
+               for another company. */
+            let dir = match paths::data_dir(&app.handle().clone()) {
+                Ok(dir) => dir,
+                Err(message) => {
+                    let kind = if paths::shop_slug().is_err() {
+                        db::FailureKind::InvalidShop
+                    } else {
+                        db::FailureKind::Io
+                    };
+                    log::write("error", "startup", &message);
+                    refuse_to_open(app, kind, message, std::path::Path::new(paths::DB_FILE));
+                    return Ok(());
+                }
+            };
             std::fs::create_dir_all(&dir)?;
             std::fs::create_dir_all(dir.join("backups"))?;
             std::fs::create_dir_all(dir.join("attachments"))?;
@@ -46,8 +66,24 @@ pub fn run() {
             // The first thing that can write anything down, and therefore the
             // first thing done with a folder to write it in.
             log::open(&dir);
-            if let Some(shop) = paths::shop_slug() {
+            if let Ok(Some(shop)) = paths::shop_slug() {
                 log::write("info", "startup", &format!("running shop \"{shop}\""));
+            }
+
+            /* Before anything touches the folder. A second copy of ShopOS on
+               the same shop used to go on to sweep the work folder and apply
+               a staged restore underneath the first. It waits a moment first,
+               because a restart overlaps the copy that is exiting. */
+            let db_path = dir.join(paths::DB_FILE);
+            match instance::hold(&dir, instance::RESTART_GRACE) {
+                Ok(held) => {
+                    app.manage(instance::Instance(held));
+                }
+                Err(message) => {
+                    log::write("warn", "startup", &message);
+                    refuse_to_open(app, db::FailureKind::Locked, message, &db_path);
+                    return Ok(());
+                }
             }
 
             // Order matters here and nowhere else in the program. A staged
@@ -66,6 +102,20 @@ pub fn run() {
             if let Some(e) = report.error.as_ref() {
                 log::write("error", "restore", e);
             }
+            /* A swap that did not finish leaves `shop.db` as something nobody
+               has decided is the shop -- or leaves nothing there at all, which
+               `Db::open` would have answered with a new, empty database and a
+               till open for business on it. Neither opens. The screen offers
+               the way back: start again to retry, or cancel the restore. */
+            if report.incomplete {
+                let message = report
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "A restore did not finish.".into());
+                app.manage(restore::LastRestore(report));
+                refuse_to_open(app, db::FailureKind::RestoreIncomplete, message, &db_path);
+                return Ok(());
+            }
 
             /* Never `?`. This used to be `Db::open(..)?`, which made a
                database that would not open into a setup that returned `Err`,
@@ -77,7 +127,7 @@ pub fn run() {
 
                The failure is carried into the app instead, and `App.tsx` asks
                for it before it asks for anything else. */
-            let opened = db::Db::open(&dir.join(paths::DB_FILE));
+            let opened = db::Db::open(&db_path);
             match &opened {
                 Ok(database) => match database.user_version() {
                     Ok(v) => log::write("info", "startup", &format!("database open, schema {v}")),
@@ -114,7 +164,6 @@ pub fn run() {
             db::sql_tx_execute,
             db::sql_tx_end,
             db::sql_abandon_tx,
-            db::backup_database,
             device::device_identity,
             device::device_set_register,
             device::device_set_setting,
@@ -149,4 +198,23 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running shopos");
+}
+
+/// Starts the window without a database, carrying why.
+///
+/// Every command that needs the database then answers `DB_NOT_OPEN` with this
+/// message, and `App.tsx` asks `startup_status` first and shows it. The other
+/// state is managed too, because a command that asks for state nobody managed
+/// panics, and the failure screen still calls a few of them.
+fn refuse_to_open(
+    app: &mut tauri::App,
+    kind: db::FailureKind,
+    message: String,
+    db_path: &std::path::Path,
+) {
+    app.manage(db::DbState(Err(db::StartupFailure::before_opening(kind, message, db_path))));
+    if app.try_state::<restore::LastRestore>().is_none() {
+        app.manage(restore::LastRestore(restore::Report::default()));
+    }
+    app.manage(sync_server::SyncHost::default());
 }

@@ -131,7 +131,7 @@ export function parseCsvRecords(text: string): {
     if (!cells.some((c) => c.trim() !== '')) return
 
     const values: Record<string, string> = {}
-    headers.forEach((header, column) => { values[header] = cells[column] ?? '' })
+    headers.forEach((header, column) => { values[header] = restored(cells[column] ?? '') })
     rows.push({ line: at + 2, values })
   })
 
@@ -151,9 +151,39 @@ export function normaliseHeader(raw: string): string {
  * a row, which is the pair of decisions that lets a file survive a round trip
  * through this product.
  */
+/**
+ * What a spreadsheet reads as the start of a formula.
+ *
+ * These files are opened in Excel by an accountant, and every name in them was
+ * typed by somebody at a counter. A customer called `=HYPERLINK("http://…")`
+ * is a live link in the accountant's sheet, and worse than a link is possible
+ * (CWE-1236). The cell is written with a leading apostrophe, which a
+ * spreadsheet shows as text and does not display.
+ */
+const FORMULA = /^[=+\-@\t\r]/
+
+/**
+ * An amount, which is left alone: `-500.00` is a refund, not a formula, and
+ * neither is `-1,23,456.50` in the grouping `Money.format` writes.
+ */
+const PLAIN_NUMBER = /^[+-]?\d[\d,]*(\.\d+)?$/
+
+function neutralised(s: string): string {
+  return FORMULA.test(s) && !PLAIN_NUMBER.test(s) ? `'${s}` : s
+}
+
+/**
+ * The apostrophe taken off again on the way back in, so a file exported here
+ * and imported here says what it said -- a product called "+Plus Pen" is not
+ * renamed "'+Plus Pen" by a round trip.
+ */
+function restored(s: string): string {
+  return s.startsWith("'") && FORMULA.test(s.slice(1)) ? s.slice(1) : s
+}
+
 export function toCsv(headers: string[], rows: (string | number)[][]): string {
   const escape = (v: string | number): string => {
-    const s = String(v)
+    const s = typeof v === 'number' ? String(v) : neutralised(v)
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   return [headers, ...rows].map((r) => r.map(escape).join(',')).join('\r\n') + '\r\n'

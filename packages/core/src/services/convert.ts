@@ -3,17 +3,23 @@ import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
+import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
 import { createDocument, loadDocument } from './documents.js'
 import { writeAudit } from '../integrity/audit.js'
+import { newId } from '../ids.js'
 
 /**
  * Turning one document into the next.
  *
  * A quotation becomes an order becomes goods. Each step forward records what it
  * came from and marks off what it consumed, in the same transaction that creates
- * the target — so a crash between the two cannot leave an order claiming it was
- * billed when no bill exists.
+ * the target -- so a crash between the two cannot leave a source claiming it
+ * was converted into something that does not exist, or a target whose source
+ * still shows the quantity open. What is left to convert is read inside that
+ * transaction as well, so two conversions of one document cannot both take it.
+ * Each line marked off leaves a `document_fulfilments` row (054), which is what
+ * `reconcileFulfilledQty` puts `fulfilled_qty` back to after a merge.
  *
  * Quoted rates carry across on purpose, unlike "Sell these again" on the bills
  * screen, which deliberately re-prices at today's rates. The reason is the
@@ -58,36 +64,39 @@ export async function quotationToSalesOrder(
     return { ok: false, code: 'EXPIRED' }
   }
 
-  const remaining = source.items.filter((i) => i.remainingQty > 0)
-  if (remaining.length === 0) return { ok: false, code: 'NOTHING_LEFT' }
-
   const register = await registerOf(db, input.quotationId)
 
-  const created = await createDocument(db, {
-    kind: 'sales_order',
-    registerId: register,
-    customerId: source.customerId,
-    lines: remaining.map((i) => ({
-      productId: i.productId,
-      saleUnit: i.saleUnit,
-      qty: i.remainingQty,
-      // The rate that was quoted, not today's.
-      rateOverride: i.rate,
-    })),
-    ...(input.postingDate ? { postingDate: input.postingDate } : {}),
-    terms: source.terms,
-    convertedFrom: source.id,
-    actorId: input.actorId,
-    now,
+  return db.transaction(async (tx): Promise<ConvertResult> => {
+    const remaining = (await loadDocument(tx, input.quotationId))?.items.filter((i) => i.remainingQty > 0) ?? []
+    if (remaining.length === 0) return { ok: false, code: 'NOTHING_LEFT' }
+
+    const created = await createDocument(tx, {
+      kind: 'sales_order',
+      registerId: register,
+      customerId: source.customerId,
+      lines: remaining.map((i) => ({
+        productId: i.productId,
+        saleUnit: i.saleUnit,
+        qty: i.remainingQty,
+        // The rate that was quoted, not today's.
+        rateOverride: i.rate,
+      })),
+      ...(input.postingDate ? { postingDate: input.postingDate } : {}),
+      terms: source.terms,
+      convertedFrom: source.id,
+      actorId: input.actorId,
+      now,
+    })
+
+    if (!created.ok) return { ok: false, code: created.code }
+
+    await markFulfilled(tx, remaining.map((i) => ({ id: i.id, by: i.remainingQty })), {
+      sourceId: source.id, targetKind: 'document', targetId: created.documentId,
+      targetNo: created.docNo, actorId: input.actorId, now,
+    })
+
+    return { ok: true, documentId: created.documentId, docNo: created.docNo }
   })
-
-  if (!created.ok) return { ok: false, code: created.code }
-
-  await markFulfilled(db, remaining.map((i) => ({ id: i.id, by: i.remainingQty })), {
-    sourceId: source.id, targetNo: created.docNo, actorId: input.actorId,
-  })
-
-  return { ok: true, documentId: created.documentId, docNo: created.docNo }
 }
 
 export interface OrderCartLine {
@@ -176,67 +185,88 @@ export async function receivePurchaseOrder(
   if (source.docstatus === 2) return { ok: false, code: 'CANCELLED' }
   if (source.docstatus !== 1) return { ok: false, code: 'NOT_SUBMITTED' }
 
-  const remaining = source.items.filter((i) => i.remainingQty > 0)
-  if (remaining.length === 0) return { ok: false, code: 'NOTHING_LEFT' }
-
   const now = input.now ?? new Date()
 
-  const entry = await createStockEntry(db, {
-    entryType: 'purchase',
-    supplierId: source.supplierId,
-    supplierName: source.partyName,
-    reference: source.docNo,
-    lines: remaining.map((i) => ({
-      productId: i.productId,
-      qty: i.remainingQty,
-      unitCost: i.rate,
-    })),
-    ...(input.postingDate ? { postingDate: input.postingDate } : {}),
-    actorId: input.actorId,
-    now,
-  })
-  if (!entry.ok) return { ok: false, code: 'NOTHING_LEFT' }
+  /* One transaction for the goods in, the order marked off and the record of
+     it. A refusal part-way throws, so nothing of it is kept. */
+  class Refused extends Error {}
+  try {
+    return await db.transaction(async (tx): Promise<ReceiveResult> => {
+      const remaining = (await loadDocument(tx, input.purchaseOrderId))?.items.filter((i) => i.remainingQty > 0) ?? []
+      if (remaining.length === 0) return { ok: false, code: 'NOTHING_LEFT' }
 
-  const submitted = await submitStockEntry(db, {
-    entryId: entry.entryId,
-    actorId: input.actorId,
-    now,
-  })
-  if (!submitted.ok) return { ok: false, code: 'NOTHING_LEFT' }
+      const entry = await createStockEntry(tx, {
+        entryType: 'purchase',
+        supplierId: source.supplierId,
+        supplierName: source.partyName,
+        reference: source.docNo,
+        lines: remaining.map((i) => ({
+          productId: i.productId,
+          qty: i.remainingQty,
+          unitCost: i.rate,
+        })),
+        ...(input.postingDate ? { postingDate: input.postingDate } : {}),
+        actorId: input.actorId,
+        now,
+      })
+      if (!entry.ok) throw new Refused()
 
-  await markFulfilled(db, remaining.map((i) => ({ id: i.id, by: i.remainingQty })), {
-    sourceId: source.id, targetNo: source.docNo, actorId: input.actorId,
-  })
+      const submitted = await submitStockEntry(tx, {
+        entryId: entry.entryId,
+        actorId: input.actorId,
+        now,
+      })
+      if (!submitted.ok) throw new Refused()
 
-  return { ok: true, stockEntryId: entry.entryId }
+      await markFulfilled(tx, remaining.map((i) => ({ id: i.id, by: i.remainingQty })), {
+        sourceId: source.id, targetKind: 'stock_entry', targetId: entry.entryId,
+        targetNo: source.docNo, actorId: input.actorId, now,
+      })
+
+      return { ok: true, stockEntryId: entry.entryId }
+    })
+  } catch (err) {
+    if (err instanceof Refused) return { ok: false, code: 'NOTHING_LEFT' }
+    throw err
+  }
 }
 
 /* ------------------------------------------------------------ private --- */
 
 /**
- * Marks off what the new document consumed.
+ * Marks off what the new document consumed, inside the caller's transaction.
  *
- * One transaction for every line plus the audit row, so a document can never be
- * left half marked — which would show as an order with three of its five lines
- * billed and no record of why.
+ * Every line, a `document_fulfilments` row for each, and the audit row, so a
+ * document can never be left half marked -- which would show as an order with
+ * three of its five lines billed and no record of why.
  */
 async function markFulfilled(
-  db: SqlDriver,
+  tx: SqlDriver,
   lines: { id: string; by: Qty }[],
-  meta: { sourceId: string; targetNo: string; actorId: string },
+  meta: {
+    sourceId: string; targetKind: 'document' | 'stock_entry'; targetId: string
+    targetNo: string; actorId: string; now: Date
+  },
 ): Promise<void> {
-  await db.transaction(async (tx) => {
-    for (const line of lines) {
-      await q(tx).update(schema.documentItems)
-        .set({ fulfilledQty: sql`${schema.documentItems.fulfilledQty} + ${line.by}` })
-        .where(eq(schema.documentItems.id, line.id))
-    }
-    await writeAudit(tx, { actorId: meta.actorId }, {
-      entity: 'document',
-      entityId: meta.sourceId,
-      action: 'update',
-      after: { converted_to: meta.targetNo },
+  for (const line of lines) {
+    await q(tx).update(schema.documentItems)
+      .set({ fulfilledQty: sql`${schema.documentItems.fulfilledQty} + ${line.by}` })
+      .where(eq(schema.documentItems.id, line.id))
+    await q(tx).insert(schema.documentFulfilments).values({
+      id: newId(),
+      documentId: meta.sourceId,
+      documentItemId: line.id,
+      qty: line.by,
+      targetKind: meta.targetKind,
+      targetId: meta.targetId,
+      createdAt: meta.now.toISOString(),
     })
+  }
+  await writeAudit(tx, { actorId: meta.actorId }, {
+    entity: 'document',
+    entityId: meta.sourceId,
+    action: 'update',
+    after: { converted_to: meta.targetNo },
   })
 }
 
@@ -248,6 +278,7 @@ async function registerOf(db: SqlDriver, documentId: string): Promise<string> {
   return row!.registerId
 }
 
+/** The shop's day, not UTC's: a quotation that ran out yesterday must not convert at 00:30. */
 function isoDate(at: Date): string {
-  return at.toISOString().slice(0, 10)
+  return businessDate(at)
 }

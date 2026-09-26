@@ -196,6 +196,8 @@ describe('the licence routes', () => {
   it('serves a shop its licence, and 404s a shop with none', async () => {
     const c = await client()
     expect((await c.get('/v1/licence/never-heard-of')).status).toBe(404)
+    // A stray percent is a bad request, not a crash inside the portal.
+    expect((await c.get('/v1/licence/%E0%A4')).status).toBe(400)
 
     await c.post(
       '/v1/licences', { shopId: 's1', tier: 'cloud', paidThrough: '2027-03-31', tills: 1 },

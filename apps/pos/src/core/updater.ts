@@ -48,7 +48,13 @@ interface UpdaterPlugin {
     version: string
     body?: string
     date?: string
-    downloadAndInstall(onEvent?: (event: { event: string; data?: { chunkLength?: number; contentLength?: number } }) => void): Promise<void>
+    /* Download and install as two calls, never `downloadAndInstall`. On
+       Windows installing runs the installer and the app exits there and then,
+       so a combined call made in the background -- which is when a download
+       happens -- would close the till in the middle of a sale, past every
+       check `apply` makes about whether now is a safe moment. */
+    download(onEvent?: (event: { event: string; data?: { chunkLength?: number; contentLength?: number } }) => void): Promise<void>
+    install(): Promise<void>
   } | null>
 }
 
@@ -91,10 +97,10 @@ export function tauriUpdateSource(
 
       let got = 0
       let total = 0
-      await pending.downloadAndInstall((event) => {
-        /* The plugin downloads and installs in one call, so "download" here
-           finishes with the bytes on disk and the installer staged. The
-           restart is what `install` triggers. */
+      await pending.download((event) => {
+        /* Only the bytes: "download" finishes with the installer on disk
+           and nothing run. Running it, and the restart after, is `install`,
+           which only `apply` reaches, after checking no bill is open. */
         if (event.event === 'Started') total = event.data?.contentLength ?? 0
         if (event.event === 'Progress') {
           got += event.data?.chunkLength ?? 0
@@ -114,7 +120,9 @@ export function tauriUpdateSource(
      * module that is not installed.
      */
     async install(): Promise<void> {
-      if (relaunch === null) throw new Error('the updater plugin is not wired in yet')
+      if (relaunch === null || pending === null) throw new Error('the updater plugin is not wired in yet')
+      // Only here, which `apply` reaches after it has checked no bill is open.
+      await pending.install()
       await relaunch()
     },
   }

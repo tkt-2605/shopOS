@@ -1,4 +1,6 @@
-import { recomputeStock, type SqlDriver } from '@shopos/core'
+import {
+  recomputeStock, reconcileLoyalty, reconcileReturnedQty, reconcileFulfilledQty, type SqlDriver,
+} from '@shopos/core'
 import { deviceSetting, setDeviceSetting } from './device'
 import { msUntilHour, DAILY_BACKUP_HOUR } from './backup'
 import { logEvent } from './log'
@@ -101,6 +103,22 @@ export async function runStockCheck(
     'maintenance',
     `Stock replay over ${Date.now() - started} ms: ${drift.length} product(s) adrift`,
   )
+
+  /* The other caches that a merge can leave behind, checked in full once a
+     week as stock is -- a sync only looks at what its batch touched. Each
+     repairs what is safe to repair and reports the rest. */
+  const points = await reconcileLoyalty(db, { repair: true })
+  const returned = await reconcileReturnedQty(db, { repair: true })
+  const fulfilled = await reconcileFulfilledQty(db, { repair: true })
+  const all = [...points, ...returned, ...fulfilled]
+  const left = all.filter((d) => !d.repairable).length
+  if (all.length > 0) {
+    logEvent(
+      left === 0 ? 'info' : 'warn',
+      'maintenance',
+      `Loyalty, returned and fulfilled quantities: ${all.length - left} put right, ${left} left for a person`,
+    )
+  }
   return check
 }
 

@@ -343,3 +343,24 @@ describe('the list of counts', () => {
     expect(summary?.differenceCount).toBe(1)
   })
 })
+
+describe('a count refused at submit', () => {
+  it('leaves nothing behind, so trying again does not pile up adjustment drafts', async () => {
+    const p = await makeProduct(fx.db, { name: 'Glue stick' })
+    await stockUp(fx.db, p, 10)
+    const opened = await sheetFor(p)
+    await setCounted(fx.db, { countId: opened.countId, productId: p, countedQty: fromUnits(2) })
+    // Eight are to come off, but only five are left by the time it is submitted.
+    await fx.db.transaction(async (tx) => {
+      await postMovement(tx, {
+        productId: p, qtyChange: fromUnits(-5), voucherType: 'probe', voucherId: newId(), postingDate: '2026-01-01',
+      })
+    })
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await submitCount(fx.db, { countId: opened.countId, actorId: fx.adminId }))
+        .toMatchObject({ ok: false, code: 'WOULD_GO_NEGATIVE' })
+    }
+    expect(await fx.db.query(`SELECT id FROM stock_entries`)).toHaveLength(0)
+  })
+})

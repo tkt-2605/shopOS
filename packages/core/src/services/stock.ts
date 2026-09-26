@@ -1,7 +1,8 @@
 import { eq, and, ne, inArray, isNotNull, asc, desc, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
-import { newId } from '../ids.js'
+import { newId, observeId } from '../ids.js'
+import { deviceId } from '../device.js'
 import { type Qty, qty, addQty, hasAtLeast, QTY_SCALE, QTY_ZERO } from '../quantity.js'
 import type { Money } from '../money.js'
 import { movingAverage, fifo, type LedgerMovement, type Valuation, type FifoResult } from '../domain/valuation.js'
@@ -47,12 +48,17 @@ export async function postMovement(tx: SqlDriver, posting: StockPosting): Promis
       ? unitValueOf(held) ?? await lastKnownCost(tx, posting.productId)
       : null)
 
-  const afterValue = valueAfter(held, posting.qtyChange, unitCost, after)
+  // An inflow with no cost is valued at the last cost the ledger holds, as the
+  // replay values it. Only asked for when it is needed.
+  const inflowRate = posting.qtyChange > 0
+    ? unitCost ?? await latestLedgerCost(tx, posting.productId)
+    : null
+  const afterValue = valueAfter(held, posting.qtyChange, inflowRate, after)
 
   const now = new Date().toISOString()
 
   await q(tx).insert(schema.stockLedger).values({
-    id: newId(),
+    id: await nextMovementId(tx, posting.productId),
     productId: posting.productId,
     postingDate: posting.postingDate,
     qtyChange: posting.qtyChange,
@@ -62,6 +68,13 @@ export async function postMovement(tx: SqlDriver, posting: StockPosting): Promis
     voucherId: posting.voucherId,
     createdBy: posting.userId ?? null,
     createdAt: now,
+    /* What the movement was worth: what the stock's value moved by, which is
+       the value that actually came or went -- not the rate times the quantity
+       rounded, which the floor at zero and uneven rates make it not quite.
+       Null when the movement had no rate at all: unknown, and not zero. */
+    valueChange: unitCost === null && inflowRate === null ? null : (afterValue - held.value) as Money,
+    // Whose shelf `balanceQty` is: this till's, and no other's (060).
+    deviceId: deviceId(),
   })
 
   await cacheStock(tx, posting.productId, after, afterValue, now)
@@ -119,19 +132,42 @@ function valueOf(unitCost: Money, quantity: Qty): number {
 
 /**
  * What the holding is worth after a movement. The live half of the rule written
- * out on `movingAverage`; both must agree or the cache and the ledger drift.
+ * out on `movingAverage`, and written the same way, expression for expression:
+ * the replay is the drift detector, so any difference in rounding is drift.
+ *
+ * Goods leaving take their share of the *value*, not a rounded rate times the
+ * quantity. Rounding the rate first and multiplying was a paisa off the replay
+ * on an ordinary sale -- one at 100 and two at 101, sell two -- so the detector
+ * reported drift on items nothing had gone wrong with.
  */
-function valueAfter(held: Holding, change: Qty, unitCost: Money | null, after: Qty): number {
+function valueAfter(held: Holding, change: Qty, inflowRate: Money | null, after: Qty): number {
   if (after <= 0) return 0
 
-  // Coming back from a shortfall: the goods that were owed were never paid for,
-  // so only what is left over carries value, at the rate it arrived at.
-  if (held.qty < 0 && change > 0) {
-    return unitCost === null ? 0 : Math.max(0, valueOf(unitCost, after))
+  if (change > 0) {
+    const rate = inflowRate ?? 0
+    // Coming back from a shortfall: the goods that were owed were never paid for,
+    // so only what is left over carries value, at the rate it arrived at.
+    if (held.qty < 0) return Math.max(0, valueOf(rate as Money, after))
+    return Math.max(0, held.value + valueOf(rate as Money, change))
   }
 
-  const valueChange = unitCost === null ? 0 : valueOf(unitCost, change)
-  return Math.max(0, held.value + valueChange)
+  // Only the part that was actually on the shelf carries value out with it.
+  const covered = Math.max(0, Math.min(-change, held.qty))
+  const value = covered > 0 && held.qty > 0
+    ? held.value - Math.round((held.value / held.qty) * covered)
+    : held.value
+  return Math.max(0, value)
+}
+
+/** The last cost any movement of this item carried, in the order they were made. */
+async function latestLedgerCost(tx: SqlDriver, productId: string): Promise<Money | null> {
+  const [row] = await q(tx)
+    .select({ unitCost: schema.stockLedger.unitCost })
+    .from(schema.stockLedger)
+    .where(and(eq(schema.stockLedger.productId, productId), isNotNull(schema.stockLedger.unitCost)))
+    .orderBy(desc(MADE))
+    .limit(1)
+  return row?.unitCost ?? null
 }
 
 /**
@@ -149,20 +185,48 @@ async function lastKnownCost(tx: SqlDriver, productId: string): Promise<Money | 
     /* Purchases before issues, then the most recent of whichever won. The
        first term is a boolean sorted descending, so every row where goods came
        *in* sorts ahead of every row where they went out. */
-    .orderBy(desc(sql`${schema.stockLedger.qtyChange} > 0`), desc(ROWID))
+    .orderBy(desc(sql`${schema.stockLedger.qtyChange} > 0`), desc(MADE))
     .limit(1)
   return row?.unitCost ?? null
 }
 
 /**
- * The order rows were written in.
+ * An id that sorts after every movement of this product already held.
  *
- * Not a column in `schema.ts` because it is not a column in the table: SQLite
- * gives every row one unless the table says otherwise, and this is how the
- * ledger's own order is read. `posting_date` is a different question -- a
- * backdated entry belongs where it was entered, not where its date puts it.
+ * The ledger is replayed in id order, and the cache was built in the order
+ * movements were posted here, so the two agree only if a new movement's id is
+ * the greatest for its product. `newId` keeps that true of ids this process
+ * mints, but not of rows that arrived from a till whose clock runs ahead --
+ * their ids are in this till's future, and a sale posted now would otherwise
+ * sort before them on replay and show as drift on a product nothing went wrong
+ * with. So the id clock is moved past the product's highest id first: a hybrid
+ * logical clock, read from the one index that already holds the answer.
  */
-const ROWID = sql`rowid`
+async function nextMovementId(tx: SqlDriver, productId: string): Promise<string> {
+  const [top] = await q(tx)
+    .select({ id: schema.stockLedger.id })
+    .from(schema.stockLedger)
+    .where(eq(schema.stockLedger.productId, productId))
+    .orderBy(desc(MADE))
+    .limit(1)
+  if (top) observeId(top.id)
+  return newId()
+}
+
+/**
+ * The order movements were made in, as every till holding them agrees on it.
+ *
+ * This used to be `rowid`, which is only *this* database's order: a movement
+ * made on another till gets its rowid when it arrives here. Two tills holding
+ * identical ledgers replayed them in different orders, and moving-average
+ * valuation depends on order, so they computed different stock values and the
+ * post-merge repair locked each into its own. The id is a UUIDv7 that `newId`
+ * keeps strictly increasing on the till that mints it, so it is the order the
+ * rows were made in there and the same order everywhere else. `posting_date`
+ * is a different question -- a backdated entry belongs where it was entered,
+ * not where its date puts it.
+ */
+const MADE = schema.stockLedger.id
 
 /**
  * What the goods on hand are worth, and what one unit of them costs. Reported
@@ -196,7 +260,7 @@ export async function issuedUnitCost(
       eq(schema.stockLedger.productId, productId),
       isNotNull(schema.stockLedger.unitCost),
     ))
-    .orderBy(asc(ROWID))
+    .orderBy(asc(MADE))
     .limit(1)
   return row?.unitCost ?? null
 }
@@ -319,7 +383,7 @@ async function replay(
      check would report drift on every overdrawn item for ever. So the ledger is
      replayed through the one function that defines the rule.
 
-     `ORDER BY product_id, rowid` and not by `posting_date`: the rule depends on
+     `ORDER BY product_id, id` and not by `posting_date`: the rule depends on
      the order the movements were *made*, because that is the order the cache
      was built in. A backdated stock entry belongs where it was entered, not
      where its date would put it, and sorting by date would make this function
@@ -332,7 +396,7 @@ async function replay(
     })
     .from(schema.stockLedger)
     .where(ids ? inArray(schema.stockLedger.productId, [...ids]) : undefined)
-    .orderBy(asc(schema.stockLedger.productId), asc(ROWID))
+    .orderBy(asc(schema.stockLedger.productId), asc(MADE))
 
   const byProduct = new Map<string, LedgerMovement[]>()
   for (const row of ledger) {
@@ -401,7 +465,7 @@ export async function reverseVoucher(
       eq(schema.stockLedger.voucherId, voucherId),
       ne(schema.stockLedger.qtyChange, QTY_ZERO),
     ))
-    .orderBy(asc(ROWID))
+    .orderBy(asc(MADE))
 
   for (const m of movements) {
     await postMovement(tx, {
@@ -432,7 +496,7 @@ export async function productValuation(
     })
     .from(schema.stockLedger)
     .where(eq(schema.stockLedger.productId, productId))
-    .orderBy(asc(schema.stockLedger.postingDate), asc(ROWID))
+    .orderBy(asc(MADE))
 
   return method === 'fifo' ? fifo(movements) : movingAverage(movements)
 }

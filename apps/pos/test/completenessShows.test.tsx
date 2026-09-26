@@ -39,6 +39,7 @@ const { Completeness } = await import('../src/ui/Completeness')
 
 function peer(over: Partial<PeerHealth> = {}): PeerHealth {
   return {
+    needsPairing: false,
     deviceId: '1111aaaa-2222-4333-8444-555566667777',
     label: 'Back Counter',
     lastAgreedAt: new Date().toISOString(),

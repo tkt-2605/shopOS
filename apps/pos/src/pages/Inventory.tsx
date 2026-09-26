@@ -1,92 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
-  Money, Quantity, Tax, Permissions,
-  searchProducts, recomputeStock, newId,
-  listBarcodes, setBarcodes, listUnits, setUnits,
-  listCategories, createCategory, renameCategory, removeCategory,
-  setProductCategory, setVariantOf,
-  setLadder, laddersFor, defaultPriceListId, Ladder, setProductActive,
-  hsnProblem, HSN_SHAPE_MESSAGE,
-  type Category,
-  type ProductListItem,
+  Money, Quantity, Tax, Permissions, searchProducts, recomputeStock, listBarcodes, setBarcodes,
+  listUnits, setUnits, listCategories, createCategory, renameCategory, removeCategory,
+  setProductCategory, setVariantOf, setLadder, laddersFor, defaultPriceListId, Ladder,
+  setProductActive, saveProductDetails, type Category, type ProductListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { recordStockCheck } from '../core/maintenance'
-import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { Modal, Empty, Alert, Rupees } from '../ui/components'
 import { ProductHistory } from '../ui/ProductHistory'
 import { useConfirm } from '../ui/useConfirm'
-import { LadderEditor, describeRowsProblem, type LadderRow } from '../ui/LadderEditor'
-import { usePickList, Results } from '../ui/PickList'
+import { describeRowsProblem } from '../ui/LadderEditor'
 import { useShopChanged } from '../core/useShopChanged'
 import { CatalogueFile } from '../ui/CatalogueFile'
-
-interface BarcodeDraft {
-  barcode: string
-  label: string
-}
-
-interface UnitDraft {
-  saleUnit: string
-  /** How many base units one of these is: a ream is 500 sheets. */
-  baseUnits: string
-}
-
-interface Draft {
-  id: string | null
-  name: string
-  brand: string
-  /** First is the primary — the one printed on a shelf tag and shown in lists. */
-  barcodes: BarcodeDraft[]
-  /** Bigger units this item also sells in. The base unit is not one of them. */
-  units: UnitDraft[]
-  categoryId: string
-  /** The item this one is a version of, and what makes it different. */
-  parentProductId: string
-  variantLabel: string
-  /** One rung per row: buy this many or more, pay this each. */
-  ladder: LadderRow[]
-  hsnCode: string
-  taxPercent: string
-  baseRate: string
-  /** The printed price on the packet. Blank when there is none. */
-  mrp: string
-  baseUnit: string
-  discountBlocked: boolean
-  loyaltyBlocked: boolean
-  returnBlocked: boolean
-  /**
-   * Whether the shop counts this one.
-   *
-   * `products.is_stock_tracked` has been read since migration 001 — by
-   * `checkAvailability`, which skips an untracked item entirely, and by the
-   * reorder report, which leaves it out — and no screen ever wrote it. So every
-   * item was counted whether or not it had a shelf, and a shop on the `block`
-   * policy could not sell a delivery charge twice.
-   *
-   * It governs those two questions and no others. A sale still posts a stock
-   * movement either way, so the ledger and the valuation are unchanged; what
-   * stops is the counter refusing, and the item appearing on a list of things
-   * to buy more of.
-   */
-  stockTracked: boolean
-  reorderLevel: string
-  reorderQty: string
-}
-
-const BLANK: Draft = {
-  id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
-  categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', taxPercent: '12',
-  baseRate: '', mrp: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
-  returnBlocked: false, stockTracked: true,
-  reorderLevel: '', reorderQty: '',
-}
-
-/** Blank means "not set", which is not the same as a level of zero. */
-function levelOf(raw: string): number | null {
-  const trimmed = raw.trim()
-  if (trimmed === '') return null
-  return Quantity.parseQty(trimmed)
-}
+import { BLANK, levelOf, type Draft } from './inventory/draft'
+import { useParentSearch } from './inventory/useParentSearch'
+import { ProductForm } from './inventory/ProductForm'
 
 export default function Inventory() {
   const { db, features } = useCore()
@@ -102,36 +31,12 @@ export default function Inventory() {
   const [notice, setNotice] = useState<string | null>(null)
   const [categories, setCategories] = useState<Category[]>([])
   const [newCategory, setNewCategory] = useState('')
-  const [parentSearch, setParentSearch] = useState('')
-  const [parentResults, setParentResults] = useState<ProductListItem[]>([])
-  /* An item cannot be its own main item, so the row is dropped before the list
-     is numbered — otherwise ↓ would land on a gap. */
-  const parentOptions = parentResults.filter((r) => r.id !== draft?.id)
-  const parentBox = useRef<HTMLInputElement>(null)
-
-  const parentPick = usePickList({
-    count: parentOptions.length,
-    resetKey: parentSearch,
-    onPick: (i) => {
-      const hit = parentOptions[i]
-      if (!hit || !draft) return
-      setDraft({ ...draft, parentProductId: hit.id })
-      setParentSearch('')
-    },
-  })
+  const parent = useParentSearch(db, draft, setDraft)
   const [browsing, setBrowsing] = useState('')
   const [ladders, setLadders] = useState<Map<string, Ladder.Rung[]>>(new Map())
   const [priceListId, setPriceListId] = useState('')
 
   const canWrite = Permissions.can(user.permissions, 'product', 'write')
-
-  /* With several barcodes switched off, only the first box is shown — and the
-     rest stay in the draft and are written back untouched. A screen that stops
-     showing a code must not be a screen that deletes it: that code is printed on
-     a packet somewhere, and the scanner still reads it. */
-  const allBarcodes = draft?.barcodes ?? []
-  const visibleBarcodes = features.multiBarcode ? allBarcodes : allBarcodes.slice(0, 1)
-  const hiddenBarcodes = allBarcodes.length - visibleBarcodes.length
 
   const refresh = useCallback(async () => {
     setRows(await searchProducts(db, {
@@ -159,55 +64,50 @@ export default function Inventory() {
   }, [db])
   useEffect(() => { void refreshLadders() }, [refreshLadders])
 
-  useEffect(() => {
-    const id = setTimeout(async () => {
-      setParentResults(parentSearch.trim() === '' ? [] : await searchProducts(db, { term: parentSearch, limit: 8 }))
-    }, 140)
-    return () => clearTimeout(id)
-  }, [db, parentSearch])
-
   async function save() {
     if (!draft || draft.name.trim() === '') return
-    const now = new Date().toISOString()
-    const rate = Money.parseMoney(draft.baseRate) ?? 0
+
+    /* Said, not assumed. A price typed as "12.3.4" used to save the item at
+       ₹0, and a tax rate that was not a number saved it untaxed. */
+    const rate = draft.baseRate.trim() === '' ? Money.ZERO : Money.parseMoney(draft.baseRate)
+    if (rate === null || rate < 0) { setNotice('The price is not an amount. Nothing was saved.'); return }
     /* Null, not zero. A packet with no printed price is not a packet printed
        with ₹0, and the receipt only shows the MRP line when there is one. */
     const mrp = draft.mrp.trim() === '' ? null : Money.parseMoney(draft.mrp)
-    const bp = Math.round((Number(draft.taxPercent) || 0) * 100)
+    if (mrp !== null && mrp < 0) { setNotice('The MRP cannot be below zero. Nothing was saved.'); return }
+    if (draft.mrp.trim() !== '' && mrp === null) { setNotice('The MRP is not an amount. Nothing was saved.'); return }
+    const percent = draft.taxPercent.trim() === '' ? 0 : Number(draft.taxPercent)
+    if (!Number.isFinite(percent)) { setNotice('The tax rate is not a number. Nothing was saved.'); return }
 
-    // The barcode column is not written here. setBarcodes owns the pair of
-    // products.barcode and the product_barcodes rows, and two writers would be
-    // how they come apart.
-    let productId = draft.id
-    if (productId) {
-      await db.execute(
-        `UPDATE products SET name = ?, brand = ?, hsn_code = ?, tax_rate_bp = ?, base_rate = ?, mrp = ?,
-                             discount_blocked = ?, loyalty_blocked = ?, return_blocked = ?,
-                             is_stock_tracked = ?,
-                             reorder_level = ?, reorder_qty = ?, updated_at = ?
-         WHERE id = ?`,
-        [draft.name.trim(), draft.brand.trim() || null,
-         draft.hsnCode.trim() || null, bp, rate, mrp,
-         draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
-         draft.returnBlocked ? 1 : 0, draft.stockTracked ? 1 : 0,
-         levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, productId],
+    // Through the core, which checks the figures and writes the change to the
+    // history. The barcode column is not written here: setBarcodes owns the pair
+    // of products.barcode and the product_barcodes rows.
+    const saved = await saveProductDetails(db, { actorId: user.id }, {
+      id: draft.id,
+      name: draft.name,
+      brand: draft.brand,
+      hsnCode: draft.hsnCode,
+      taxRateBp: Math.round(percent * 100),
+      baseRate: rate,
+      mrp,
+      baseUnit: draft.baseUnit,
+      discountBlocked: draft.discountBlocked,
+      loyaltyBlocked: draft.loyaltyBlocked,
+      returnBlocked: draft.returnBlocked,
+      isStockTracked: draft.stockTracked,
+      reorderLevel: levelOf(draft.reorderLevel),
+      reorderQty: levelOf(draft.reorderQty),
+    })
+    if (!saved.ok) {
+      setNotice(
+        saved.code === 'BAD_TAX' ? 'A tax rate is between 0 and 100 per cent. Nothing was saved.'
+        : saved.code === 'BAD_LEVEL' ? 'The reorder figures have to be quantities, zero or more. Nothing was saved.'
+        : saved.code === 'UNKNOWN_PRODUCT' ? 'This item is no longer in the catalogue.'
+        : 'The item could not be saved. Check its name and price.',
       )
-    } else {
-      productId = newId()
-      await db.execute(
-        `INSERT INTO products (id, name, brand, hsn_code, tax_rate_bp, base_rate, mrp, base_unit,
-                               discount_blocked, loyalty_blocked, return_blocked, is_stock_tracked,
-                               reorder_level, reorder_qty,
-                               created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [productId, draft.name.trim(), draft.brand.trim() || null,
-         draft.hsnCode.trim() || null, bp, rate, mrp, draft.baseUnit,
-         draft.discountBlocked ? 1 : 0, draft.loyaltyBlocked ? 1 : 0,
-         draft.returnBlocked ? 1 : 0, draft.stockTracked ? 1 : 0,
-         levelOf(draft.reorderLevel), levelOf(draft.reorderQty), now, now],
-      )
+      return
     }
-
+    const productId = saved.productId
     const codes = await setBarcodes(db, { actorId: user.id }, productId, draft.barcodes)
     if (!codes.ok) {
       setNotice(`${codes.barcode} is already ${codes.productName}'s barcode. The rest was saved.`)
@@ -262,7 +162,7 @@ export default function Inventory() {
     }
 
     setDraft(null)
-    setParentSearch('')
+    parent.setSearch('')
     await refresh()
     await refreshLadders()
   }
@@ -498,320 +398,16 @@ export default function Inventory() {
             <button className="btn primary" disabled={draft.name.trim() === ''} onClick={() => void save()}>Save</button>
           </>}
         >
-          <Field label="Name">
-            <input className="input" id="p-name" autoFocus value={draft.name}
-              onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
-          </Field>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <Field label="Brand">
-              <input className="input" id="p-brand" value={draft.brand}
-                onChange={(e) => setDraft({ ...draft, brand: e.target.value })} />
-            </Field>
-            {/* Warned, never blocked. Somebody entering three hundred items off
-                a supplier's list is the person most likely to mistype one and
-                least able to stop and look it up — and an item that cannot be
-                saved is an item that cannot be sold. */}
-            <Field
-              label="HSN code"
-              {...(hsnProblem(draft.hsnCode) ? { hint: HSN_SHAPE_MESSAGE } : {})}
-            >
-              <input className="input num" id="p-hsn" value={draft.hsnCode}
-                onChange={(e) => setDraft({ ...draft, hsnCode: e.target.value })} />
-            </Field>
-            <Field label="GST %">
-              <input className="input num" id="p-gst" value={draft.taxPercent}
-                onChange={(e) => setDraft({ ...draft, taxPercent: e.target.value })} />
-            </Field>
-            <Field label="Selling rate" hint="Tax inclusive.">
-              <input className="input num" id="p-rate" value={draft.baseRate}
-                onChange={(e) => setDraft({ ...draft, baseRate: e.target.value })} />
-            </Field>
-            <Field
-              label="MRP"
-              hint="The price printed on the packet. Leave blank if there is none. When it is
-                    above the selling rate, the receipt shows it and what the customer saved."
-            >
-              <input className="input num" id="p-mrp" value={draft.mrp}
-                onChange={(e) => setDraft({ ...draft, mrp: e.target.value })} />
-            </Field>
-            {!draft.id && (
-              <Field label="Unit">
-                <input className="input" id="p-unit" value={draft.baseUnit}
-                  onChange={(e) => setDraft({ ...draft, baseUnit: e.target.value })} />
-              </Field>
-            )}
-          </div>
-
-          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>
-              {features.tieredPricing ? 'Quantity ladder' : 'Price on the shop’s list'}
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              {features.tieredPricing ? (
-                <>
-                  Cheaper by the quantity. One row per price break: buy one or more at one price, ten
-                  or more at another. Counted in {draft.baseUnit || 'base units'}, so a bigger unit
-                  gets the rate its contents have earned — a box of twelve reaches the ten-or-more
-                  break. Leave it empty and everyone pays the base rate. Other price lists, a price
-                  for the box itself, and a ladder for one customer are on the Prices screen.
-                </>
-              ) : (
-                <>
-                  What this item sells for on the shop’s own price list, per{' '}
-                  {draft.baseUnit || 'unit'}. Leave it empty and everyone pays the base rate above.
-                  Turn on cheaper-by-the-quantity in Settings to price by how much is bought.
-                </>
-              )}
-            </div>
-            <LadderEditor
-              rows={draft.ladder}
-              unit={draft.baseUnit || 'units'}
-              breaks={features.tieredPricing}
-              onChange={(ladder) => setDraft({ ...draft, ladder })}
-            />
-          </div>
-
-          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Grouping</div>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              A group is what the item is — stationery, cold drinks. A version is what it is a
-              version of: the same pen in six colours stays six items, because there really are six
-              on the shelf, but searching the main item&rsquo;s name finds all of them.
-            </div>
-
-            <Field label="Group">
-              <div style={{ display: 'flex', gap: 6 }}>
-                <select className="input" value={draft.categoryId} style={{ flex: 1, minWidth: 0 }}
-                  onChange={(e) => setDraft({ ...draft, categoryId: e.target.value })}>
-                  <option value="">Not grouped</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.parentName ? `${c.parentName} — ${c.name}` : c.name}
-                    </option>
-                  ))}
-                </select>
-                <input className="input" placeholder="Or a new one" value={newCategory}
-                  style={{ width: 150 }} onChange={(e) => setNewCategory(e.target.value)} />
-                <button className="btn" type="button" disabled={newCategory.trim() === ''}
-                  onClick={() => void addCategory()}>Add</button>
-              </div>
-            </Field>
-
-            <Field label="Version of" hint="Leave empty unless this is one of several versions of the same item.">
-              {draft.parentProductId ? (
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <span style={{ flex: 1, fontSize: 12.5 }}>
-                    {rows.find((r) => r.id === draft.parentProductId)?.name ?? 'the chosen item'}
-                  </span>
-                  <input className="input" style={{ width: 150 }} placeholder="blue, 500g, large"
-                    value={draft.variantLabel}
-                    onChange={(e) => setDraft({ ...draft, variantLabel: e.target.value })} />
-                  <button className="btn ghost" type="button"
-                    onClick={() => setDraft({ ...draft, parentProductId: '', variantLabel: '' })}>Cut loose</button>
-                </div>
-              ) : (
-                <div>
-                  <input className="input" ref={parentBox} placeholder="Search the main item"
-                    value={parentSearch}
-                    onChange={(e) => setParentSearch(e.target.value)}
-                    onKeyDown={parentPick.searchKeyDown} />
-                  <Results anchor={parentBox} open={parentOptions.length > 0}>
-                    <div {...parentPick.listProps}>
-                      {parentOptions.map((r, i) => (
-                        <div key={r.id} style={{ padding: '6px 10px' }} {...parentPick.rowProps(i)}>
-                          {r.name}
-                        </div>
-                      ))}
-                    </div>
-                  </Results>
-                </div>
-              )}
-            </Field>
-          </div>
-
-          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>
-              Units it also sells in
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              Stock is counted in {draft.baseUnit || 'the base unit'}. A bigger unit says how many of
-              those it holds — a ream is 500 sheets, a pack of pens is 10. The cashier then picks the
-              unit at the counter, and each one can carry its own price on the Prices screen.
-            </div>
-            {draft.units.map((unit, index) => (
-              <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-                <input
-                  className="input"
-                  style={{ flex: 1, minWidth: 0 }}
-                  placeholder="ream, pack, dozen, box"
-                  value={unit.saleUnit}
-                  onChange={(e) => setDraft({
-                    ...draft,
-                    units: draft.units.map((u, i) => (i === index ? { ...u, saleUnit: e.target.value } : u)),
-                  })}
-                />
-                <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>=</span>
-                <input
-                  className="input num"
-                  style={{ width: 90 }}
-                  inputMode="decimal"
-                  placeholder="500"
-                  value={unit.baseUnits}
-                  onChange={(e) => setDraft({
-                    ...draft,
-                    units: draft.units.map((u, i) => (i === index ? { ...u, baseUnits: e.target.value } : u)),
-                  })}
-                />
-                <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>
-                  {draft.baseUnit || 'units'}
-                </span>
-                <button className="btn ghost" type="button" title="Remove this unit"
-                  onClick={() => setDraft({ ...draft, units: draft.units.filter((_, i) => i !== index) })}
-                >✕</button>
-              </div>
-            ))}
-            <button className="btn ghost sm" type="button"
-              onClick={() => setDraft({ ...draft, units: [...draft.units, { saleUnit: '', baseUnits: '' }] })}
-            >Another unit</button>
-          </div>
-
-          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Barcodes</div>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              {features.multiBarcode ? (
-                <>
-                  An item can answer to several — the manufacturer’s code on the packet, your own
-                  printed label, the one from the old packaging still on the back shelf. Scanning
-                  any of them finds this item. The first is the one shown in lists.
-                </>
-              ) : (
-                <>The code on the packet, or the one you print and stick on the shelf.</>
-              )}
-            </div>
-            {visibleBarcodes.map((code, index) => (
-              <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                <input
-                  className="input num"
-                  id={index === 0 ? 'p-barcode' : `p-barcode-${index}`}
-                  style={{ flex: 2, minWidth: 0 }}
-                  placeholder={index === 0 ? 'Main barcode' : 'Another barcode'}
-                  value={code.barcode}
-                  onChange={(e) => setDraft({
-                    ...draft,
-                    barcodes: draft.barcodes.map((c, i) => (i === index ? { ...c, barcode: e.target.value } : c)),
-                  })}
-                />
-                {features.multiBarcode && (
-                  <input
-                    className="input"
-                    style={{ flex: 1, minWidth: 0 }}
-                    placeholder="What it is"
-                    value={code.label}
-                    onChange={(e) => setDraft({
-                      ...draft,
-                      barcodes: draft.barcodes.map((c, i) => (i === index ? { ...c, label: e.target.value } : c)),
-                    })}
-                  />
-                )}
-                {features.multiBarcode && (
-                  <button
-                    className="btn ghost"
-                    type="button"
-                    title="Remove this barcode"
-                    disabled={draft.barcodes.length === 1}
-                    onClick={() => setDraft({ ...draft, barcodes: draft.barcodes.filter((_, i) => i !== index) })}
-                  >✕</button>
-                )}
-              </div>
-            ))}
-            {features.multiBarcode ? (
-              <button
-                className="btn ghost sm"
-                type="button"
-                onClick={() => setDraft({ ...draft, barcodes: [...draft.barcodes, { barcode: '', label: '' }] })}
-              >Another barcode</button>
-            ) : hiddenBarcodes > 0 && (
-              <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-                {hiddenBarcodes === 1 ? 'One other code is' : `${hiddenBarcodes} other codes are`} saved
-                against this item and still {hiddenBarcodes === 1 ? 'scans' : 'scan'} at the counter.
-                Turn on several barcodes per item in Settings to see{' '}
-                {hiddenBarcodes === 1 ? 'it' : 'them'}.
-              </div>
-            )}
-          </div>
-
-          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Buying</div>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              An item with a reorder level appears on the buying list once stock falls to it.
-              Leave both empty for things you buy when you happen to think of them.
-            </div>
-            <div className="grid-res">
-              <Field label="Reorder at" hint="Stock level that puts it on the buying list.">
-                <input className="input" id="reorder-level" inputMode="decimal" value={draft.reorderLevel}
-                  onChange={(e) => setDraft({ ...draft, reorderLevel: e.target.value })} />
-              </Field>
-              <Field label="Order quantity" hint="How many to buy. Empty means the reorder level itself.">
-                <input className="input" id="reorder-qty" inputMode="decimal" value={draft.reorderQty}
-                  onChange={(e) => setDraft({ ...draft, reorderQty: e.target.value })} />
-              </Field>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Thin margin</div>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              For recharge, cigarettes, milk, gas — things the shop stocks because it must,
-              not because they pay. These hold against every discount and every offer,
-              including one applied to a whole bill.
-            </div>
-            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 7 }}>
-              <input type="checkbox" checked={draft.discountBlocked}
-                onChange={(e) => setDraft({ ...draft, discountBlocked: e.target.checked })} />
-              <span style={{ fontSize: 12.5 }}>Never discount this item</span>
-            </label>
-            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 7 }}>
-              <input type="checkbox" checked={draft.loyaltyBlocked}
-                onChange={(e) => setDraft({ ...draft, loyaltyBlocked: e.target.checked })} />
-              <span style={{ fontSize: 12.5 }}>Earns no loyalty points</span>
-            </label>
-            {/* `returns.ts` has refused a return on one of these since returns
-                were written, and nothing could ever switch it on. */}
-            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              <input type="checkbox" checked={draft.returnBlocked}
-                onChange={(e) => setDraft({ ...draft, returnBlocked: e.target.checked })} />
-              <span style={{ fontSize: 12.5 }}>
-                Cannot be returned
-                <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)' }}>
-                  A recharge, a cut length, anything perishable. The return screen
-                  refuses the line and says which item it was.
-                </span>
-              </span>
-            </label>
-          </div>
-
-          <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Counting</div>
-            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-              Most things on a shelf are counted. A delivery charge, a repair fee or
-              a service is not — it has no shelf to run out of. Every item was
-              counted until now whether or not that made sense, so a shop that
-              refuses sales below the count could not sell a delivery charge twice.
-            </div>
-            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              <input type="checkbox" checked={draft.stockTracked}
-                onChange={(e) => setDraft({ ...draft, stockTracked: e.target.checked })} />
-              <span style={{ fontSize: 12.5 }}>
-                Keep a count of this item
-                <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)' }}>
-                  Off, the counter never refuses it for being short and it never
-                  appears on the reorder list. It changes those two things and
-                  nothing else — sales are still recorded against it, so the cost
-                  and margin reports read the same as before.
-                </span>
-              </span>
-            </label>
-          </div>
+          <ProductForm
+            draft={draft}
+            setDraft={setDraft}
+            categories={categories}
+            newCategory={newCategory}
+            setNewCategory={setNewCategory}
+            onAddCategory={() => void addCategory()}
+            parentName={rows.find((r) => r.id === draft.parentProductId)?.name}
+            parent={parent}
+          />
         </Modal>
       )}
 

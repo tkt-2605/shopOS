@@ -234,6 +234,14 @@ const NEEDS: Record<GatedFeature, Tier> = {
 }
 
 /**
+ * The cheapest tier that includes a feature, for a screen that says what
+ * a shop would need. Read from `NEEDS` so the answer cannot drift from `allows`.
+ */
+export function tierFor(feature: GatedFeature): Tier {
+  return NEEDS[feature]
+}
+
+/**
  * The ladder. A tier gets everything below it, so `cloud` includes
  * `multiTill`: a shop big enough to want its books off-site certainly has more
  * than one counter, and charging twice for that would read as sharp practice.

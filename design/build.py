@@ -550,10 +550,10 @@ CAPS = ['View', 'Add', 'Edit', 'Delete', 'Submit', 'Cancel', 'Amend']
 def box(on):
     if on:
         return ('<span style="display:inline-block;width:13px;height:13px;background:var(--accent);'
-                'border-radius:3px;position:relative"><span style="position:absolute;left:3px;top:1px;'
+                'position:relative"><span style="position:absolute;left:3px;top:1px;'
                 'color:#fff;font-size:9px;line-height:11px">&#10003;</span></span>')
     return ('<span style="display:inline-block;width:13px;height:13px;border:1px solid var(--rule-strong);'
-            'border-radius:3px;background:var(--surface)"></span>')
+            'background:var(--surface)"></span>')
 
 
 grid_rows = ''.join(row(

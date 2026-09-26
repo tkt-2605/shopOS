@@ -4,7 +4,7 @@ import { q, schema } from '../db/q.js'
 import { ZERO } from '../money.js'
 import { SUBMITTED } from '../integrity/docstatus.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
-import { getSetting, setSetting } from './bootstrap.js'
+import { getSetting, setSetting } from './settings.js'
 import type { Rounding } from '../domain/billTotals.js'
 import { defaultScheme, isTaxScheme, type TaxScheme } from '../domain/taxScheme.js'
 

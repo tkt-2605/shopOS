@@ -124,19 +124,24 @@ mod win {
     }
 }
 
-#[tauri::command]
+/* `async`, all three. They go to the Windows print spooler, which answers in
+   milliseconds when it is well and in tens of seconds when a network printer
+   has gone to sleep -- and as plain commands those seconds were a frozen
+   window at the counter, mid-sale, with the customer watching. */
+
+#[tauri::command(async)]
 pub fn list_printers() -> Vec<String> {
     win::list_printers()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn default_printer() -> Option<String> {
     win::default_printer()
 }
 
 /// `bytes` arrives as a plain number array from the webview — the receipt is
 /// already encoded there, so nothing reinterprets it on the way through.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn print_receipt(printer: Option<String>, bytes: Vec<u8>) -> Result<(), String> {
     if bytes.is_empty() {
         return Err("Nothing to print".into());

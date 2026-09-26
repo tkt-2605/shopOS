@@ -199,3 +199,15 @@ describe('the round trip', () => {
     expect(await exportCustomers(fx.db)).toBe(file)
   })
 })
+
+describe('amounts that cannot be right', () => {
+  it('refuses a negative credit limit, and a balance with two minus signs', async () => {
+    const fx = await freshDb()
+    try {
+      const plan = await planCustomerImport(fx.db, 'name,creditlimit,opening\nAnand,-500,\nBala,,--200\nChithra,1000,-50\n')
+      expect(plan.rows.map((r) => r.problem)).toEqual(['BAD_LIMIT', 'BAD_OPENING', null])
+    } finally {
+      await fx.db.close()
+    }
+  })
+})

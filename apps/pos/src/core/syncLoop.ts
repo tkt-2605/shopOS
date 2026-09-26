@@ -231,6 +231,15 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
               `${round.quarantined} record(s) from ${peer.deviceId} could not be applied and were set aside`,
             )
           }
+          /* The same for a cache the merge found out of line and left alone
+             on purpose -- points or returned quantities that a record not
+             here yet may explain. See `MergeOutcome.cachesHeld`. */
+          if (round.cachesHeld > 0) {
+            logEvent(
+              'warn', 'sync',
+              `${round.cachesHeld} loyalty or return figure(s) differ from their records and were left for a person`,
+            )
+          }
           reports.push({
             peer: peer.deviceId,
             ok: true,

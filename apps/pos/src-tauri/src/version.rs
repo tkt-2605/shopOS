@@ -38,7 +38,7 @@ pub fn app_version(app: AppHandle, db: State<'_, DbState>) -> AppVersion {
         /* On the version line on purpose. A person running two companies has
            two identical windows, and the question "which one am I in" is
            asked in exactly the situation this line already exists for. */
-        shop: crate::paths::shop_slug(),
+        shop: crate::paths::shop_slug().ok().flatten(),
     }
 }
 

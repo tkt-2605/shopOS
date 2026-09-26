@@ -113,6 +113,3 @@ class TxDriver extends TauriDriver {
   }
 }
 
-export async function backupDatabase(invoke: Invoke, target: string): Promise<void> {
-  await invoke('backup_database', { target })
-}

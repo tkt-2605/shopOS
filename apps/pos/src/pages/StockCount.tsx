@@ -8,6 +8,7 @@ import { useCore, useDb, useUser } from '../core/CoreProvider'
 import { Card, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
+import { useAction } from '../core/useAction'
 
 /**
  * Counting the shelves.
@@ -36,9 +37,9 @@ export default function StockCount() {
   const [showExpected, setShowExpected] = useState(false)
   const [onlyPending, setOnlyPending] = useState(false)
   const [confirming, setConfirming] = useState(false)
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
+  const action = useAction(setError)
+  const busy = action.busy
   const canCount = Permissions.can(user.permissions, 'stock_entry', 'submit')
 
   const refresh = useCallback(async () => {
@@ -57,7 +58,10 @@ export default function StockCount() {
   useShopChanged(refresh)
 
   async function start() {
-    setBusy(true)
+    await action.run(startNow)
+  }
+
+  async function startNow() {
     setError(null)
     const result = await openCount(db, {
       // By category once categories are something a shop actually fills in; the
@@ -65,7 +69,6 @@ export default function StockCount() {
       scope: { kind: 'all' },
       actorId: user.id,
     })
-    setBusy(false)
     if (!result.ok) {
       setError(
         result.code === 'NOTHING_TO_COUNT'
@@ -96,11 +99,13 @@ export default function StockCount() {
   }
 
   async function finish() {
+    await action.run(finishNow)
+  }
+
+  async function finishNow() {
     if (phase.kind !== 'sheet') return
-    setBusy(true)
     setError(null)
     const result = await submitCount(db, { countId: phase.sheet.id, actorId: user.id })
-    setBusy(false)
     setConfirming(false)
 
     if (!result.ok) {

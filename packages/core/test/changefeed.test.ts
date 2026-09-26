@@ -322,8 +322,9 @@ describe('the set of tables it covers', () => {
       if (cols.some((c) => c.name === 'rev')) revTables.push(name)
     }
     // 022 gave doc_formats one, so it has a tiebreaker of its own rather than
-    // being merged on the two machines' clocks; 049 added user_sessions.
-    expect(revTables.length).toBe(23)
+    // being merged on the two machines' clocks; 049 added user_sessions, and
+    // 051 loyalty_entries, which is edited and so needs one to merge by.
+    expect(revTables.length).toBe(24)
 
     const triggers = new Set(
       (await fx.db.query<{ name: string }>(

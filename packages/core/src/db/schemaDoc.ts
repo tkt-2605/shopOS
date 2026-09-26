@@ -139,10 +139,10 @@ function renderTable(table: TableShape): string[] {
       const where = index.sql !== null && / WHERE /i.test(index.sql)
         ? ` — partial: ${index.sql.replace(/^.*? WHERE /is, '').trim()}`
         : ''
-      out.push(
-        `- \`${index.name}\`${index.unique ? ' (unique)' : ''} on ` +
-        `${index.columns.map((c) => `\`${c}\``).join(', ')}${where}`,
-      )
+      const on = index.columns.map((c) => `\`${c}\``).join(', ')
+      out.push(index.sql === null && index.name.startsWith('unique (')
+        ? `- UNIQUE constraint on ${on}`
+        : `- \`${index.name}\`${index.unique ? ' (unique)' : ''} on ${on}${where}`)
     }
     out.push('')
   }
@@ -170,9 +170,7 @@ function columnRow(table: TableShape, column: ColumnShape): string {
   const key = [
     column.pk > 0 ? 'pk' : null,
     fk !== undefined ? `→ ${fk.table}` : null,
-    table.indexes.some((i) => i.unique && i.columns.length === 1 && i.columns[0] === column.name)
-      ? 'unique'
-      : null,
+    uniqueness(table, column.name),
   ].filter((k): k is string => k !== null).join(', ')
 
   const cells = [
@@ -212,4 +210,18 @@ function replicationLine(role: ReplicationRole): string[] {
 /** GitHub keeps underscores in a heading's anchor and drops the backticks. */
 function anchor(name: string): string {
   return name.toLowerCase()
+}
+
+/**
+ * What the Key cell says about a column being unique: plainly unique, unique
+ * only among rows a condition picks out -- `cash_sessions.register_id` is
+ * unique among open sessions, not across them -- or nothing.
+ */
+function uniqueness(table: TableShape, column: string): string | null {
+  const own = table.indexes.filter((i) => i.unique && i.columns.length === 1 && i.columns[0] === column)
+  if (own.length === 0) return null
+  const whole = own.find((i) => i.sql === null || !/ WHERE /i.test(i.sql))
+  if (whole) return 'unique'
+  const partial = own[0]!.sql!.replace(/^.*? WHERE /is, '').trim()
+  return `unique where ${partial}`
 }

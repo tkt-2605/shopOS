@@ -17,6 +17,7 @@
 /// `Answerer` is that seam. The app hands each request to its webview and waits;
 /// `shopos-net answer` forwards it to a Node till on localhost. The rules about
 /// what a request *means* stay in `packages/core`, in one copy, as before.
+pub mod client;
 pub mod discovery;
 pub mod http;
 

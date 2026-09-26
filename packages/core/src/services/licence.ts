@@ -1,5 +1,5 @@
 import type { SqlDriver } from '../db/driver.js'
-import { getSetting, setSetting, forgetSetting } from './bootstrap.js'
+import { getSetting, setSetting, forgetSetting } from './settings.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { businessDate } from '../dates.js'
 import type { DeviceStore } from './deviceSettings.js'

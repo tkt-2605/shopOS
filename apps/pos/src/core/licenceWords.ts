@@ -1,4 +1,4 @@
-import type { Entitlement } from '@shopos/core'
+import { tierFor, type Entitlement, type GatedFeature } from '@shopos/core'
 
 /**
  * What the licence card says, in sentences a shopkeeper can act on.
@@ -81,8 +81,9 @@ export function licenceLine(e: Entitlement): LicenceLine {
   switch (e.state) {
     case 'none':
       return {
-        headline: 'No licence code on this till',
-        detail: 'The counter works without one. A code adds the cloud features and tells us who you are.',
+        headline: 'Free plan',
+        detail: 'No licence code on this till. The counter works without one; a code adds '
+          + 'more counters and tells us who you are.',
         tone: 'warn',
       }
 
@@ -189,4 +190,53 @@ export function installProblem(
     return { ...line, detail: `${line.detail} The code names shop ${shopId}.` }
   }
   return line
+}
+
+/**
+ * The one-word state for the badge beside the plan name. The headline
+ * underneath says the rest; this is what the eye lands on.
+ */
+export function stateWord(e: Entitlement): { word: string; tone: LicenceLine['tone'] | 'mute' } {
+  if (e.problem !== null) return { word: 'Needs attention', tone: 'bad' }
+  switch (e.state) {
+    case 'none': return { word: 'Free', tone: 'mute' }
+    case 'active': return { word: 'Active', tone: 'ok' }
+    case 'grace': return { word: 'Renew soon', tone: 'warn' }
+    case 'lapsed': return { word: 'Ran out', tone: 'bad' }
+  }
+}
+
+export interface FeatureWords {
+  /** The gate it answers to, or null for what every shop has for nothing. */
+  gate: GatedFeature | null
+  name: string
+  note: string
+  /**
+   * Whether the product does this yet. A plan must not list as bought a
+   * thing that does not exist; until it is built it says "Coming".
+   */
+  built: boolean
+}
+
+/**
+ * What a shop gets, free and paid, in the order a shopkeeper cares about.
+ *
+ * The free rows are here on purpose. They are the rule every lapse message
+ * carries -- nothing a shop needs to take money is ever sold -- said once as
+ * a list instead of as a reassurance.
+ */
+export const FEATURES: readonly FeatureWords[] = [
+  { gate: null, name: 'Billing, printing and returns', note: 'Always included.', built: true },
+  { gate: null, name: 'Stock, credit and reports', note: 'Always included.', built: true },
+  { gate: null, name: 'Backups on this computer', note: 'Always included.', built: true },
+  { gate: 'multiTill', name: 'Add another counter', note: 'Tills that share one shop’s stock and bills.', built: true },
+  { gate: 'cloudPeer', name: 'Off-site backup', note: 'A copy of the books kept away from the shop.', built: false },
+  { gate: 'phoneView', name: 'Owner’s phone view', note: 'The day’s sales and stock on your phone.', built: false },
+  { gate: 'diagnosticsUpload', name: 'Send a problem report', note: 'A till’s logs to us in one step.', built: false },
+  { gate: 'branches', name: 'Branches', note: 'More than one shop under one owner.', built: false },
+]
+
+/** Which plan first includes a gated feature, as the name a shop sees. */
+export function planFor(gate: GatedFeature): string {
+  return tierName(tierFor(gate))
 }

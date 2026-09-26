@@ -169,7 +169,8 @@ export function ProductHistory({
                   </td>
                   {/* Below zero is a real state — a shop can sell what its records
                       say it does not have — so it is shown rather than clamped. */}
-                  <td className="r num">{Quantity.formatQty(m.balanceQty)}</td>
+                  {/* Another counter's running total is not this shelf's, so it is not shown as one. */}
+                  <td className="r num">{m.balanceQty === null ? '—' : Quantity.formatQty(m.balanceQty)}</td>
                   <td className="src">{m.by ?? '—'}</td>
                 </tr>
               ))}

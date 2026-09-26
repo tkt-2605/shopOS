@@ -1,4 +1,4 @@
-import type { webcrypto } from 'node:crypto'
+import { createHash, timingSafeEqual, type webcrypto } from 'node:crypto'
 import type { SqlDriver } from '@shopos/core'
 import type { OtpChannel } from './otp/channel.js'
 import {
@@ -152,8 +152,8 @@ export async function handle(
   /* ── licences ─────────────────────────────────────────────────────── */
 
   if (method === 'GET' && path.startsWith('/v1/licence/')) {
-    const shopId = decodeURIComponent(path.slice('/v1/licence/'.length))
-    if (shopId === '') return bad('a shop id is required')
+    const shopId = decoded(path.slice('/v1/licence/'.length))
+    if (shopId === null || shopId === '') return bad('a shop id is required')
 
     const device = request.headers[DEVICE_HEADER]
     if (device !== undefined && device !== '') {
@@ -184,7 +184,7 @@ export async function handle(
     if (deps.adminToken === null) {
       return { status: 404, body: { error: 'ISSUING_DISABLED' } }
     }
-    if (bearer(request) !== deps.adminToken) return unauthorised()
+    if (!sameSecret(bearer(request), deps.adminToken)) return unauthorised()
     if (deps.signingKey === null) {
       return { status: 503, body: { error: 'NO_SIGNING_KEY', detail: 'set SHOPOS_LICENCE_KEY' } }
     }
@@ -209,7 +209,8 @@ export async function handle(
     const account = await signedIn(deps, request, now)
     if (account === null) return unauthorised()
 
-    const shopId = decodeURIComponent(path.slice('/v1/shops/'.length, -'/tills'.length))
+    const shopId = decoded(path.slice('/v1/shops/'.length, -'/tills'.length))
+    if (shopId === null) return bad('a shop id is required')
     const owned = await deps.db.get<{ id: string }>(
       'SELECT id FROM shops WHERE id = ? AND account_id = ?', [shopId, account.id],
     )
@@ -234,6 +235,26 @@ function bearer(request: PortalRequest): string | null {
   if (header === undefined) return null
   const match = /^Bearer (.+)$/.exec(header)
   return match?.[1] ?? null
+}
+
+/**
+ * The admin token, compared without saying how much of a guess was right.
+ * `!==` stops at the first differing character, and the time that takes is
+ * what an attacker measures. Both sides are hashed first so the lengths agree.
+ */
+function sameSecret(given: string | null, expected: string): boolean {
+  if (given === null) return false
+  const digest = (s: string) => createHash('sha256').update(s).digest()
+  return timingSafeEqual(digest(given), digest(expected))
+}
+
+/** A path segment, or null when its percent-escapes are not escapes. `decodeURIComponent` throws. */
+function decoded(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return null
+  }
 }
 
 function publicAccount(account: { id: string; phone: string; name: string | null }) {

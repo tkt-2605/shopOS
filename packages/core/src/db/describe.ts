@@ -187,17 +187,24 @@ async function indexesOf(
   const out: IndexShape[] = []
 
   for (const row of rows) {
-    if (row.name.startsWith('sqlite_autoindex_')) continue
-    const columns = await db.query<IndexColumnRow>(`PRAGMA index_info(${quote(row.name)})`)
-    out.push({
-      name: row.name,
-      unique: row.unique === 1,
-      sql: objects.find((o) => o.type === 'index' && o.name === row.name)?.sql ?? null,
+    /* SQLite's own index for the primary key says nothing the pk column does
+       not. Its index for a UNIQUE constraint does -- `bills.doc_no`, a user's
+       name, a price row's combination -- and leaving those out made the
+       document say a column could repeat when the database refuses it. So
+       they are kept, under a name that says what they are rather than
+       SQLite's bookkeeping one. */
+    if (row.origin === 'pk') continue
+    const columns = (await db.query<IndexColumnRow>(`PRAGMA index_info(${quote(row.name)})`))
+      .slice()
+      .sort((a, b) => a.seqno - b.seqno)
       // A null name is an expression rather than a column; say so rather than drop it.
-      columns: columns
-        .slice()
-        .sort((a, b) => a.seqno - b.seqno)
-        .map((c) => c.name ?? '(expression)'),
+      .map((c) => c.name ?? '(expression)')
+    const constraint = row.origin === 'u'
+    out.push({
+      name: constraint ? `unique (${columns.join(', ')})` : row.name,
+      unique: row.unique === 1,
+      sql: constraint ? null : objects.find((o) => o.type === 'index' && o.name === row.name)?.sql ?? null,
+      columns,
     })
   }
 

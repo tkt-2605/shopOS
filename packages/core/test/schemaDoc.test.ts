@@ -119,6 +119,15 @@ describe('what it describes', () => {
     }
   })
 
+  it('says a column is unique when a UNIQUE constraint makes it so', () => {
+    /* SQLite backs a UNIQUE constraint with an index of its own, and the
+       document used to skip those as bookkeeping -- so `bills.doc_no` read as
+       a column that could repeat, and one comment in the code reasoned from
+       that and was wrong. */
+    const bills = described.tables.find((t) => t.name === 'bills')
+    expect(bills?.indexes.some((i) => i.unique && i.columns.join() === 'doc_no')).toBe(true)
+  })
+
   it('carries the partial indexes\' conditions, which is where the meaning is', () => {
     const bills = described.tables.find((t) => t.name === 'bills')
     const kindIndex = bills?.indexes.find((i) => i.name === 'idx_bills_kind')

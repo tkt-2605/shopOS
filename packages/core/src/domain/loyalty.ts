@@ -205,3 +205,29 @@ export function pointsToMoney(program: LoyaltyProgram, points: number, billTotal
   const raw = (points * program.pointValue) as Money
   return minMoney(raw, billTotal)
 }
+
+/**
+ * What is wrong with a program as typed, in words for the owner, or null.
+ *
+ * The settings form read its boxes with `Number(...)`, so "abc" became NaN, which
+ * JSON writes as null, and a program with a null point value or expiry then
+ * broke earning and redemption on every bill after it was saved.
+ */
+export function programProblem(program: LoyaltyProgram): string | null {
+  const whole = (n: unknown) => typeof n === 'number' && Number.isInteger(n)
+  if (!whole(program.pointValue) || program.pointValue <= 0) return 'A point has to be worth more than nothing.'
+  if (program.expiryDays !== null && (!whole(program.expiryDays) || program.expiryDays <= 0)) {
+    return 'Points expire after a whole number of days, or leave it blank for never.'
+  }
+  if (!whole(program.minBillForEarn) || program.minBillForEarn < 0) return 'The minimum bill cannot be below zero.'
+  if (!whole(program.maxRedeemFractionBp) || program.maxRedeemFractionBp < 0 || program.maxRedeemFractionBp > 10_000) {
+    return 'Points can pay between 0 and 100 per cent of a bill.'
+  }
+  for (const tier of program.tiers) {
+    if (!whole(tier.minSpend) || tier.minSpend < 0) return 'Every tier needs a bill amount of zero or more.'
+    if (!Number.isFinite(tier.pointsPerHundred) || tier.pointsPerHundred < 0) {
+      return 'Every tier needs a number of points per ₹100, zero or more.'
+    }
+  }
+  return null
+}

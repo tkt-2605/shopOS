@@ -14,8 +14,18 @@
  * readable and writable by it: a new table, a new index, a new trigger, a
  * column added nullable or with a default, a row inserted or corrected.
  *
+ * A defaulted column is only additive when the default is *true* of every row
+ * the newer build writes. An older till cannot send what it has not got, so a
+ * row that reaches a newer till by way of an older one -- a hub relaying it,
+ * or an older till's copy winning a merge -- arrives without the column and is
+ * stored with the default. A default that changes what the row *means* (the
+ * direction money moved, an amount owed) turns that into a wrong figure on a
+ * till that was never out of date. `REVIEWED_DEFAULTS` below is where each
+ * defaulted column on a replicated table has to say why that cannot happen.
+ *
  * `breaking` is anything else -- a rename, a drop, a CHECK made stricter, a
- * table rebuilt into a new shape. Across one of those, two tills cannot
+ * table rebuilt into a new shape, a defaulted column whose default would be a
+ * lie about a row an older till passed on. Across one of those, two tills cannot
  * exchange rows safely in either direction: the newer one writes columns the
  * older has no place for, and the older sends rows missing columns the newer
  * has made NOT NULL.
@@ -77,7 +87,11 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [32, '032_the_retirement_that_never_was.sql', 'breaking'],
   [33, '033_a_setting_nothing_asks_for.sql', 'additive'],
   [34, '034_two_questions_the_tables_would_not_answer.sql', 'additive'],
-  [35, '035_money_that_goes_the_other_way.sql', 'additive'],
+  /* Breaking, although it only adds a column. A refund row relayed by a till
+     that has not run this arrives without `direction` and is stored as 'in':
+     the refund booked as a receipt, the customer's balance out by twice the
+     amount, on a till that was up to date. Reclassified before release. */
+  [35, '035_money_that_goes_the_other_way.sql', 'breaking'],
   [36, '036_a_hub_that_relays.sql', 'additive'],
   /* A column on a replicated table. A till that has not run this migration
      does not send it and drops it from what arrives -- `ignoredColumns` is the
@@ -98,9 +112,46 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [47, '047_a_place_for_a_fingerprint.sql', 'additive'],
   [48, '048_nothing_to_send_is_not_silence.sql', 'additive'],
   [49, '049_a_sign_in_is_not_a_shop_fact.sql', 'additive'],
-  // Two columns on `suppliers`, both defaulted. An older till reads a row a
-  // newer one wrote and simply does not see them.
-  [50, '050_what_the_shop_owed_before.sql', 'additive'],
+  /* Two defaulted columns on `suppliers`, and breaking for the same reason
+     as 035: a supplier relayed by an older till lands on a newer one owing
+     nothing, whatever the shop recorded. Reclassified before release. */
+  [50, '050_what_the_shop_owed_before.sql', 'breaking'],
+  [51, '051_points_that_move.sql', 'additive'],
+  [52, '052_what_the_database_holds_itself.sql', 'additive'],
+  [53, '053_points_as_first_earned.sql', 'additive'],
+  [54, '054_what_an_order_became.sql', 'additive'],
+  [55, '055_what_a_row_may_hold.sql', 'additive'],
+  [56, '056_a_barcode_taken_off.sql', 'additive'],
+  [57, '057_a_return_nobody_has_given.sql', 'additive'],
+  [58, '058_what_a_movement_was_worth.sql', 'additive'],
+  [59, '059_a_submitted_document_is_final.sql', 'additive'],
+  [60, '060_whose_shelf_count.sql', 'additive'],
+]
+
+/**
+ * Every defaulted or NOT NULL column added to a replicated table by an additive
+ * migration, keyed `file:table.column`, with the reason its default is true of
+ * a row an older till passes on. `migration-files.test.ts` fails on one that is
+ * not here, so the question gets asked at the moment it can still be answered
+ * by calling the migration breaking instead.
+ */
+export const REVIEWED_DEFAULTS: Readonly<Record<string, string>> = {
+  '051_points_that_move.sql:loyalty_entries.rev':
+    'A revision, not a figure: 1 is what every row starts at, and no till below 051 '
+    + 'is above the floor 050 set, so none can relay an entry without it.',
+}
+
+/**
+ * Columns nothing reads or writes any more, kept only because dropping a
+ * column means rebuilding its table -- a breaking migration. Each is named
+ * with the migration that retired it, so the next rebuild of that table takes
+ * it along instead of it being forgotten.
+ */
+export const DROP_AT_NEXT_REBUILD: ReadonlyArray<readonly [column: string, retiredBy: string]> = [
+  ['price_lists.is_default', '043: the default is the `default_price_list` setting'],
+  /* Not `users.failed_logins` or `last_login_at`: since 049 they are the
+     fallback for a till that cannot say which machine it is, and still used. */
+  ['users.locked_until', '049: nothing locks an account; only ever reset to null'],
 ]
 
 /**

@@ -11,7 +11,7 @@ import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { CustomerWorth } from '../ui/CustomerWorth'
 import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
-import { CustomerFile } from '../ui/CatalogueFile'
+import { CustomerFile } from '../ui/CustomerFile'
 
 /**
  * Who the shop sells to.

@@ -1,55 +1,35 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  entitlement, installToken, removeToken, storedToken,
+  allowsAny, entitlement, getSetting, installToken, removeToken, storedCodes,
   UNLICENSED, type Entitlement, type Grant,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { deviceStore } from '../core/device'
 import {
-  licenceLine, clockLine, installProblem, tierName, grantLine, type LicenceLine,
+  licenceLine, clockLine, installProblem, tierName, grantLine, stateWord,
+  FEATURES, planFor, type LicenceLine, type FeatureWords,
 } from '../core/licenceWords'
 import { copyText } from '../core/clipboard'
 import { saveFile } from '../core/exportFile'
-import { Card, Field, Alert } from './components'
+import { Card, Alert } from './components'
 import { useConfirm } from './useConfirm'
 
 /**
- * The shop's licence: what it is, and how a code gets in and out.
+ * The shop's licence: what it has, what that includes, and how a code gets in
+ * and out.
  *
- * Until this existed, a licence could only reach a till by somebody editing a
- * `settings` row by hand — so everything underneath it was built, tested, and
- * unreachable. This is the whole of the product's paid side as far as a
- * shopkeeper is concerned.
+ * Read top to bottom the way a shopkeeper asks: which plan am I on, what does
+ * it give me, what have I bought. The codes themselves are long signed
+ * strings nobody reads, so they stay folded away until somebody needs to move
+ * one -- the shop with sync down, the till being set up before it has paired,
+ * the support call that asks for it.
  *
- * ## In and out, both
+ * The shop id is shown **always**, including with no licence installed,
+ * because that is the moment it is needed: `portal issue --shop <id>` cannot
+ * make a code without it.
  *
- * **In** is the obvious half: paste a code, and `installToken` decides.
- *
- * **Out** matters more than it looks. A licence replicates between tills, so
- * normally nobody needs to carry one — but the shop with sync down, the till
- * being set up before it has paired, and the support call that begins "can you
- * send me your licence code" all need the code back out of a machine that has
- * it. A card that can only swallow codes turns each of those into a database
- * question.
- *
- * ## The shop id, which has to be here
- *
- * A licence is issued to one shop, and `portal issue --shop <id>` needs that
- * id before a code can exist at all. It is minted once in `bootstrap.ts` and
- * read in five places in the code — and until this card showed it, in none on
- * screen. Which meant selling a licence to a real shop began with somebody
- * remoting in to read a `settings` row.
- *
- * So it is shown **always**, including with no licence installed. That is
- * precisely the moment it is needed: before anything has been bought.
- *
- * ## What it never does
- *
- * It does not gate anything. There is no state of this card in which the
- * counter stops working, and the sentences in `licenceWords.ts` say so out
- * loud in every message about lapsing — because a shopkeeper who reads
- * "expired" and closes the till for the afternoon has lost a day's takings to
- * a word.
+ * It gates nothing. There is no state of this card in which the counter stops
+ * working, and the free rows in the list say so without a paragraph.
  */
 
 export function LicenceCard() {
@@ -65,15 +45,13 @@ export function LicenceCard() {
   const [said, setSaid] = useState('')
 
   const reload = useCallback(async () => {
-    /* With the device store, so `clockUnreliable` is actually computed. Without
-       it the answer is hard-false and `clockLine` below can never say anything
-       — which is what this card did until the witness was wired up. */
+    /* With the device store, so `clockUnreliable` is actually computed. */
     setState(await entitlement(db, { device: deviceStore() }))
-    const held = await storedToken(db)
-    /* The stored string, not the parsed token: what a person has to paste
-       somewhere else is the code exactly as it arrived. */
-    setCode(held === null ? null : (await rawToken(db)))
-    setShopId(await shopIdOf(db))
+    /* The codes exactly as they were pasted, not re-encoded: the signature is
+       over the original bytes, so a re-encoded token would not verify. */
+    const codes = await storedCodes(db)
+    setCode(codes.length === 0 ? null : codes.join('\n'))
+    setShopId(await getSetting(db, 'shop_id'))
   }, [db])
 
   useEffect(() => { void reload() }, [reload])
@@ -104,39 +82,21 @@ export function LicenceCard() {
     }
   }, [db, typed, user, reload, say])
 
-  const copy = useCallback(async () => {
-    if (code === null) return
-    say(await copyText(code) ? 'Code copied.' : 'Could not reach the clipboard.')
-  }, [code, say])
-
-  const save = useCallback(async () => {
-    if (code === null) return
-    const result = await saveFile('shopos-licence.txt', code)
-    say(result.ok ? `Saved to ${result.path}` : result.message)
-  }, [code, say])
-
-  const copyOne = useCallback(async (grant: Grant) => {
-    say(await copyText(grant.raw) ? 'Code copied.' : 'Could not reach the clipboard.')
+  const copy = useCallback(async (text: string, what: string) => {
+    say(await copyText(text) ? `${what} copied.` : 'Could not reach the clipboard.')
   }, [say])
 
-  const copyId = useCallback(async () => {
-    if (shopId === null) return
-    say(await copyText(shopId) ? 'Shop id copied.' : 'Could not reach the clipboard.')
-  }, [shopId, say])
-
-  const saveId = useCallback(async () => {
-    if (shopId === null) return
-    /* A file as well as the clipboard, because the machine that has the id is
-       often not the machine the message gets sent from. */
-    const result = await saveFile('shopos-shop-id.txt', shopId)
+  const save = useCallback(async (filename: string, text: string) => {
+    /* A file as well as the clipboard, because the machine that has the code
+       is often not the machine the message gets sent from. */
+    const result = await saveFile(filename, text)
     say(result.ok ? `Saved to ${result.path}` : result.message)
-  }, [shopId, say])
+  }, [say])
 
   const remove = useCallback(async (grant: Grant) => {
     const yes = await ask({
       title: `Remove the ${tierName(grant.tier).toLowerCase()} code?`,
-      /* Names the one being removed, because a shop can hold more than one and
-         "remove this licence" beside a list of two says nothing about which. */
+      /* Names the one being removed, because a shop can hold more than one. */
       message: 'The counter is unaffected — billing, printing and backups all carry '
         + 'on. Only what this code paid for stops, and only until it is pasted '
         + 'again. Any other code on this till is untouched.',
@@ -150,161 +110,185 @@ export function LicenceCard() {
 
   const line = licenceLine(state)
   const clock = clockLine(state)
+  const badge = stateWord(state)
+  /* Nothing bought is not a warning. The edge goes quiet, the same as the badge. */
+  const tone = state.state === 'none' && state.problem === null ? 'mute' : line.tone
 
   return (
-    <Card title="Licence">
+    <>
       {confirmUi}
 
-      <Alert kind={line.tone}>
-        <strong>{line.headline}</strong>
-        {line.detail !== '' && <div>{line.detail}</div>}
-      </Alert>
+      <section className="licence-plan" data-tone={tone} aria-label="Your plan">
+        <div>
+          <div className="licence-kicker">Your plan</div>
+          <div className="licence-plan-name">{line.headline}</div>
+          {line.detail !== '' && <div className="licence-plan-detail">{line.detail}</div>}
+        </div>
+        <span className={`badge ${badge.tone}`}>{badge.word}</span>
+      </section>
 
       {clock !== '' && <Alert kind="warn">{clock}</Alert>}
 
-      <Field
-        label="This shop's id"
-        hint="Tell us this when you buy or renew a licence. A licence is issued to one shop."
-      >
-        {shopId === null ? (
-          /* A real state, not a bug: `sync.ts` lets a till with no shop id join
-             any shop, so a till part-way through setting up has not got one.
-             Saying so beats an empty box somebody reads as broken. */
-          <div className="hint">Not set up yet — finish setting up this till first.</div>
-        ) : (
-          <>
-            <input
-              readOnly
-              value={shopId}
-              className="num"
-              aria-label="This shop's id"
-              onFocus={(e) => e.currentTarget.select()}
-            />
-            <div className="row" style={{ gap: 8, marginTop: 8 }}>
-              <button type="button" className="btn" onClick={() => { void copyId() }}>
-                Copy the id
-              </button>
-              <button type="button" className="btn" onClick={() => { void saveId() }}>
-                Save the id to a file
-              </button>
-            </div>
-          </>
-        )}
-      </Field>
+      <Card title="What is included">
+        <ul className="licence-features">
+          {FEATURES.map((feature) => (
+            <Feature key={feature.name} feature={feature} grants={state.grants} />
+          ))}
+        </ul>
+      </Card>
 
       {state.grants.length > 0 && (
-        <Field
-          label={state.grants.length === 1 ? 'What this shop has' : 'What this shop has bought'}
-          hint="Each code is one thing bought. They are kept separately because they
-                do not all run out at the same time — some never do."
-        >
+        <Card title={state.grants.length === 1 ? 'Bought' : 'Bought, one code each'}>
           {state.grants.map((grant) => (
-            <div
-              key={grant.raw}
-              className="row"
-              style={{ gap: 12, alignItems: 'baseline', marginBottom: 10 }}
-            >
-              <div style={{ minWidth: 140 }}><strong>{tierName(grant.tier)}</strong></div>
-              {/* The sentence only when there is more than one. With a single
-                  licence the alert above has already said it, and the same
-                  words twice on one card reads as a mistake. */}
-              <div className="hint" style={{ flex: 1 }}>
-                {state.grants.length > 1 ? grantLine(grant) : ''}
+            <div key={grant.raw} className="licence-grant">
+              <div>
+                <div className="licence-grant-name">{tierName(grant.tier)}</div>
+                {/* The sentence only when there is more than one. With a single
+                    licence the plan above has already said it, and the same
+                    words twice on one screen reads as a mistake. */}
+                {state.grants.length > 1 && <div className="hint">{grantLine(grant)}</div>}
               </div>
-              <button type="button" className="btn" onClick={() => { void copyOne(grant) }}>
-                Copy
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
-                aria-label={`Remove the ${tierName(grant.tier)} code`}
-                onClick={() => { void remove(grant) }}
-              >
-                Remove
-              </button>
+              <div className="licence-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  aria-label={`Copy the ${tierName(grant.tier)} code`}
+                  onClick={() => { void copy(grant.raw, 'Code') }}
+                >
+                  Copy code
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  aria-label={`Remove the ${tierName(grant.tier)} code`}
+                  onClick={() => { void remove(grant) }}
+                >
+                  Remove
+                </button>
+              </div>
             </div>
           ))}
-        </Field>
+        </Card>
       )}
 
-      {code !== null && (
-        <Field
-          label={state.grants.length > 1 ? 'All of them, as one block' : "This shop's code"}
-          hint="Needed to set up another counter while sync is down, or if we ask for it."
-        >
-          <textarea
-            readOnly
-            value={code}
-            rows={3}
-            aria-label="This shop's licence code"
-            onFocus={(e) => e.currentTarget.select()}
-          />
-          <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            <button type="button" className="btn" onClick={() => { void copy() }}>
-              Copy all
-            </button>
-            <button type="button" className="btn" onClick={() => { void save() }}>
-              Save to a file
-            </button>
+      <Card title="This shop">
+        <div className="licence-id-row">
+          <div>
+            <div className="licence-kicker">Shop id</div>
+            {shopId === null ? (
+              /* A real state, not a bug: `sync.ts` lets a till with no shop id
+                 join any shop, so a till part-way through setting up has none. */
+              <div className="hint">Not set up yet — finish setting up this till first.</div>
+            ) : (
+              <input
+                readOnly
+                value={shopId}
+                className="licence-id mono"
+                aria-label="This shop's id"
+                onFocus={(e) => e.currentTarget.select()}
+              />
+            )}
+            <div className="hint">Tell us this when you buy or renew. A licence is issued to one shop.</div>
           </div>
-        </Field>
-      )}
-
-      <Field
-        label="Paste a licence code"
-        hint="Added to what is already here. A renewal replaces the one it renews;
-              anything else is kept alongside."
-      >
-        <textarea
-          value={typed}
-          rows={3}
-          spellCheck={false}
-          aria-label="Paste a licence code"
-          placeholder="Paste the whole code, including the dot in the middle"
-          onChange={(e) => { setTyped(e.target.value); setFailed(null) }}
-        />
-        <div className="row" style={{ gap: 8, marginTop: 8 }}>
-          <button
-            type="button"
-            className="btn primary"
-            disabled={busy || typed.trim() === ''}
-            onClick={() => { void install() }}
-          >
-            {busy ? 'Checking…' : 'Save this code'}
-          </button>
-          {said !== '' && <span className="hint" role="status">{said}</span>}
+          {shopId !== null && (
+            <div className="licence-actions">
+              <button type="button" className="btn" aria-label="Copy the id"
+                onClick={() => { void copy(shopId, 'Shop id') }}>
+                Copy
+              </button>
+              <button type="button" className="btn ghost" aria-label="Save the id to a file"
+                onClick={() => { void save('shopos-shop-id.txt', shopId) }}>
+                Save to file
+              </button>
+            </div>
+          )}
         </div>
-      </Field>
 
-      {failed !== null && (
-        <Alert kind={failed.tone}>
-          <strong>{failed.headline}</strong>
-          {failed.detail !== '' && <div>{failed.detail}</div>}
-        </Alert>
-      )}
-    </Card>
+        <details className="licence-more" open={state.grants.length === 0 || failed !== null}>
+          <summary>Add a licence code</summary>
+          <div className="licence-more-body">
+            <textarea
+              value={typed}
+              rows={3}
+              spellCheck={false}
+              aria-label="Paste a licence code"
+              className="mono"
+              placeholder="Paste the whole code, including the dot in the middle"
+              onChange={(e) => { setTyped(e.target.value); setFailed(null) }}
+            />
+            <div className="hint">
+              Added to what is already here. A renewal replaces the one it renews.
+            </div>
+            {failed !== null && (
+              <Alert kind={failed.tone}>
+                <strong>{failed.headline}</strong>
+                {failed.detail !== '' && <div>{failed.detail}</div>}
+              </Alert>
+            )}
+            <div className="licence-actions">
+              <button
+                type="button"
+                className="btn primary"
+                disabled={busy || typed.trim() === ''}
+                onClick={() => { void install() }}
+              >
+                {busy ? 'Checking…' : 'Save this code'}
+              </button>
+            </div>
+          </div>
+        </details>
+
+        {code !== null && (
+          <details className="licence-more">
+            <summary>Move this licence to another counter</summary>
+            <div className="licence-more-body">
+              <div className="hint">
+                Counters that sync share the licence on their own. This is for one
+                set up while sync is down, or when we ask for the code.
+              </div>
+              <textarea
+                readOnly
+                value={code}
+                rows={3}
+                className="mono"
+                aria-label="This shop's licence code"
+                onFocus={(e) => e.currentTarget.select()}
+              />
+              <div className="licence-actions">
+                <button type="button" className="btn" onClick={() => { void copy(code, 'Code') }}>
+                  Copy all
+                </button>
+                <button type="button" className="btn ghost"
+                  onClick={() => { void save('shopos-licence.txt', code) }}>
+                  Save to a file
+                </button>
+              </div>
+            </div>
+          </details>
+        )}
+
+        <div className="licence-said hint" role="status">{said}</div>
+      </Card>
+    </>
   )
 }
 
-/**
- * The code exactly as it was pasted.
- *
- * `storedToken` parses, which is right for the fields above and wrong for the
- * box a person copies out of: re-encoding a token would produce a different
- * string with the same meaning, and the signature is over the original bytes.
- * So the raw setting is read directly.
- */
-async function rawToken(db: Parameters<typeof entitlement>[0]): Promise<string | null> {
-  const row = await db.get<{ value: string }>(
-    'SELECT value FROM settings WHERE key = ?', ['licence_token'],
+/** One row of the list: included, not on this plan, or not built yet. */
+function Feature({ feature, grants }: { feature: FeatureWords; grants: readonly Grant[] }) {
+  const has = feature.gate === null || allowsAny(grants, feature.gate)
+  const tag = feature.gate === null ? 'Free'
+    : !feature.built ? 'Coming'
+    : has ? 'Included'
+    : `With ${planFor(feature.gate)}`
+  const on = has && feature.built
+  return (
+    <li className="licence-feature" data-on={on}>
+      <span className="licence-mark" aria-hidden="true">{on ? '✓' : '–'}</span>
+      <span>
+        <span className="settings-option-title">{feature.name}</span>
+        <span className="settings-option-note">{feature.note}</span>
+      </span>
+      <span className={`badge ${on ? 'ok' : 'mute'}`}>{tag}</span>
+    </li>
   )
-  return row?.value ?? null
-}
-
-/** Which shop this is, as `portal issue --shop` and the licence both mean it. */
-async function shopIdOf(db: Parameters<typeof entitlement>[0]): Promise<string | null> {
-  const row = await db.get<{ value: string }>(
-    'SELECT value FROM settings WHERE key = ?', ['shop_id'],
-  )
-  return row?.value ?? null
 }

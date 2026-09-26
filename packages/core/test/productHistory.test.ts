@@ -6,6 +6,7 @@ import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
 import { businessDate } from '../src/dates.js'
 import { freshDb, makeProduct, type Fixture } from './helpers.js'
+import { newId } from '../src/ids.js'
 
 /**
  * Reading one product's life out of the ledger.
@@ -125,6 +126,36 @@ describe('the movements of one product', () => {
     const [row] = await productHistory(fx.db, product)
     expect(row!.unitCost, 'nothing to record').toBeNull()
     expect(row!.value, 'and so nothing to value it at — not zero').toBeNull()
+  })
+
+  it("shows this till's shelf count, and not another till's as if it were", async () => {
+    /* 060. Each row's balance is the running total on the till that posted it;
+       a movement that arrived from another counter carries that counter's. */
+    await stockIn(10, rupees(60))
+    await fx.db.execute(
+      `INSERT INTO stock_ledger (id, product_id, posting_date, qty_change, unit_cost, balance_qty,
+                                 voucher_type, voucher_id, created_at, device_id)
+       VALUES (?, ?, ?, ?, NULL, 999999, 'bill', ?, ?, 'another-till')`,
+      [newId(), product, today, -fromUnits(1), newId(), new Date().toISOString()],
+    )
+    const rows = await productHistory(fx.db, product)
+    const theirs = rows.find((r) => r.balanceQty === null)
+    const mine = rows.find((r) => r.qtyChange > 0)
+    expect(theirs, "the other till's movement is listed, without a balance").toBeDefined()
+    expect(mine?.balanceQty).toBe(fromUnits(10))
+  })
+
+  it('values a sale by what actually left the shelf, not the rate times the quantity', async () => {
+    /* 058. What a sale took plus what is left on the shelf is what was
+       bought -- to the paisa, because both are the stored value moving, not a
+       rate multiplied back out and rounded on each side. */
+    await stockIn(3, 333 as Money)
+    await sell(1)
+    const [sale] = await productHistory(fx.db, product)
+    const shelf = await fx.db.get<{ stock_value: number }>(
+      'SELECT stock_value FROM product_stock WHERE product_id = ?', [product])
+    expect(sale!.value! + shelf!.stock_value).toBe(await fx.db.get<{ v: number }>(
+      'SELECT value_change AS v FROM stock_ledger WHERE qty_change > 0').then((r) => r!.v))
   })
 })
 

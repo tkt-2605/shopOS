@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Money, Quantity, Permissions,
-  listBills, countBills, loadBillDetail, cancelBill, amendBill, listReturns, cancelReturn,
-  type BillListItem, type BillDetail, type ReturnListItem, type BillStatusFilter,
+  Quantity, Permissions, listBills, countBills, loadBillDetail, cancelBill, amendBill, listReturns,
+  cancelReturn, type BillListItem, type BillDetail, type ReturnListItem, type BillStatusFilter,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { goTo } from '../core/nav'
@@ -12,13 +11,13 @@ import {
 import { printBill } from '../core/print'
 import { printBillSheet, printCreditNoteSheet, previewBillSheet } from '../core/printHtml'
 import { SheetPreview } from '../ui/SheetPreview'
-import { Attachments } from '../ui/Attachments'
 import { ReturnSheet } from '../ui/ReturnSheet'
 import { usePickList } from '../ui/PickList'
 import { useConfirm } from '../ui/useConfirm'
 import { requestRepeat } from '../core/repeat'
 import { useShopChanged } from '../core/useShopChanged'
 import { countAttachments } from '@shopos/core'
+import { BillBody } from './bills/BillBody'
 
 /** A page of bills. Enough to scroll, few enough that the query stays quick. */
 const PAGE = 50
@@ -271,7 +270,7 @@ export default function Bills() {
 
         <div className="segment">
           {STATUSES.map((s) => (
-            <button key={s.id} aria-selected={status === s.id} onClick={() => setStatus(s.id)}>
+            <button key={s.id} type="button" aria-pressed={status === s.id} onClick={() => setStatus(s.id)}>
               {s.label}
             </button>
           ))}
@@ -387,107 +386,15 @@ export default function Bills() {
             </>
           }
         >
-          <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-            <DocStatusBadge status={open.docstatus} />
-            <span style={{ color: 'var(--ink-3)' }}>{open.postingDate}</span>
-            <span>{open.customerName ?? 'Walk-in'}</span>
-          </div>
-
-          {open.cancelReason && <Alert kind="warn">Cancelled: {open.cancelReason}</Alert>}
-
-          <table>
-            <thead>
-              <tr>
-                <th>Item</th><th>HSN</th>
-                <th className="r">Qty</th><th className="r">Rate</th>
-                <th className="r">Taxable</th><th className="r">GST</th><th className="r">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {open.items.map((i) => (
-                <tr key={i.id}>
-                  <td>
-                    {i.productName}
-                    {i.returnedQty > 0 && (
-                      <span className="badge warn" style={{ marginLeft: 6 }}>
-                        {Quantity.formatQty(i.returnedQty)} returned
-                      </span>
-                    )}
-                    <div className="src">{i.priceSource.replace(/_/g, ' ')}</div>
-                  </td>
-                  <td className="num">{i.hsnCode ?? '—'}</td>
-                  <td className="r num">{Quantity.formatQty(i.qty)} {i.saleUnit}</td>
-                  <td className="r"><Rupees value={i.rate} /></td>
-                  <td className="r"><Rupees value={i.taxableValue} /></td>
-                  <td className="r"><Rupees value={i.cgst + i.sgst + i.igst} /></td>
-                  <td className="r"><Rupees value={i.lineTotal} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <div style={{ width: 260 }}>
-              <div className="total-line"><span>Subtotal</span><Rupees value={open.subtotal} /></div>
-              {open.discount > 0 && <div className="total-line"><span>Discount</span><Rupees value={open.discount} /></div>}
-              <div className="total-line"><span>Taxable</span><Rupees value={open.taxableTotal} /></div>
-              <div className="total-line"><span>GST</span><Rupees value={open.taxTotal} /></div>
-              <div className="total-line grand"><span>Total</span><Rupees value={open.grandTotal} /></div>
-            </div>
-          </div>
-
-          <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>
-            Paid by {open.payments.map((p) => `${p.method} ${Money.formatWithSymbol(p.amount)}`).join(', ') || '—'}
-          </div>
-
-          {returns.length > 0 && (
-            <div>
-              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Goods taken back</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Number</th><th>Date</th><th>Why</th>
-                    <th className="r">Goods</th><th className="r">Paid back</th><th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {returns.map((r) => (
-                    <tr key={r.id}>
-                      <td className="num">
-                        {r.docNo}
-                        {r.docstatus === 2 && <span className="badge" style={{ marginLeft: 6 }}>cancelled</span>}
-                      </td>
-                      <td className="num">{r.postingDate}</td>
-                      <td style={{ color: 'var(--ink-3)' }}>{r.reason ?? '—'}</td>
-                      <td className="r"><Rupees value={r.refundTotal} /></td>
-                      <td className="r">
-                        <Rupees value={r.refundCash} />
-                        {r.refundMethod === 'credit' && <div className="src">off the khata</div>}
-                        {r.pointsRestored > 0 && <div className="src">+ {r.pointsRestored} points</div>}
-                      </td>
-                      <td className="r">
-                        {r.docstatus === 1 && (
-                          <button className="btn ghost sm" onClick={() => void printCreditNote(r.id)}>
-                            Credit note
-                          </button>
-                        )}
-                        {canUnreturn && r.docstatus === 1 && (
-                          <button
-                            className="btn ghost sm" style={{ marginLeft: 6 }}
-                            onClick={() => void undoReturn(r.id, r.docNo)}
-                          >
-                            Cancel
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          <Attachments entity="bill" entityId={open.id} canEdit={canAttach} onChange={() => void refresh()} />
+          <BillBody
+            bill={open}
+            returns={returns}
+            canUnreturn={canUnreturn}
+            canAttach={canAttach}
+            onCreditNote={(returnId) => void printCreditNote(returnId)}
+            onUndoReturn={(returnId, docNo) => void undoReturn(returnId, docNo)}
+            onAttachmentsChange={() => void refresh()}
+          />
         </Modal>
       )}
 

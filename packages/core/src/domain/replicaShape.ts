@@ -23,7 +23,15 @@
  * produces a bill neither till ever had.
  */
 
-import type { Row } from '../db/driver.js'
+/**
+ * A row as it travels: column name to value.
+ *
+ * The same shape as the driver's `Row`, spelled out here rather than imported,
+ * because the domain describes records and never touches the database that
+ * holds them. The two are structurally one type, so either is accepted where
+ * the other is asked for.
+ */
+type Row = Record<string, string | number | bigint | Uint8Array | null>
 
 export interface RecordShape {
   table: string
@@ -36,7 +44,7 @@ export interface RecordShape {
    * satisfy — as SQL, because the two places that need it are a trigger and an
    * `INSERT … SELECT`.
    *
-   * Absent for every table but one, and that is the point of it being here
+   * Absent for every table but two -- bills (042) and returns (057) -- and that is the point of it being here
    * rather than a name checked against in a loop somewhere: the rule is a
    * replication decision, and this file is where replication decisions are
    * written down once instead of three times.
@@ -61,10 +69,13 @@ export interface RecordShape {
  * `replicaShape.test.ts` now checks this order against the schema's own foreign
  * keys, so it cannot quietly stop being true when a table is added.
  *
- * `stock_ledger` and `loyalty_entries` carry no `rev` and do not need one: they
- * are append-only and never edited, so two tills cannot disagree about a row —
- * they can only each be missing some of the other's, which is a union rather
- * than a merge.
+ * `stock_ledger` carries no `rev` and does not need one: it is append-only --
+ * the database refuses an edit or a delete since 052 -- so two tills cannot
+ * disagree about a row, only each be missing some of the other's, which is a
+ * union rather than a merge. `loyalty_entries` was once listed here too, and
+ * wrongly: its `consumed`, `points` and `cancelled_at` are edited, so since 051
+ * it carries a `rev` and merges like any other edited record, with
+ * `reconcileLoyalty` putting `consumed` back in line after each merge.
  */
 export const REPLICATED: readonly RecordShape[] = [
   { table: 'settings', key: 'key', lines: [] },
@@ -122,6 +133,9 @@ export const REPLICATED: readonly RecordShape[] = [
   {
     table: 'sales_returns',
     key: 'id',
+    /* A draft return is a person mid-refund, as a draft bill is a cashier
+       mid-sale; it stays where it is being made. Migration 057. */
+    travels: 'docstatus <> 0',
     lines: [{ table: 'sales_return_items', parentKey: 'return_id' }],
   },
   {
@@ -136,6 +150,9 @@ export const REPLICATED: readonly RecordShape[] = [
   },
   { table: 'stock_ledger', key: 'id', lines: [] },
   { table: 'loyalty_entries', key: 'id', lines: [] },
+  /* Its own row, like the ledger: written once when a line is converted,
+     and never lost to a merge of the document it marks (054). */
+  { table: 'document_fulfilments', key: 'id', lines: [] },
   { table: 'attachments', key: 'id', lines: [] },
 ]
 

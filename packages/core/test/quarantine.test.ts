@@ -192,3 +192,48 @@ describe('a record that cannot be applied', () => {
     ).toBeDefined()
   })
 })
+
+describe('a record that does not agree with itself', () => {
+  it('is set aside when its key is not the row it names', async () => {
+    const product = await makeProduct(a.db, { id: newId(), name: 'Dal 1kg' })
+    const batch = await as(a, () => collectChanges(a.db, 0, 500, b.id))
+    const forged = newId()
+    for (const record of batch.records) {
+      if (record.table === 'products' && record.rowId === product && record.row) {
+        record.row = { ...record.row, id: forged }
+      }
+    }
+
+    const outcome = await as(b, () => applyBatch(b.db, batch, new Set()))
+
+    expect(outcome.quarantined).toBeGreaterThanOrEqual(1)
+    expect(await b.db.get(`SELECT id FROM products WHERE id IN (?, ?)`, [product, forged])).toBeUndefined()
+  })
+})
+
+describe('a peer deleting a submitted document', () => {
+  it('keeps the document, however high the revision the delete carries', async () => {
+    const { createBill, submitBill } = await import('../src/services/billing.js')
+    const { rupees } = await import('../src/money.js')
+    const { fromUnits } = await import('../src/quantity.js')
+    const product = await makeProduct(a.db, { baseRate: rupees(10) })
+    const bill = await as(a, () => createBill(a.db, {
+      registerId: a.fx!.seed.registerId, lines: [{ productId: product, qty: fromUnits(1) }], actorId: a.fx!.adminId,
+    }))
+    if (!bill.ok) throw new Error(bill.code)
+    const paid = await as(a, () => submitBill(a.db, {
+      billId: bill.billId, payments: [{ method: 'cash', amount: rupees(10) }], actorId: a.fx!.adminId,
+    }))
+    expect(paid.ok).toBe(true)
+    await push(a, b)
+    expect(await b.db.get(`SELECT id FROM bills WHERE id = ? AND docstatus = 1`, [bill.billId])).toBeDefined()
+
+    const outcome = await as(b, () => applyBatch(b.db, {
+      fromDevice: a.id, schemaVersion: 0, upTo: 1, complete: true,
+      records: [{ table: 'bills', rowId: bill.billId, op: 'delete', row: { rev: 1_000_000 } }],
+    }, new Set()))
+
+    expect(outcome.contested[0]?.winner).toBe('mine')
+    expect(await b.db.get(`SELECT id FROM bills WHERE id = ?`, [bill.billId])).toBeDefined()
+  })
+})

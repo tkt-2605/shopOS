@@ -147,9 +147,51 @@ export async function nextDocNo(
     .select({ lastValue: schema.docSequences.lastValue })
     .from(schema.docSequences)
     .where(eq(schema.docSequences.scope, scope))
-  const seq = row?.lastValue ?? 1
+  const stem = `${MARK[docType]}${registerPrefix}/${fy}/`
+  let seq = row?.lastValue ?? 1
 
-  return `${MARK[docType]}${registerPrefix}/${fy}/${String(seq).padStart(5, '0')}`
+  /* Never below a number this database already holds. The counter stays on
+     each machine, so it knows nothing of documents that arrived by sync: a
+     till restored from an older backup, or one that took over a counter with
+     `takeRegister`, starts behind bills it has since pulled back. It would
+     then mint a number an incoming row holds, the UNIQUE would roll the
+     transaction back with the counter, and every retry would fail the same
+     way -- a till that can no longer bill. */
+  const highest = await highestIssued(tx, docType, stem)
+  if (seq <= highest) {
+    seq = highest + 1
+    await q(tx).update(schema.docSequences)
+      .set({ lastValue: seq })
+      .where(eq(schema.docSequences.scope, scope))
+  }
+
+  return `${stem}${String(seq).padStart(5, '0')}`
+}
+
+/** Where each kind of document keeps its numbers. */
+const NUMBERED = {
+  bill: schema.bills,
+  return: schema.salesReturns,
+  payment: schema.paymentEntries,
+  stock_entry: schema.stockEntries,
+  stock_count: schema.stockCounts,
+  quotation: schema.documents,
+  sales_order: schema.documents,
+  purchase_order: schema.documents,
+} as const satisfies Record<DocType, { docNo: unknown }>
+
+/** The highest serial under `stem` already in the database, or 0. */
+async function highestIssued(tx: SqlDriver, docType: DocType, stem: string): Promise<number> {
+  const table = NUMBERED[docType]
+  const [row] = await q(tx)
+    .select({ top: sql<number | null>`MAX(CAST(substr(${table.docNo}, ${stem.length + 1}) AS INTEGER))` })
+    .from(table)
+    /* A range rather than LIKE or substr: it seeks the UNIQUE index on doc_no
+       instead of scanning it on every number minted, and a `_` in a prefix is
+       not read as a wildcard. Everything under the stem sorts between the
+       stem itself and the stem followed by the highest character there is. */
+    .where(sql`${table.docNo} >= ${stem} AND ${table.docNo} < ${stem} || char(1114111)`)
+  return row?.top ?? 0
 }
 
 export async function peekDocNo(db: SqlDriver, docType: DocType, registerPrefix: string, on: Date = new Date()): Promise<string> {
@@ -158,5 +200,8 @@ export async function peekDocNo(db: SqlDriver, docType: DocType, registerPrefix:
     .select({ lastValue: schema.docSequences.lastValue })
     .from(schema.docSequences)
     .where(eq(schema.docSequences.scope, `${docType}:${registerPrefix}:${fy}`))
-  return `${MARK[docType]}${registerPrefix}/${fy}/${String((row?.lastValue ?? 0) + 1).padStart(5, '0')}`
+  const stem = `${MARK[docType]}${registerPrefix}/${fy}/`
+  // Floored as `nextDocNo` is, so the number shown is the number minted.
+  const next = Math.max(row?.lastValue ?? 0, await highestIssued(db, docType, stem)) + 1
+  return `${stem}${String(next).padStart(5, '0')}`
 }

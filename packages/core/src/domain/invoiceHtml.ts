@@ -4,8 +4,9 @@ import {
   BILL_WORDING, formatRate,
   type DocWording, type ReceiptDoc, type ReceiptItem,
 } from './receipt.js'
-import { fillTokens, PAPER, usesTemplate, type Block, type DocFormat, type Facts } from './docFormat.js'
+import { fillTokens, PAPER, usesTemplate, type Block, type DocFormat } from './docFormat.js'
 import { renderTemplate, templateData } from './htmlTemplate.js'
+import { factsFor, escapeHtml as esc, titleCase, formatDate } from './docText.js'
 
 /**
  * The same document, on a sheet.
@@ -68,7 +69,9 @@ export function buildInvoiceHtml(
     // at the bottom of every one, which is the only way to reserve the same
     // strip on each page once `@page` has given its margin up.
     '<table class="page"><thead><tr><td><div class="edge"></div></td></tr></thead>',
-    `<tbody><tr><td><main class="sheet">${body}</main></td></tr></tbody>`,
+    // `blocks` only when the blocks laid it out: the grid below is theirs, and
+    // a shop's own markup keeps the plain sheet it was written against.
+    `<tbody><tr><td><main class="${own === null ? 'sheet blocks' : 'sheet'}">${body}</main></td></tr></tbody>`,
     '<tfoot><tr><td><div class="edge"></div></td></tr></tfoot></table>',
     /* Nothing here opens the print dialog, and that is the fix for a bill that
        asked to be printed twice.
@@ -208,7 +211,7 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
     case 'payments': {
       if (doc.payments.length === 0) return ''
       return `<table class="payments"><tbody>
-        ${doc.payments.map((p) => row(titleCase(p.method), p.amount)).join('')}
+        ${doc.payments.map((p) => row(methodLabel(p.method), p.amount)).join('')}
       </tbody></table>`
     }
 
@@ -337,40 +340,9 @@ function line(text: string | null | undefined): string {
   return text ? `<div>${esc(text)}</div>` : ''
 }
 
-function factsFor(doc: ReceiptDoc): Facts {
-  return {
-    'shop.name': doc.shop.name,
-    'shop.address': doc.shop.address ?? '',
-    'shop.phone': doc.shop.phone ?? '',
-    'shop.gstin': doc.shop.gstin ?? '',
-    'doc.no': doc.docNo,
-    'doc.date': formatDate(doc.postingDate),
-    'customer.name': doc.customerName ?? '',
-    total: fmtMoney(doc.grandTotal),
-  }
-}
-
-/**
- * The page never receives anything but the shop's own data — but a product name
- * with an ampersand in it would still break the markup, and a shop is free to
- * type anything into a text block. Escaped at the one place values become HTML.
- */
-function esc(value: string): string {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function titleCase(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1)
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso.length === 10 ? `${iso}T00:00:00` : iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+/** A tender as it is written: UPI is an acronym, not a word to capitalise. */
+function methodLabel(method: string): string {
+  return method === 'upi' ? 'UPI' : titleCase(method)
 }
 
 /**
@@ -404,7 +376,10 @@ function styles(pageSize: string, preview: boolean): string {
     }
     .page { width: 100%; border-collapse: collapse; }
     .page > thead, .page > tfoot { break-inside: avoid; }
-    .page > thead td, .page > tfoot td, .page > tbody td { padding: 0; }
+    /* Child combinators all the way down. ".page > tbody td" reached every cell
+       of every table on the sheet and outranked ".tax td", which is why the
+       tax summary always printed with its figures against the rules. */
+    .page > thead > tr > td, .page > tfoot > tr > td, .page > tbody > tr > td { padding: 0; }
     .edge { height: 0; }
     .sheet { padding: ${MARGIN}; }
     @media print {
@@ -412,87 +387,127 @@ function styles(pageSize: string, preview: boolean): string {
       .edge { height: ${MARGIN}; }
       .sheet { padding: 0 ${MARGIN}; }
     }
+    /* The sheet is a two-column grid, and every block spans both unless it is
+       one of the pairs an invoice reads side by side: the document's details
+       beside the customer, and the tax table beside the totals. The blocks keep
+       the order the shop gave them; only their width is decided here, so a shop
+       that moves or switches a block off gets a sheet that still lines up.
+
+       Everything that carries a tint says so to the printer. A print dialog
+       drops background colour unless asked, and the grey bands are what make
+       the columns and the total findable at arm's length. */
+    .blocks {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      column-gap: 7mm;
+      align-items: start;
+      /* Dense, so a half-width block fills the cell beside the one above it --
+         the amount in words beside the payments -- instead of starting a row. */
+      grid-auto-flow: row dense;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      font-variant-numeric: tabular-nums;
+    }
+    .blocks > * { grid-column: 1 / -1; }
+    .blocks > .meta, .blocks > .tax, .blocks > .words { grid-column: 1; }
+    .blocks > .party, .blocks > .totals, .blocks > .payments { grid-column: 2; }
     /* Centred, over a title band that is centred and a rule that runs the full
-       width. Left-aligned it was the only thing on the top third of the page
-       that was, so the sheet read as though the header had come loose from the
-       document under it. This is also the shape of every invoice an Indian shop
-       already recognises, and it matches the thermal roll — which matters,
-       because the roll and the sheet are the same shop's paper. */
-    .shop { margin-bottom: 10px; text-align: center; }
-    .shop-name { font-size: 17pt; font-weight: 700; letter-spacing: -0.01em; }
-    .shop div { font-size: 9.5pt; color: #444; }
+       width. This is the shape of every invoice an Indian shop already
+       recognises, and it matches the thermal roll -- the roll and the sheet are
+       the same shop's paper. */
+    .shop { margin-bottom: 8px; text-align: center; }
+    .shop-name { font-size: 18pt; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+    /* ".shop > div", not ".shop div": the name is a div too, and the wider
+       selector outranked ".shop-name", so every invoice printed the shop's own
+       name at the size of its phone number. */
+    .shop > div:not(.shop-name) { font-size: 9.5pt; color: #444; }
     /* A logo above a centred name belongs on the same axis as the name. */
-    .logo { text-align: center; }
+    .logo { margin: 0 0 6px; text-align: center; }
+    .logo img { display: inline-block; max-width: 60mm; object-fit: contain; }
     .title {
-      margin: 14px 0 10px;
+      margin: 8px 0 12px;
       padding: 6px 0;
       font-size: 12pt;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
       text-align: center;
-      border-top: 1px solid #111;
-      border-bottom: 1px solid #111;
-    }
-    .scheme { margin: -6px 0 10px; font-size: 9pt; text-align: center; color: #333; }
-    table { width: 100%; border-collapse: collapse; }
-    .meta { width: auto; margin-bottom: 12px; font-size: 10pt; }
-    .meta th { padding: 1px 14px 1px 0; font-weight: 400; color: #555; text-align: left; }
-    .meta td { padding: 1px 0; font-weight: 600; }
-    .party { margin-bottom: 12px; padding: 8px 10px; border: 1px solid #bbb; }
-    .party-label { font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.06em; color: #555; }
-    .party-name { font-size: 11.5pt; font-weight: 700; }
-    .party div { font-size: 9.5pt; color: #444; }
-    .items { margin-bottom: 12px; font-size: 10pt; }
-    .items thead th {
-      padding: 5px 6px;
-      font-size: 8.5pt;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      text-align: left;
+      background: #f1f1f1;
+      border-top: 1.5px solid #111;
       border-bottom: 1.5px solid #111;
     }
-    .items tbody td { padding: 5px 6px; border-bottom: 1px solid #ddd; }
+    .scheme { margin: -8px 0 12px; font-size: 9pt; text-align: center; color: #333; }
+    table { width: 100%; border-collapse: collapse; }
+    /* The two boxes of the details band, drawn the same so they read as a pair. */
+    .meta, .party { margin-bottom: 12px; border: 1px solid #bbb; font-size: 10pt; }
+    .meta th { padding: 4px 10px; width: 42%; font-weight: 400; color: #555; text-align: left; }
+    .meta td { padding: 4px 10px; font-weight: 600; }
+    .meta tr + tr th, .meta tr + tr td { border-top: 1px solid #eee; }
+    .party { padding: 8px 10px; }
+    .party-label {
+      margin-bottom: 2px;
+      font-size: 8pt; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #555;
+    }
+    .party-name { font-size: 11.5pt; font-weight: 700; }
+    .party > div:not(.party-label):not(.party-name) { font-size: 9.5pt; color: #444; }
+    .items { margin-bottom: 12px; font-size: 10pt; border: 1px solid #bbb; }
+    .items thead th {
+      padding: 6px;
+      font-size: 8pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      text-align: left;
+      background: #f1f1f1;
+      border-bottom: 1.5px solid #111;
+    }
+    .items tbody td { padding: 5px 6px; border-bottom: 1px solid #e3e3e3; vertical-align: top; }
+    .items tbody tr:nth-child(even) td { background: #fafafa; }
+    .items tbody tr:last-child td { border-bottom: 0; }
     .items tbody tr { break-inside: avoid; }
-    .c-no { width: 26px; }
+    .c-no { width: 26px; color: #666; }
     .c-hsn { width: 62px; }
     .c-num { text-align: right; white-space: nowrap; }
     th.c-num { text-align: right; }
-    .totals, .payments { width: 46%; margin-left: auto; font-size: 10pt; }
-    .totals th, .payments th { padding: 2px 6px; font-weight: 400; color: #444; text-align: left; }
-    .totals td, .payments td { padding: 2px 6px; text-align: right; white-space: nowrap; }
+    .totals, .payments { font-size: 10pt; }
+    .totals { margin-bottom: 12px; border: 1px solid #bbb; }
+    .totals th, .payments th { padding: 3px 10px; font-weight: 400; color: #444; text-align: left; }
+    .totals td, .payments td { padding: 3px 10px; text-align: right; white-space: nowrap; }
     .totals .grand th, .totals .grand td {
-      padding-top: 5px;
-      font-size: 12pt;
+      padding: 7px 10px;
+      font-size: 12.5pt;
       font-weight: 700;
       color: #111;
+      background: #f1f1f1;
       border-top: 1.5px solid #111;
     }
-    .payments { margin-top: 10px; }
-    .payments th, .payments td { color: #555; }
-    .tax { margin: 12px 0; font-size: 9.5pt; }
+    .payments { margin: -6px 0 12px; }
+    .payments th, .payments td { color: #555; font-size: 9.5pt; }
+    .tax { margin-bottom: 12px; font-size: 9pt; }
     .tax th, .tax td { padding: 4px 6px; border: 1px solid #bbb; text-align: left; }
-    .tax thead th { background: #f2f2f2; }
-    .logo { margin: 0 0 6px; }
-    .logo img { display: inline-block; max-width: 60mm; object-fit: contain; }
+    .tax th.c-num, .tax td.c-num { text-align: right; }
+    .tax thead th {
+      background: #f1f1f1;
+      font-size: 8pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    }
     .note { margin: 8px 0 0; font-size: 9.5pt; color: #555; }
     /* Boxed, because it is the line that settles an argument about the figures
        above it, and it has to be findable at a glance to do that. */
-    .words { margin: 10px 0 0; padding: 6px 8px; border: 1px solid #000; font-size: 10pt; }
-    .words .k { display: block; font-size: 8pt; letter-spacing: .06em; text-transform: uppercase; color: #555; }
-    /* Centred, on a rule that spans the paper. This is the shop's closing line
-       -- "Goods once sold are not returnable without this bill" -- and hanging
-       it off the left end of a full-width rule was the last thing on the page
-       still sitting against an edge. The thermal roll has always centred it,
-       and the two are the same shop's paper. */
+    .words { margin: 0 0 12px; padding: 6px 10px; border: 1px solid #111; font-size: 10pt; }
+    .words .k {
+      display: block; margin-bottom: 1px;
+      font-size: 8pt; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #555;
+    }
+    /* Centred on a rule that spans the paper: the shop's closing line, as the
+       thermal roll has always set it. */
     .terms {
       margin: 16px 0 0; padding-top: 8px;
       font-size: 9pt; color: #555; text-align: center;
       border-top: 1px solid #ddd;
     }
-    .signature { margin-top: 34px; width: 210px; margin-left: auto; text-align: center; break-inside: avoid; }
-    .sign-for { font-size: 9.5pt; color: #444; }
-    .sign-rule { margin-top: 40px; border-top: 1px solid #111; }
+    .signature { margin-top: 30px; width: 220px; justify-self: end; text-align: center; break-inside: avoid; }
+    .sign-for { font-size: 9.5pt; font-weight: 600; color: #333; }
+    .sign-rule { margin-top: 42px; border-top: 1px solid #111; }
     .sign-label { margin-top: 3px; font-size: 8.5pt; color: #555; }
   `
 }

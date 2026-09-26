@@ -30,7 +30,8 @@ export function JoinRequestPrompt() {
         <div style={{ fontWeight: 600 }}>A till wants to join this shop</div>
         <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>
           {asking.label ?? `Machine ${asking.deviceId.slice(0, 8)}`}
-          {' '}— it should be showing these two digits.
+          {' '}— it should be showing these same four digits. If they differ, press No:
+          {' '}something on the network is standing between the two tills.
         </div>
       </div>
       <div style={{ fontSize: 30, letterSpacing: 6, fontWeight: 600 }}>{asking.digits}</div>

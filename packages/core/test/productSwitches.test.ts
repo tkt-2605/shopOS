@@ -120,3 +120,47 @@ describe('an item with no shelf to run out of', () => {
     expect(rows.some((r) => r.productId === service)).toBe(false)
   })
 })
+
+describe('saving an item’s own details', () => {
+  it('puts a price change on the history, with what it was and what it became', async () => {
+    const { saveProductDetails } = await import('../src/services/products.js')
+    const fx = await freshDb()
+    try {
+      const details = {
+        name: 'Stapler', brand: null, hsnCode: null, taxRateBp: 1800, baseRate: 12_000 as never, mrp: null,
+        baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false, returnBlocked: false,
+        isStockTracked: true, reorderLevel: null, reorderQty: null,
+      }
+      const made = await saveProductDetails(fx.db, { actorId: fx.adminId }, details)
+      if (!made.ok) throw new Error(made.code)
+      await saveProductDetails(fx.db, { actorId: fx.adminId }, { ...details, id: made.productId, baseRate: 13_500 as never })
+
+      const trail = await fx.db.query<{ action: string; diff: string | null }>(
+        `SELECT action, diff FROM audit_log WHERE entity = 'products' AND entity_id = ? ORDER BY rowid`,
+        [made.productId],
+      )
+      expect(trail.map((t) => t.action)).toEqual(['create', 'update'])
+      expect(JSON.parse(trail[1]!.diff!)).toEqual({ base_rate: { from: 12_000, to: 13_500 } })
+    } finally {
+      await fx.db.close()
+    }
+  })
+
+  it('refuses a price below zero and a tax rate over a hundred per cent', async () => {
+    const { saveProductDetails } = await import('../src/services/products.js')
+    const fx = await freshDb()
+    try {
+      const base = {
+        name: 'Glue', brand: null, hsnCode: null, taxRateBp: 0, baseRate: 0 as never, mrp: null, baseUnit: 'piece',
+        discountBlocked: false, loyaltyBlocked: false, returnBlocked: false, isStockTracked: true,
+        reorderLevel: null, reorderQty: null,
+      }
+      expect(await saveProductDetails(fx.db, { actorId: fx.adminId }, { ...base, baseRate: -1 as never }))
+        .toEqual({ ok: false, code: 'BAD_RATE' })
+      expect(await saveProductDetails(fx.db, { actorId: fx.adminId }, { ...base, taxRateBp: 12_000 }))
+        .toEqual({ ok: false, code: 'BAD_TAX' })
+    } finally {
+      await fx.db.close()
+    }
+  })
+})

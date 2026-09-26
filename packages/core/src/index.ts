@@ -14,7 +14,7 @@ export { EXPECTED_SCHEMA_VERSION } from './db/schemaVersion.js'
 export {
   MIN_PEER_SCHEMA_VERSION, MIGRATION_FILES, type MigrationKind,
 } from './db/migrationKinds.js'
-export { createTauriDriver, backupDatabase } from './db/tauri-driver.js'
+export { createTauriDriver } from './db/tauri-driver.js'
 
 export * as Tax from './domain/tax.js'
 export * as Pricing from './domain/pricing.js'
@@ -24,7 +24,9 @@ export * as Returns from './domain/returns.js'
 export * as DocFormat from './domain/docFormat.js'
 export { REPLICATED, NOT_REPLICATED, shapeOf, type RecordShape, type ChangeRecord, type ChangeBatch } from './domain/replicaShape.js'
 export { handleSyncRequest, serveAs, setServingRegisterSource, LISTEN_PORT_HEADER, peerAddressFrom, offerPairing, withdrawPairing, pairingOnOffer, expectingAJoin, pendingJoin, onJoinRequest, allowJoin, refuseJoin, PAIRING_WINDOW_MS, type SyncRequest, type SyncResponse, type JoinRequest } from './services/syncServer.js'
-export { forgetNonces, CLOCK_TOLERANCE_MS, setFingerprintSource } from './services/syncAuth.js'
+export {
+  forgetNonces, CLOCK_TOLERANCE_MS, setFingerprintSource, pairingKey, comparisonDigits,
+} from './services/syncAuth.js'
 export { nextBackoff, BACKOFF_START_MS, BACKOFF_MAX_MS } from './services/syncBackoff.js'
 export { httpTransport, pairWith, askToJoin, pollJoin, pairedPeers, rememberAddress, SyncHttpError, type PeerAddress, type PairOutcome, type SelfAddress, type JoinProgress } from './services/syncClient.js'
 export { recentConflicts, acknowledgeConflicts, unreadConflictCount, recordAttempt, type RecordedConflict, type PeerHealth } from './services/sync.js'
@@ -66,6 +68,12 @@ export {
   currentStock, postMovement, checkAvailability, recomputeStock, reverseVoucher,
 } from './services/stock.js'
 export type { StockPosting, StockRequirement, StockShortfall, StockDrift } from './services/stock.js'
+export { reconcileLoyalty } from './services/loyaltyLedger.js'
+export type { LoyaltyDrift } from './services/loyaltyLedger.js'
+export { reconcileReturnedQty } from './services/returns/reconcile.js'
+export { reconcileFulfilledQty } from './services/documents/reconcile.js'
+export type { FulfilledDrift } from './services/documents/reconcile.js'
+export type { ReturnedQtyDrift } from './services/returns/reconcile.js'
 
 export { nextDocNo, peekDocNo, fiscalYear, fiscalYearTag, docNoFits, MAX_DOC_NO } from './services/numbering.js'
 export type { DocType } from './services/numbering.js'
@@ -107,9 +115,9 @@ export type {
 
 export {
   getOrOpenSession, openSessionFor, closeSession, sessionSummary, postCashMovement, countDrawer,
-  listSessions,
+  listSessions, recordPayout, sessionMovements,
 } from './services/cash.js'
-export type { ClosedSession } from './services/cash.js'
+export type { ClosedSession, PayoutResult, SessionMovement } from './services/cash.js'
 export type {
   CashMovementInput, OpenSessionInput, SessionSummary, CloseSessionResult, CashDirection, TenderMethod,
 } from './services/cash.js'
@@ -172,7 +180,8 @@ export {
   billWording, COMPOSITION_STATEMENT,
 } from './domain/taxScheme.js'
 export type { TaxScheme } from './domain/taxScheme.js'
-export { setProductActive } from './services/products.js'
+export { setProductActive, saveProductDetails } from './services/products.js'
+export type { ProductDetails, SaveProductResult } from './services/products.js'
 export { HSN_SHAPE, isHsn, hsnProblem, HSN_SHAPE_MESSAGE } from './domain/hsn.js'
 export type { HsnProblem } from './domain/hsn.js'
 export { buildInvoiceHtml } from './domain/invoiceHtml.js'
@@ -195,6 +204,8 @@ export * as Reports from './repos/reports.js'
 export { reorderList, bySupplier } from './repos/reorder.js'
 export type { ReorderRow, ReorderOptions, SupplierGroup } from './repos/reorder.js'
 export { listShortfalls, countShortfalls } from './repos/shortfalls.js'
+export { lowStock } from './repos/lowStock.js'
+export type { LowStockItem } from './repos/lowStock.js'
 export {
   createCustomer, updateCustomer, customerByPhone, nextCustomerCode, backfillCustomerCodes,
   archiveCustomer, restoreCustomer,
@@ -223,7 +234,7 @@ export {
   listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
   archivePriceList, restorePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
-  listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList,
+  listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList, customerPriceListId,
   setLadder, setCustomerLadder, ladderFor, customerLadderFor, laddersFor,
   perBaseUnit,
 } from './services/pricing.js'
@@ -296,7 +307,7 @@ export type { BillPricingContext } from './repos/pricing.js'
 
 export {
   TIERS, isTier, GRACE_DAYS, GATED, verifyToken, readTokenUnverified, stateOf,
-  allows, allowsAny, tierRank, overTillLimit, encodePayload, toBase64Url, fromBase64Url,
+  allows, allowsAny, tierRank, tierFor, overTillLimit, encodePayload, toBase64Url, fromBase64Url,
 } from './domain/licence.js'
 export type {
   Tier, LicenceToken, LicenceState, GatedFeature, SigningKey,
@@ -327,7 +338,7 @@ export {
   planImport, applyImport, exportCatalogue, IMPORT_COLUMNS,
 } from './services/import.js'
 export type {
-  ImportPlan, PlannedRow, ImportResult, ImportAction, RowProblem,
+  ImportPlan, PlannedRow, ImportResult, CatalogueImportResult, ImportAction, RowProblem,
 } from './services/import.js'
 
 export {

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import { login, Permissions, type Page } from '@shopos/core'
-import { useCore, type FailureKind } from './core/CoreProvider'
-import { advice } from './core/startupAdvice'
+import { Permissions, type Page } from '@shopos/core'
+import { useCore } from './core/CoreProvider'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
 import { JoinShop } from './ui/JoinShop'
@@ -10,10 +9,9 @@ import { DeviceTroubleBanner } from './ui/DeviceTrouble'
 import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
 import { ChangePassword } from './ui/ChangePassword'
-import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
-import { appVersion, versionLine, shopLine, type AppVersion } from './core/version'
+import { appVersion, shopLine, type AppVersion } from './core/version'
 import { ICONS, BrandMark } from './ui/icons'
 import { AdminGate } from './ui/AdminGate'
 import { CounterGate } from './ui/CounterGate'
@@ -40,6 +38,9 @@ import Pricing from './pages/Pricing'
 import Audit from './pages/Audit'
 import Orders from './pages/Orders'
 import PurchaseOrders from './pages/PurchaseOrders'
+import { CouldNotStart } from './entry/CouldNotStart'
+import { Login } from './entry/Login'
+import { UpdateLine } from './ui/UpdateLine'
 
 /* Grouped by what the person is doing, rather than one flat list of every screen.
    A cashier lives in Sell and never opens Setup. */
@@ -56,10 +57,10 @@ const NAV_GROUPS: { label: string; pages: Page[] }[] = [
    a year. They are still routable pages with their own permissions, reached
    from the "Set up" card on Settings.
 
-   Bill Formats is not one of them, though it was at first and that was wrong.
-   It is not a twice-a-year screen — it is a design tool, opened over and over
-   while a shop gets its bill looking right, and a design tool behind a password
-   prompt inside another screen is a design tool nobody finds. */
+   Bill Formats is a section of Settings, named in its own list beside the shop
+   details and the printer. It stays in the sidebar only for a role that was
+   given Bill Formats and not Settings -- otherwise that role would have no way
+   to reach the one screen it was granted. */
 
 const PAGE_TITLES: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -90,73 +91,6 @@ const PAGE_TITLES: Record<string, string> = {
 
 export default function App() {
   const { status, user } = useCore()
-
-  if (status.phase === 'starting') return <Empty>Starting…</Empty>
-  if (status.phase === 'failed') return <CouldNotStart error={status.error} kind={status.kind} />
-  if (status.phase === 'setup') return <Setup />
-  if (!user) return <Login />
-  return <Shell />
-}
-
-/**
- * The way out of a shop that will not open.
- *
- * Restore lives here as well as in Settings, because a database this build
- * cannot read fails before sign-in — and a fix that sits behind the screen that
- * will not load is not a fix.
- */
-
-function CouldNotStart({ error, kind }: { error: string; kind: FailureKind }) {
-  const [restoring, setRestoring] = useState(false)
-  const said = advice(kind)
-  // The one screen where the version matters most and was hardest to get: a
-  // shop that cannot start cannot open Settings to read it.
-  const [version, setVersion] = useState<AppVersion | null>(null)
-  useEffect(() => { void appVersion().then(setVersion) }, [])
-
-  return (
-    <div className="centre">
-      <div className="panel" style={{ maxWidth: restoring ? 620 : undefined }}>
-        <div className="panel-head">
-          <h1>{said.title}</h1>
-        </div>
-        <div className="panel-body">
-          <Alert>{error}</Alert>
-          {said.says && (
-            <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.6 }}>
-              {said.says}
-            </div>
-          )}
-          {!restoring && (
-            <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-              <button
-                className={said.restore === 'first' ? 'btn primary' : said.restore === 'last' ? 'btn ghost' : 'btn'}
-                onClick={() => setRestoring(true)}
-              >
-                Restore a backup…
-              </button>
-              <button className="btn ghost" onClick={() => { void abandonRestore().then(() => window.location.reload()) }}>
-                Cancel a pending restore
-              </button>
-            </div>
-          )}
-          {restoring && (
-            <div style={{ marginTop: 14 }}>
-              <RestorePanel standalone />
-              <button className="btn ghost sm" style={{ marginTop: 10 }} onClick={() => setRestoring(false)}>
-                Back
-              </button>
-            </div>
-          )}
-          <div style={{ marginTop: 16, fontSize: 12, color: 'var(--ink-3)' }}>
-            ShopOS {versionLine(version)}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 /**
  * The first screen a machine ever shows, and it has three doors.
  *
@@ -328,51 +262,11 @@ function NewShop({ onCancel }: { onCancel: () => void }) {
   )
 }
 
-function Login() {
-  const { db, setUser } = useCore()
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    const result = await login(db, { username, password })
-    setBusy(false)
-
-    if (result.ok) {
-      setUser(result.user)
-      return
-    }
-    setError(
-      result.code === 'ACCOUNT_DISABLED'
-        ? 'This account has been turned off.'
-        : 'That username and password do not match.',
-    )
-  }
-
-  return (
-    <div className="centre">
-      <form className="panel" onSubmit={(e) => void submit(e)}>
-        <div className="panel-head">
-          <h1>ShopOS</h1>
-          <p>Sign in to the counter</p>
-        </div>
-        <div className="panel-body">
-          {error && <Alert>{error}</Alert>}
-          <Field label="Username">
-            <input className="input" id="username" value={username} autoFocus onChange={(e) => setUsername(e.target.value)} />
-          </Field>
-          <Field label="Password">
-            <input className="input" id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          </Field>
-          <button className="btn primary lg" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-        </div>
-      </form>
-    </div>
-  )
+  if (status.phase === 'starting') return <Empty>Starting…</Empty>
+  if (status.phase === 'failed') return <CouldNotStart error={status.error} kind={status.kind} />
+  if (status.phase === 'setup') return <Setup />
+  if (!user) return <Login />
+  return <Shell />
 }
 
 function Shell() {
@@ -419,7 +313,9 @@ function Shell() {
 
         <nav className="nav">
           {NAV_GROUPS.map((group) => {
-            const visible = group.pages.filter((p) => pages.includes(p))
+            const visible = group.pages
+              .filter((p) => pages.includes(p))
+              .filter((p) => p !== 'formats' || !pages.includes('settings'))
             if (visible.length === 0) return null
             return (
               <div key={group.label}>
@@ -435,6 +331,7 @@ function Shell() {
           })}
         </nav>
 
+        <UpdateLine />
         <div className="sidebar-foot">
           <div className="avatar">{initials}</div>
           <div style={{ minWidth: 0 }}>
@@ -481,7 +378,7 @@ function Shell() {
               take the sidebar with it, or there is no way back to the counter
               except closing the app mid-sale. */}
           <PageErrorBoundary resetKey={current}>
-            <PageBody page={current} />
+            <PageBody page={current} settingsToo={pages.includes('settings')} />
           </PageErrorBoundary>
         </div>
       </main>
@@ -489,7 +386,7 @@ function Shell() {
   )
 }
 
-function PageBody({ page }: { page: Page }) {
+function PageBody({ page, settingsToo }: { page: Page; settingsToo: boolean }) {
   switch (page) {
     /* The two that mint numbers against a counter, and so are the two that a
        till which does not know its counter must not reach. `CounterGate` says
@@ -511,7 +408,11 @@ function PageBody({ page }: { page: Page }) {
       /* Behind the same gate as Settings: this screen decides what every bill
          printed from now on looks like, which is not a thing for whoever was
          left at the counter. */
-      <AdminGate scope="formats" title="Bill Formats"><Formats /></AdminGate>
+      <AdminGate scope="formats" title="Bill Formats">
+        {/* Inside Settings for anyone who can open it, so there is one place
+            a bill's look is decided; on its own for a role that has only this. */}
+        {settingsToo ? <Settings initial="format" /> : <Formats />}
+      </AdminGate>
     )
     case 'settings': return (
       <AdminGate scope="settings" title="Settings"><Settings /></AdminGate>

@@ -1,4 +1,4 @@
-import { eq, ne, and, desc, sql } from 'drizzle-orm'
+import { eq, ne, and, desc, isNull, notInArray, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { derivedId } from '../ids.js'
@@ -41,7 +41,7 @@ export async function listBarcodes(db: SqlDriver, productId: string): Promise<Ba
       isPrimary: schema.productBarcodes.isPrimary,
     })
     .from(schema.productBarcodes)
-    .where(eq(schema.productBarcodes.productId, productId))
+    .where(and(eq(schema.productBarcodes.productId, productId), isNull(schema.productBarcodes.deletedAt)))
     .orderBy(desc(schema.productBarcodes.isPrimary), schema.productBarcodes.barcode)
 
   return rows.map((r) => ({ ...r, isPrimary: r.isPrimary === 1 }))
@@ -79,6 +79,7 @@ export async function setBarcodes(
       .where(and(
         eq(schema.productBarcodes.barcode, input.barcode),
         ne(schema.productBarcodes.productId, productId),
+        isNull(schema.productBarcodes.deletedAt),
       ))
     if (owner) {
       return { ok: false, code: 'TAKEN', barcode: input.barcode, productId: owner.productId, productName: owner.name }
@@ -89,8 +90,17 @@ export async function setBarcodes(
   const before = await listBarcodes(db, productId)
 
   await db.transaction(async (tx) => {
-    await q(tx).delete(schema.productBarcodes)
-      .where(eq(schema.productBarcodes.productId, productId))
+    /* Taken off, not deleted (056): a removal is an edit and merges like one,
+       where a delete left a tombstone that a third till could outlive -- and a
+       barcode brought back that way scans as an item the shop took it off. */
+    const keep = cleaned.map((b) => b.barcode)
+    await q(tx).update(schema.productBarcodes)
+      .set({ deletedAt: now })
+      .where(and(
+        eq(schema.productBarcodes.productId, productId),
+        isNull(schema.productBarcodes.deletedAt),
+        ...(keep.length > 0 ? [notInArray(schema.productBarcodes.barcode, keep)] : []),
+      ))
 
     for (const [index, input] of cleaned.entries()) {
       /* Derived from the code itself, which is the one thing about a barcode
@@ -99,6 +109,20 @@ export async function setBarcodes(
          with a minted id a barcode nobody touched came back under a new one,
          and two tills saving the same product wrote two rows for one code.
          Same id, and the feed folds the delete and the insert into one upsert. */
+      /* The same code, back on this item or moved to it from one it was taken
+         off: the row it always was, alive again. Found by the code rather than
+         by the derived id, because rows written before ids were derived carry
+         a minted one and the code is what is unique. */
+      const [held] = await q(tx)
+        .select({ id: schema.productBarcodes.id })
+        .from(schema.productBarcodes)
+        .where(eq(schema.productBarcodes.barcode, input.barcode))
+      if (held) {
+        await q(tx).update(schema.productBarcodes)
+          .set({ productId, label: input.label ?? null, isPrimary: index === 0 ? 1 : 0, deletedAt: null })
+          .where(eq(schema.productBarcodes.id, held.id))
+        continue
+      }
       await q(tx).insert(schema.productBarcodes).values({
         id: await derivedId('product_barcodes', input.barcode),
         productId,
@@ -140,6 +164,6 @@ export async function productIdForBarcode(db: SqlDriver, barcode: string): Promi
   const [row] = await q(db)
     .select({ productId: schema.productBarcodes.productId })
     .from(schema.productBarcodes)
-    .where(eq(schema.productBarcodes.barcode, barcode.trim()))
+    .where(and(eq(schema.productBarcodes.barcode, barcode.trim()), isNull(schema.productBarcodes.deletedAt)))
   return row?.productId ?? null
 }

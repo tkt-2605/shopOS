@@ -7,7 +7,7 @@ import {
   type SupplierSummary,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
-import { SupplierFile } from '../ui/CatalogueFile'
+import { SupplierFile } from '../ui/SupplierFile'
 import { Card, Modal, Field, Empty, Alert, Rupees } from '../ui/components'
 import { SupplierWorth } from '../ui/SupplierWorth'
 import { useConfirm } from '../ui/useConfirm'

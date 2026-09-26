@@ -263,7 +263,11 @@ export function SyncCard() {
                         {/* A till that agreed at four and has been unreachable
                             since five past looks, at a glance, exactly like one
                             that agreed at four and had nothing to say after. */}
-                        {p.lastError === null
+                        {/* Restored from a backup: the secret was left out of it on
+                            purpose, so this till has to be let in again. */}
+                        {p.needsPairing
+                          ? <span className="badge warn" title="Press Add a till on the other counter, then join it from here">pair again</span>
+                          : p.lastError === null
                           ? <span className="badge ok">talking</span>
                           : (
                             <span title={p.lastError}>

@@ -6,6 +6,7 @@ import {
   type ProductListItem, type StockEntryType, type Supplier,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { useAction } from '../core/useAction'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
@@ -40,6 +41,8 @@ export default function StockIn() {
   const [results, setResults] = useState<ProductListItem[]>([])
   const [lines, setLines] = useState<Line[]>([])
   const [error, setError] = useState<string | null>(null)
+  // A second press while the first is posting would receive the goods twice.
+  const posting = useAction(setError)
   // Held with its id, not just its number: the distributor's paper bill is in
   // the shopkeeper's hand at this moment and nowhere else later.
   const [done, setDone] = useState<{ docNo: string; entryId: string } | null>(null)
@@ -92,7 +95,15 @@ export default function StockIn() {
   }, 0)
 
   async function submit() {
+    await posting.run(post)
+  }
+
+  async function post() {
     setError(null)
+    if (lines.some((l) => (Money.parseMoney(l.cost) ?? 0) < 0)) {
+      setError('A cost cannot be below zero.')
+      return
+    }
     const entry = await createStockEntry(db, {
       entryType,
       supplierId: supplierId || null,
@@ -285,8 +296,8 @@ export default function StockIn() {
           Unit cost is recorded per movement, so valuation stays correct later.
         </span>
         <span style={{ flex: 1 }} />
-        <button className="btn primary" disabled={lines.length === 0} onClick={() => void submit()}>
-          Post entry
+        <button className="btn primary" disabled={lines.length === 0 || posting.busy} onClick={() => void submit()}>
+          {posting.busy ? 'Posting…' : 'Post entry'}
         </button>
       </div>
     </div>

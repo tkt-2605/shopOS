@@ -153,7 +153,7 @@ export const DOCUMENT_TABLES: ReadonlySet<string> = new Set([
  * every document in this schema, and seven lists would be seven places for the
  * eighth document to be forgotten.
  */
-const FROZEN: ReadonlySet<string> = new Set([
+export const FROZEN: ReadonlySet<string> = new Set([
   // Which document, and whose
   'doc_no', 'posting_date', 'created_by', 'amended_from',
   'register_id', 'session_id', 'customer_id', 'bill_id',

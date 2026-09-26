@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { login, createUser, listStaff, unlockUser, setUserActive } from '../src/services/auth.js'
 import { freshDb, type Fixture } from './helpers.js'
+import { setDeviceId } from '../src/device.js'
 
 /**
  * Signing in at the counter.
@@ -17,6 +18,9 @@ let userId: string
 const PASSWORD = 'counter-9'
 
 beforeEach(async () => {
+  /* Every till knows which machine it is -- the Rust side mints it before the
+     database opens -- and the count lives per machine since 049. */
+  setDeviceId('1111aaaa-1111-4111-8111-111111111111')
   fx = await freshDb()
   const created = await createUser(fx.db, {
     username: 'ramesh', password: PASSWORD, roleId: fx.seed.roleIds['Admin']!,
@@ -25,15 +29,13 @@ beforeEach(async () => {
   userId = created.userId
 })
 
-afterEach(async () => { await fx.db.close() })
+afterEach(async () => { setDeviceId(null); await fx.db.close() })
 
 const signIn = (password: string) => login(fx.db, { username: 'ramesh', password })
 
+/** The count as the staff screen shows it: every till's, added up. */
 async function failedCount(): Promise<number> {
-  const row = await fx.db.get<{ failed_logins: number }>(
-    `SELECT failed_logins FROM users WHERE id = ?`, [userId],
-  )
-  return row!.failed_logins
+  return (await listStaff(fx.db)).find((u) => u.id === userId)!.failedLogins
 }
 
 describe('signing in', () => {
@@ -131,5 +133,21 @@ describe('what the staff screen shows', () => {
       `SELECT locked_until FROM users WHERE id = ?`, [userId],
     )
     expect(row!.locked_until).toBeNull()
+  })
+})
+
+describe('what a wrong answer gives away', () => {
+  it('takes as long to refuse a name that does not exist as a wrong password', async () => {
+    // A lower bound, so a slow machine only makes it pass more easily. The old
+    // placeholder hash was malformed and answered in about a millisecond.
+    const started = performance.now()
+    expect(await login(fx.db, { username: 'nobody-here', password: 'x' }))
+      .toEqual({ ok: false, code: 'INVALID_CREDENTIALS' })
+    expect(performance.now() - started).toBeGreaterThan(20)
+  })
+
+  it('does not say an account is disabled to somebody without its password', async () => {
+    await setUserActive(fx.db, { userId, isActive: false, actorId: userId })
+    expect(await signIn('not-the-password')).toEqual({ ok: false, code: 'INVALID_CREDENTIALS' })
   })
 })

@@ -137,7 +137,10 @@ impl Answerer for ToWebview {
     }
 }
 
-#[tauri::command]
+/// `async`: binding is quick, but finding the discovery port free can take up
+/// to a second when sync has just been switched off and on again, and that
+/// second should not be a frozen window.
+#[tauri::command(async)]
 pub fn sync_serve_start(
     app: tauri::AppHandle,
     port: u16,
@@ -160,7 +163,7 @@ pub fn sync_serve_start(
        one flag. There is deliberately no state where a till announces itself on
        the network and then does not answer when somebody knocks. */
     if let Ok(identity) = device::identity_of(&paths::data_dir(&app)?) {
-        discovery::respond_while(
+        let findable = discovery::respond_while(
             discovery::Announcement {
                 v: 1,
                 device: identity.id,
@@ -177,6 +180,12 @@ pub fn sync_serve_start(
             },
             bound.stop_flag(),
         );
+        /* Not a reason to refuse to answer: a till that cannot be found can
+           still be typed in by address, and the screen shows the address. But
+           it is a reason nobody could find it, and that belongs in the log. */
+        if let Err(why) = findable {
+            crate::log::write("warn", "sync", &format!("discovery is off: {why}"));
+        }
     }
 
     let answer = info(bound.port);

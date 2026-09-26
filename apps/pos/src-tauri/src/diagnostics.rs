@@ -145,7 +145,9 @@ struct Peer {
 }
 
 /// Writes the bundle into `destination` and returns the path it wrote.
-#[tauri::command]
+/// `async`: a dozen queries, the logs and a zip are not work for the thread
+/// that draws the window.
+#[tauri::command(async)]
 pub fn diagnostics_bundle(
     app: tauri::AppHandle,
     db: State<'_, DbState>,
