@@ -9,7 +9,7 @@ import { seedFeedWithEverything } from '../changefeed.js'
 import { getSetting } from '../settings.js'
 import { entitled } from '../licence.js'
 import {
-  mintPairingCode, myFingerprint, pairingKey, agreeSecret, comparisonDigits, type PairingKey,
+  mintPairingCode, myFingerprint, pairingKey, agreeSecret, comparisonDigits, keyCommitment, type PairingKey,
 } from '../syncAuth.js'
 import { clock } from '../../clock.js'
 import { type SyncRequest, type SyncResponse, type SyncServerOptions, ok, peerAddressFrom, refuse } from './wire.js'
@@ -67,11 +67,14 @@ interface PendingJoin {
   requestId: string
   deviceId: string
   label: string | null
-  digits: string
+  /** Null until the joining till has shown the key it committed to. */
+  digits: string | null
   expiresAt: number
   decided: 'allowed' | 'refused' | null
-  /** The joining till's public key, as it asked with it. */
-  joinerKey: string
+  /** What the joining till asked with: a hash of the key it will show. */
+  commitment: string
+  /** The key itself, once shown and checked against `commitment`. */
+  joinerKey: string | null
   /** Ours for this pairing, made when the till first asked. */
   hostKey: PairingKey
   /** Agreed once, on the first poll after Allow, and the same for every poll
@@ -110,8 +113,17 @@ export function onJoinRequest(fn: ((join: JoinRequest | null) => void) | null): 
 
 export function pendingJoin(now = clock.now()): JoinRequest | null {
   if (pending === null || pending.expiresAt <= now || pending.decided !== null) return null
+  /* Nothing to show until the key is in: the digits are what a person
+     compares, and there are none yet. */
+  if (pending.digits === null) return null
   const { requestId, deviceId: device, label, digits } = pending
   return { requestId, deviceId: device, label, digits }
+}
+
+/** Whether a request is at the door, digits or not. */
+function asking(now: number): PendingJoin | null {
+  if (pending === null || pending.expiresAt <= now || pending.decided !== null) return null
+  return pending
 }
 
 export function allowJoin(requestId: string): void {
@@ -167,7 +179,7 @@ export function pairingOnOffer(now = clock.now()): string | null {
 export async function askingToJoin(
   theirDevice: string,
   label: string | null,
-  joinerKey: string,
+  commitment: string,
   now: number,
   /** The identity this till had before a restore, if it says so. */
   replaces: string | null = null,
@@ -177,38 +189,39 @@ export async function askingToJoin(
   /* One at a time. Two prompts that swap under a shopkeeper's hand is how the
      wrong till gets let in, and a shop adds a second counter about as often as
      it buys one. */
-  const live = pendingJoin(now)
+  const live = asking(now)
   if (live !== null && live.deviceId !== theirDevice) return refuse(409, 'ANOTHER_TILL_IS_ASKING')
 
   /* Asking again — a reply that went missing, or a till restarted mid-walk —
      is the same request, not a new one. Re-minting would change the digits
      under a shopkeeper who is already looking at them. */
-  if (live !== null && live.deviceId === theirDevice && pending !== null) {
-    /* A till that restarted mid-walk asks with a new key. The digits follow
-       the keys, so they change -- on both screens, since the joining till
-       works its own out -- and the prompt is shown again with the new ones. */
-    if (pending.joinerKey !== joinerKey) {
-      pending.joinerKey = joinerKey
-      pending.digits = await comparisonDigits(joinerKey, pending.hostKey.publicKey)
+  if (live !== null) {
+    /* A till that restarted mid-walk asks with a new key, and so a new
+       commitment. What it showed before counts for nothing now: the prompt
+       comes down until the new key is shown, and the digits follow it. */
+    if (live.commitment !== commitment) {
+      live.commitment = commitment
+      live.joinerKey = null
+      live.digits = null
+      live.secret = null
       announce()
     }
-    return pendingAnswer(pending)
+    return pendingAnswer(live)
   }
 
-  const hostKey = await pairingKey()
   pending = {
     requestId: newId(),
     deviceId: theirDevice,
     label,
-    digits: await comparisonDigits(joinerKey, hostKey.publicKey),
+    digits: null,
     expiresAt: now + PAIRING_WINDOW_MS,
     decided: null,
-    joinerKey,
-    hostKey,
+    commitment,
+    joinerKey: null,
+    hostKey: await pairingKey(),
     secret: null,
     replaces,
   }
-  announce()
   return pendingAnswer(pending)
 }
 
@@ -235,8 +248,18 @@ export async function pollingAJoin(
      whether a shop is mid-pairing. It is also simply not their conversation.
      A different key is a different conversation too: the digits the person
      compared were worked out from the key that asked. */
-  if (live === null || live.requestId !== requestId || live.deviceId !== theirDevice
-    || live.joinerKey !== joinerKey) {
+  if (live === null || live.requestId !== requestId || live.deviceId !== theirDevice) {
+    return ok({ state: 'LAPSED' })
+  }
+  /* The first poll shows the key the request committed to. It has to be that
+     key: anything else is a key chosen after ours was seen, which is the one
+     thing the commitment exists to rule out. */
+  if (live.joinerKey === null) {
+    if (await keyCommitment(joinerKey) !== live.commitment) return ok({ state: 'LAPSED' })
+    live.joinerKey = joinerKey
+    live.digits = await comparisonDigits(joinerKey, live.hostKey.publicKey)
+    announce()
+  } else if (live.joinerKey !== joinerKey) {
     return ok({ state: 'LAPSED' })
   }
   if (live.decided === 'refused') return ok({ state: 'REFUSED' })
@@ -246,7 +269,7 @@ export async function pollingAJoin(
   /* Allowed. The secret is agreed on the first poll that gets here and kept,
      so that a reply lost on the way back is a poll that can be repeated rather
      than a shop holding half a pairing. */
-  live.secret ??= await agreeSecret(live.hostKey, live.joinerKey, live.joinerKey, live.hostKey.publicKey)
+  live.secret ??= await agreeSecret(live.hostKey, joinerKey, joinerKey, live.hostKey.publicKey)
   return await letThemIn(
     db, request, theirDevice, live.label, live.secret, live.hostKey.publicKey, now, opts,
     null, live.replaces,

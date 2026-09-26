@@ -10,7 +10,8 @@ import { feedHead } from '../changefeed.js'
 import { resolveDeviceRegister } from '../registers.js'
 import { getSetting } from '../settings.js'
 import {
-  constantTimeEquals, signReply, verify, pairingKey, agreeSecret, isPairingPublicKey,
+  constantTimeEquals, signReply, verify, pairingKey, agreeSecret, isPairingPublicKey, isKeyCommitment,
+  codeProof, codeConfirmation,
 } from '../syncAuth.js'
 import { clock } from '../../clock.js'
 import { askingToJoin, letThemIn, offered, pollingAJoin, withdrawPairing } from './pairing.js'
@@ -115,45 +116,63 @@ async function handlePair(
 ): Promise<SyncResponse> {
   const asked = parse<{
     code?: string; deviceId?: string; label?: string; requestId?: string
-    fingerprint?: string; publicKey?: string; replaces?: string
+    fingerprint?: string; publicKey?: string; replaces?: string; commitment?: string; proof?: string
   }>(request.body)
   if (asked === null) return refuse(400, 'MALFORMED')
 
   const theirDevice = typeof asked.deviceId === 'string' ? asked.deviceId.trim() : ''
   if (theirDevice === '') return refuse(400, 'MALFORMED')
-  /* Every turn carries the joining till's public key: the secret is agreed
-     from it rather than sent, and a till without one is not one this build
-     can pair with safely. */
-  if (!isPairingPublicKey(asked.publicKey)) return refuse(400, 'MALFORMED')
-  const joinerKey = asked.publicKey
-
   /* Three messages arrive on this one path, because they are three turns of one
      conversation and a shop's firewall should not need a fourth port opened to
      hold it: a till asking to come in, that till asking whether it may yet, and
-     the old way — a till that was read a code. */
+     the old way — a till that was read a code.
+
+     Asking carries a commitment to the joining till's key and not the key --
+     see `keyCommitment` -- and every later turn carries the key itself: the
+     secret is agreed from it rather than sent. */
+  /* A code sent as typed is refused, and spent: it has already crossed the
+     wire where anybody could read it. The proof below replaces it. */
+  if (typeof asked.code === 'string') {
+    withdrawPairing()
+    return refuse(400, 'MALFORMED')
+  }
+  if (typeof asked.requestId !== 'string' && typeof asked.proof !== 'string') {
+    if (!isKeyCommitment(asked.commitment)) return refuse(400, 'MALFORMED')
+    return await askingToJoin(
+      theirDevice, asked.label ?? null, asked.commitment, now, replacesOf(asked.replaces, theirDevice),
+    )
+  }
+  if (!isPairingPublicKey(asked.publicKey)) return refuse(400, 'MALFORMED')
+  const joinerKey = asked.publicKey
+
   if (typeof asked.requestId === 'string') {
     return await pollingAJoin(db, request, asked.requestId.trim(), theirDevice, joinerKey, now, opts)
   }
-  if (typeof asked.code !== 'string') {
-    return await askingToJoin(theirDevice, asked.label ?? null, joinerKey, now, replacesOf(asked.replaces, theirDevice))
-  }
+  if (typeof asked.proof !== 'string') return refuse(400, 'MALFORMED')
 
   const live = offered
-  const given = asked.code.trim().toUpperCase()
 
   // Whatever happens next, this code is spent.
   withdrawPairing()
 
   if (live === null || live.expiresAt <= now) return refuse(403, 'NO_PAIRING_OFFERED')
-  if (!constantTimeEquals(live.code, given)) return refuse(403, 'WRONG_CODE')
+  if (!constantTimeEquals(await codeProof(live.code, theirDevice, joinerKey), asked.proof)) {
+    return refuse(403, 'WRONG_CODE')
+  }
 
   const ours = await pairingKey()
   const secret = await agreeSecret(ours, joinerKey, joinerKey, ours.publicKey)
-  return await letThemIn(
+  const answer = await letThemIn(
     db, request, theirDevice, asked.label ?? null, secret, ours.publicKey, now, opts,
     typeof asked.fingerprint === 'string' ? asked.fingerprint : null,
     replacesOf(asked.replaces, theirDevice),
   )
+  if (answer.status !== 200) return answer
+  /* Proof back the other way, over both keys: the joining till is told this
+     came from somebody who was shown the code, not from whoever was in the
+     middle of the conversation. */
+  const body = JSON.parse(answer.body) as Record<string, unknown>
+  return ok({ ...body, confirm: await codeConfirmation(live.code, theirDevice, joinerKey, ours.publicKey) })
 }
 
 async function handleHello(db: SqlDriver, them: string, request: SyncRequest): Promise<SyncResponse> {
@@ -224,6 +243,12 @@ async function handleFetch(
       eq(schema.syncPeers.deviceId, them),
       lt(schema.syncPeers.myCursor, since),
     ))
+  /* Being asked is being in touch. A phone that only ever pulls would
+     otherwise read as a peer gone quiet, and stop holding the feed back while
+     it is still reading it. See `FEED_LEASE_MS`. */
+  await q(db).update(schema.syncPeers)
+    .set({ lastAgreedAt: clock.iso() })
+    .where(eq(schema.syncPeers.deviceId, them))
 
   return ok(await collectChanges(db, since, limit, them))
 }

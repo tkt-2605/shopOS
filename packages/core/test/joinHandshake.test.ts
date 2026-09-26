@@ -280,13 +280,17 @@ describe('the secret two tills agree', () => {
   it('shows different digits on the two screens when a machine sits in the middle', async () => {
     /* It has to swap both keys to learn a secret, and the digits come from the
        keys -- the joining till works its own out -- so the person comparing
-       them sees the swap. */
-    const { pairingKey } = await import('../src/services/syncAuth.js')
+       them sees the swap. This one also swaps the commitment for one to its
+       own key; one that did not would be turned away at the reveal. */
+    const { pairingKey, keyCommitment } = await import('../src/services/syncAuth.js')
     const towardShop = await pairingKey()
     const towardTill = await pairingKey()
     const inTheMiddle = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
-      const response = await fetch(input, { ...init, body: JSON.stringify({ ...sent, publicKey: towardShop.publicKey }) })
+      const forged = 'commitment' in sent
+        ? { ...sent, commitment: await keyCommitment(towardShop.publicKey) }
+        : { ...sent, publicKey: towardShop.publicKey }
+      const response = await fetch(input, { ...init, body: JSON.stringify(forged) })
       const answer = JSON.parse(await response.text()) as Record<string, unknown>
       if (typeof answer['publicKey'] === 'string') answer['publicKey'] = towardTill.publicKey
       return new Response(JSON.stringify(answer), { status: response.status })
@@ -295,7 +299,38 @@ describe('the secret two tills agree', () => {
     addingATill()
     const asked = await askToJoin(host.url, null, inTheMiddle, MINE)
     if (asked.state !== 'PENDING') throw new Error('should be pending')
+    expect(pendingJoin()?.digits).toMatch(/^\d{6}$/)
     expect(pendingJoin()?.digits).not.toBe(asked.digits)
+  })
+
+  it('turns away a key that is not the one the request committed to', async () => {
+    /* The whole of the commitment: a key chosen after the shop's was seen is
+       a key that could have been ground to fit the digits. */
+    const { pairingKey, keyCommitment } = await import('../src/services/syncAuth.js')
+    const committed = await pairingKey()
+    const other = await pairingKey()
+    const pair = (body: Record<string, unknown>) => fetch(`${host.url}/pair`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }).then((r) => r.json() as Promise<Record<string, unknown>>)
+
+    addingATill()
+    const asked = await pair({ deviceId: JOINER, commitment: await keyCommitment(committed.publicKey) })
+    expect(asked['state']).toBe('PENDING')
+    expect(pendingJoin(), 'no prompt, and no digits, before the key is shown').toBeNull()
+
+    const shown = await pair({ deviceId: JOINER, requestId: asked['requestId'], publicKey: other.publicKey })
+    expect(shown['state']).toBe('LAPSED')
+    expect(pendingJoin()).toBeNull()
+  })
+
+  it('will not ask with the key itself on the first turn', async () => {
+    const { pairingKey } = await import('../src/services/syncAuth.js')
+    addingATill()
+    const response = await fetch(`${host.url}/pair`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId: JOINER, publicKey: (await pairingKey()).publicKey }),
+    })
+    expect(response.status).toBe(400)
   })
 
   it('refuses an answer that was altered on the way back', async () => {

@@ -2,7 +2,7 @@ import type { Row, SqlDriver } from '../../db/driver.js'
 import { EXPECTED_SCHEMA_VERSION } from '../../db/schemaVersion.js'
 import { deviceId } from '../../device.js'
 import { shapeOf, type ChangeBatch, type ChangeRecord } from '../../domain/replicaShape.js'
-import { changesSince } from '../changefeed.js'
+import { changesSince, prunedThrough, seedFeedWithEverything } from '../changefeed.js'
 
 /*
  * What leaves this till: the records a peer has not seen, read as they stand,
@@ -25,6 +25,7 @@ export async function collectChanges(
   /** The till this batch is for. Its own changes are left out of it. */
   forPeer: string | null = null,
 ): Promise<ChangeBatch> {
+  await catchUpFromBelowTheFloor(db, cursor, forPeer)
   const entries = await changesSince(db, cursor, limit + 1, forPeer)
   const complete = entries.length <= limit
   const batch = complete ? entries : entries.slice(0, limit)
@@ -132,4 +133,28 @@ export async function changedHere(
       .map((e) => `${e.table_name}\u0000${e.row_id}`)
       .filter((key) => wanted.has(key)),
   )
+}
+
+/** Peers already given the whole shop again by this process. */
+const reseeded = new WeakMap<SqlDriver, Set<string>>()
+
+/**
+ * A peer asking from below where the feed was pruned has missed entries --
+ * it was away past `FEED_LEASE_MS`, and the feed went on without it. It is
+ * given the whole shop again, which is what a till that has just joined gets
+ * and for the same reason: the feed alone no longer says everything it lacks.
+ * Rows it already holds are identical and write nothing there.
+ *
+ * Once per peer per run: after the first time every row is in the feed and a
+ * second pass would find nothing to add, at the price of a scan of every table.
+ * What cannot be sent again is a delete, because the row is gone -- a peer away
+ * for a month keeps a draft the rest of the shop threw out.
+ */
+async function catchUpFromBelowTheFloor(db: SqlDriver, cursor: number, forPeer: string | null): Promise<void> {
+  if (forPeer === null || cursor >= await prunedThrough(db)) return
+  let done = reseeded.get(db)
+  if (!done) { done = new Set(); reseeded.set(db, done) }
+  if (done.has(forPeer)) return
+  await seedFeedWithEverything(db)
+  done.add(forPeer)
 }

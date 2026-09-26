@@ -316,11 +316,83 @@ export async function agreeSecret(
  * thousand tries, each one a shopkeeper pressing Refuse -- which is not so: it
  * sees the joining till's key before it has to choose the one it shows that
  * till, so it can try keys offline until the digits match, and ten thousand
- * key pairs is a moment's work. Six makes that a million, which is a cost and
- * not a wall. The wall is a commitment -- one side sends a hash of its key
- * before it sees the other's, as Bluetooth numeric comparison does -- and that
- * is a change to the pairing exchange, recorded in `progress.md`.
+ * key pairs is a moment's work. Six makes that a million, and the wall is
+ * `keyCommitment`: the joining till is bound to its key before it sees the
+ * shop's, so neither side's key can be chosen to fit, and a machine in the
+ * middle is left with one guess in a million per attempt -- each attempt a
+ * shopkeeper looking at two numbers that do not match.
  */
+/**
+ * What a joining till sends before its key: a SHA-256 of it.
+ *
+ * The digits a person compares only prove anything if neither side could pick
+ * its key after seeing the other's. The joining till used to send its key
+ * first, so a machine in the middle -- posing as the shop -- saw it before
+ * choosing the key it showed back, and could try keys until the digits
+ * matched. Now the joining till sends this, hears the shop's key, and only then
+ * shows its own, which the shop checks against this. Bluetooth's numeric
+ * comparison and ZRTP do the same thing for the same reason.
+ */
+/**
+ * A key made from a pairing code, slowly.
+ *
+ * The typed code used to cross the wire as it was typed, beside the joining
+ * till's key -- so a machine in the middle could read it and relay the whole
+ * request with a key of its own. Now the code never crosses: each side proves
+ * it knows it with an HMAC over the keys, and neither proof can be moved to a
+ * different key.
+ *
+ * Slowly, because a proof is something to guess against. Eight characters from
+ * thirty-two is forty bits, which a fast hash gives up to one graphics card in
+ * minutes; a hundred thousand rounds of PBKDF2 makes that years, against a code
+ * that is spent on the first attempt and gone in ten minutes. Salted with the
+ * joining till's id, so no two pairings share a table.
+ */
+export const CODE_ROUNDS = 100_000
+
+async function codeKey(code: string, joiner: string): Promise<Key> {
+  const material = await globalThis.crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(code.trim().toUpperCase()), 'PBKDF2', false, ['deriveBits'],
+  )
+  const bits = await globalThis.crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2', hash: 'SHA-256', iterations: CODE_ROUNDS,
+      salt: new TextEncoder().encode(`shopos pairing code|${joiner}`),
+    },
+    material, 256,
+  )
+  return globalThis.crypto.subtle.importKey('raw', bits, ALGORITHM, false, ['sign'])
+}
+
+async function macWith(key: Key, message: string): Promise<string> {
+  return hex(new Uint8Array(await globalThis.crypto.subtle.sign(ALGORITHM.name, key, new TextEncoder().encode(message))))
+}
+
+/** The joining till's proof that it was read the code, bound to its key. */
+export async function codeProof(code: string, joiner: string, joinerKey: string): Promise<string> {
+  return macWith(await codeKey(code, joiner), `join\n${joinerKey}`)
+}
+
+/**
+ * The shop's answer to it: that it knows the code too, bound to both keys. A
+ * machine in the middle that swapped either key cannot make this, so the
+ * joining till checks it before it trusts the key it was handed.
+ */
+export async function codeConfirmation(
+  code: string, joiner: string, joinerKey: string, hostKey: string,
+): Promise<string> {
+  return macWith(await codeKey(code, joiner), `shop\n${joinerKey}\n${hostKey}`)
+}
+
+export async function keyCommitment(publicKey: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(publicKey))
+  return hex(new Uint8Array(digest))
+}
+
+export function isKeyCommitment(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
 export async function comparisonDigits(joinerKey: string, hostKey: string): Promise<string> {
   const digest = new Uint8Array(await globalThis.crypto.subtle.digest(
     'SHA-256', new TextEncoder().encode(`${joinerKey}|${hostKey}`),
