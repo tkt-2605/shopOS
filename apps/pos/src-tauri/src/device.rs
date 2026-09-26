@@ -392,6 +392,51 @@ fn save(path: &Path, stored: &Stored) -> Result<(), String> {
 }
 
 /// A fresh device id. `ids.rs` says why it is a v4.
+/// The device setting a restore leaves behind, as JSON: which identity this
+/// machine had before, and when. Read, updated and finally cleared by the
+/// webview -- `apps/pos/src/core/restoreHold.ts` carries the rest of it.
+pub const RESTORE_SETTING: &str = "restore";
+
+/// A new identity for a machine whose database has just been put back.
+///
+/// The label, the counter and the settings stay: it is the same machine at the
+/// same counter. Only the id changes, and the id it had is kept in
+/// `RESTORE_SETTING` so it can tell the other tills whose place it is taking.
+///
+/// If a restore is already pending -- a crash between this and the commit, or
+/// a second restore before the first caught up -- the identity recorded is the
+/// one from the first time, because that is the one the other tills know. The
+/// id in between was never seen by anybody.
+///
+/// No file means no identity yet, and the next start mints a new one anyway.
+pub fn start_over_after_restore(dir: &Path, restored_at: &str) -> Result<(), String> {
+    let _guard = writing();
+    let path = dir.join(FILE);
+    let Some(existing) = read_identity(&path)? else {
+        return Ok(());
+    };
+    let mut settings = existing.settings;
+    let replaces = settings
+        .get(RESTORE_SETTING)
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|held| held.get("replaces").and_then(|r| r.as_str()).map(str::to_string))
+        .filter(|id| is_device_id(id))
+        .unwrap_or(existing.id);
+    settings.insert(
+        RESTORE_SETTING.into(),
+        serde_json::json!({ "replaces": replaces, "at": restored_at }).to_string(),
+    );
+    save(
+        &path,
+        &Stored {
+            device_id: mint(),
+            label: existing.label,
+            register_id: existing.register_id,
+            settings,
+        },
+    )
+}
+
 fn mint() -> String {
     crate::ids::uuid_v4()
 }
@@ -677,4 +722,56 @@ mod tests {
             assert!(!is_device_id(s), "{s} should be refused");
         }
     }
+
+    fn restore_setting(dir: &std::path::Path) -> serde_json::Value {
+        let raw = load_or_mint(dir).unwrap().settings.get(RESTORE_SETTING).cloned().unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    /// The same machine at the same counter, under a new name the other tills
+    /// have never read. See `restore.rs::start_over` for why.
+    #[test]
+    fn a_restore_takes_a_new_identity_and_remembers_the_old_one() {
+        let dir = temp("restored");
+        let before = load_or_mint(&dir).unwrap();
+        set_register(&dir, Some("reg-front".into())).unwrap();
+        put(&dir, "thermal_printer", Some("EPSON TM-T82")).unwrap();
+
+        start_over_after_restore(&dir, "2026-09-26T10:00:00.000Z").unwrap();
+
+        let after = load_or_mint(&dir).unwrap();
+        assert_ne!(after.id, before.id);
+        assert!(is_device_id(&after.id));
+        assert_eq!(after.label, before.label);
+        assert_eq!(after.register_id.as_deref(), Some("reg-front"), "the same counter");
+        assert_eq!(after.settings.get("thermal_printer").map(String::as_str), Some("EPSON TM-T82"));
+        let held = restore_setting(&dir);
+        assert_eq!(held["replaces"], before.id.as_str());
+        assert_eq!(held["at"], "2026-09-26T10:00:00.000Z");
+    }
+
+    /// A crash between the rotation and the commit rotates again on the next
+    /// start. The id the other tills know is the first one, and it is kept.
+    #[test]
+    fn a_second_rotation_keeps_the_identity_the_other_tills_know() {
+        let dir = temp("restored-twice");
+        let original = load_or_mint(&dir).unwrap().id;
+
+        start_over_after_restore(&dir, "2026-09-26T10:00:00.000Z").unwrap();
+        let between = load_or_mint(&dir).unwrap().id;
+        start_over_after_restore(&dir, "2026-09-26T10:00:00.000Z").unwrap();
+        let last = load_or_mint(&dir).unwrap().id;
+
+        assert_ne!(last, between);
+        assert_ne!(last, original);
+        assert_eq!(restore_setting(&dir)["replaces"], original.as_str());
+    }
+
+    #[test]
+    fn a_machine_with_no_identity_yet_is_left_to_mint_one() {
+        let dir = temp("restored-fresh");
+        start_over_after_restore(&dir, "2026-09-26T10:00:00.000Z").unwrap();
+        assert!(!dir.join(FILE).exists(), "nothing to replace, so nothing written");
+    }
+
 }

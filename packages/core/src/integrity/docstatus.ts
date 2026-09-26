@@ -199,3 +199,66 @@ export function refusedAsSubmitted(
   return `a ${label(was as DocStatus)} document, and they have a different `
     + `${changed.slice(0, 3).join(', ')}${changed.length > 3 ? ` and ${changed.length - 3} more` : ''}`
 }
+
+/**
+ * Line columns that are allowed to move after the document is submitted,
+ * because they are caches of later documents rather than part of this one:
+ * what has come back against a bill line, what a return has handed back of a
+ * redemption, and when a cancellation reversed it, and how much of an order
+ * line has been fulfilled. Each is repaired from its records after a merge.
+ * Everything else on a submitted document's lines is the document.
+ */
+export const LINE_CACHES: Readonly<Record<string, ReadonlySet<string>>> = {
+  bill_items: new Set(['returned_qty']),
+  loyalty_redemptions: new Set(['restored', 'reversed_at']),
+  document_items: new Set(['fulfilled_qty']),
+}
+
+/**
+ * Why an incoming document's lines must not replace the ones held here, or
+ * null to allow it.
+ *
+ * `refusedAsSubmitted` guards the header and the triggers from 059 guard it in
+ * the database, and neither ever looked at the lines -- while the merge
+ * replaces a winning document's lines wholesale. So a cancellation arriving
+ * from a peer that held different lines for the same submitted bill would
+ * have left this till with a grand total the lines no longer add up to, on a
+ * tax invoice. The lines of a submitted document are as final as its header:
+ * the same lines, by id, holding the same things, caches aside.
+ *
+ * Columns and line tables only one side has are left out of the comparison --
+ * the other till is a migration ahead or behind -- for the same reason
+ * `known()` drops them.
+ */
+export function refusedLinesOfSubmitted(
+  table: string,
+  mine: Record<string, unknown>,
+  myLines: Readonly<Record<string, ReadonlyArray<Record<string, unknown>>>>,
+  theirLines: Readonly<Record<string, ReadonlyArray<Record<string, unknown>>>>,
+): string | null {
+  if (!DOCUMENT_TABLES.has(table)) return null
+  const was = Number(mine['docstatus'])
+  if (!Number.isFinite(was) || was < SUBMITTED) return null
+
+  for (const [lineTable, held] of Object.entries(myLines)) {
+    // A line table the other till does not have yet says nothing either way.
+    const arriving = theirLines[lineTable]
+    if (arriving === undefined) continue
+    const byId = new Map(arriving.map((line) => [String(line['id']), line]))
+    if (byId.size !== held.length || held.some((line) => !byId.has(String(line['id'])))) {
+      return `a ${label(was as DocStatus)} document, and they have different ${lineTable} on it`
+    }
+    const caches = LINE_CACHES[lineTable] ?? new Set<string>()
+    for (const line of held) {
+      const theirs = byId.get(String(line['id']))!
+      const changed = Object.keys(line).filter(
+        (column) => !caches.has(column) && column in theirs && String(theirs[column]) !== String(line[column]),
+      )
+      if (changed.length > 0) {
+        return `a ${label(was as DocStatus)} document, and they have a different `
+          + `${changed.slice(0, 3).join(', ')} on one of its ${lineTable}`
+      }
+    }
+  }
+  return null
+}

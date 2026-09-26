@@ -454,8 +454,9 @@ fn apply_with(dir: &Path, rename: Rename<'_>) -> Report {
     if !swap.staged.exists() {
         if swap.previous.exists() && swap.live.exists() {
             // The swap happened and the commit did not. Commit.
+            let error = start_over(dir, &marker);
             let _ = std::fs::remove_dir_all(&staging);
-            return Report { restored: Some(marker), ..Report::default() };
+            return Report { restored: Some(marker), error, ..Report::default() };
         }
         if swap.put_back(rename).is_err() {
             return stuck(&swap, &marker, "the backup went missing half-way through the restore");
@@ -520,8 +521,39 @@ fn apply_with(dir: &Path, rename: Rename<'_>) -> Report {
     }
 
     // 3b. Deleting the marker, and the parked database with it, is the commit.
+    let error = start_over(dir, &marker);
     let _ = std::fs::remove_dir_all(&staging);
-    Report { restored: Some(marker), ..Report::default() }
+    Report { restored: Some(marker), error, ..Report::default() }
+}
+
+/// The machine takes a new identity, immediately before the commit.
+///
+/// The restored database is this machine's past, and the other tills already
+/// hold its present: they have read its change feed up to a number the restored
+/// feed is now far below, so everything written after the restore would sit
+/// under their cursor and never be asked for -- and the bills this till rang up
+/// between the backup and now are filed on them as having come from this till,
+/// so they would never be sent back. Reproduced during the pre-release review of 26 September. A new
+/// id makes this a till the others have not read at all, which is the truth
+/// about the database it now holds.
+///
+/// Before the commit rather than after, so a machine that loses power between
+/// the two finishes the commit on the next start and rotates again -- keeping
+/// the identity it replaced from the first time, which is the one the other
+/// tills know. `device::start_over_after_restore` owns that rule.
+///
+/// A failure does not undo the restore, which has already happened; it is
+/// reported, with what to do about it.
+fn start_over(dir: &Path, marker: &Marker) -> Option<String> {
+    crate::device::start_over_after_restore(dir, &marker.staged_at)
+        .err()
+        .map(|e| {
+            format!(
+                "The backup is back in place, but this till could not take a new identity ({e}). \
+                 Until it does, the other tills cannot tell it from the till it was before the \
+                 restore: on each of them, forget this till and pair it again."
+            )
+        })
 }
 
 /// A swap that could not be finished *or* undone. Nothing opens; the message
@@ -972,5 +1004,65 @@ mod tests {
             safety_path(&backups, "shop-2026-09-12.zip", "before-restore-2026-09-13-0905.db").unwrap(),
             backups.join("before-restore-2026-09-13-0905.db")
         );
+    }
+
+    fn identity(dir: &Path) -> String {
+        crate::device::identity_of(dir).unwrap().id
+    }
+
+    /// Restoring on the machine that made the backup used to keep its id, and
+    /// the other tills' cursors on that id then stepped over everything it
+    /// wrote afterwards. The sync half is argued at `start_over`.
+    #[test]
+    fn a_restore_gives_the_machine_a_new_identity() {
+        let dir = a_shop("new-identity");
+        let before = identity(&dir);
+        stage(&dir, b"the backup", true);
+
+        let report = apply_pending(&dir);
+        assert!(report.error.is_none() && report.restored.is_some());
+        assert_ne!(identity(&dir), before);
+    }
+
+    #[test]
+    fn an_ordinary_start_keeps_the_identity() {
+        let dir = a_shop("same-identity");
+        let before = identity(&dir);
+        apply_pending(&dir);
+        assert_eq!(identity(&dir), before);
+    }
+
+    /// Power lost after the swap and before the commit, on a machine that had
+    /// already been given its new identity: the one the other tills know is
+    /// still the one recorded as replaced.
+    #[test]
+    fn finishing_an_interrupted_commit_keeps_the_identity_it_replaced() {
+        let dir = a_shop("uncommitted-identity");
+        let original = identity(&dir);
+        stage(&dir, b"the backup", true);
+        crate::device::start_over_after_restore(&dir, "2026-09-13T09:05:00Z").unwrap();
+        let staging = restore_dir(&dir);
+        std::fs::rename(dir.join(DB_FILE), staging.join(PREVIOUS)).unwrap();
+        std::fs::rename(staging.join(STAGED), dir.join(DB_FILE)).unwrap();
+
+        let report = apply_pending(&dir);
+        assert!(report.error.is_none() && report.restored.is_some());
+        let held = crate::device::setting(&dir, crate::device::RESTORE_SETTING).unwrap().unwrap();
+        let held: serde_json::Value = serde_json::from_str(&held).unwrap();
+        assert_eq!(held["replaces"], original.as_str());
+        assert_ne!(identity(&dir), original);
+    }
+
+    #[test]
+    fn a_commit_finished_on_the_next_start_takes_a_new_identity_too() {
+        let dir = a_shop("uncommitted-identity");
+        let before = crate::device::identity_of(&dir).unwrap().id;
+        stage(&dir, b"the backup", true);
+        let staging = restore_dir(&dir);
+        std::fs::rename(dir.join(DB_FILE), staging.join(PREVIOUS)).unwrap();
+        std::fs::rename(staging.join(STAGED), dir.join(DB_FILE)).unwrap();
+
+        assert!(apply_pending(&dir).restored.is_some());
+        assert_ne!(crate::device::identity_of(&dir).unwrap().id, before);
     }
 }

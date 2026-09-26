@@ -3,7 +3,9 @@ import { deviceId } from '../../device.js'
 import { decideRow, decideDeletion } from '../../domain/merge.js'
 import { shapeOf, type ChangeBatch, type ChangeRecord } from '../../domain/replicaShape.js'
 import { feedApplied } from '../changefeed.js'
-import { refusedAsSubmitted, DOCUMENT_TABLES, SUBMITTED } from '../../integrity/docstatus.js'
+import {
+  refusedAsSubmitted, refusedLinesOfSubmitted, DOCUMENT_TABLES, SUBMITTED,
+} from '../../integrity/docstatus.js'
 import type { ContestedChange } from './types.js'
 
 /*
@@ -183,6 +185,7 @@ export async function applyRecord(
        holds, so the two shops now genuinely differ and a person has to be the
        one to decide. */
     const refusal = refusedAsSubmitted(shape.table, mine, record.row)
+      ?? await linesRefused(tx, shape, record, mine)
     if (refusal !== null) {
       return {
         ...NOTHING,
@@ -235,6 +238,28 @@ export async function applyRecord(
   }
 
   return { applied: 1, contested, ignoredColumns, ignoredTables }
+}
+
+/**
+ * `refusedLinesOfSubmitted` against the lines held here. Only read for a
+ * document already submitted here, which is the only case it can refuse.
+ */
+async function linesRefused(
+  tx: SqlDriver,
+  shape: NonNullable<ReturnType<typeof shapeOf>>,
+  record: ChangeRecord,
+  mine: Row,
+): Promise<string | null> {
+  if (!DOCUMENT_TABLES.has(shape.table) || Number(mine['docstatus']) < SUBMITTED) return null
+  if (record.lines === undefined || shape.lines.length === 0) return null
+  const held: Record<string, Row[]> = {}
+  for (const line of shape.lines) {
+    /* raw: `REPLICATED`'s names again. See the note on `upsert`. */
+    held[line.table] = await tx.query<Row>(
+      `SELECT * FROM "${line.table}" WHERE "${line.parentKey}" = ?`, [record.rowId],
+    )
+  }
+  return refusedLinesOfSubmitted(shape.table, mine, held, record.lines)
 }
 
 /**

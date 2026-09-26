@@ -2,7 +2,7 @@ import type { SqlDriver } from '../../db/driver.js'
 import { MERGE_BUDGET_MS } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { newId } from '../../ids.js'
-import { shapeOf, type ChangeBatch, type ChangeRecord } from '../../domain/replicaShape.js'
+import { type ChangeBatch, type ChangeRecord } from '../../domain/replicaShape.js'
 import { applyingRemote } from '../changefeed.js'
 import { recomputeStock } from '../stock.js'
 import { reconcileLoyalty } from '../loyaltyLedger.js'
@@ -10,6 +10,9 @@ import { reconcileReturnedQty } from '../returns/reconcile.js'
 import { reconcileFulfilledQty } from '../documents/reconcile.js'
 import { clock } from '../../clock.js'
 import { applyRecord } from './record.js'
+import {
+  RECORD, anythingSetAside, keyOf, orphansAmong, parentSetAside, retrySetAside,
+} from './setAside.js'
 import type { ContestedChange } from './types.js'
 
 /*
@@ -63,11 +66,19 @@ export async function applyBatch(
   batch: ChangeBatch,
   changedHereToo: ReadonlySet<string> = new Set(),
 ): Promise<MergeOutcome> {
-  if (batch.records.length === 0) {
+  /* An empty batch still has work when something is set aside. The fix a
+     person is told to make for a name that clashes -- rename one, then sync
+     again -- is a local edit, and the round after it usually brings nothing
+     in. Without this the record they were waiting on would wait for the next
+     round that happened to carry a row. */
+  if (batch.records.length === 0 && !await anythingSetAside(db)) {
     return { applied: 0, contested: [], ignoredColumns: 0, ignoredTables: 0, quarantined: 0, cachesHeld: 0 }
   }
 
-  const outcome = await mergeBatch(db, batch, changedHereToo)
+  const { recovered, ...outcome } = await mergeBatch(db, batch, changedHereToo)
+  /* The caches below are scoped by what arrived, and a record that has just
+     come out of quarantine arrived as surely as anything in the batch. */
+  const arrived = recovered.length === 0 ? batch.records : [...batch.records, ...recovered]
 
   /* `product_stock` is a cache of the ledger and does not replicate — and
      `NOT_REPLICATED` has said "a merge recomputes it" since the day it was
@@ -91,27 +102,27 @@ export async function applyBatch(
      in the shop, forty-seven thousand movements on a year of trade, because one
      row for one item came across. */
   if (outcome.applied > 0) {
-    const touched = productsIn(batch)
+    const touched = productsIn(arrived)
     if (touched === null || touched.length > 0) {
       await recomputeStock(db, { repair: true, ...(touched ? { productIds: touched } : {}) })
     }
     /* The same for points: what an entry has had spent from it is a cache of
        the redemptions, which arrive inside their bill. See `loyaltyLedger.ts`. */
-    const customers = idsIn(batch, LOYALTY_SOURCES, (r) => r.row?.['customer_id'])
+    const customers = idsIn(arrived, LOYALTY_SOURCES, (r) => r.row?.['customer_id'])
     if (customers === null || customers.length > 0) {
       const found = await reconcileLoyalty(db, { repair: true, customerIds: customers })
       outcome.cachesHeld += found.filter((d) => !d.repairable).length
     }
     /* And what each bill line has had back, which two partial returns of one
        bill on two tills would otherwise leave one increment short. */
-    const bills = idsIn(batch, RETURN_SOURCES, (r) => (r.table === 'bills' ? r.rowId : r.row?.['bill_id']))
+    const bills = idsIn(arrived, RETURN_SOURCES, (r) => (r.table === 'bills' ? r.rowId : r.row?.['bill_id']))
     if (bills === null || bills.length > 0) {
       const found = await reconcileReturnedQty(db, { repair: true, billIds: bills })
       outcome.cachesHeld += found.filter((d) => !d.repairable).length
     }
     /* And what each order line has been fulfilled by -- bills against it and
        conversions of it, both recorded row by row. */
-    const documents = idsIn(batch, FULFIL_SOURCES, (r) => (
+    const documents = idsIn(arrived, FULFIL_SOURCES, (r) => (
       r.table === 'documents' ? r.rowId
         : r.table === 'bills' ? r.row?.['converted_from']
           : r.row?.['document_id']))
@@ -134,9 +145,9 @@ export async function applyBatch(
  * the weekly replay. Deletions of ledger rows are refused outright (052), so
  * this is reached only by a row that vanished before it could be read.
  */
-function productsIn(batch: ChangeBatch): string[] | null {
+function productsIn(records: readonly ChangeRecord[]): string[] | null {
   const ids = new Set<string>()
-  for (const record of batch.records) {
+  for (const record of records) {
     if (record.table !== 'stock_ledger') continue
     /* A deletion of a movement is refused by the database since 052 and
        quarantined, so it changes nothing here to replay. */
@@ -154,12 +165,12 @@ function productsIn(batch: ChangeBatch): string[] | null {
  * caller then looks at everything, which is slow and correct.
  */
 function idsIn(
-  batch: ChangeBatch,
+  records: readonly ChangeRecord[],
   tables: ReadonlySet<string>,
-  pick: (record: ChangeBatch['records'][number]) => unknown,
+  pick: (record: ChangeRecord) => unknown,
 ): string[] | null {
   const ids = new Set<string>()
-  for (const record of batch.records) {
+  for (const record of records) {
     if (!tables.has(record.table)) continue
     const id = pick(record)
     if (typeof id !== 'string') {
@@ -171,11 +182,28 @@ function idsIn(
   return [...ids]
 }
 
+/** A merge's outcome, and the parked records that landed during it. */
+type BatchOutcome = MergeOutcome & { recovered: ChangeRecord[] }
+
+/**
+ * Records that point at a row this database does not hold, found before the
+ * COMMIT that would have refused them.
+ *
+ * Thrown from the slow pass so that the pass can be run again with these set
+ * aside from the start. Keyed like `setAside`; the value is the reason.
+ */
+class Orphaned extends Error {
+  constructor(readonly waiting: ReadonlyMap<string, string>) {
+    super(`${waiting.size} record(s) point at rows that are not here`)
+    this.name = 'Orphaned'
+  }
+}
+
 async function mergeBatch(
   db: SqlDriver,
   batch: ChangeBatch,
   changedHereToo: ReadonlySet<string>,
-): Promise<MergeOutcome> {
+): Promise<BatchOutcome> {
   /* Ninety seconds rather than a bill's fifteen.
    *
    * The whole batch is one transaction on purpose: half a merge is not a state
@@ -186,7 +214,7 @@ async function mergeBatch(
    * catch up, and nobody would diagnose that from the shop floor. */
   try {
     return await applyingRemote(
-      db, (tx) => runBatch(tx, batch, changedHereToo, false), { budgetMs: MERGE_BUDGET_MS },
+      db, (tx) => runBatch(tx, batch, changedHereToo, false, NONE_WAITING), { budgetMs: MERGE_BUDGET_MS },
     )
   } catch {
     /* Something in this batch will not go in, and the fast path has just rolled
@@ -202,22 +230,38 @@ async function mergeBatch(
        Not retried beyond this. If the slow path throws as well then the fault is
        not a record — it is the disk, the schema, or the watchdog — and setting a
        whole batch aside would be inventing a diagnosis. The throw goes up, the
-       cursor stays where it was, and the round is reported as failed. */
-    return await applyingRemote(
-      db, (tx) => runBatch(tx, batch, changedHereToo, true), { budgetMs: MERGE_BUDGET_MS },
-    )
+       cursor stays where it was, and the round is reported as failed.
+
+       With one exception, which is a diagnosis and not a guess: a record whose
+       parent is not here. A savepoint cannot catch that, because the foreign
+       key is deferred and only checked at COMMIT -- and the parent can
+       legitimately be in a *later* batch, because the feed is a set and editing
+       a category after adding a product to it moves the category's entry
+       behind the product's. Without this the COMMIT failed on both passes,
+       nothing was set aside, the cursor stayed put, and the next round built
+       the identical batch: a pair of tills wedged for good. So the slow pass
+       asks SQLite before committing, and when it names records that point at
+       nothing it is run again with those set aside. Each run sets aside at
+       least one more record, so this ends. */
+    const waiting = new Map<string, string>()
+    for (;;) {
+      try {
+        return await applyingRemote(
+          db, (tx) => runBatch(tx, batch, changedHereToo, true, waiting), { budgetMs: MERGE_BUDGET_MS },
+        )
+      } catch (err) {
+        if (!(err instanceof Orphaned)) throw err
+        const before = waiting.size
+        for (const [key, why] of err.waiting) waiting.set(key, why)
+        if (waiting.size === before) throw err
+      }
+    }
   }
 }
 
-/**
- * The savepoint's name.
- *
- * One constant rather than one per record: `run_execute` in the Rust driver
- * prepares statements into a small cache, and a fresh name each time would push
- * out the statements the merge actually runs on. SQLite is content to reuse a
- * name — `ROLLBACK TO` and `RELEASE` find the most recent one that carries it.
- */
-const RECORD = 'shopos_record'
+const NONE_WAITING: ReadonlyMap<string, string> = new Map()
+
+
 
 async function runBatch(
   tx: SqlDriver,
@@ -225,13 +269,18 @@ async function runBatch(
   changedHereToo: ReadonlySet<string>,
   /** Whether to put a savepoint around each record. See `mergeBatch`. */
   oneByOne: boolean,
-): Promise<MergeOutcome> {
+  /** Records an earlier run of this pass found pointing at nothing. */
+  waiting: ReadonlyMap<string, string>,
+): Promise<BatchOutcome> {
   let applied = 0
   let ignoredColumns = 0
   let ignoredTables = 0
   let quarantined = 0
   const contested: ContestedChange[] = []
   const setAside = new Set<string>()
+  /* What this run wrote, so the check before COMMIT can tell an orphan this
+     batch made from one that was already here. */
+  const landed: ChangeRecord[] = []
 
   /* Foreign keys are checked at COMMIT rather than per statement, for the rows
      written inside this transaction only.
@@ -261,15 +310,21 @@ async function runBatch(
       continue
     }
 
+    /* Found pointing at nothing by an earlier run of this pass. Set aside
+       rather than tried again, because trying again only fails at COMMIT. It
+       comes back out on its own once what it waits for has arrived -- see
+       `retrySetAside`. */
+    const key = keyOf(record.table, record.rowId)
+    const waitingFor = waiting.get(key)
     /* A record whose parent was set aside cannot land either, and finding that
        out at COMMIT fails the whole batch — which is the thing this pass exists
        to prevent. `REPLICATED`'s dependency order covers most of it and cannot
        cover a row that points at its own table: `categories.parent_id`,
        `bills.amended_from`, `products.parent_product_id`. */
-    const orphaned = await parentSetAside(tx, record, setAside)
+    const orphaned = waitingFor ?? await parentSetAside(tx, record, setAside)
     if (orphaned !== null) {
       await quarantine(tx, batch, record, orphaned)
-      setAside.add(`${record.table}\u0000${record.rowId}`)
+      setAside.add(key)
       quarantined += 1
       continue
     }
@@ -282,6 +337,7 @@ async function runBatch(
       ignoredColumns += outcome.ignoredColumns
       ignoredTables += outcome.ignoredTables
       contested.push(...outcome.contested)
+      if (outcome.applied > 0) landed.push(record)
     } catch (err) {
       /* Both statements, and in this order. `ROLLBACK TO` undoes the work and
          leaves the savepoint on the stack; without the `RELEASE` the stack grows
@@ -289,9 +345,24 @@ async function runBatch(
       await tx.execute(`ROLLBACK TO ${RECORD}`)
       await tx.execute(`RELEASE ${RECORD}`)
       await quarantine(tx, batch, record, reasonOf(err))
-      setAside.add(`${record.table}\u0000${record.rowId}`)
+      setAside.add(key)
       quarantined += 1
     }
+  }
+
+  /* After the batch, because the batch is usually what a parked record was
+     waiting for: the category behind the product, the counter renamed on the
+     other till. */
+  const retried = await retrySetAside(tx, setAside, waiting)
+  applied += retried.recovered.length
+
+  /* The last thing before COMMIT on the slow pass: would it be refused? Only
+     here, because a healthy merge never reaches the slow pass, and on this one
+     the cost of asking is a scan of the tables the batch touched against the
+     cost of a shop that stops replicating. */
+  if (oneByOne) {
+    const orphans = await orphansAmong(tx, [...landed, ...retried.recovered])
+    if (orphans.size > 0) throw new Orphaned(orphans)
   }
 
   /* Written inside the same transaction that applied the batch, so a merge
@@ -312,7 +383,10 @@ async function runBatch(
     })
   }
 
-  return { applied, contested, ignoredColumns, ignoredTables, quarantined, cachesHeld: 0 }
+  return {
+    applied, contested, ignoredColumns, ignoredTables, quarantined, cachesHeld: 0,
+    recovered: retried.recovered,
+  }
 }
 
 /**
@@ -357,53 +431,6 @@ async function quarantine(
         acknowledged: 0,
       },
     })
-}
-
-/**
- * Which foreign keys a table has, asked once per table per process.
- *
- * Cached on the driver rather than globally for `localColumns`' reason: a test
- * that opens two databases in one process must not be handed the other's shape.
- */
-const keysOf = new WeakMap<SqlDriver, Map<string, Array<{ from: string; table: string }>>>()
-
-async function foreignKeys(
-  tx: SqlDriver, table: string,
-): Promise<Array<{ from: string; table: string }>> {
-  let tables = keysOf.get(tx)
-  if (!tables) { tables = new Map(); keysOf.set(tx, tables) }
-
-  const cached = tables.get(table)
-  if (cached !== undefined) return cached
-
-  /* raw: a PRAGMA, which a query builder has no words for. The name is
-     `REPLICATED`'s and never the wire's -- see the note on `upsert` in `record.ts`. */
-  const rows = await tx.query<{ from: string; table: string }>(
-    `PRAGMA foreign_key_list("${table}")`,
-  )
-  const keys = rows.map((r) => ({ from: r.from, table: r.table }))
-  tables.set(table, keys)
-  return keys
-}
-
-/** Why a record cannot land when what it points at did not, or null. */
-async function parentSetAside(
-  tx: SqlDriver,
-  record: ChangeRecord,
-  setAside: ReadonlySet<string>,
-): Promise<string | null> {
-  if (setAside.size === 0 || record.row === null) return null
-  const shape = shapeOf(record.table)
-  if (shape === undefined) return null
-
-  for (const key of await foreignKeys(tx, shape.table)) {
-    const value = record.row[key.from]
-    if (typeof value !== 'string') continue
-    if (setAside.has(`${key.table}\u0000${value}`)) {
-      return `parent quarantined: ${key.table} ${value}`
-    }
-  }
-  return null
 }
 
 /** What SQLite said, got back out as plainly as it can be. */

@@ -211,3 +211,58 @@ describe('a bill the other till is still typing into', () => {
     expect(await grandTotalOn(b, billId)).toBe(25000)
   })
 })
+
+describe('the lines of a submitted bill', () => {
+  /* The header has been guarded since 059 and by `refusedAsSubmitted`; the
+     lines were rewritten wholesale by any copy of the bill that won the merge.
+     A cancellation from a till that held different lines would have left the
+     invoice here with a total its lines no longer add up to. */
+
+  async function cancelOnA(billId: string) {
+    await editingSubmitted(a.db, 'bills', () => a.db.execute(
+      `UPDATE bills SET docstatus = 2, updated_at = ? WHERE id = ?`,
+      ['2026-09-18T12:00:00.000Z', billId],
+    ))
+  }
+
+  const lineOn = (till: Till, billId: string) => till.db.get<{ rate: number; line_total: number; returned_qty: number }>(
+    `SELECT rate, line_total, returned_qty FROM bill_items WHERE bill_id = ?`, [billId],
+  )
+  const statusOn = async (till: Till, billId: string) =>
+    (await till.db.get<{ docstatus: number }>(`SELECT docstatus FROM bills WHERE id = ?`, [billId]))?.docstatus
+
+  it('are not replaced by a copy that holds different ones', async () => {
+    const billId = await billOnBoth()
+    await a.db.execute(
+      `UPDATE bill_items SET rate = 99900, line_total = 99900 WHERE bill_id = ?`, [billId],
+    )
+    await cancelOnA(billId)
+
+    await push(a, b)
+
+    expect(await lineOn(b, billId), 'the line B printed').toMatchObject({ rate: 10000, line_total: 10000 })
+    expect(await statusOn(b, billId), 'and the copy carrying it was refused whole').toBe(1)
+    const conflicts = await recentConflicts(b.db)
+    expect(conflicts.some((c) => c.rowId === billId && c.explain.includes('bill_items'))).toBe(true)
+  })
+
+  it('let an honest cancellation through', async () => {
+    const billId = await billOnBoth()
+    await cancelOnA(billId)
+
+    await push(a, b)
+
+    expect(await statusOn(b, billId)).toBe(2)
+    expect(await lineOn(b, billId)).toMatchObject({ rate: 10000, line_total: 10000 })
+  })
+
+  it('may differ in what has come back against them, which is a cache', async () => {
+    const billId = await billOnBoth()
+    await a.db.execute(`UPDATE bill_items SET returned_qty = 10000 WHERE bill_id = ?`, [billId])
+    await cancelOnA(billId)
+
+    await push(a, b)
+
+    expect(await statusOn(b, billId), 'returned_qty is not part of the invoice').toBe(2)
+  })
+})

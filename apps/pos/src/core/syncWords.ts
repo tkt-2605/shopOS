@@ -103,7 +103,8 @@ export function explainQuarantine(count: number): string {
   return (count === 1
     ? 'One thing the other till has could not be saved here.'
     : `${count} things the other till has could not be saved here.`)
-    + ' The rest of the sync went through. The two tills differ until this is sorted out.'
+    + ' The rest of the sync went through. This till tries again after every sync, so anything'
+    + ' waiting for something still on its way comes in by itself; a name used twice needs one renamed.'
 }
 
 /**

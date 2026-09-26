@@ -202,12 +202,15 @@ describe('a bill travels whole', () => {
     expect(lines).toHaveLength(1)
   })
 
-  it('replaces the lines rather than merging them into a bill nobody raised', async () => {
+  it('never builds a bill nobody raised out of two copies of its lines', async () => {
     const productId = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
     const billId = await raiseBill(a, productId)
     await bothWays()
 
-    // A second line on A only. B must end with two, not three.
+    /* A second line on A only, on a bill already submitted. Merged line by line
+       B would hold a bill nobody raised; replaced wholesale it would hold a total
+       its lines no longer add up to. The lines of a submitted bill are as final
+       as its header, so B keeps the one it printed and says so. */
     await as(a, async () => {
       const line = await a.db.get<Row>(`SELECT * FROM bill_items WHERE bill_id = ?`, [billId])
       const top = await a.db.get<{ n: number }>(
@@ -226,7 +229,8 @@ describe('a bill travels whole', () => {
     const lines = await b.db.query<{ id: string }>(
       `SELECT id FROM bill_items WHERE bill_id = ?`, [billId],
     )
-    expect(lines).toHaveLength(2)
+    expect(lines).toHaveLength(1)
+    expect((await recentConflicts(b.db)).some((c) => c.rowId === billId)).toBe(true)
   })
 })
 
@@ -608,23 +612,19 @@ describe('what a person is told afterwards', () => {
             // Wins, and is contested: this is the conflict that must not survive.
             { table: 'products', rowId: id, op: 'upsert',
               row: { ...row!, name: 'Theirs', rev: Number(row!['rev']) + 5 } },
-            // And a user pointing at a role that does not exist. Foreign keys are
-            // deferred inside the batch, so this fails at the commit and takes
-            // everything written before it with it.
-            { table: 'users', rowId: 'ghost', op: 'upsert', row: {
-              id: 'ghost', username: 'ghost', full_name: 'Ghost',
-              role_id: 'no-such-role', password_hash: 'x', is_active: 1,
-              failed_logins: 0, rev: 1,
-              created_at: '2026-01-01T00:00:00.000Z',
-              updated_at: '2026-01-01T00:00:00.000Z',
-            } },
           ],
           upTo: 99, complete: true,
         }
       },
     }
 
-    await expect(as(a, () => syncWith(a.db, broken))).rejects.toThrow()
+    /* And a COMMIT that fails after the complaint was written -- a full disk,
+       the watchdog. This used to be staged with a user pointing at a role that
+       does not exist, which failed the commit on both passes; that record is
+       now set aside and the batch commits, so the failure is made directly. */
+    const failsAtCommit = commitFailsAfter(a.db, 'sync_conflicts')
+
+    await expect(as(a, () => syncWith(failsAtCommit, broken))).rejects.toThrow('the disk is full')
 
     expect(await recentConflicts(a.db)).toEqual([])
     // And the product it would have overwritten is untouched.
@@ -904,3 +904,38 @@ describe('a barcode taken off an item', () => {
     expect(after).toEqual({ id: before!.id, deleted_at: null })
   })
 })
+
+/**
+ * The same database, except that a transaction which wrote to `table` fails
+ * at the end instead of committing -- a merge whose COMMIT did not happen.
+ */
+function commitFailsAfter(db: SqlDriver, table: string): SqlDriver {
+  const watch = (tx: SqlDriver, touched: { yes: boolean }): SqlDriver => new Proxy(tx, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver) as unknown
+      if (typeof value !== 'function') return value
+      if (prop === 'execute' || prop === 'query' || prop === 'get' || prop === 'queryValues') {
+        return (sql: string, params?: unknown[]) => {
+          if (sql.includes(`"${table}"`) && /^\s*insert/i.test(sql)) touched.yes = true
+          return (value as (s: string, p?: unknown[]) => unknown).call(target, sql, params)
+        }
+      }
+      return (value as (...args: unknown[]) => unknown).bind(target)
+    },
+  })
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === 'transaction') {
+        return async <T>(fn: (tx: SqlDriver) => Promise<T>, opts?: unknown) =>
+          (target.transaction as (f: (tx: SqlDriver) => Promise<T>, o?: unknown) => Promise<T>)(async (tx) => {
+            const touched = { yes: false }
+            const result = await fn(watch(tx, touched))
+            if (touched.yes) throw new Error('the disk is full')
+            return result
+          }, opts)
+      }
+      const value = Reflect.get(target, prop, receiver) as unknown
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value
+    },
+  })
+}
