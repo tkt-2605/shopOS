@@ -1,4 +1,7 @@
-import { useEffect, useId, useRef, type ReactNode, type RefObject } from 'react'
+import {
+  cloneElement, isValidElement, useEffect, useId, useRef,
+  type ReactElement, type ReactNode, type RefObject,
+} from 'react'
 import { createPortal } from 'react-dom'
 import { Money, businessDate } from '@shopos/core'
 import { pushModal, popModal, isTopModal } from '../core/modalStack'
@@ -67,7 +70,7 @@ export function DateRangePicker<T extends Range>({ value, onChange, presets }: {
     <>
       <div className="segment">
         {offered.map((p) => (
-          <button key={p} aria-selected={sameRange(value, rangePreset(p))}
+          <button key={p} type="button" aria-pressed={sameRange(value, rangePreset(p))}
             onClick={() => onChange({ ...value, ...rangePreset(p) })}>
             {RANGE_PRESETS[p]}
           </button>
@@ -107,14 +110,35 @@ export function Card({ title, actions, children }: { title?: string | undefined;
   )
 }
 
+/** The controls a `<label for>` can point at. */
+const LABELABLE = new Set(['input', 'select', 'textarea'])
+
 export function Field({
   label, hint, children,
 }: { label: string; hint?: string | undefined; children: ReactNode }) {
+  const made = useId()
+  const hintId = `${made}-hint`
+
+  /* The label is tied to its control, so a screen reader reads the one with the
+     other and a click on the words puts the cursor in the box. A lone input,
+     select or textarea is given an id if it has none; anything else -- a button
+     standing in for a picker, several controls together -- is left as it is. */
+  const control = isValidElement<{ id?: string; 'aria-describedby'?: string }>(children)
+    && typeof children.type === 'string' && LABELABLE.has(children.type)
+    ? children as ReactElement<{ id?: string; 'aria-describedby'?: string }>
+    : null
+  const controlId: string = control?.props.id ?? made
+
   return (
     <div className="field">
-      <label>{label}</label>
-      {children}
-      {hint && <span className="hint">{hint}</span>}
+      <label htmlFor={control ? controlId : undefined}>{label}</label>
+      {control
+        ? cloneElement(control, {
+            id: controlId,
+            ...(hint ? { 'aria-describedby': hintId } : {}),
+          })
+        : children}
+      {hint && <span className="hint" id={hintId}>{hint}</span>}
     </div>
   )
 }
@@ -257,7 +281,8 @@ export function Empty({ children }: { children: ReactNode }) {
 
 export function Alert({ kind = 'bad', children }: { kind?: 'bad' | 'warn' | 'ok'; children: ReactNode }) {
   const cls = kind === 'bad' ? 'alert' : `alert ${kind}`
-  return <div className={cls}>{children}</div>
+  // Announced, not only shown: an error interrupts, anything else waits its turn.
+  return <div className={cls} role={kind === 'bad' ? 'alert' : 'status'}>{children}</div>
 }
 
 export function DocStatusBadge({ status }: { status: number }) {

@@ -6,11 +6,17 @@ import {
 } from '../src/services/sync.js'
 import { setDeviceId, deviceId } from '../src/device.js'
 import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
+import { MIN_PEER_SCHEMA_VERSION } from '../src/db/migrationKinds.js'
 import { changesSince, feedHead, pruneFeed, seedFeedWithEverything } from '../src/services/changefeed.js'
 import { setSetting, getSetting } from '../src/services/bootstrap.js'
-import { createBill } from '../src/services/billing.js'
+import { createBill, submitBill } from '../src/services/billing.js'
+import { postMovement } from '../src/services/stock.js'
+import { createReturn, submitReturn } from '../src/services/returns.js'
+import { createRegister, claimRegister } from '../src/services/registers.js'
+import { rupees } from '../src/money.js'
+import { newId } from '../src/ids.js'
 import { fromUnits } from '../src/quantity.js'
-import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
+import { freshDb, emptyDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 import type { Row, SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -30,6 +36,8 @@ import type { Row, SqlDriver } from '../src/db/driver.js'
 
 const TILL_A = '1111aaaa-1111-4111-8111-111111111111'
 const TILL_B = '2222bbbb-2222-4222-8222-222222222222'
+/** Not a till in these scenarios -- a name for "some other machine". */
+const TILL_C = '3333cccc-3333-4333-8333-333333333333'
 
 interface Till {
   id: string
@@ -101,13 +109,17 @@ function wireTo(peer: Till, me: Till, over: Partial<PeerHello> = {}): SyncTransp
       }
     },
     async fetch(since, limit) {
-      return as(peer, () => collectChanges(peer.db, since, limit))
+      /* The asking till is passed on, as `handleFetch` passes it: a batch
+         leaves out what that till sent us, so nothing goes back where it came
+         from. A fake wire that dropped this would make the relay untestable
+         here and green anyway. */
+      return as(peer, () => collectChanges(peer.db, since, limit, me.id))
     },
     async offer(batch) {
       return as(peer, async () => {
         // The far side records how far it has read of ours before answering,
         // so the cursor it hands back is one it has actually committed to.
-        const both = await changedHere(peer.db, 0)
+        const both = await changedHere(peer.db, 0, batch.records)
         await applyBatch(peer.db, batch, both)
         await peer.db.execute(
           `INSERT INTO sync_peers (device_id, their_cursor, created_at) VALUES (?, ?, ?)
@@ -174,15 +186,7 @@ describe('a change made on one till reaches the other', () => {
 describe('a bill travels whole', () => {
   it('arrives with its lines, not as an empty bill', async () => {
     const productId = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
-    const billId = await as(a, async () => {
-      const made = await createBill(a.db, {
-        registerId: a.fx!.seed.registerId,
-        lines: [{ productId, qty: fromUnits(2) }],
-        actorId: a.fx!.adminId,
-      })
-      if (!made.ok) throw new Error(made.code)
-      return made.billId
-    })
+    const billId = await raiseBill(a, productId)
 
     /* Once. This used to be twice, with a comment saying the register and the
        user "have to land first" — which was a foreign-key ordering bug being
@@ -198,20 +202,15 @@ describe('a bill travels whole', () => {
     expect(lines).toHaveLength(1)
   })
 
-  it('replaces the lines rather than merging them into a bill nobody raised', async () => {
+  it('never builds a bill nobody raised out of two copies of its lines', async () => {
     const productId = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
-    const billId = await as(a, async () => {
-      const made = await createBill(a.db, {
-        registerId: a.fx!.seed.registerId,
-        lines: [{ productId, qty: fromUnits(2) }],
-        actorId: a.fx!.adminId,
-      })
-      if (!made.ok) throw new Error(made.code)
-      return made.billId
-    })
+    const billId = await raiseBill(a, productId)
     await bothWays()
 
-    // A second line on A only. B must end with two, not three.
+    /* A second line on A only, on a bill already submitted. Merged line by line
+       B would hold a bill nobody raised; replaced wholesale it would hold a total
+       its lines no longer add up to. The lines of a submitted bill are as final
+       as its header, so B keeps the one it printed and says so. */
     await as(a, async () => {
       const line = await a.db.get<Row>(`SELECT * FROM bill_items WHERE bill_id = ?`, [billId])
       const top = await a.db.get<{ n: number }>(
@@ -230,7 +229,8 @@ describe('a bill travels whole', () => {
     const lines = await b.db.query<{ id: string }>(
       `SELECT id FROM bill_items WHERE bill_id = ?`, [billId],
     )
-    expect(lines).toHaveLength(2)
+    expect(lines).toHaveLength(1)
+    expect((await recentConflicts(b.db)).some((c) => c.rowId === billId)).toBe(true)
   })
 })
 
@@ -280,16 +280,61 @@ describe('when both tills changed the same thing', () => {
 })
 
 describe('what must never happen', () => {
-  it('refuses a till on a different schema before a single row moves', async () => {
+  it('refuses a till too far behind to be talked to, before a single row moves', async () => {
     await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
 
+    /* Below the floor, so the two are on opposite sides of a migration that
+       dropped something. One version behind is a different case and is allowed
+       -- `schema-skew.test.ts` in the bench is where both are pinned. */
     const round = await as(a, () =>
-      syncWith(a.db, wireTo(b, a, { schemaVersion: EXPECTED_SCHEMA_VERSION - 1 })))
+      syncWith(a.db, wireTo(b, a, { schemaVersion: MIN_PEER_SCHEMA_VERSION - 1 })))
 
     expect(round.ok).toBe(false)
-    if (!round.ok) expect(round.code).toBe('SCHEMA_MISMATCH')
+    if (!round.ok && round.code === 'SCHEMA_MISMATCH') {
+      expect(round.behind).toBe('theirs')
+    } else {
+      expect.fail(`expected SCHEMA_MISMATCH, got ${round.ok ? 'ok' : round.code}`)
+    }
     // And nothing crossed.
     expect(await b.db.query(`SELECT id FROM products`)).toHaveLength(0)
+  })
+
+  it('refuses when this till is the one that is too old', async () => {
+    /* The other direction, which is not the same test. A peer that has taken a
+       breaking migration this build has never seen says so in `minPeerSchema`,
+       and the honest answer is that *we* are behind -- which is the sentence a
+       shopkeeper needs, because the fix is on this machine. */
+    await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+
+    const round = await as(a, () => syncWith(a.db, wireTo(b, a, {
+      schemaVersion: EXPECTED_SCHEMA_VERSION + 2,
+      minPeerSchema: EXPECTED_SCHEMA_VERSION + 1,
+    })))
+
+    expect(round.ok).toBe(false)
+    if (!round.ok && round.code === 'SCHEMA_MISMATCH') {
+      expect(round.behind).toBe('mine')
+    } else {
+      expect.fail(`expected SCHEMA_MISMATCH, got ${round.ok ? 'ok' : round.code}`)
+    }
+    expect(await b.db.query(`SELECT id FROM products`)).toHaveLength(0)
+  })
+
+  it('refuses a peer running a build from before the floor existed', async () => {
+    /* An older build does not send `minPeerSchema` at all, and its own code
+       demands an exact match -- so a round with it would be refused at its end
+       whatever this side decides. Absent is read as "they demand equality",
+       which makes the refusal happen here, with a reason, rather than halfway
+       through. */
+    const round = await as(a, () =>
+      syncWith(a.db, wireTo(b, a, { schemaVersion: EXPECTED_SCHEMA_VERSION + 1 })))
+
+    expect(round.ok).toBe(false)
+    if (!round.ok && round.code === 'SCHEMA_MISMATCH') {
+      expect(round.behind).toBe('mine')
+    } else {
+      expect.fail(`expected SCHEMA_MISMATCH, got ${round.ok ? 'ok' : round.code}`)
+    }
   })
 
   it('refuses a till that has set itself up as its own shop', async () => {
@@ -336,11 +381,49 @@ describe('what must never happen', () => {
     const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
     await bothWays()
 
-    /* Applying is a write. Without the suppression that write lands in B's feed,
-       and A pulls its own change back, applies it, feeds it — two tills passing
-       one row between them for ever, each doing real work. */
+    /* Applying is a write, and the write does land in B's feed — that is how a
+       till in the middle relays to a third counter, which is migration 036. The
+       thing that must not happen is the row going back to A: A would pull its
+       own change, apply it, feed it, and two tills would pass one row between
+       them for ever, each doing real work.
+
+       So the entry is there, it says where it came from, and a batch built for
+       A leaves it out. */
     const bFeed = await changesSince(b.db, 0, 1000)
-    expect(bFeed.some((c) => c.rowId === id)).toBe(false)
+    const entry = bFeed.find((c) => c.rowId === id)
+    expect(entry?.originDevice).toBe(TILL_A)
+
+    const forA = await collectChanges(b.db, 0, 500, TILL_A)
+    expect(forA.records.some((r) => r.rowId === id)).toBe(false)
+
+    // And for anybody else it travels, which is the point of keeping it.
+    const forSomebodyElse = await collectChanges(b.db, 0, 500, TILL_C)
+    expect(forSomebodyElse.records.some((r) => r.rowId === id)).toBe(true)
+  })
+
+  it('settles rather than circling, when both tills keep asking', async () => {
+    /* The property the suppression used to give for free. Five rounds after the
+       row has landed must move nothing and change nothing: an identical row
+       that keeps being written is an identical row that keeps raising its own
+       revision, because `bump_rev` fires on exactly the write that changes
+       nothing. */
+    const id = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await bothWays()
+
+    const revOf = async (till: Till) => (await till.db.get<{ rev: number }>(
+      `SELECT rev FROM products WHERE id = ?`, [id]))?.rev
+
+    const settled = { a: await revOf(a), b: await revOf(b) }
+    expect(settled.a).toBe(settled.b)
+
+    for (let i = 0; i < 5; i += 1) {
+      const { first, second } = await bothWays()
+      expect(first.ok && first.received, `round ${i} pulled nothing back`).toBe(0)
+      expect(second.ok && second.received, `round ${i} pulled nothing back`).toBe(0)
+    }
+
+    expect(await revOf(a)).toBe(settled.a)
+    expect(await revOf(b)).toBe(settled.b)
   })
 
   it('does not raise the revision of a row it was given', async () => {
@@ -364,14 +447,7 @@ describe('a till joining a shop that was already selling', () => {
 
   it('is sent the whole shop, not only what has changed lately', async () => {
     const productId = await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
-    await as(a, async () => {
-      const made = await createBill(a.db, {
-        registerId: a.fx!.seed.registerId,
-        lines: [{ productId, qty: fromUnits(1) }],
-        actorId: a.fx!.adminId,
-      })
-      if (!made.ok) throw new Error(made.code)
-    })
+    await raiseBill(a, productId)
 
     // Everything settles, and then the feed is emptied — a shop that has been
     // running for a year, with nothing left to say to anybody.
@@ -536,23 +612,19 @@ describe('what a person is told afterwards', () => {
             // Wins, and is contested: this is the conflict that must not survive.
             { table: 'products', rowId: id, op: 'upsert',
               row: { ...row!, name: 'Theirs', rev: Number(row!['rev']) + 5 } },
-            // And a user pointing at a role that does not exist. Foreign keys are
-            // deferred inside the batch, so this fails at the commit and takes
-            // everything written before it with it.
-            { table: 'users', rowId: 'ghost', op: 'upsert', row: {
-              id: 'ghost', username: 'ghost', full_name: 'Ghost',
-              role_id: 'no-such-role', password_hash: 'x', is_active: 1,
-              failed_logins: 0, rev: 1,
-              created_at: '2026-01-01T00:00:00.000Z',
-              updated_at: '2026-01-01T00:00:00.000Z',
-            } },
           ],
           upTo: 99, complete: true,
         }
       },
     }
 
-    await expect(as(a, () => syncWith(a.db, broken))).rejects.toThrow()
+    /* And a COMMIT that fails after the complaint was written -- a full disk,
+       the watchdog. This used to be staged with a user pointing at a role that
+       does not exist, which failed the commit on both passes; that record is
+       now set aside and the batch commits, so the failure is made directly. */
+    const failsAtCommit = commitFailsAfter(a.db, 'sync_conflicts')
+
+    await expect(as(a, () => syncWith(failsAtCommit, broken))).rejects.toThrow('the disk is full')
 
     expect(await recentConflicts(a.db)).toEqual([])
     // And the product it would have overwritten is untouched.
@@ -653,3 +725,217 @@ describe('cursors', () => {
     expect(await pruneAcknowledged(a.db)).toBe(0)
   })
 })
+
+/**
+ * A bill that has been rung up, which is the only kind that replicates.
+ *
+ * `createBill` leaves a draft, and since migration 042 a draft deliberately
+ * stays on the till that is typing it. Submitted by hand rather than through
+ * `submitBill` because these are replication tests: a bill refused on stock
+ * policy would fail here as the wrong thing entirely.
+ */
+async function raiseBill(till: Till, productId: string): Promise<string> {
+  return as(till, async () => {
+    const made = await createBill(till.db, {
+      registerId: till.fx!.seed.registerId,
+      lines: [{ productId, qty: fromUnits(2) }],
+      actorId: till.fx!.adminId,
+    })
+    if (!made.ok) throw new Error(made.code)
+    await till.db.execute(
+      `UPDATE bills SET docstatus = 1, updated_at = ? WHERE id = ?`,
+      [new Date().toISOString(), made.billId],
+    )
+    return made.billId
+  })
+}
+
+describe('points spent on one till', () => {
+  /**
+   * The schema review's first finding. A loyalty entry had no revision, so a
+   * merge between an edited copy and an untouched one fell through to the last
+   * tiebreak -- the higher device id -- and B is the higher id here. B kept its
+   * copy with nothing spent, the redemption arrived inside its bill anyway, and
+   * the customer could spend the same points again at B.
+   */
+  it('reach the other till, even when that till has the higher device id', async () => {
+    const product = await as(a, async () => {
+      await setSetting(a.db, 'loyalty_program', JSON.stringify({
+        enabled: true, tiers: [{ minSpend: 0, pointsPerHundred: 5 }], expiryDays: 365,
+        pointValue: 100, earnOnCreditPortion: false, minBillForEarn: 0, maxRedeemFractionBp: 10_000,
+      }))
+      const p = await makeProduct(a.db, { baseRate: rupees(500), taxRateBp: 0 })
+      await a.db.transaction((tx) => postMovement(tx, {
+        productId: p, qtyChange: fromUnits(20), voucherType: 'opening', voucherId: newId(), postingDate: '2026-01-01',
+      }))
+      return p
+    })
+    const customer = await makeCustomer(a.db)
+
+    const sell = (redeem: number) => as(a, async () => {
+      const draft = await createBill(a.db, {
+        registerId: a.fx!.seed.registerId, customerId: customer,
+        lines: [{ productId: product, qty: fromUnits(2) }], actorId: a.fx!.adminId,
+      })
+      if (!draft.ok) throw new Error(draft.code)
+      const paid = await submitBill(a.db, {
+        billId: draft.billId,
+        payments: [{ method: 'cash', amount: (draft.grandTotal - rupees(redeem)) as typeof draft.grandTotal }],
+        ...(redeem > 0 ? { redeemPoints: redeem } : {}),
+        actorId: a.fx!.adminId,
+      })
+      if (!paid.ok) throw new Error(paid.code)
+      return draft.billId
+    })
+
+    const earned = await sell(0)
+    await bothWays()
+    const spentOn = async (till: Till) => (await till.db.get<{ consumed: number }>(
+      'SELECT consumed FROM loyalty_entries WHERE bill_id = ?', [earned]))?.consumed
+
+    expect(await spentOn(b)).toBe(0)
+
+    await sell(10)
+    await bothWays()
+
+    expect(await spentOn(a)).toBe(10)
+    expect(await spentOn(b)).toBe(10)
+  })
+})
+
+describe('one bill refunded on two tills while apart', () => {
+  /**
+   * Found by the independent review. A return was numbered in the series of
+   * the *bill's* counter, so two tills refunding against one bill both minted
+   * the same credit note number; after sync each quarantined the other's, and
+   * a refund paid out on one never reached the other.
+   */
+  it('keeps both refunds, each under the till that paid it out', async () => {
+    const { billId, itemId } = await as(a, async () => {
+      const p = await makeProduct(a.db, { baseRate: rupees(100), taxRateBp: 0 })
+      await a.db.transaction((tx) => postMovement(tx, {
+        productId: p, qtyChange: fromUnits(10), voucherType: 'opening', voucherId: newId(), postingDate: '2026-01-01',
+      }))
+      const second = await createRegister(a.db, { name: 'Front Counter', prefix: 'FC', actorId: a.fx!.adminId })
+      if (!second.ok) throw new Error(second.code)
+      await claimRegister(a.db, { registerId: a.fx!.seed.registerId })
+      const draft = await createBill(a.db, {
+        registerId: a.fx!.seed.registerId, lines: [{ productId: p, qty: fromUnits(4) }], actorId: a.fx!.adminId,
+      })
+      if (!draft.ok) throw new Error(draft.code)
+      const paid = await submitBill(a.db, {
+        billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: a.fx!.adminId,
+      })
+      if (!paid.ok) throw new Error(paid.code)
+      const item = await a.db.get<{ id: string }>('SELECT id FROM bill_items WHERE bill_id = ?', [draft.billId])
+      return { billId: draft.billId, itemId: item!.id }
+    })
+    await bothWays()
+    await as(b, async () => {
+      const fc = await b.db.get<{ id: string }>(`SELECT id FROM registers WHERE prefix = 'FC'`)
+      await claimRegister(b.db, { registerId: fc!.id })
+    })
+
+    const refund = (till: Till) => as(till, async () => {
+      const ret = await createReturn(till.db, {
+        billId, lines: [{ billItemId: itemId, qty: fromUnits(1) }], refundMethod: 'cash', actorId: a.fx!.adminId,
+      })
+      if (!ret.ok) throw new Error(ret.code)
+      const done = await submitReturn(till.db, { returnId: ret.returnId, actorId: a.fx!.adminId })
+      if (!done.ok) throw new Error(done.code)
+      return done.docNo
+    })
+    const onA = await refund(a)
+    const onB = await refund(b)
+    expect(onA).not.toBe(onB)
+
+    await bothWays()
+    for (const till of [a, b]) {
+      const setAside = await till.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM sync_quarantine')
+      expect(setAside?.n, 'nothing set aside').toBe(0)
+      const held = await till.db.query<{ doc_no: string }>(
+        'SELECT doc_no FROM sales_returns WHERE docstatus = 1 ORDER BY doc_no')
+      expect(held.map((r) => r.doc_no).sort()).toEqual([onA, onB].sort())
+    }
+  })
+})
+
+describe('the same name made on two tills while apart', () => {
+  it('is set aside with a reason that says what to do', async () => {
+    await bothWays()
+    await as(a, () => createRegister(a.db, { name: 'Counter 2', prefix: 'CA', actorId: a.fx!.adminId }))
+    const user = await b.db.get<{ id: string }>('SELECT id FROM users LIMIT 1')
+    await as(b, () => createRegister(b.db, { name: 'Counter 2', prefix: 'CB', actorId: user!.id }))
+
+    await bothWays()
+    const reasons = [
+      ...await a.db.query<{ reason: string }>('SELECT reason FROM sync_quarantine'),
+      ...await b.db.query<{ reason: string }>('SELECT reason FROM sync_quarantine'),
+    ].map((r) => r.reason)
+    expect(reasons.length).toBeGreaterThan(0)
+    expect(reasons[0]).toMatch(/a counter with the same name .* Rename or remove one/)
+  })
+})
+
+describe('a barcode taken off an item', () => {
+  it('stops scanning on the other till too, and comes back as the same row', async () => {
+    /* Removal is an edit since 056, so it travels and merges like one -- a
+       delete's tombstone could be outlived by a third till, and a barcode
+       brought back that way scans as an item the shop took it off. */
+    const { setBarcodes } = await import('../src/services/barcodes.js')
+    const { productIdForBarcode } = await import('../src/services/barcodes.js')
+    const ctx = { actorId: a.fx!.adminId }
+    const p = await as(a, () => makeProduct(a.db, { name: 'Pen' }))
+    await as(a, () => setBarcodes(a.db, ctx, p, [{ barcode: '8900000000017' }, { barcode: 'OLD-77' }]))
+    await bothWays()
+    expect(await as(b, () => productIdForBarcode(b.db, 'OLD-77'))).toBe(p)
+
+    await as(a, () => setBarcodes(a.db, ctx, p, [{ barcode: '8900000000017' }]))
+    await bothWays()
+    expect(await as(b, () => productIdForBarcode(b.db, 'OLD-77'))).toBeNull()
+    const kept = await b.db.get<{ deleted_at: string | null }>(
+      `SELECT deleted_at FROM product_barcodes WHERE barcode = 'OLD-77'`)
+    expect(kept?.deleted_at).not.toBeNull()
+
+    const before = await a.db.get<{ id: string }>(`SELECT id FROM product_barcodes WHERE barcode = 'OLD-77'`)
+    await as(a, () => setBarcodes(a.db, ctx, p, [{ barcode: '8900000000017' }, { barcode: 'OLD-77' }]))
+    const after = await a.db.get<{ id: string; deleted_at: string | null }>(
+      `SELECT id, deleted_at FROM product_barcodes WHERE barcode = 'OLD-77'`)
+    expect(after).toEqual({ id: before!.id, deleted_at: null })
+  })
+})
+
+/**
+ * The same database, except that a transaction which wrote to `table` fails
+ * at the end instead of committing -- a merge whose COMMIT did not happen.
+ */
+function commitFailsAfter(db: SqlDriver, table: string): SqlDriver {
+  const watch = (tx: SqlDriver, touched: { yes: boolean }): SqlDriver => new Proxy(tx, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver) as unknown
+      if (typeof value !== 'function') return value
+      if (prop === 'execute' || prop === 'query' || prop === 'get' || prop === 'queryValues') {
+        return (sql: string, params?: unknown[]) => {
+          if (sql.includes(`"${table}"`) && /^\s*insert/i.test(sql)) touched.yes = true
+          return (value as (s: string, p?: unknown[]) => unknown).call(target, sql, params)
+        }
+      }
+      return (value as (...args: unknown[]) => unknown).bind(target)
+    },
+  })
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === 'transaction') {
+        return async <T>(fn: (tx: SqlDriver) => Promise<T>, opts?: unknown) =>
+          (target.transaction as (f: (tx: SqlDriver) => Promise<T>, o?: unknown) => Promise<T>)(async (tx) => {
+            const touched = { yes: false }
+            const result = await fn(watch(tx, touched))
+            if (touched.yes) throw new Error('the disk is full')
+            return result
+          }, opts)
+      }
+      const value = Reflect.get(target, prop, receiver) as unknown
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value
+    },
+  })
+}

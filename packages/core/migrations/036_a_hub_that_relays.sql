@@ -1,0 +1,43 @@
+-- Where a feed entry came from, so a till in the middle can pass it on.
+--
+-- ── What was wrong ────────────────────────────────────────────────────────
+--
+-- A till that applies somebody else's change deliberately keeps it out of its
+-- own feed: `sync_state.applying` is 1 for the length of a merge and all 108
+-- triggers from 021 check it. That is what stops two tills handing one row back
+-- and forth for ever, and with two tills it is exactly right.
+--
+-- With three it loses sales. A shop builds a hub -- one machine everything
+-- talks to, because that is the arrangement a person can hold in their head --
+-- and the hub receives everything and relays nothing. The third counter is
+-- paired with the hub, pulls the whole shop the day it is set up (pairing seeds
+-- the entire database into the hub's feed, so it looks perfect), and then never
+-- sees another sale rung up on the second counter. Both screens say the tills
+-- agree. The first person to notice is whoever adds up the cash.
+--
+-- ── What this changes ─────────────────────────────────────────────────────
+--
+-- One nullable column. A merge writes the entries for the rows it applied,
+-- naming the till they came from, and a batch built for a peer leaves out the
+-- entries that came from that peer. The row still travels everywhere else, so
+-- a hub relays and the ping-pong the flag prevents stays prevented.
+--
+-- NULL means "written here". That is the right reading for every row already in
+-- a shop's feed when this migration lands -- they were written by that till --
+-- and it is the safe default besides: a NULL origin matches no peer, so the
+-- entry is sent to all of them, which is what happens today.
+--
+-- The 108 triggers are untouched, and they do not need to be: each one deletes
+-- the row's entry and inserts a fresh one, so a local edit to a row that
+-- arrived from another till replaces the entry and leaves `origin_device` NULL
+-- without being told to. That is worth saying out loud because the opposite --
+-- a stale origin on a locally-edited row -- would mean this till never telling
+-- one peer about its own change.
+
+ALTER TABLE change_feed ADD COLUMN origin_device TEXT;
+
+-- The filter is "everything for this peer except what came from it", which is
+-- the feed's own order narrowed by one column. Without this it is a scan of the
+-- feed per round per peer; the feed on a till that has been offline a fortnight
+-- is not small.
+CREATE INDEX idx_change_feed_origin ON change_feed(origin_device, seq);

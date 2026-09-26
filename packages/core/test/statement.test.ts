@@ -9,7 +9,7 @@ import {
   writeOff, recordOpeningBalance,
 } from '../src/services/payments.js'
 import { businessDate } from '../src/dates.js'
-import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
+import { freshDb, makeProduct, makeCustomer, type Fixture, editingSubmitted } from './helpers.js'
 
 /**
  * The page a customer takes away.
@@ -229,8 +229,10 @@ describe('a statement for one month', () => {
     // Two bills dated by hand, because a statement window is the point here.
     const first = await buy(2, 'credit')
     const second = await buy(3, 'credit')
-    await fx.db.execute(`UPDATE bills SET posting_date = '2026-02-10' WHERE id = ?`, [first.billId])
-    await fx.db.execute(`UPDATE bills SET posting_date = '2026-03-15' WHERE id = ?`, [second.billId])
+    await editingSubmitted(fx.db, 'bills', async () => {
+      await fx.db.execute(`UPDATE bills SET posting_date = '2026-02-10' WHERE id = ?`, [first.billId])
+      await fx.db.execute(`UPDATE bills SET posting_date = '2026-03-15' WHERE id = ?`, [second.billId])
+    })
   }
 
   it('starts from what was owed before it, rather than in the middle of nowhere', async () => {

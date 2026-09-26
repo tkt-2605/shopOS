@@ -1,16 +1,51 @@
 import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting } from './device'
 import {
-  Receipt, loadShopProfile, loadBillDetail, customerAccount, businessDate, formatFor,
+  Receipt, loadShopProfile, loadBillDetail, loadCustomer, customerAccount, businessDate, formatFor,
   loadTaxScheme, billWording, schemeStatement, rateSummaryOf,
   type SqlDriver, type ReceiptDoc, type ReceiptItem,
 } from '@shopos/core'
 
 type StatementDoc = Parameters<typeof Receipt.buildStatement>[0]
 
+/**
+ * Where a roll's bytes go, and what printers this machine has.
+ *
+ * The till's is three Tauri commands, and Windows answers them. A test hands
+ * in its own and reads back what would have been printed, which is the only
+ * way to check a receipt end to end on a machine with no printer: the bytes a
+ * shop's printer is sent are exactly the bytes `print` receives.
+ *
+ * Each call may throw; the functions below turn that into the answer a screen
+ * can show, so a printer that is not there fails the same way whichever one is
+ * plugged in.
+ */
+export interface ReceiptPrinter {
+  list(): Promise<string[]>
+  defaultName(): Promise<string | null>
+  /** `printer` null means whatever Windows calls the default. */
+  print(printer: string | null, bytes: number[]): Promise<void>
+}
+
+/** The printers Windows knows, through the Rust side. */
+export const tauriPrinter: ReceiptPrinter = {
+  list: () => invoke<string[]>('list_printers'),
+  defaultName: () => invoke<string | null>('default_printer'),
+  print: async (printer, bytes) => { await invoke('print_receipt', { printer, bytes }) },
+}
+
+let printer: ReceiptPrinter = tauriPrinter
+
+/** Swaps the printer, and hands back a function that puts the last one back. */
+export function setReceiptPrinter(next: ReceiptPrinter): () => void {
+  const before = printer
+  printer = next
+  return () => { printer = before }
+}
+
 export async function listPrinters(): Promise<string[]> {
   try {
-    return await invoke<string[]>('list_printers')
+    return await printer.list()
   } catch {
     return []
   }
@@ -18,7 +53,7 @@ export async function listPrinters(): Promise<string[]> {
 
 export async function defaultPrinter(): Promise<string | null> {
   try {
-    return await invoke<string | null>('default_printer')
+    return await printer.defaultName()
   } catch {
     return null
   }
@@ -104,9 +139,7 @@ export async function printStatement(
   customerId: string,
   range: { from?: string; to?: string } = {},
 ): Promise<PrintResult> {
-  const customer = await db.get<{ name: string; code: string | null; phone: string | null }>(
-    `SELECT name, code, phone FROM customers WHERE id = ?`, [customerId],
-  )
+  const customer = await loadCustomer(db, customerId)
   if (!customer) return { ok: false, message: 'That customer could not be found.' }
 
   const account = await customerAccount(db, customerId, range)
@@ -153,12 +186,9 @@ function printerName(): string | null {
 }
 
 /** The one place bytes go to a printer, so both documents fail the same way. */
-async function send(text: string, printer: string | null): Promise<PrintResult> {
+async function send(text: string, name: string | null): Promise<PrintResult> {
   try {
-    await invoke('print_receipt', {
-      printer,
-      bytes: Array.from(new TextEncoder().encode(text)),
-    })
+    await printer.print(name, Array.from(new TextEncoder().encode(text)))
     return { ok: true }
   } catch (err) {
     return { ok: false, message: typeof err === 'string' ? err : 'The printer did not respond.' }

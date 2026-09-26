@@ -15,6 +15,9 @@
     "paths": {
       "@shopos/core": [
         "../../packages/core/src/index.ts"
+      ],
+      "@shopos/core/config": [
+        "../../packages/core/src/config/licensing.ts"
       ]
     }
   },

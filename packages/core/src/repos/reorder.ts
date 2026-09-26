@@ -56,6 +56,13 @@ export async function reorderList(db: SqlDriver, options: ReorderOptions = {}): 
         OR COALESCE(s.qty_on_hand, 0) <= 0)`
     : `p.reorder_level IS NOT NULL AND COALESCE(s.qty_on_hand, 0) <= p.reorder_level`
 
+  /* raw: a window function in a derived table. `ROW_NUMBER() OVER (PARTITION
+     BY …)` is how the last purchase of each item is found in one pass, and it
+     is the case the spec names as staying written out -- a builder has no
+     words for it, and doing it another way means either a correlated subquery
+     per row or reading every purchase into memory. The rest of the statement
+     stays here with it: splitting the half a builder can express away from the
+     half it cannot would put the two out of sight of each other. */
   const rows = await db.query<{
     id: string; name: string; code: string | null; base_unit: string
     on_hand: number; reorder_level: number | null; reorder_qty: number | null

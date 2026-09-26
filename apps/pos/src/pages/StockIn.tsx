@@ -2,9 +2,11 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
+  directionOf, signedQty, noCostBasis,
   type ProductListItem, type StockEntryType, type Supplier,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { useAction } from '../core/useAction'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
@@ -16,11 +18,15 @@ interface Line {
   cost: string
 }
 
+/* Each note says which way the shelf moves, because that is what the list is
+   choosing between. It used to ask for the direction back: “Wastage.
+   Negative.” meant typing a minus into a box that starts at 1, having already
+   picked Wastage from this list. `signedQty` settles it now. */
 const TYPES: { id: StockEntryType; name: string; note: string }[] = [
-  { id: 'purchase', name: 'Purchase', note: 'Goods received from a supplier.' },
-  { id: 'opening', name: 'Opening stock', note: 'What was on the shelf when you started.' },
-  { id: 'adjustment', name: 'Adjustment', note: 'Correcting a count. May be negative.' },
-  { id: 'wastage', name: 'Wastage', note: 'Damaged or expired. Negative.' },
+  { id: 'purchase', name: 'Purchase', note: 'Goods received from a supplier. Stock goes up.' },
+  { id: 'opening', name: 'Opening stock', note: 'What was on the shelf when you started. Stock goes up.' },
+  { id: 'adjustment', name: 'Adjustment', note: 'Correcting a count. Type a minus to take stock off.' },
+  { id: 'wastage', name: 'Wastage', note: 'Damaged or expired. Stock goes down by what you enter.' },
 ]
 
 export default function StockIn() {
@@ -35,9 +41,16 @@ export default function StockIn() {
   const [results, setResults] = useState<ProductListItem[]>([])
   const [lines, setLines] = useState<Line[]>([])
   const [error, setError] = useState<string | null>(null)
+  // A second press while the first is posting would receive the goods twice.
+  const posting = useAction(setError)
   // Held with its id, not just its number: the distributor's paper bill is in
   // the shopkeeper's hand at this moment and nowhere else later.
   const [done, setDone] = useState<{ docNo: string; entryId: string } | null>(null)
+  /* Items the shop has never recorded a rate for. Read once, because it
+     answers a question about history that this screen is not changing until
+     it saves — and the difference it makes is which of two warnings is true,
+     not whether to warn. */
+  const [unpriced, setUnpriced] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     const id = setTimeout(() => { void searchProducts(db, { term, limit: 25 }).then(setResults) }, 140)
@@ -49,6 +62,10 @@ export default function StockIn() {
   }, [db])
 
   useEffect(() => { void loadSuppliers() }, [loadSuppliers])
+
+  useEffect(() => {
+    void noCostBasis(db).then((rows) => setUnpriced(new Set(rows.map((r) => r.productId))))
+  }, [db])
 
   async function addSupplier() {
     if (!newSupplier) return
@@ -78,22 +95,27 @@ export default function StockIn() {
   }, 0)
 
   async function submit() {
-    setError(null)
-    const inflow = entryType === 'purchase' || entryType === 'opening'
+    await posting.run(post)
+  }
 
+  async function post() {
+    setError(null)
+    if (lines.some((l) => (Money.parseMoney(l.cost) ?? 0) < 0)) {
+      setError('A cost cannot be below zero.')
+      return
+    }
     const entry = await createStockEntry(db, {
       entryType,
       supplierId: supplierId || null,
       supplierName: suppliers.find((x) => x.id === supplierId)?.name ?? null,
       reference: reference.trim(),
-      lines: lines.map((l) => {
-        const units = Number(l.qty) || 0
-        return {
-          productId: l.product.id,
-          qty: Quantity.fromUnits(inflow ? Math.abs(units) : units),
-          unitCost: (Money.parseMoney(l.cost) ?? 0) as never,
-        }
-      }),
+      lines: lines.map((l) => ({
+        productId: l.product.id,
+        /* As typed. `createStockEntry` applies the direction, so this screen
+           and any other way in agree without each having to remember it. */
+        qty: Quantity.fromUnits(Number(l.qty) || 0),
+        unitCost: (Money.parseMoney(l.cost) ?? 0) as never,
+      })),
       actorId: user.id,
     })
 
@@ -209,11 +231,23 @@ export default function StockIn() {
       <div className="card card-scroll">
         <table>
           <thead>
-            <tr><th>Item</th><th className="r">Quantity</th><th className="r">Unit cost</th><th className="r">Value</th><th /></tr>
+            <tr>
+              <th>Item</th>
+              <th className="r">{directionOf(entryType) === 'out' ? 'Quantity lost' : 'Quantity'}</th>
+              <th className="r">Unit cost</th><th className="r">Value</th>
+              <th className="r">On hand after</th><th />
+            </tr>
           </thead>
           <tbody>
             {lines.map((l) => {
-              const value = Math.round((Number(l.qty) || 0) * (Money.parseMoney(l.cost) ?? 0))
+              const typed = Number(l.qty) || 0
+              const value = Math.round(Math.abs(typed) * (Money.parseMoney(l.cost) ?? 0))
+              /* The answer rather than the convention. Whatever the sign rule
+                 is, a shopkeeper can see what the shelf will say afterwards
+                 before pressing save. */
+              const after = Quantity.addQty(
+                l.product.qtyOnHand, signedQty(entryType, Quantity.fromUnits(typed)),
+              )
               return (
                 <tr key={l.key}>
                   <td>{l.product.name}<div className="src">on hand {Quantity.formatQty(l.product.qtyOnHand)} {l.product.baseUnit}</div></td>
@@ -224,15 +258,33 @@ export default function StockIn() {
                   <td className="r">
                     <input className="qty-input num" placeholder="0.00" value={l.cost}
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cost: e.target.value } : x))} />
+                    {/* Said, not enforced. A shopkeeper holding a delivery note
+                        they cannot read must still be able to record the stock;
+                        a save that refuses here is a shelf that goes uncounted.
+
+                        But a blank cost is not nothing. It falls back to the
+                        last rate known for the item, which is usually close
+                        enough — and where there has never been one the item
+                        enters at zero, and every sale of it reads as pure
+                        profit for ever with nothing saying so. Those are two
+                        different sentences and only one of them is alarming. */}
+                    {directionOf(entryType) === 'in' && Money.parseMoney(l.cost) === null && (
+                      <div className="src warn-note">
+                        {unpriced.has(l.product.id)
+                          ? 'no cost ever recorded — profit on this item will read as 100%'
+                          : 'no cost — the last rate paid will be assumed'}
+                      </div>
+                    )}
                   </td>
                   <td className="r"><Rupees value={value} /></td>
+                  <td className="r num">{Quantity.formatQty(after)} {l.product.baseUnit}</td>
                   <td className="r">
                     <button className="btn ghost sm" onClick={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}>✕</button>
                   </td>
                 </tr>
               )
             })}
-            {lines.length === 0 && <tr><td colSpan={5}><Empty>Nothing added yet</Empty></td></tr>}
+            {lines.length === 0 && <tr><td colSpan={6}><Empty>Nothing added yet</Empty></td></tr>}
           </tbody>
         </table>
       </div>
@@ -244,8 +296,8 @@ export default function StockIn() {
           Unit cost is recorded per movement, so valuation stays correct later.
         </span>
         <span style={{ flex: 1 }} />
-        <button className="btn primary" disabled={lines.length === 0} onClick={() => void submit()}>
-          Post entry
+        <button className="btn primary" disabled={lines.length === 0 || posting.busy} onClick={() => void submit()}>
+          {posting.busy ? 'Posting…' : 'Post entry'}
         </button>
       </div>
     </div>

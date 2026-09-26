@@ -107,7 +107,7 @@ fn write_atomically(target: &Path, work: &Path, bytes: &[u8]) -> Result<(), Stri
     // Written under a temporary name and renamed in, so a crash or a full disk
     // never leaves a half-written file wearing the hash of the whole one — which
     // is what every later read, and every backup, would trust.
-    let part = crate::archive::Temp(work.join(format!(
+    let part = crate::files::Temp(work.join(format!(
         "{}.part",
         target.file_name().and_then(|n| n.to_str()).unwrap_or("attachment")
     )));
@@ -154,7 +154,9 @@ pub fn store_bytes(root: &Path, work: &Path, bytes: &[u8], file_name: &str) -> R
     })
 }
 
-#[tauri::command]
+/// `async`, as is `attachment_read`: ten megabytes decoded, hashed and flushed
+/// to disk is not work for the thread that draws the window.
+#[tauri::command(async)]
 pub fn attachment_store(
     app: tauri::AppHandle,
     data: String,
@@ -175,7 +177,7 @@ pub fn attachment_store(
 /// photograph reaches the screen without opening a second way into the
 /// filesystem. Large images pay for it in memory; the answer then is the asset
 /// protocol scoped to this one directory, not a looser CSP.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn attachment_read(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let root = paths::attachments_dir(&app)?;
     let file = paths::in_attachments(&root, &path)?;

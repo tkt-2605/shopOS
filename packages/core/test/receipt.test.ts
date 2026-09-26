@@ -166,11 +166,27 @@ describe('receipt content', () => {
     }
     const text = visibleLines(buildReceipt(split)).join('\n')
     expect(text).toContain('Cash')
-    expect(text).toContain('Upi')
+    expect(text).toContain('UPI')
   })
 
   it('leaves loyalty out entirely when no points were earned', () => {
     const none = { ...doc, pointsEarned: 0 }
     expect(visibleLines(buildReceipt(none)).join('\n')).not.toContain('Points earned')
+  })
+})
+
+describe('what the roll can print', () => {
+  it('sends only characters a thermal printer has, one for one', () => {
+    const odd = {
+      ...doc,
+      shop: { ...doc.shop, name: 'Sri Café — Stores' },
+      customerName: 'முருகன்',
+      footer: 'Thank you — it’s “fresh”',
+    }
+    const out = buildReceipt(odd)
+    expect([...out].filter((c) => c.charCodeAt(0) > 126)).toEqual([])
+    const text = visibleLines(out).join('\n')
+    expect(text).toContain('Sri Cafe - Stores')
+    expect(text).toContain('Thank you - it\'s "fresh"')
   })
 })

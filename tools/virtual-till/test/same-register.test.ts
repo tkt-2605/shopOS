@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
+import { claimRegister, countersOtherTillsUse } from '@shopos/core'
 import { host, joiner, stopAll, writeBill } from './bench.js'
+import { openShop, topology, drainUntilQuiet } from './shop.js'
+import type { Till } from '../src/till.js'
 
 /**
  * Two tills that think they are the same counter.
@@ -103,4 +106,83 @@ describe('two tills on one counter', () => {
 
     expect((await back.sync(front)).ok).toBe(true)
   })
+})
+
+/**
+ * Four counters, which is where the refusal stops being a two-body problem.
+ *
+ * With two tills, "are we on the same counter" is one comparison and the
+ * scenarios above cover it from both ends. With four, three things become
+ * possible that were not, and none of them is exotic:
+ *
+ *   * the two tills on one counter may not be paired with each other at all,
+ *     so neither ever asks the other the question;
+ *   * a till may be on a counter that is fine with two of its peers and a
+ *     collision with the third, so refusing a peer is not the same as stopping;
+ *   * the shop must go on working around the pair that cannot talk, rather than
+ *     one mistake at one counter stopping the whole of it.
+ */
+describe('four tills, and two of them on one counter', () => {
+  async function fourCounters(): Promise<Till[]> {
+    const shop = await openShop(4, topology.mesh(4))
+    return shop.tills
+  }
+
+  it('refuses the pair that collides and nobody else', async () => {
+    const tills = await fourCounters()
+    const [front, back, side, store] = tills as [Till, Till, Till, Till]
+
+    // The store room is moved onto the front counter — the mistake a shopkeeper
+    // makes by recognising the name on the list.
+    await store.useRegister(front.registerId!)
+
+    const clash = await store.sync(front)
+    expect(clash.ok, 'the two on one counter').toBe(false)
+    if (!clash.ok) expect(clash.code).toBe('SAME_REGISTER')
+
+    /* And the rest of the shop carries on. A refusal is about a pair of tills,
+       not about the shop — treating it as a shop-wide stop would mean one
+       mis-set counter halting replication between two machines that are
+       perfectly fine. */
+    for (const [from, to] of [[store, back], [store, side], [back, front], [side, front]] as const) {
+      const round = await from.sync(to)
+      expect(round.ok, `${from.label} -> ${to.label}`).toBe(true)
+    }
+  }, 120_000)
+
+  it('is refused from whichever end asks', async () => {
+    const tills = await fourCounters()
+    const [front, , , store] = tills as [Till, Till, Till, Till]
+    await store.useRegister(front.registerId!)
+
+    for (const [from, to] of [[store, front], [front, store]] as const) {
+      const round = await from.sync(to)
+      expect(round.ok, `${from.label} -> ${to.label}`).toBe(false)
+      if (!round.ok) expect(round.code).toBe('SAME_REGISTER')
+    }
+  }, 120_000)
+
+  it('still refuses when the two on one counter have never met', async () => {
+    /* A ring, so the front counter and the store room are never paired: the
+       question "are we on the same counter" is one neither of them is ever in a
+       position to ask the other. The claim is what carries — it rides on
+       `registers`, which replicates — so each of them finds out from a till in
+       the middle. */
+    const shop = await openShop(4, topology.ring(4))
+    const [front, , , store] = shop.tills as [Till, Till, Till, Till]
+
+    await store.useRegister(front.registerId!)
+    await store.as(() => claimRegister(store.db, {
+      registerId: front.registerId!, deviceId: store.deviceId,
+    }))
+    await drainUntilQuiet(shop.tills[3]!, shop.tills[2]!)
+    await drainUntilQuiet(shop.tills[2]!, shop.tills[1]!)
+    await drainUntilQuiet(shop.tills[1]!, shop.tills[0]!)
+
+    const taken = await front.as(() => countersOtherTillsUse(front.db, front.deviceId))
+    expect(
+      taken.map((t) => t.registerId),
+      'the front counter has heard that somebody else claims its counter',
+    ).toContain(front.registerId)
+  }, 120_000)
 })

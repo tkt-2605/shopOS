@@ -1,23 +1,33 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Permissions, getOrOpenSession, openSessionFor, sessionSummary, closeSession,
-  postCashMovement, countDrawer, type SessionSummary,
+  recordPayout, countDrawer, sessionMovements, type SessionSummary, type SessionMovement,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { useShopChanged } from '../core/useShopChanged'
+import { useAction } from '../core/useAction'
+import { Completeness } from '../ui/Completeness'
 
 const NOTES = [500, 200, 100, 50, 20, 10, 5, 2, 1]
 
-interface Movement {
-  id: string
-  direction: string
-  amount: number
-  method: string
-  source_type: string
-  reference: string | null
-  created_at: string
+/**
+ * How many of a note were typed, by the rule `countDrawer` applies: a whole
+ * number, not below zero, or nothing. The screen used to add up `1.5` notes
+ * that the close then ignored, so the total shown was not the total recorded.
+ */
+function notesOf(typed: string | undefined): number {
+  const n = Number(typed)
+  return Number.isInteger(n) && n > 0 ? n : 0
 }
 
+/** The time of day on this machine's clock. The stored stamp is UTC, and its own digits are five and a half hours out. */
+function timeOfDay(iso: string): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(at.getHours())}:${pad(at.getMinutes())}`
+}
 export default function CashCounter() {
   const { db, registerId, registerName } = useCore()
   const user = useUser()
@@ -28,62 +38,72 @@ export default function CashCounter() {
   const canClose = Permissions.can(user.permissions, 'cash_session', 'submit')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
-  const [movements, setMovements] = useState<Movement[]>([])
+  const [movements, setMovements] = useState<SessionMovement[]>([])
   const [opening, setOpening] = useState('')
   const [counting, setCounting] = useState(false)
   const [counts, setCounts] = useState<Record<string, string>>({})
   const [payout, setPayout] = useState<{ amount: string; reason: string } | null>(null)
   const [closed, setClosed] = useState<{ expected: number; actual: number; variance: number } | null>(null)
-
+  const [error, setError] = useState<string | null>(null)
+  // Opening, paying out and closing each move money once per press.
+  const action = useAction(setError)
   const refresh = useCallback(async () => {
     const id = await openSessionFor(db, registerId)
     setSessionId(id)
     if (!id) { setSummary(null); setMovements([]); return }
     setSummary(await sessionSummary(db, id))
-    setMovements(await db.query<Movement>(
-      `SELECT id, direction, amount, method, source_type, reference, created_at
-         FROM cash_movements WHERE session_id = ? ORDER BY created_at DESC LIMIT 60`, [id],
-    ))
+    setMovements(await sessionMovements(db, id))
   }, [db, registerId])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   async function openDrawer() {
-    await getOrOpenSession(db, {
-      registerId, userId: user.id,
-      openingCash: (Money.parseMoney(opening) ?? 0) as never,
+    const float = opening.trim() === '' ? 0 : Money.parseMoney(opening)
+    if (float === null || float < 0) { setError('The opening cash has to be an amount, zero or more.'); return }
+    setError(null)
+    await action.run(async () => {
+      await getOrOpenSession(db, { registerId, userId: user.id, openingCash: float as never })
+      setOpening('')
+      await refresh()
     })
-    setOpening('')
-    await refresh()
   }
 
-  async function recordPayout() {
+  async function payOut() {
     if (!payout || !sessionId) return
     const amount = Money.parseMoney(payout.amount)
-    if (amount === null || amount <= 0) return
-    await db.transaction(async (tx) => {
-      await postCashMovement(tx, {
-        sessionId, direction: 'out', amount,
-        sourceType: 'expense', reference: payout.reason.trim() || null, userId: user.id,
-      })
+    if (amount === null || amount <= 0) { setError('Enter an amount greater than zero.'); return }
+    setError(null)
+    await action.run(async () => {
+      const result = await recordPayout(db, { sessionId, amount, reason: payout.reason, userId: user.id })
+      if (!result.ok) {
+        setError(result.code === 'SESSION_CLOSED'
+          ? 'This drawer has been closed. Open it again to take money out.'
+          : 'Enter an amount greater than zero.')
+        return
+      }
+      setPayout(null)
+      await refresh()
     })
-    setPayout(null)
-    await refresh()
   }
 
   async function doClose() {
     if (!sessionId) return
-    const actual = await countDrawer(
-      Object.fromEntries(Object.entries(counts).map(([note, n]) => [note, Number(n) || 0])),
-    )
-    const result = await closeSession(db, { sessionId, actualCash: actual, userId: user.id })
-    setClosed({ expected: result.expectedCash, actual: result.actualCash, variance: result.variance })
-    setCounting(false)
-    setCounts({})
-    await refresh()
+    setError(null)
+    await action.run(async () => {
+      const actual = await countDrawer(
+        Object.fromEntries(Object.entries(counts).map(([note, n]) => [note, notesOf(n)])),
+      )
+      const result = await closeSession(db, { sessionId, actualCash: actual, userId: user.id })
+      setClosed({ expected: result.expectedCash, actual: result.actualCash, variance: result.variance })
+      setCounting(false)
+      setCounts({})
+      await refresh()
+    })
   }
 
-  const counted = NOTES.reduce((s, n) => s + n * 100 * (Number(counts[String(n)]) || 0), 0)
+  const counted = NOTES.reduce((s, n) => s + n * 100 * notesOf(counts[String(n)]), 0)
 
   if (!sessionId) {
     return (
@@ -97,13 +117,14 @@ export default function CashCounter() {
             </Alert>
           </div>
         )}
+        {error && <div style={{ marginBottom: 14 }}><Alert>{error}</Alert></div>}
         <Card title={`Open the drawer — ${registerName}`}>
           <Field label="Cash in the drawer to start" hint="What is physically there now.">
             <input className="input num" id="opening-cash" autoFocus value={opening}
               onChange={(e) => setOpening(e.target.value)} placeholder="0.00" />
           </Field>
           <button className="btn primary lg" style={{ marginTop: 14, width: '100%' }}
-            disabled={!canOpen} onClick={() => void openDrawer()}>
+            disabled={!canOpen || action.busy} onClick={() => void openDrawer()}>
             Open drawer
           </button>
         </Card>
@@ -113,9 +134,14 @@ export default function CashCounter() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* A drawer is counted against what the till thinks it took. If the back
+          counter's card payments have not arrived, the variance is somebody
+          else's sales and not a shortfall in this drawer. */}
+      <Completeness />
       <div style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
         {registerName} · this machine's drawer
       </div>
+      {error && !payout && !counting && <Alert>{error}</Alert>}
 
       <div className="stat-row">
         <div className="stat">
@@ -153,9 +179,9 @@ export default function CashCounter() {
           <tbody>
             {movements.map((m) => (
               <tr key={m.id}>
-                <td className="num">{m.created_at.slice(11, 16)}</td>
+                <td className="num">{timeOfDay(m.createdAt)}</td>
                 <td>
-                  {m.source_type.replace(/_/g, ' ')}
+                  {m.sourceType.replace(/_/g, ' ')}
                   {m.reference && <div className="src">{m.reference}</div>}
                 </td>
                 <td>{m.method}</td>
@@ -174,9 +200,10 @@ export default function CashCounter() {
           onClose={() => setPayout(null)}
           footer={<>
             <button className="btn" onClick={() => setPayout(null)}>Cancel</button>
-            <button className="btn primary" onClick={() => void recordPayout()}>Record</button>
+            <button className="btn primary" disabled={action.busy} onClick={() => void payOut()}>Record</button>
           </>}
         >
+          {error && <Alert>{error}</Alert>}
           <Field label="Amount">
             <input className="input num" id="payout-amount" autoFocus value={payout.amount}
               onChange={(e) => setPayout({ ...payout, amount: e.target.value })} />
@@ -194,9 +221,12 @@ export default function CashCounter() {
           onClose={() => setCounting(false)}
           footer={<>
             <button className="btn" onClick={() => setCounting(false)}>Cancel</button>
-            <button className="btn primary" onClick={() => void doClose()}>Close drawer</button>
+            <button className="btn primary" disabled={action.busy} onClick={() => void doClose()}>
+              {action.busy ? 'Closing…' : 'Close drawer'}
+            </button>
           </>}
         >
+          {error && <Alert>{error}</Alert>}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
             {NOTES.map((n) => (
               <Field key={n} label={`₹${n}`}>

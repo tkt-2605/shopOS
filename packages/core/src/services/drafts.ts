@@ -1,4 +1,6 @@
+import { eq, and, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
 import type { PriceSource } from '../domain/pricing.js'
@@ -26,31 +28,29 @@ export interface OpenDraft {
 }
 
 export async function listOpenDrafts(db: SqlDriver, registerId: string): Promise<OpenDraft[]> {
-  const rows = await db.query<{
-    id: string; customer_name: string | null; grand_total: number
-    updated_at: string; line_count: number; preview: string | null
-  }>(
-    `SELECT b.id, b.customer_name, b.grand_total, b.updated_at,
-            (SELECT COUNT(*) FROM bill_items i WHERE i.bill_id = b.id) AS line_count,
-            (SELECT GROUP_CONCAT(i.product_name, ', ')
-               FROM (SELECT product_name FROM bill_items WHERE bill_id = b.id ORDER BY idx LIMIT 3) i
-            ) AS preview
-       FROM bills b
-      WHERE b.docstatus = ? AND b.register_id = ?
-      ORDER BY b.created_at`,
-    [DRAFT, registerId],
-  )
+  const rows = await q(db)
+    .select({
+      billId: schema.bills.id,
+      customerName: schema.bills.customerName,
+      grandTotal: schema.bills.grandTotal,
+      updatedAt: schema.bills.updatedAt,
+      lineCount: sql<number>`(SELECT COUNT(*) FROM bill_items i WHERE i.bill_id = bills.id)`,
+      /* raw: the first three item names, in the order they were rung up.
+         `GROUP_CONCAT` over a subquery that is itself ordered and limited --
+         the ordering has to happen before the concatenation, which is why it
+         is a derived table and not one aggregate. `bills.id` is written out
+         because a bare `id` inside it would bind to `bill_items`. */
+      preview: sql<string | null>`(SELECT GROUP_CONCAT(i.product_name, ', ') FROM
+        (SELECT product_name FROM bill_items WHERE bill_id = bills.id ORDER BY idx LIMIT 3) i)`,
+    })
+    .from(schema.bills)
+    .where(and(eq(schema.bills.docstatus, DRAFT), eq(schema.bills.registerId, registerId)))
+    .orderBy(schema.bills.createdAt)
 
+  // An empty draft is a bill somebody started and walked away from, not a tab.
   return rows
-    .filter((r) => r.line_count > 0)
-    .map((r) => ({
-      billId: r.id,
-      customerName: r.customer_name,
-      lineCount: r.line_count,
-      grandTotal: r.grand_total as Money,
-      updatedAt: r.updated_at,
-      preview: r.preview ?? '',
-    }))
+    .filter((r) => r.lineCount > 0)
+    .map((r) => ({ ...r, preview: r.preview ?? '' }))
 }
 
 export interface DraftLine {
@@ -82,45 +82,47 @@ export interface DraftDetail {
 }
 
 export async function loadDraft(db: SqlDriver, billId: string): Promise<DraftDetail | null> {
-  const bill = await db.get<{
-    id: string; docstatus: number; customer_id: string | null; customer_name: string | null
-    discount: number; converted_from: string | null; order_no: string | null
-  }>(
-    `SELECT b.id, b.docstatus, b.customer_id, b.customer_name, b.discount, b.converted_from,
-            d.doc_no AS order_no
-       FROM bills b
-       LEFT JOIN documents d ON d.id = b.converted_from
-      WHERE b.id = ?`,
-    [billId],
-  )
+  const [bill] = await q(db)
+    .select({
+      id: schema.bills.id,
+      docstatus: schema.bills.docstatus,
+      customerId: schema.bills.customerId,
+      customerName: schema.bills.customerName,
+      discount: schema.bills.discount,
+      convertedFrom: schema.bills.convertedFrom,
+      orderNo: schema.documents.docNo,
+    })
+    .from(schema.bills)
+    .leftJoin(schema.documents, eq(schema.documents.id, schema.bills.convertedFrom))
+    .where(eq(schema.bills.id, billId))
   if (!bill || bill.docstatus !== DRAFT) return null
 
-  const lines = await db.query<{
-    product_id: string; product_name: string; sale_unit: string
-    qty: number; rate: number; discount: number
-    price_source: string; price_source_id: string | null
-  }>(
-    `SELECT product_id, product_name, sale_unit, qty, rate, discount, price_source, price_source_id
-       FROM bill_items WHERE bill_id = ? ORDER BY idx`,
-    [billId],
-  )
+  const lines = await q(db)
+    .select({
+      productId: schema.billItems.productId,
+      productName: schema.billItems.productName,
+      saleUnit: schema.billItems.saleUnit,
+      qty: schema.billItems.qty,
+      rate: schema.billItems.rate,
+      discount: schema.billItems.discount,
+      priceSource: schema.billItems.priceSource,
+      priceSourceId: schema.billItems.priceSourceId,
+    })
+    .from(schema.billItems)
+    .where(eq(schema.billItems.billId, billId))
+    .orderBy(schema.billItems.idx)
 
   return {
     billId: bill.id,
-    customerId: bill.customer_id,
-    customerName: bill.customer_name,
-    billDiscount: bill.discount as Money,
-    fromOrder: bill.converted_from ? { id: bill.converted_from, docNo: bill.order_no ?? '' } : null,
-    lines: lines.map((l) => ({
-      productId: l.product_id,
-      productName: l.product_name,
-      saleUnit: l.sale_unit,
-      qty: l.qty as Qty,
-      rate: l.rate as Money,
-      discount: l.discount as Money,
-      priceSource: l.price_source as PriceSource,
-      priceSourceId: l.price_source_id,
-    })),
+    customerId: bill.customerId,
+    customerName: bill.customerName,
+    billDiscount: bill.discount,
+    fromOrder: bill.convertedFrom ? { id: bill.convertedFrom, docNo: bill.orderNo ?? '' } : null,
+    /* `price_source` is text in the database and this build knows a fixed set
+       of words for it. A row written by a later build could hold another, and
+       it is passed on rather than refused: the draft is the cashier's own cart,
+       and a word this build does not recognise is not worth losing it over. */
+    lines: lines.map((l) => ({ ...l, priceSource: l.priceSource as PriceSource })),
   }
 }
 
@@ -134,19 +136,33 @@ export async function discardDraft(
   db: SqlDriver,
   input: { billId: string; actorId: string },
 ): Promise<DiscardResult> {
-  const bill = await db.get<{ docstatus: number }>(`SELECT docstatus FROM bills WHERE id = ?`, [input.billId])
+  const [bill] = await q(db)
+    .select({ docstatus: schema.bills.docstatus })
+    .from(schema.bills)
+    .where(eq(schema.bills.id, input.billId))
   if (!bill) return { ok: true }
   if (bill.docstatus !== DRAFT) return { ok: false, code: 'NOT_A_DRAFT' }
 
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx): Promise<DiscardResult> => {
+    /* Asked again in here, before anything is deleted. A submit that lands
+       between the check above and this transaction would otherwise keep its
+       bill -- the delete below is conditional -- and lose every line under it,
+       because the lines went first and unconditionally. */
+    const [now] = await q(tx)
+      .select({ docstatus: schema.bills.docstatus })
+      .from(schema.bills)
+      .where(eq(schema.bills.id, input.billId))
+    if (!now) return { ok: true }
+    if (now.docstatus !== DRAFT) return { ok: false, code: 'NOT_A_DRAFT' }
+
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'bills', entityId: input.billId, action: 'delete', docstatusFrom: DRAFT,
     })
-    await tx.execute(`DELETE FROM bill_items WHERE bill_id = ?`, [input.billId])
-    await tx.execute(`DELETE FROM bills WHERE id = ? AND docstatus = ?`, [input.billId, DRAFT])
+    await q(tx).delete(schema.billItems).where(eq(schema.billItems.billId, input.billId))
+    await q(tx).delete(schema.bills)
+      .where(and(eq(schema.bills.id, input.billId), eq(schema.bills.docstatus, DRAFT)))
+    return { ok: true }
   })
-
-  return { ok: true }
 }
 
 /**
@@ -155,6 +171,8 @@ export async function discardDraft(
  * leave a trail of empty rows behind.
  */
 export async function pruneEmptyDrafts(db: SqlDriver, registerId: string): Promise<number> {
+  // raw: how many were cleared is the answer, and the proxy the typed queries
+  // go over does not carry a row count back.
   const result = await db.execute(
     `DELETE FROM bills
       WHERE docstatus = ? AND register_id = ?

@@ -1,11 +1,13 @@
+import { eq, and, inArray, isNull, isNotNull, desc, count, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
-import type { Money } from '../money.js'
-import { type Qty, qty, subQty } from '../quantity.js'
+import { type Money, paise } from '../money.js'
+import { type Qty, subQty } from '../quantity.js'
 import { businessDate } from '../dates.js'
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
-import { nextDocNo } from './numbering.js'
+import { nextDocNo, seriesPrefix } from './numbering.js'
 import { createStockEntry, submitStockEntry, cancelStockEntry } from './stockEntry.js'
 
 /**
@@ -80,35 +82,42 @@ export interface CountSheet {
  * their difference would apply the same correction twice.
  */
 export async function openCount(db: SqlDriver, input: OpenCountInput): Promise<OpenCountResult> {
-  const existing = await db.get<{ id: string; doc_no: string }>(
-    `SELECT id, doc_no FROM stock_counts WHERE docstatus = 0 AND deleted_at IS NULL ORDER BY created_at LIMIT 1`,
-  )
-  if (existing) return { ok: false, code: 'ALREADY_OPEN', countId: existing.id, docNo: existing.doc_no }
+  const existing = await openSheet(db)
+  if (existing) return { ok: false, code: 'ALREADY_OPEN', countId: existing.id, docNo: existing.docNo }
 
   const now = input.now ?? new Date()
-  const where: string[] = ['p.deleted_at IS NULL', 'p.is_active = 1', 'p.is_stock_tracked = 1']
-  const args: (string | number)[] = []
 
+  /* The scope used to be built as a string of SQL with a matching array of
+     arguments kept in step by hand. `and()` takes the same shape without the
+     two lists being able to disagree, and `inArray` writes its own placeholders
+     -- which is where a hand-built `IN` list goes wrong. */
+  const onHand = sql<Qty>`COALESCE(${schema.productStock.qtyOnHand}, 0)`
+  const scoped = []
   if (input.scope.kind === 'category') {
-    where.push('p.category_id = ?')
-    args.push(input.scope.categoryId)
+    scoped.push(eq(schema.products.categoryId, input.scope.categoryId))
   } else if (input.scope.kind === 'chosen') {
     if (input.scope.productIds.length === 0) return { ok: false, code: 'NOTHING_TO_COUNT' }
-    where.push(`p.id IN (${input.scope.productIds.map(() => '?').join(', ')})`)
-    args.push(...input.scope.productIds)
+    scoped.push(inArray(schema.products.id, input.scope.productIds))
   }
   if (!input.includeEmpty && input.scope.kind !== 'chosen') {
-    where.push('COALESCE(s.qty_on_hand, 0) <> 0')
+    scoped.push(sql`${onHand} <> 0`)
   }
 
-  const rows = await db.query<{ id: string; qty_on_hand: number; stock_value: number }>(
-    `SELECT p.id, COALESCE(s.qty_on_hand, 0) AS qty_on_hand, COALESCE(s.stock_value, 0) AS stock_value
-       FROM products p
-       LEFT JOIN product_stock s ON s.product_id = p.id
-      WHERE ${where.join(' AND ')}
-      ORDER BY p.name`,
-    args,
-  )
+  const rows = await q(db)
+    .select({
+      id: schema.products.id,
+      qtyOnHand: onHand,
+      stockValue: sql<Money>`COALESCE(${schema.productStock.stockValue}, 0)`,
+    })
+    .from(schema.products)
+    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
+    .where(and(
+      isNull(schema.products.deletedAt),
+      eq(schema.products.isActive, 1),
+      eq(schema.products.isStockTracked, 1),
+      ...scoped,
+    ))
+    .orderBy(schema.products.name)
   if (rows.length === 0) return { ok: false, code: 'NOTHING_TO_COUNT' }
 
   const countId = newId()
@@ -116,27 +125,31 @@ export async function openCount(db: SqlDriver, input: OpenCountInput): Promise<O
   let docNo = ''
 
   await db.transaction(async (tx) => {
-    docNo = await nextDocNo(tx, 'stock_count', 'MR', now)
+    docNo = await nextDocNo(tx, 'stock_count', await seriesPrefix(tx, 'MR'), now)
 
-    await tx.execute(
-      `INSERT INTO stock_counts
-         (id, doc_no, docstatus, scope, category_id, note, opened_at, posting_date,
-          created_by, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        countId, docNo, input.scope.kind,
-        input.scope.kind === 'category' ? input.scope.categoryId : null,
-        input.note?.trim() || null, nowIso, businessDate(now),
-        input.actorId, nowIso, nowIso,
-      ],
-    )
+    await q(tx).insert(schema.stockCounts).values({
+      id: countId,
+      docNo,
+      docstatus: DRAFT,
+      scope: input.scope.kind,
+      categoryId: input.scope.kind === 'category' ? input.scope.categoryId : null,
+      note: input.note?.trim() || null,
+      openedAt: nowIso,
+      postingDate: businessDate(now),
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
 
     for (const row of rows) {
-      await tx.execute(
-        `INSERT INTO stock_count_items (id, count_id, product_id, expected_qty, counted_qty, unit_cost)
-         VALUES (?, ?, ?, ?, NULL, ?)`,
-        [newId(), countId, row.id, row.qty_on_hand, unitCostOf(row.qty_on_hand, row.stock_value)],
-      )
+      await q(tx).insert(schema.stockCountItems).values({
+        id: newId(),
+        countId,
+        productId: row.id,
+        expectedQty: row.qtyOnHand,
+        countedQty: null,
+        unitCost: unitCostOf(row.qtyOnHand, row.stockValue),
+      })
     }
 
     await writeAudit(tx, { actorId: input.actorId }, {
@@ -150,70 +163,62 @@ export async function openCount(db: SqlDriver, input: OpenCountInput): Promise<O
 
 /** Moving average at the moment the sheet opened. Null when there is nothing to
  *  average — found goods then come in at no value rather than a guessed one. */
-function unitCostOf(quantity: number, value: number): number | null {
+function unitCostOf(quantity: Qty, value: Money): Money | null {
   if (quantity <= 0 || value <= 0) return null
-  return Math.round((value * 10_000) / quantity)
+  return paise(Math.round((value * 10_000) / quantity))
 }
 
 export async function loadCount(db: SqlDriver, countId: string): Promise<CountSheet | null> {
-  const head = await db.get<{
-    id: string; doc_no: string; docstatus: number; scope: string; category_id: string | null
-    note: string | null; opened_at: string; posting_date: string; entry_id: string | null
-    created_by: string
-  }>(
-    `SELECT id, doc_no, docstatus, scope, category_id, note, opened_at, posting_date, entry_id, created_by
-       FROM stock_counts WHERE id = ? AND deleted_at IS NULL`,
-    [countId],
-  )
+  const [head] = await q(db)
+    .select({
+      id: schema.stockCounts.id,
+      docNo: schema.stockCounts.docNo,
+      docstatus: schema.stockCounts.docstatus,
+      scope: schema.stockCounts.scope,
+      categoryId: schema.stockCounts.categoryId,
+      note: schema.stockCounts.note,
+      openedAt: schema.stockCounts.openedAt,
+      postingDate: schema.stockCounts.postingDate,
+      entryId: schema.stockCounts.entryId,
+      createdBy: schema.stockCounts.createdBy,
+    })
+    .from(schema.stockCounts)
+    .where(and(eq(schema.stockCounts.id, countId), isNull(schema.stockCounts.deletedAt)))
   if (!head) return null
 
-  const lines = await db.query<{
-    id: string; product_id: string; product_name: string; code: string | null
-    barcode: string | null; category_name: string | null; base_unit: string
-    expected_qty: number; counted_qty: number | null; unit_cost: number | null
-  }>(
-    `SELECT i.id, i.product_id, p.name AS product_name, p.code, p.barcode,
-            c.name AS category_name, p.base_unit,
-            i.expected_qty, i.counted_qty, i.unit_cost
-       FROM stock_count_items i
-       JOIN products p ON p.id = i.product_id
-       LEFT JOIN categories c ON c.id = p.category_id
-      WHERE i.count_id = ?
-      ORDER BY c.name, p.name`,
-    [countId],
-  )
+  /* The quantities and the cost arrive branded now -- `expected_qty` is a `Qty`
+     and `unit_cost` a `Money` because that is what the column says they are, so
+     the re-wrapping this used to do on every row is gone. */
+  const lines = await q(db)
+    .select({
+      id: schema.stockCountItems.id,
+      productId: schema.stockCountItems.productId,
+      productName: schema.products.name,
+      code: schema.products.code,
+      barcode: schema.products.barcode,
+      categoryName: schema.categories.name,
+      baseUnit: schema.products.baseUnit,
+      expectedQty: schema.stockCountItems.expectedQty,
+      countedQty: schema.stockCountItems.countedQty,
+      unitCost: schema.stockCountItems.unitCost,
+    })
+    .from(schema.stockCountItems)
+    .innerJoin(schema.products, eq(schema.products.id, schema.stockCountItems.productId))
+    .leftJoin(schema.categories, eq(schema.categories.id, schema.products.categoryId))
+    .where(eq(schema.stockCountItems.countId, countId))
+    .orderBy(schema.categories.name, schema.products.name)
 
-  return {
-    id: head.id,
-    docNo: head.doc_no,
-    docstatus: head.docstatus,
-    scope: head.scope,
-    categoryId: head.category_id,
-    note: head.note,
-    openedAt: head.opened_at,
-    postingDate: head.posting_date,
-    entryId: head.entry_id,
-    createdBy: head.created_by,
-    lines: lines.map((l) => ({
-      id: l.id,
-      productId: l.product_id,
-      productName: l.product_name,
-      code: l.code,
-      barcode: l.barcode,
-      categoryName: l.category_name,
-      baseUnit: l.base_unit,
-      expectedQty: qty(l.expected_qty),
-      countedQty: l.counted_qty === null ? null : qty(l.counted_qty),
-      unitCost: l.unit_cost === null ? null : (l.unit_cost as Money),
-    })),
-  }
+  return { ...head, lines }
 }
 
 export async function openSheet(db: SqlDriver): Promise<{ id: string; docNo: string } | null> {
-  const row = await db.get<{ id: string; doc_no: string }>(
-    `SELECT id, doc_no FROM stock_counts WHERE docstatus = 0 AND deleted_at IS NULL ORDER BY created_at LIMIT 1`,
-  )
-  return row ? { id: row.id, docNo: row.doc_no } : null
+  const [row] = await q(db)
+    .select({ id: schema.stockCounts.id, docNo: schema.stockCounts.docNo })
+    .from(schema.stockCounts)
+    .where(and(eq(schema.stockCounts.docstatus, DRAFT), isNull(schema.stockCounts.deletedAt)))
+    .orderBy(schema.stockCounts.createdAt)
+    .limit(1)
+  return row ?? null
 }
 
 export interface CountSummary {
@@ -229,32 +234,35 @@ export interface CountSummary {
 }
 
 export async function listCounts(db: SqlDriver, limit = 50): Promise<CountSummary[]> {
-  const rows = await db.query<{
-    id: string; doc_no: string; docstatus: number; posting_date: string; opened_at: string
-    note: string | null; lines: number; counted: number; differing: number
-  }>(
-    `SELECT c.id, c.doc_no, c.docstatus, c.posting_date, c.opened_at, c.note,
-            COUNT(i.id) AS lines,
-            SUM(CASE WHEN i.counted_qty IS NOT NULL THEN 1 ELSE 0 END) AS counted,
-            SUM(CASE WHEN i.counted_qty IS NOT NULL AND i.counted_qty <> i.expected_qty THEN 1 ELSE 0 END) AS differing
-       FROM stock_counts c
-       LEFT JOIN stock_count_items i ON i.count_id = c.id
-      WHERE c.deleted_at IS NULL
-      GROUP BY c.id
-      ORDER BY c.created_at DESC
-      LIMIT ?`,
-    [limit],
-  )
+  const counted = schema.stockCountItems.countedQty
+  const expected = schema.stockCountItems.expectedQty
+
+  const rows = await q(db)
+    .select({
+      id: schema.stockCounts.id,
+      docNo: schema.stockCounts.docNo,
+      docstatus: schema.stockCounts.docstatus,
+      postingDate: schema.stockCounts.postingDate,
+      openedAt: schema.stockCounts.openedAt,
+      note: schema.stockCounts.note,
+      lineCount: count(schema.stockCountItems.id),
+      countedCount: sql<number>`SUM(CASE WHEN ${counted} IS NOT NULL THEN 1 ELSE 0 END)`,
+      /* A line put back to uncounted is not a difference, which is why the
+         `IS NOT NULL` is repeated here rather than left to the comparison:
+         `NULL <> expected` is NULL, and would be counted by neither branch. */
+      differenceCount: sql<number>`SUM(CASE WHEN ${counted} IS NOT NULL AND ${counted} <> ${expected} THEN 1 ELSE 0 END)`,
+    })
+    .from(schema.stockCounts)
+    .leftJoin(schema.stockCountItems, eq(schema.stockCountItems.countId, schema.stockCounts.id))
+    .where(isNull(schema.stockCounts.deletedAt))
+    .groupBy(schema.stockCounts.id)
+    .orderBy(desc(schema.stockCounts.createdAt))
+    .limit(limit)
+
   return rows.map((r) => ({
-    id: r.id,
-    docNo: r.doc_no,
-    docstatus: r.docstatus,
-    postingDate: r.posting_date,
-    openedAt: r.opened_at,
-    note: r.note,
-    lineCount: r.lines,
-    countedCount: r.counted ?? 0,
-    differenceCount: r.differing ?? 0,
+    ...r,
+    countedCount: r.countedCount ?? 0,
+    differenceCount: r.differenceCount ?? 0,
   }))
 }
 
@@ -266,20 +274,22 @@ export async function setCounted(
   db: SqlDriver,
   input: { countId: string; productId: string; countedQty: Qty | null },
 ): Promise<void> {
-  const head = await db.get<{ docstatus: number }>(
-    `SELECT docstatus FROM stock_counts WHERE id = ? AND deleted_at IS NULL`,
-    [input.countId],
-  )
+  const [head] = await q(db)
+    .select({ docstatus: schema.stockCounts.docstatus })
+    .from(schema.stockCounts)
+    .where(and(eq(schema.stockCounts.id, input.countId), isNull(schema.stockCounts.deletedAt)))
   if (!head) throw new Error('no such count')
   if (head.docstatus !== DRAFT) throw new Error('that count sheet has already been submitted')
   if (input.countedQty !== null && input.countedQty < 0) {
     throw new RangeError('a shelf cannot hold less than nothing')
   }
 
-  await db.execute(
-    `UPDATE stock_count_items SET counted_qty = ? WHERE count_id = ? AND product_id = ?`,
-    [input.countedQty, input.countId, input.productId],
-  )
+  await q(db).update(schema.stockCountItems)
+    .set({ countedQty: input.countedQty })
+    .where(and(
+      eq(schema.stockCountItems.countId, input.countId),
+      eq(schema.stockCountItems.productId, input.productId),
+    ))
 }
 
 /** A line whose stock moved between the sheet opening and it being submitted. */
@@ -314,55 +324,90 @@ export type SubmitCountResult =
  * shelf is empty. Only differences are posted, so a count of two hundred items
  * that finds three wrong writes three ledger rows.
  */
+/** A refusal from inside the transaction, thrown so that everything before it rolls back. */
+class Refused {
+  constructor(readonly result: Extract<SubmitCountResult, { ok: false }>) {}
+}
+
+/**
+ * One transaction for the whole of it: the adjustment entry, its submission and
+ * the sheet's own status. Three used to follow one another, so a refusal at the
+ * second left a draft entry behind on every attempt, and a till that stopped
+ * between the second and the third had moved the stock with the sheet still
+ * open -- submitting it again moved the stock again.
+ */
 export async function submitCount(
   db: SqlDriver,
   input: { countId: string; actorId: string; now?: Date },
 ): Promise<SubmitCountResult> {
+  try {
+    return await db.transaction((tx) => submitCountIn(tx, input))
+  } catch (err) {
+    if (err instanceof Refused) return err.result
+    throw err
+  }
+}
+
+async function submitCountIn(
+  db: SqlDriver,
+  input: { countId: string; actorId: string; now?: Date },
+): Promise<SubmitCountResult> {
   const now = input.now ?? new Date()
-  const head = await db.get<{ id: string; doc_no: string; docstatus: number; posting_date: string }>(
-    `SELECT id, doc_no, docstatus, posting_date FROM stock_counts WHERE id = ? AND deleted_at IS NULL`,
-    [input.countId],
-  )
+  const [head] = await q(db)
+    .select({
+      id: schema.stockCounts.id,
+      docNo: schema.stockCounts.docNo,
+      docstatus: schema.stockCounts.docstatus,
+      postingDate: schema.stockCounts.postingDate,
+    })
+    .from(schema.stockCounts)
+    .where(and(eq(schema.stockCounts.id, input.countId), isNull(schema.stockCounts.deletedAt)))
   if (!head) throw new Error('no such count')
   assertCanApply('stock count', parseDocStatus(head.docstatus), 'submit')
 
-  const lines = await db.query<{
-    product_id: string; product_name: string; expected_qty: number
-    counted_qty: number; unit_cost: number | null; on_hand: number
-  }>(
-    `SELECT i.product_id, p.name AS product_name, i.expected_qty, i.counted_qty, i.unit_cost,
-            COALESCE(s.qty_on_hand, 0) AS on_hand
-       FROM stock_count_items i
-       JOIN products p ON p.id = i.product_id
-       LEFT JOIN product_stock s ON s.product_id = i.product_id
-      WHERE i.count_id = ? AND i.counted_qty IS NOT NULL`,
-    [input.countId],
-  )
+  const lines = await q(db)
+    .select({
+      productId: schema.stockCountItems.productId,
+      productName: schema.products.name,
+      expectedQty: schema.stockCountItems.expectedQty,
+      countedQty: schema.stockCountItems.countedQty,
+      unitCost: schema.stockCountItems.unitCost,
+      onHand: sql<Qty>`COALESCE(${schema.productStock.qtyOnHand}, 0)`,
+    })
+    .from(schema.stockCountItems)
+    .innerJoin(schema.products, eq(schema.products.id, schema.stockCountItems.productId))
+    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.stockCountItems.productId))
+    .where(and(
+      eq(schema.stockCountItems.countId, input.countId),
+      isNotNull(schema.stockCountItems.countedQty),
+    ))
   if (lines.length === 0) return { ok: false, code: 'NOTHING_COUNTED' }
 
   // What the shop sold or received while the shelf was being counted. Reported,
   // never corrected: those movements are real and the count did not see them.
   const moved: MovedLine[] = lines
-    .filter((l) => l.on_hand !== l.expected_qty)
+    .filter((l) => l.onHand !== l.expectedQty)
     .map((l) => ({
-      productId: l.product_id,
-      productName: l.product_name,
-      expectedQty: qty(l.expected_qty),
-      currentQty: qty(l.on_hand),
+      productId: l.productId,
+      productName: l.productName,
+      expectedQty: l.expectedQty,
+      currentQty: l.onHand,
     }))
 
+  /* `counted_qty` is not null on any of these -- the query asked for that -- but
+     the column is nullable and the type says so, so it is narrowed rather than
+     asserted. */
   const differences = lines
-    .map((l) => ({ ...l, change: subQty(qty(l.counted_qty), qty(l.expected_qty)) }))
+    .map((l) => ({ ...l, change: subQty(l.countedQty ?? l.expectedQty, l.expectedQty) }))
     .filter((l) => l.change !== 0)
 
   const nowIso = now.toISOString()
 
   if (differences.length === 0) {
     await db.transaction(async (tx) => {
-      await tx.execute(
-        `UPDATE stock_counts SET docstatus = 1, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-        [nowIso, input.countId],
-      )
+      await q(tx).update(schema.stockCounts)
+        .set({ docstatus: SUBMITTED, updatedAt: nowIso, rev: sql`${schema.stockCounts.rev} + 1` })
+        .where(eq(schema.stockCounts.id, input.countId))
       await writeAudit(tx, { actorId: input.actorId }, {
         entity: 'stock_counts', entityId: input.countId, action: 'submit',
         docstatusFrom: DRAFT, docstatusTo: SUBMITTED,
@@ -370,7 +415,7 @@ export async function submitCount(
       })
     })
     return {
-      ok: true, countId: input.countId, docNo: head.doc_no,
+      ok: true, countId: input.countId, docNo: head.docNo,
       entryId: null, entryDocNo: null, adjusted: 0, shortages: 0, surpluses: 0, moved,
     }
   }
@@ -379,35 +424,40 @@ export async function submitCount(
   // ability to cancel are the ones already built and tested.
   const entry = await createStockEntry(db, {
     entryType: 'adjustment',
-    postingDate: head.posting_date,
-    reference: head.doc_no,
-    notes: `Physical count ${head.doc_no}`,
+    postingDate: head.postingDate,
+    reference: head.docNo,
+    notes: `Physical count ${head.docNo}`,
     actorId: input.actorId,
     now,
     lines: differences.map((l) => ({
-      productId: l.product_id,
+      productId: l.productId,
       qty: l.change,
       // Goods found come back at what the shelf was worth when the sheet opened.
       // A count corrects a quantity; it is not a purchase and must not move the
       // average. Goods short are valued by the ledger itself on the way out.
-      ...(l.change > 0 && l.unit_cost ? { unitCost: l.unit_cost as Money } : {}),
+      ...(l.change > 0 && l.unitCost ? { unitCost: l.unitCost } : {}),
     })),
   })
   if (!entry.ok) throw new Error(`the count could not be posted: ${entry.code}`)
 
   const submitted = await submitStockEntry(db, { entryId: entry.entryId, actorId: input.actorId, now })
   if (!submitted.ok) {
-    return {
+    // Thrown, not returned: the draft entry made above goes with it.
+    throw new Refused({
       ok: false, code: 'WOULD_GO_NEGATIVE',
       productId: submitted.productId, available: submitted.available, change: submitted.change,
-    }
+    })
   }
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE stock_counts SET docstatus = 1, entry_id = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-      [entry.entryId, nowIso, input.countId],
-    )
+    await q(tx).update(schema.stockCounts)
+      .set({
+        docstatus: SUBMITTED,
+        entryId: entry.entryId,
+        updatedAt: nowIso,
+        rev: sql`${schema.stockCounts.rev} + 1`,
+      })
+      .where(eq(schema.stockCounts.id, input.countId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'stock_counts', entityId: input.countId, action: 'submit',
       docstatusFrom: DRAFT, docstatusTo: SUBMITTED,
@@ -418,7 +468,7 @@ export async function submitCount(
   return {
     ok: true,
     countId: input.countId,
-    docNo: head.doc_no,
+    docNo: head.docNo,
     entryId: entry.entryId,
     entryDocNo: submitted.docNo,
     adjusted: differences.length,
@@ -438,30 +488,39 @@ export async function cancelCount(
   db: SqlDriver,
   input: { countId: string; reason?: string; actorId: string; now?: Date },
 ): Promise<{ ok: true }> {
+  // As one, for the reason `submitCount` is: the entry's reversal and the
+  // sheet's status must not be able to come apart.
+  return db.transaction((tx) => cancelCountIn(tx, input))
+}
+
+async function cancelCountIn(
+  db: SqlDriver,
+  input: { countId: string; reason?: string; actorId: string; now?: Date },
+): Promise<{ ok: true }> {
   const now = input.now ?? new Date()
-  const head = await db.get<{ docstatus: number; entry_id: string | null }>(
-    `SELECT docstatus, entry_id FROM stock_counts WHERE id = ? AND deleted_at IS NULL`,
-    [input.countId],
-  )
+  const [head] = await q(db)
+    .select({ docstatus: schema.stockCounts.docstatus, entryId: schema.stockCounts.entryId })
+    .from(schema.stockCounts)
+    .where(and(eq(schema.stockCounts.id, input.countId), isNull(schema.stockCounts.deletedAt)))
   if (!head) throw new Error('no such count')
 
   const from = parseDocStatus(head.docstatus)
-  if (from === SUBMITTED && head.entry_id) {
-    await cancelStockEntry(db, { entryId: head.entry_id, actorId: input.actorId, now })
+  if (from === SUBMITTED && head.entryId) {
+    await cancelStockEntry(db, { entryId: head.entryId, actorId: input.actorId, now })
   }
 
   const nowIso = now.toISOString()
   await db.transaction(async (tx) => {
     if (from === DRAFT) {
       // A sheet nobody submitted is not history worth keeping.
-      await tx.execute(`UPDATE stock_counts SET deleted_at = ?, updated_at = ? WHERE id = ?`,
-        [nowIso, nowIso, input.countId])
+      await q(tx).update(schema.stockCounts)
+        .set({ deletedAt: nowIso, updatedAt: nowIso })
+        .where(eq(schema.stockCounts.id, input.countId))
     } else {
       assertCanApply('stock count', from, 'cancel')
-      await tx.execute(
-        `UPDATE stock_counts SET docstatus = 2, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-        [nowIso, input.countId],
-      )
+      await q(tx).update(schema.stockCounts)
+        .set({ docstatus: CANCELLED, updatedAt: nowIso, rev: sql`${schema.stockCounts.rev} + 1` })
+        .where(eq(schema.stockCounts.id, input.countId))
     }
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'stock_counts', entityId: input.countId, action: from === DRAFT ? 'delete' : 'cancel',

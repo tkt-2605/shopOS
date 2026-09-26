@@ -106,6 +106,17 @@ describe('validity windows', () => {
     expect(r.source).toBe('base_rate')
   })
 
+  it('charges a window on its last day, which is a calendar date', () => {
+    // The date picker stores YYYY-MM-DD. Late afternoon on the last day must
+    // still be inside it, and so must the first minutes of the first day.
+    const tiers = [{ id: 'sale', minQty: fromUnits(0), rate: rupees(50), validFrom: '2026-06-15', validTo: '2026-06-15' }]
+    const lastDay = new Date(2026, 5, 15, 17, 0)
+    const firstMinutes = new Date(2026, 5, 15, 0, 30)
+    expect(resolvePrice({ baseRate: rupees(100), defaultListTiers: tiers }, fromUnits(1), lastDay).sourceId).toBe('sale')
+    expect(resolvePrice({ baseRate: rupees(100), defaultListTiers: tiers }, fromUnits(1), firstMinutes).sourceId).toBe('sale')
+    expect(resolvePrice({ baseRate: rupees(100), defaultListTiers: tiers }, fromUnits(1), new Date(2026, 5, 16, 0, 30)).source).toBe('base_rate')
+  })
+
   it('honours a window that is currently open', () => {
     const r = resolvePrice(
       {

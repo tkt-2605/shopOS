@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
-  Money, customerAccount, businessDate, loadShopProfile,
+  Money, customerAccount, businessDate, loadShopProfile, loadCustomer,
   type SqlDriver, type CustomerAccount,
 } from '@shopos/core'
 import type { SaveResult } from './exportFile'
@@ -64,9 +64,7 @@ export async function statementPdf(
   customerId: string,
   range: { from?: string; to?: string } = {},
 ): Promise<SaveResult> {
-  const customer = await db.get<{ name: string; code: string | null; phone: string | null; address: string | null }>(
-    `SELECT name, code, phone, address FROM customers WHERE id = ?`, [customerId],
-  )
+  const customer = await loadCustomer(db, customerId)
   if (!customer) return { ok: false, message: 'That customer could not be found.' }
 
   const account: CustomerAccount = await customerAccount(db, customerId, range)

@@ -100,3 +100,24 @@ export async function makeCustomer(db: SqlDriver, name = 'Test Customer'): Promi
   )
   return id
 }
+
+/**
+ * Runs a hand edit of a submitted document, which the database refuses since
+ * 059, with that table's guard lifted for the length of it.
+ *
+ * For tests that set up a situation the product can no longer make: a bill
+ * back-dated to build a statement window, a copy of a document altered on a
+ * till from before 059 to prove the merge still refuses it. The guard is put
+ * back exactly as it was, whatever the edit does.
+ */
+export async function editingSubmitted<T>(db: SqlDriver, table: string, edit: () => Promise<T>): Promise<T> {
+  const name = `${table}_submitted_is_final`
+  const row = await db.get<{ sql: string }>(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?`, [name])
+  if (!row) throw new Error(`no guard called ${name}`)
+  await db.execute(`DROP TRIGGER ${name}`)
+  try {
+    return await edit()
+  } finally {
+    await db.execute(row.sql)
+  }
+}

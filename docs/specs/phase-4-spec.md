@@ -76,11 +76,18 @@ issue a licence. Plus the one item that is not code: the certificate.
 - `services/features.ts` untouched; a new `entitled(db, feature)` in
   `licence.ts` is what the UI asks. Cloud UI (Phase 6) hides behind it; LAN
   pairing does not. `[delegate: Sonnet/Haiku]`
-- `device.rs` — `clock_high_water` in `Stored.settings`, updated on every
-  start; `entitlement` reports `clockUnreliable` when now is more than 24 h
-  before the high-water mark. `[delegate: Sonnet/Haiku]`
-- Settings → Licence card: paste a code, show tier, state and dates; "Renew"
-  opens the portal URL. `[delegate: Sonnet/Haiku]`
+- ~~`device.rs` — `clock_high_water` in `Stored.settings`~~ **Done, and no
+  Rust was needed.** `device_set_setting` already takes an arbitrary key into
+  the `BTreeMap`; `DEVICE_LOCAL_KEYS` is the one-time migration list, not a
+  gate on what may be stored. So it is `witnessClock(deviceStore())` at startup
+  in `CoreProvider.tsx` and the same store handed to `entitlement` by the
+  licence card. The one Rust change was adding the key to `SAFE_SETTINGS` in
+  `diagnostics.rs`, so the support bundle carries the date rather than
+  `<redacted, length 24>`.
+- Settings → Licence card: **done.** Paste a code, show tier, state and dates,
+  and copy the code or the shop id back out. There is no "Renew" button:
+  `PORTAL_BASE_URL` is null and a till cannot reach the portal until Phase 6
+  Stage 5 solves TLS. Renewal is a newer code, pasted.
 - `apps/portal` (minimal, this phase): a Node service with a CLI
   `portal issue --shop <id> --tier cloud --paid-through 2027-03-31` that
   signs with the private key from an env var, and `GET /v1/licence/:shopId`

@@ -1,6 +1,6 @@
 import type { SqlDriver, SqlValue } from '../db/driver.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
-import { getSetting, setSetting } from './bootstrap.js'
+import { getSetting, setSetting } from './settings.js'
 import { loadTaxScheme, taxSchemeAnswered } from './features.js'
 import { isStateCode } from '../domain/states.js'
 import { GSTIN_SHAPE, stateFromGstin } from '../domain/gstin.js'

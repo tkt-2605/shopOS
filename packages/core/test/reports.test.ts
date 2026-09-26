@@ -110,6 +110,11 @@ describe('sales reporting', () => {
     const sale = days.find((d) => d.date === '2026-03-01')!
     expect(sale.returns).toBe(0)
     expect(sale.net).toBe(rupees(400))
+
+    // The day of the return has no sale, and is still a row: the rows add up to the summary.
+    const refundDay = days.find((d) => d.date === '2026-03-05')
+    expect(refundDay).toMatchObject({ bills: 0, returns: rupees(100), net: -rupees(100) })
+    expect(days.reduce((sum, d) => sum + d.net, 0)).toBe(s.net)
   })
 
   it('honours the date range at both ends', async () => {

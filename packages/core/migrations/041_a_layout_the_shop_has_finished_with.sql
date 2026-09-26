@@ -1,0 +1,57 @@
+-- A bill layout the shop has finished with is marked gone, not removed.
+--
+-- ── Why ───────────────────────────────────────────────────────────────────
+--
+-- 040 gave a delete the revision it deleted, which settles the case that can be
+-- settled: a delete that meets an edit made afterwards gives way to it. It
+-- cannot settle the other one. A row that is gone leaves nothing to compare, so
+-- a till that has not heard offers it back, and the two operations do not
+-- commute — a till that saw the delete first has no row, one that saw the offer
+-- first has one. Round a ring of three or more they take turns, and the
+-- tombstone that would stop them is the feed entry, which is pruned as soon as
+-- every peer has read it.
+--
+-- `deleted_at` has none of that. It is a column on a row that stays, so a
+-- removal is an edit like any other, `rev` and `updated_at` settle it the way
+-- they settle a price, and there is nothing to resurrect because nothing went.
+-- `021` said so when the feed was built: "a soft delete sets deleted_at, which
+-- is an UPDATE, and travels as one -- the row still exists and the other till
+-- needs to be told it is gone rather than left wondering."
+--
+-- Bill layouts are the case that actually arises. They are authored on a screen,
+-- the whole reason they replicate is that two tills must print the same bill,
+-- and a shop with a back office edits them from whichever machine is nearest —
+-- so one counter deleting a format while another adjusts it is an ordinary
+-- Tuesday rather than a contrived one.
+--
+-- ── Where this stops, on purpose ──────────────────────────────────────────
+--
+-- `roles` is the other screen with a delete, and it keeps its hard one. The
+-- reason is `roles.name TEXT NOT NULL UNIQUE`: a soft-deleted role holds its
+-- name against a constraint nobody can see it through, so a shop that removes
+-- "Cashier" and makes a new "Cashier" is refused by a row that is not on the
+-- screen. Freeing the name means a partial unique index, which means rebuilding
+-- a table that `users`, `role_pages` and `role_permissions` all point at — a
+-- large, cascading migration for an operation that happens once in a shop's
+-- life and is already refused while anybody holds the role. 040 settles the
+-- case that matters for it. When `roles` is next rebuilt for another reason,
+-- this is the passenger to take along.
+--
+-- Three other hard deletes are staying for now and are worth naming, so that
+-- "why is this one not soft" has an answer rather than a silence:
+--
+--   `registers`  -- `deleteRegister` had no callers and is removed in this
+--                   commit. The shop's actual path is `setRegisterActive`.
+--   `bills`      -- discarding a draft. The answer there is not a soft delete
+--                   but a draft that never replicated in the first place, which
+--                   is its own migration.
+--   `product_barcodes`, `product_units` -- rewritten wholesale on every product
+--                   save. The answer there is a deterministic id, so a save
+--                   updates the row it already agreed on instead of deleting it
+--                   and minting another.
+--
+-- Additive. One nullable column; a till that does not have it yet ignores it in
+-- the records it receives and keeps printing the format, which is the safe way
+-- round.
+
+ALTER TABLE doc_formats ADD COLUMN deleted_at TEXT;

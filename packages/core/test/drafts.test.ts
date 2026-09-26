@@ -5,6 +5,7 @@ import { createBill, saveDraft, submitBill } from '../src/services/billing.js'
 import { listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts } from '../src/services/drafts.js'
 import { currentStock, postMovement } from '../src/services/stock.js'
 import { newId } from '../src/ids.js'
+import { defaultPriceListId } from '../src/repos/pricing.js'
 import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
@@ -233,13 +234,14 @@ describe('a held bill keeps what it quoted', () => {
     const p = await makeProduct(fx.db, { baseRate: rupees(100), taxRateBp: 0 })
     await stockUp(fx.db, p, 20)
 
-    const list = await fx.db.get<{ id: string }>(`SELECT id FROM price_lists WHERE is_default = 1`)
+    // The default is a setting since 043, not a column on the row.
+    const list = await defaultPriceListId(fx.db)
     const priceId = newId()
     const now = new Date().toISOString()
     await fx.db.execute(
       `INSERT INTO item_prices (id, product_id, price_list_id, sale_unit, min_qty, rate, valid_to, created_at, updated_at)
        VALUES (?, ?, ?, 'piece', 0, ?, '2099-12-31', ?, ?)`,
-      [priceId, p, list!.id, rupees(80), now, now],
+      [priceId, p, list!, rupees(80), now, now],
     )
 
     const draft = await createBill(fx.db, {

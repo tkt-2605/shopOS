@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Permissions, searchCustomers, createCustomer, updateCustomer, customerByPhone,
+  type CustomerOrder,
   archiveCustomer, restoreCustomer,
   loadCustomer, STATES, stateName, stateFromGstin,
   type CustomerListItem, type CustomerConflict, type SaveCustomerResult,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Modal, Field, Empty, Alert, Rupees } from '../ui/components'
+import { CustomerWorth } from '../ui/CustomerWorth'
+import { useConfirm } from '../ui/useConfirm'
+import { useShopChanged } from '../core/useShopChanged'
+import { CustomerFile } from '../ui/CustomerFile'
 
 /**
  * Who the shop sells to.
@@ -47,16 +52,24 @@ export default function Customers() {
   const canWrite = Permissions.can(user.permissions, 'customer', 'write')
   const [term, setTerm] = useState('')
   const [rows, setRows] = useState<CustomerListItem[]>([])
+  /* The row, so the panel can open on the name that was clicked. It
+     reads everything else itself. */
+  const [worth, setWorth] = useState<CustomerListItem | null>(null)
+  const [confirmUi, ask] = useConfirm()
   const [draft, setDraft] = useState<Draft | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
+  /* Decided by the database, not by sorting the rows: this list stops at two
+     hundred names, so sorting what came back sorts an arbitrary two hundred
+     of a larger book. */
+  const [order, setOrder] = useState<CustomerOrder>('name')
   /** Who already answers to the number being typed, said before the save. */
   const [clash, setClash] = useState<CustomerConflict | null>(null)
   /** Off by default: an archived customer is one the shop has finished with. */
   const [showArchived, setShowArchived] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRows(await searchCustomers(db, term, 200, { includeArchived: showArchived }))
-  }, [db, term, showArchived])
+    setRows(await searchCustomers(db, term, 200, { includeArchived: showArchived, order }))
+  }, [db, term, showArchived, order])
 
   /**
    * A customer who has stopped coming.
@@ -78,14 +91,14 @@ export default function Customers() {
       return
     }
 
-    if (!window.confirm(
+    if (!(await ask(
       `Archive ${c.name}?
 
 `
       + 'They stop appearing when searching here and at the counter. Nothing is '
       + 'deleted — their bills, their khata and their points are all kept, and '
       + 'they can be brought back from this screen.',
-    )) return
+    ))) return
 
     const result = await archiveCustomer(db, { actorId: user.id }, c.id)
     if (!result.ok) {
@@ -105,6 +118,8 @@ export default function Customers() {
     const id = setTimeout(() => void refresh(), term === '' ? 0 : 140)
     return () => clearTimeout(id)
   }, [refresh, term])
+  // And again when the other till adds or edits one.
+  useShopChanged(refresh)
 
   /* Asked as the number is typed rather than on save, so the answer arrives
      while it is still cheap to act on — and so the way out is "open them",
@@ -182,6 +197,7 @@ export default function Customers() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {confirmUi}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <input className="input" style={{ maxWidth: 340 }}
           placeholder="Search by name, phone or customer code"
@@ -194,7 +210,17 @@ export default function Customers() {
           />
           Show archived
         </label>
+        <select
+          className="input" style={{ maxWidth: 180 }} value={order}
+          aria-label="Sort the list"
+          onChange={(e) => setOrder(e.target.value as CustomerOrder)}
+        >
+          <option value="name">By name</option>
+          <option value="owing">Most owed first</option>
+          <option value="oldest">Quietest first</option>
+        </select>
         <span style={{ flex: 1 }} />
+        {canWrite && <CustomerFile onDone={refresh} />}
         {canCreate && (
           <button className="btn primary" onClick={() => { setProblem(null); setClash(null); setDraft({ ...BLANK }) }}>
             New customer
@@ -216,7 +242,10 @@ export default function Customers() {
               <tr key={c.id}>
                 <td className="num" style={{ color: 'var(--ink-2)' }}>{c.code ?? '—'}</td>
                 <td>
-                  {c.name}
+                  {/* The name is the way in. A customer's worth to the shop
+                     is a question asked while looking at their name, not
+                     one reached from a menu somewhere else. */}
+                  <button className="cell-btn" onClick={() => setWorth(c)}>{c.name}</button>
                   {c.archived && <span className="badge" style={{ marginLeft: 6 }}>archived</span>}
                 </td>
                 <td className="num">{c.phone ?? '—'}</td>
@@ -349,6 +378,14 @@ export default function Customers() {
             </select>
           </Field>
         </Modal>
+      )}
+      {worth && (
+        <CustomerWorth
+          customerId={worth.id}
+          name={worth.name}
+          code={worth.code}
+          onClose={() => setWorth(null)}
+        />
       )}
     </div>
   )

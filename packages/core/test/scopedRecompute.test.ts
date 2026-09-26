@@ -8,6 +8,9 @@ import { newId } from '../src/ids.js'
 import type { ChangeBatch } from '../src/domain/replicaShape.js'
 import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
 
+/** One id for a crafted record's `rowId` and its row's key, which a merge now holds to agreeing. */
+const ROW_ID = newId()
+
 /**
  * Replaying one product's ledger instead of the whole shop's.
  *
@@ -152,10 +155,10 @@ describe('what a merge replays', () => {
 
     const applied = await applyBatch(fx.db, batch([{
       table: 'stock_ledger',
-      rowId: newId(),
+      rowId: ROW_ID,
       op: 'upsert',
       row: {
-        id: newId(), product_id: here, posting_date: '2026-03-01',
+        id: ROW_ID, product_id: here, posting_date: '2026-03-01',
         qty_change: -fromUnits(4), unit_cost: rupees(30), balance_qty: fromUnits(6),
         voucher_type: 'bill', voucher_id: newId(), created_by: null,
         created_at: '2026-03-01T10:00:00.000Z',
@@ -181,10 +184,10 @@ describe('what a merge replays', () => {
 
     await applyBatch(fx.db, batch([{
       table: 'stock_ledger',
-      rowId: newId(),
+      rowId: ROW_ID,
       op: 'upsert',
       row: {
-        id: newId(), product_id: touched, posting_date: '2026-03-01',
+        id: ROW_ID, product_id: touched, posting_date: '2026-03-01',
         qty_change: -fromUnits(4), unit_cost: rupees(30), balance_qty: fromUnits(6),
         voucher_type: 'bill', voucher_id: newId(), created_by: null,
         created_at: '2026-03-01T10:00:00.000Z',
@@ -197,24 +200,22 @@ describe('what a merge replays', () => {
     expect(row?.qty_on_hand).toBe(fromUnits(1))
   })
 
-  it('falls back to the whole shop when a ledger row was deleted', async () => {
-    /* A deletion carries no row, so the batch cannot say which product it was
-       about. Replaying everything is slow and correct; guessing would leave one
-       cache wrong with nothing to notice it for a week. */
-    const untouched = await stocked(20)
-    await bendTheCache(untouched, fromUnits(1))
+  it('refuses a ledger row deleted elsewhere, and keeps it', async () => {
+    /* The ledger is append-only in the database since 052, not only by habit:
+       a deletion arriving from another till is set aside in quarantine rather
+       than taking a movement out of this till's history. */
+    const product = await stocked(20)
 
     const ledgerRow = await fx.db.get<{ id: string }>(
-      `SELECT id FROM stock_ledger WHERE product_id = ?`, [untouched],
+      `SELECT id FROM stock_ledger WHERE product_id = ?`, [product],
     )
-    await applyBatch(fx.db, batch([
+    const outcome = await applyBatch(fx.db, batch([
       { table: 'stock_ledger', rowId: ledgerRow!.id, op: 'delete', row: null },
     ]))
 
-    const row = await fx.db.get<{ qty_on_hand: number }>(
-      `SELECT qty_on_hand FROM product_stock WHERE product_id = ?`, [untouched],
-    )
-    expect(row?.qty_on_hand).toBe(0)
+    expect(outcome.quarantined).toBe(1)
+    const still = await fx.db.get<{ id: string }>(`SELECT id FROM stock_ledger WHERE id = ?`, [ledgerRow!.id])
+    expect(still?.id).toBe(ledgerRow!.id)
   })
 
   it('does nothing at all when the batch carried no stock', async () => {
@@ -223,10 +224,10 @@ describe('what a merge replays', () => {
 
     await applyBatch(fx.db, batch([{
       table: 'customers',
-      rowId: newId(),
+      rowId: ROW_ID,
       op: 'upsert',
       row: {
-        id: newId(), code: null, name: 'Someone', phone: null, email: null, gstin: null,
+        id: ROW_ID, code: null, name: 'Someone', phone: null, email: null, gstin: null,
         address: null, state_code: '33', price_list_id: null, credit_limit: 0,
         credit_enforcement: 'hard', is_active: 1, rev: 1, origin_id: null,
         created_at: '2026-03-01T10:00:00.000Z', updated_at: '2026-03-01T10:00:00.000Z',

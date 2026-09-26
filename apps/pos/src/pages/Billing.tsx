@@ -1,19 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Money, Quantity, Pricing, Totals, Loyalty, Permissions,
-  searchProducts, saleUnitsFor, searchCustomers, loadLoyaltyProgram,
-  submitBill, pricingContextFor, resolveLinePrice, chargesTax, RULE_46F_THRESHOLD,
-  type ProductListItem, type CustomerListItem,
+  Money, Quantity, Totals, Loyalty, Permissions, searchProducts, saleUnitsFor, searchCustomers,
+  loadLoyaltyProgram, submitBill, pricingContextFor, resolveLinePrice, chargesTax,
+  RULE_46F_THRESHOLD, type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { printBill } from '../core/print'
-import { previewBillSheet } from '../core/printHtml'
 import { SheetPreview } from '../ui/SheetPreview'
 import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBillTabs'
 import { useShortcuts } from '../core/useShortcuts'
-import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
+import { Empty, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
 import { useConfirm } from '../ui/useConfirm'
+import { totalsLinesOf, shortOf } from './billing/cart'
+import { submitMessage } from './billing/submitMessage'
+import { restoreHold, restoreHoldMessage } from '../core/restoreHold'
+import { TabStrip } from './billing/TabStrip'
+import { CartTable } from './billing/CartTable'
+import { TotalsPanel } from './billing/TotalsPanel'
+import { CustomerPicker } from './billing/CustomerPicker'
+import { PaymentDialog, type Tender } from './billing/PaymentDialog'
+import { DoneDialog, type CompletedBill } from './billing/DoneDialog'
 
 export default function Billing() {
   const { db, registerId, stockPolicy, rounding, taxScheme } = useCore()
@@ -29,7 +36,12 @@ export default function Billing() {
   const [customerTerm, setCustomerTerm] = useState('')
   const [pickingCustomer, setPickingCustomer] = useState(false)
   const [paying, setPaying] = useState(false)
-  const [done, setDone] = useState<{ billId: string; docNo: string; total: number; points: number } | null>(null)
+  /* A second click on a tender while the first is still in flight would submit
+     the same draft twice. The ref is the guard, because state set in one click
+     handler is not yet visible to the next; the state is what greys the buttons. */
+  const submitting = useRef(false)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState<CompletedBill | null>(null)
   const [printMsg, setPrintMsg] = useState<string | null>(null)
   /** The A4 page, while somebody is looking at it. */
   const [sheet, setSheet] = useState<{ html: string; docNo: string } | null>(null)
@@ -74,34 +86,8 @@ export default function Billing() {
      billed for nothing. */
   const unfinished = active.lines.some((l) => l.qty <= 0)
 
-  /**
-   * Lines being sold off a shelf that does not have them.
-   *
-   * Read off the snapshot the search returned rather than asked of the database
-   * on every keystroke: this is a warning, and the authoritative check still
-   * happens inside `submitBill` where it belongs. Several lines of the same item
-   * are added together, because two lines of three pens is six pens.
-   */
-  const short = useMemo(() => {
-    const wanted = new Map<string, { name: string; unit: string; want: number; have: number }>()
-    for (const line of active.lines) {
-      if (!line.product.isStockTracked) continue
-      const factor = line.units.find((u) => u.saleUnit === line.saleUnit)?.baseUnits
-      const base = line.qty * Quantity.toUnits(factor ?? Quantity.fromUnits(1))
-      const at = wanted.get(line.product.id)
-      if (at) at.want += base
-      else {
-        wanted.set(line.product.id, {
-          name: line.product.name,
-          unit: line.product.baseUnit,
-          want: base,
-          have: Quantity.toUnits(line.product.qtyOnHand),
-        })
-      }
-    }
-    for (const [id, w] of wanted) if (w.want <= w.have) wanted.delete(id)
-    return wanted
-  }, [active.lines])
+  /* Lines being sold off a shelf that does not have them. See `shortOf`. */
+  const short = useMemo(() => shortOf(active.lines), [active.lines])
 
   const sellingShort = short.size > 0 && stockPolicy === 'warn'
 
@@ -206,8 +192,6 @@ export default function Billing() {
     onPick: (i) => { const p = results[i]; if (p) void addProduct(p) },
   })
 
-  /* Walk-in is row zero, so the commonest answer is the one already highlighted
-     when the dialog opens. */
   /* Only where it is actually the rule: Rule 46(f) is about a tax invoice, and
      a shop on the composition scheme or not registered at all is issuing
      something else. `submitBill` draws the same line. */
@@ -219,12 +203,6 @@ export default function Billing() {
     tabs.patch((cart) => ({ ...cart, customer }))
     setPickingCustomer(false)
   }, [tabs])
-
-  const customerPick = usePickList({
-    count: customers.length + 1,
-    resetKey: customerTerm,
-    onPick: (i) => chooseCustomer(i === 0 ? null : customers[i - 1] ?? null),
-  })
 
   const editLine = (key: string, change: (line: CartLine) => CartLine) =>
     tabs.patch((cart) => ({ ...cart, lines: cart.lines.map((l) => (l.key === key ? change(l) : l)) }))
@@ -240,31 +218,57 @@ export default function Billing() {
   function setRate(key: string, value: string) {
     if (!canOverridePrice) return
     const rate = Money.parseMoney(value)
-    if (rate === null) return
+    if (rate === null || rate < 0) return
     editLine(key, (l) => ({ ...l, rate, manual: true, source: 'manual_override', sourceId: null }))
   }
 
-  const pay = useCallback(async (method: 'cash' | 'upi' | 'card' | 'credit') => {
-    if (active.lines.length === 0) return
+  const pay = useCallback(async (method: Tender) => {
+    if (active.lines.length === 0 || submitting.current) return
+    submitting.current = true
+    setBusy(true)
+    const fail = (error: string) => tabs.patch((cart) => ({ ...cart, error }))
 
-    // The bill on screen is already a draft; paying submits that same document,
-    // so the number on the receipt belongs to the row that was there all along.
-    await tabs.flush()
-    const billId = tabs.active.billId
-    if (!billId) {
-      tabs.patch((cart) => ({ ...cart, error: 'The bill could not be prepared. Try adding the items again.' }))
+    /* Before a number is taken. The banner above says the same and carries
+       the way on; see `restoreHold.ts`. */
+    const hold = restoreHold()
+    if (hold !== null) {
+      submitting.current = false
+      setBusy(false)
+      fail(restoreHoldMessage(hold))
       return
     }
 
-    const result = await submitBill(db, {
-      billId,
-      payments: due > 0 ? [{ method, amount: due }] : [],
-      ...(redeemPoints > 0 ? { redeemPoints } : {}),
-      actorId: user.id,
-    })
+    let result: Awaited<ReturnType<typeof submitBill>>
+    let billId: string
+    try {
+      // The bill on screen is already a draft; paying submits that same document,
+      // so the number on the receipt belongs to the row that was there all along.
+      // Read after the flush, not off this render: a first line paid for inside
+      // the autosave delay has a draft only once the flush has made one.
+      await tabs.flush()
+      const saved = tabs.savedDraft()
+      if (saved.billId === null) {
+        fail('The bill on screen could not be saved, so it cannot be taken yet. Check the lines and try again.')
+        return
+      }
+      billId = saved.billId
+
+      result = await submitBill(db, {
+        billId,
+        payments: due > 0 ? [{ method, amount: due }] : [],
+        ...(redeemPoints > 0 ? { redeemPoints } : {}),
+        actorId: user.id,
+      })
+    } catch (err) {
+      fail(`The bill could not be completed: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    } finally {
+      submitting.current = false
+      setBusy(false)
+    }
 
     if (!result.ok) {
-      tabs.patch((cart) => ({ ...cart, error: submitMessage(result) }))
+      fail(submitMessage(result))
       return
     }
 
@@ -316,39 +320,7 @@ export default function Billing() {
     <div className="billing">
       {confirmUi}
       <div className="bill-left">
-        <div className="tab-strip">
-          {tabs.tabs.map((cart, i) => (
-            <div key={cart.tabId} className="tab" aria-current={cart.tabId === active.tabId}>
-              <button className="pick" onClick={() => tabs.select(cart.tabId)}>
-                <span className="n">{i + 1}</span>
-                <span className="who">
-                  {cart.customer?.name ?? (cart.lines.length === 0 ? 'New' : 'Walk-in')}
-                </span>
-              </button>
-              {tabs.tabs.length > 1 && (
-                <button className="shut" aria-label="Cancel this bill" onClick={() => void closeTab(cart)}>
-                  ✕
-                </button>
-              )}
-            </div>
-          ))}
-          {tabs.tabs.length < MAX_TABS && (
-            <button className="tab-add" onClick={tabs.open} title="Another bill (Ctrl+T)">+</button>
-          )}
-        </div>
-
-        {tabs.notice && (
-          <div style={{ padding: '0 0 10px' }}>
-            <Alert kind="ok">
-              {tabs.notice}
-              <button
-                className="btn ghost sm"
-                style={{ marginLeft: 10 }}
-                onClick={tabs.dismissNotice}
-              >Dismiss</button>
-            </Alert>
-          </div>
-        )}
+        <TabStrip tabs={tabs} activeId={active.tabId} onClose={(cart) => void closeTab(cart)} />
 
         <div className="scan-wrap">
           <div className="scan-bar" ref={scanBox}>
@@ -385,316 +357,77 @@ export default function Billing() {
           </Results>
         </div>
 
-        <div className="cart">
-          <table>
-            <thead>
-              <tr>
-                <th>Item</th>
-                <th style={{ width: 100 }}>Unit</th>
-                <th className="r" style={{ width: 96 }}>Qty</th>
-                <th className="r" style={{ width: 110 }}>Rate</th>
-                <th className="r" style={{ width: 110 }}>Amount</th>
-                <th style={{ width: 40 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {active.lines.map((line, i) => (
-                <tr key={line.key}>
-                  <td>
-                    <div>
-                      {line.product.name}
-                      {line.product.discountBlocked && (
-                        <span className="badge" style={{ marginLeft: 7 }} title="Sold on too thin a margin to discount">
-                          no discount
-                        </span>
-                      )}
-                    </div>
-                    <div className="src">{Pricing.describeSource(line.source)}</div>
-                    {/* Said where the mistake is being made, not at the end. A
-                        cashier who learns at the payment screen has a queue
-                        waiting while they work out which line to change. */}
-                    {stockPolicy !== 'allow' && short.has(line.product.id) && (
-                      <div className="src warn-note">
-                        Only {Quantity.formatQty(line.product.qtyOnHand)} {line.product.baseUnit} in stock
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    <select
-                      className="select unit-select"
-                      value={line.saleUnit}
-                      onChange={(e) => editLine(line.key, (l) => ({ ...l, saleUnit: e.target.value }))}
-                    >
-                      {line.units.map((u) => <option key={u.saleUnit} value={u.saleUnit}>{u.saleUnit}</option>)}
-                    </select>
-                  </td>
-                  <td className="r">
-                    {/* `step="any"` rather than a step against a fractional
-                        `min`: a number input counts from its minimum, so min
-                        0.0001 step 1 made the arrows produce 1.0001, 2.0001,
-                        3.0001. Fractional quantities are still typed freely — a
-                        shop sells 0.3 kg — the arrows just stop inventing them. */}
-                    <input
-                      className="qty-input num"
-                      type="number" min="0" step="any"
-                      value={line.qty}
-                      onChange={(e) => editLine(line.key, (l) => ({ ...l, qty: Math.max(0, Number(e.target.value) || 0) }))}
-                    />
-                  </td>
-                  <td className="r">
-                    {canOverridePrice ? (
-                      <input
-                        key={`${line.key}-${line.rate}`}
-                        className="qty-input num"
-                        defaultValue={Money.format(line.rate as never)}
-                        onBlur={(e) => setRate(line.key, e.target.value)}
-                      />
-                    ) : (
-                      <span className="num" title="Changing a price needs permission">
-                        {Money.format(line.rate as never)}
-                      </span>
-                    )}
-                  </td>
-                  <td className="r"><Rupees value={totals.lines[i]?.net ?? 0} /></td>
-                  <td>
-                    <button
-                      className="btn ghost sm"
-                      aria-label="Remove"
-                      onClick={() => tabs.patch((cart) => ({
-                        ...cart, lines: cart.lines.filter((l) => l.key !== line.key),
-                      }))}
-                    >
-                      ✕
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {empty && (
-                <tr><td colSpan={6}><Empty>Scan an item to start a bill</Empty></td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <CartTable
+          lines={active.lines}
+          totals={totals}
+          short={short}
+          canOverridePrice={canOverridePrice}
+          onEdit={editLine}
+          onRate={setRate}
+          onRemove={(key) => tabs.patch((cart) => ({
+            ...cart, lines: cart.lines.filter((l) => l.key !== key),
+          }))}
+        />
       </div>
 
-      <div className="bill-right">
-        <div className="totals">
-          <Field label="Customer">
-            <button className="btn" style={{ width: '100%', justifyContent: 'space-between' }}
-              onClick={() => {
-                setCustomerTerm('')
-                void searchCustomers(db).then(setCustomers)
-                setPickingCustomer(true)
-              }}>
-              <span>{active.customer?.name ?? 'Walk-in'}</span>
-              <span style={{ color: 'var(--ink-3)' }}>Change</span>
-            </button>
-          </Field>
-          {active.customer && active.customer.outstanding > 0 && (
-            <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--warn)' }}>
-              Outstanding <Rupees value={active.customer.outstanding} />
-            </div>
-          )}
-          {/* Said while the cart is being built rather than at the moment the
-              customer holds out the money. Rule 46(f) refuses this bill at
-              submit, and a refusal a cashier could have seen coming is a
-              refusal that should have been a warning. */}
-          {needsRecipient && (
-            <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--warn)' }}>
-              Over {Money.formatWithSymbol(RULE_46F_THRESHOLD)}, so this bill needs a
-              customer with a name and address before it can be taken.
-            </div>
-          )}
-          {/* Which order this tab is settling, said plainly and permanently:
-              the notice that announced it is gone by the time the customer
-              finishes at the shelf, and a counter restarted after a power cut
-              would otherwise have nothing to go on. */}
-          {active.fromOrder && (
-            <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--ink-2)' }}>
-              Billing order <strong>{active.fromOrder.docNo}</strong> — marked off when this is paid.
-            </div>
-          )}
-        </div>
-
-        <div className="totals">
-          {active.error && <div style={{ marginBottom: 12 }}><Alert>{active.error}</Alert></div>}
-
-          <div className="total-line">
-            <span>Subtotal</span><Rupees value={totals.subtotal} />
-          </div>
-          <div className="total-line">
-            <span>Discount</span>
-            <input
-              className="qty-input num" style={{ width: 110 }}
-              placeholder="0.00" value={active.discount}
-              onChange={(e) => tabs.patch((cart) => ({ ...cart, discount: e.target.value }))}
-            />
-          </div>
-          {blocked.length > 0 && (
-            <div style={{ fontSize: 11.5, color: 'var(--ink-3)', margin: '-4px 0 8px' }}>
-              {blocked.length === 1
-                ? `${blocked[0]!.product.name} takes no discount.`
-                : `${blocked.length} items take no discount.`}
-              {' '}Only <Rupees value={totals.discountableSubtotal} /> of this bill can be reduced.
-            </div>
-          )}
-          <div className="total-line" style={{ color: 'var(--ink-3)' }}>
-            <span>Tax included</span><Rupees value={totals.taxTotal} />
-          </div>
-          <div className="total-line grand">
-            <span>Total</span><Rupees value={totals.grandTotal} className="amount" />
-          </div>
-        </div>
-
-        <button className="pay-btn" disabled={empty || unfinished} onClick={() => setPaying(true)}>
-          <span className="k">F12</span>
-          <span>{unfinished ? 'A line has no quantity' : 'Take payment'}</span>
-        </button>
-      </div>
+      <TotalsPanel
+        cart={active}
+        totals={totals}
+        blocked={blocked}
+        needsRecipient={needsRecipient}
+        empty={empty}
+        unfinished={unfinished}
+        onPickCustomer={() => {
+          setCustomerTerm('')
+          void searchCustomers(db).then(setCustomers)
+          setPickingCustomer(true)
+        }}
+        onDiscount={(discount) => tabs.patch((cart) => ({ ...cart, discount }))}
+        onPay={() => setPaying(true)}
+      />
 
       {pickingCustomer && (
-        <Modal title="Choose a customer" onClose={() => setPickingCustomer(false)}>
-          <input
-            className="input" placeholder="Name, phone or customer code"
-            value={customerTerm}
-            onChange={(e) => {
-              setCustomerTerm(e.target.value)
-              void searchCustomers(db, e.target.value).then(setCustomers)
-            }}
-            onKeyDown={customerPick.searchKeyDown}
-          />
-          <table>
-            <tbody {...customerPick.listProps}>
-              <tr {...customerPick.rowProps(0)}>
-                <td><span className="cart-name">Walk-in</span></td><td className="r">—</td>
-              </tr>
-              {customers.map((c, i) => (
-                <tr key={c.id} {...customerPick.rowProps(i + 1)}>
-                  <td>
-                    <span className="cart-name">{c.name}</span>
-                    {c.code && <span className="cart-brand"> · {c.code}</span>}
-                    {c.phone && <span className="cart-brand"> · {c.phone}</span>}
-                  </td>
-                  <td className="r">
-                    {c.loyaltyPoints > 0 && (
-                      <span className="badge ok" style={{ marginRight: 7 }}>{c.loyaltyPoints} pts</span>
-                    )}
-                    {c.outstanding > 0 ? <Rupees value={c.outstanding} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Modal>
+        <CustomerPicker
+          customers={customers}
+          term={customerTerm}
+          onTerm={(typed) => {
+            setCustomerTerm(typed)
+            void searchCustomers(db, typed).then(setCustomers)
+          }}
+          onChoose={chooseCustomer}
+          onClose={() => setPickingCustomer(false)}
+        />
       )}
 
       {paying && (
-        <Modal
-          title={`Take payment — ${Money.formatWithSymbol(due)}`}
+        <PaymentDialog
+          due={due}
+          customer={active.customer}
+          redeemable={redeemable}
+          redeemPoints={redeemPoints}
+          setRedeemPoints={setRedeemPoints}
+          redeemedValue={redeemedValue}
+          sellingShort={sellingShort}
+          short={short}
+          acknowledged={acknowledged}
+          shortKey={shortKey}
+          onAcknowledge={() => setAcknowledged(shortKey)}
+          blockedOnShort={blockedOnShort}
+          busy={busy}
+          onPay={(method) => void pay(method)}
           onClose={() => { setPaying(false); setRedeemPoints(0) }}
-          footer={<button className="btn" onClick={() => { setPaying(false); setRedeemPoints(0) }}>Cancel</button>}
-        >
-          {redeemable > 0 && (
-            <div style={{ padding: '11px 13px', background: 'var(--ok-soft)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 12.5, flex: 1 }}>
-                  {active.customer!.name} has <strong>{active.customer!.loyaltyPoints} points</strong>.
-                  Up to {redeemable} can go against this bill.
-                </span>
-                <input
-                  className="qty-input num" type="number" min={0} max={redeemable}
-                  value={redeemPoints}
-                  onChange={(e) => setRedeemPoints(Math.max(0, Math.min(redeemable, Number(e.target.value) || 0)))}
-                />
-                <button className="btn sm" onClick={() => setRedeemPoints(redeemable)}>All</button>
-              </div>
-              {redeemPoints > 0 && (
-                <div style={{ marginTop: 7, fontSize: 12.5, color: 'var(--ink-2)' }}>
-                  {redeemPoints} points pay {Money.formatWithSymbol(redeemedValue as never)} — {Money.formatWithSymbol(due)} left.
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Above the money, not below it. This is the last point at which
-              changing the quantity costs nothing, and the buttons stay out of
-              reach until it has been answered one way or the other. Under
-              `block` the service refuses instead and this never shows. */}
-          {sellingShort && (
-            <div className="short-gate">
-              <div className="short-gate-text">
-                <div className="short-gate-head">
-                  Not enough stock for {short.size === 1 ? 'this item' : `${short.size} items`}
-                </div>
-                {[...short.values()].map((w) => (
-                  <div key={w.name} className="short-gate-line">
-                    {w.name} — <span className="num">{w.have}</span> {w.unit} in stock,
-                    selling <span className="num">{w.want}</span>
-                  </div>
-                ))}
-                <div className="short-gate-note">
-                  {acknowledged === shortKey
-                    ? 'The count will go below zero and the item will be on “Counts that need fixing”.'
-                    : 'Change the quantity on the bill, or sell it anyway and fix the count later.'}
-                </div>
-              </div>
-              {acknowledged !== shortKey && (
-                <button className="btn warn" onClick={() => setAcknowledged(shortKey)}>
-                  Sell anyway
-                </button>
-              )}
-            </div>
-          )}
-
-          {due === 0 ? (
-            <button className="btn primary lg" disabled={blockedOnShort} onClick={() => void pay('cash')}>
-              Settle with points
-            </button>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <button className="btn primary lg" disabled={blockedOnShort} onClick={() => void pay('cash')}>Cash</button>
-              <button className="btn lg" disabled={blockedOnShort} onClick={() => void pay('upi')}>UPI</button>
-              <button className="btn lg" disabled={blockedOnShort} onClick={() => void pay('card')}>Card</button>
-              <button
-                className="btn lg"
-                disabled={blockedOnShort || !active.customer}
-                onClick={() => void pay('credit')}
-              >
-                Credit
-              </button>
-            </div>
-          )}
-
-          {!active.customer && <span className="hint">Credit and loyalty points both need a customer on the bill.</span>}
-        </Modal>
+        />
       )}
 
       {done && (
-        <Modal
-          title="Bill complete"
+        <DoneDialog
+          done={done}
+          printMsg={printMsg}
+          onPrintMsg={setPrintMsg}
+          onSheet={setSheet}
+          onNewBill={() => { setDone(null); focusScan() }}
           onClose={() => setDone(null)}
-          footer={<>
-            <button className="btn" onClick={() => {
-              void printBill(db, done.billId).then((r) => setPrintMsg(r.ok ? null : r.message))
-            }}>Print again</button>
-            {/* Over this dialog, with the counter untouched behind both. */}
-            <button className="btn" onClick={() => {
-              void previewBillSheet(db, done.billId).then((r) => {
-                if (!r.ok) { setPrintMsg(r.message); return }
-                setPrintMsg(null)
-                setSheet({ html: r.html, docNo: r.docNo })
-              })
-            }}>A4 preview</button>
-            <button className="btn primary" onClick={() => { setDone(null); focusScan() }}>New bill</button>
-          </>}
-        >
-          <div style={{ fontSize: 15 }}>
-            <strong className="num">{done.docNo}</strong>
-          </div>
-          <div style={{ fontSize: 26, fontWeight: 700 }}><Rupees value={done.total} /></div>
-          {done.points > 0 && <Alert kind="ok">{done.points} loyalty points earned</Alert>}
-          {printMsg && <Alert kind="warn">{printMsg} The bill is saved — you can print it again.</Alert>}
-        </Modal>
+        />
       )}
 
       {sheet && <SheetPreview html={sheet.html} docNo={sheet.docNo} onClose={() => setSheet(null)} />}
@@ -702,48 +435,3 @@ export default function Billing() {
   )
 }
 
-/** The one mapping from cart lines to what the totals engine wants. */
-function totalsLinesOf(lines: CartLine[]): Totals.TotalsLine[] {
-  return lines.map((l) => ({
-    qty: Quantity.fromUnits(l.qty),
-    rate: l.rate as never,
-    taxRateBp: l.product.taxRateBp,
-    discountBlocked: l.product.discountBlocked,
-  }))
-}
-
-function submitMessage(result: Extract<Awaited<ReturnType<typeof submitBill>>, { ok: false }>): string {
-  switch (result.code) {
-    case 'INSUFFICIENT_STOCK': {
-      const first = result.shortfalls[0]
-      // This shop has chosen to refuse. Said with the way out, because a cashier
-      // who cannot sell the item in the customer's hand needs to know it is a
-      // setting and not a fault.
-      const how = ' This shop refuses sales below the count — an owner can change that in Settings.'
-      return first
-        ? `Not enough stock: ${first.productName} has ${Quantity.formatQty(first.available)}, needs ${Quantity.formatQty(first.required)}.${how}`
-        : `Not enough stock.${how}`
-    }
-    case 'CREDIT_LIMIT_EXCEEDED':
-      return `Over the credit limit by ${Money.formatWithSymbol(result.excess)}. Take a payment first or reduce the bill.`
-    case 'PAYMENT_MISMATCH':
-      return 'The payment does not match the bill total.'
-    case 'CREDIT_WITHOUT_CUSTOMER':
-      return 'Choose a customer before billing to credit.'
-    case 'LOYALTY_REJECTED':
-      return `Points could not be redeemed: ${result.reason}.`
-    case 'SHOP_STATE_UNSET':
-      /* The setting decides CGST+SGST against IGST on every bill, and with it
-         unset every sale is taxed as a local one — including one to another
-         state. Said as a thing to go and do, with where. */
-      return 'This shop has not said which state it is in, and that decides the tax on every bill. '
-        + 'Settings → Shop → State.'
-    case 'NEEDS_RECIPIENT':
-      // Rule 46(f). A required field, not a stopped till: put a name on it.
-      return `A bill of ${Money.formatWithSymbol(result.threshold)} or more has to carry the customer’s `
-        + `name and address — this one is ${Money.formatWithSymbol(result.grandTotal)}. `
-        + 'Choose a customer, or add them, and take the payment again.'
-    default:
-      return 'The bill could not be completed.'
-  }
-}

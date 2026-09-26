@@ -24,3 +24,17 @@ __pycache__/
 # and printed bills that name real customers. The procedure says which files are
 # safe to commit; the default is that they are not.
 docs/specs/evidence/layer3-*/
+
+# Virtual tills started by hand for trying two shops against each other.
+tills/
+
+# Scratch that keeps getting swept into commits.
+docs/specs.zip
+*.stackdump
+
+# The vendor sales record. Never in the repo: billing.md calls it the only
+# record of what has been sold, and it is not the code.
+portal.db
+portal.db-journal
+portal.db-wal
+portal.db-shm

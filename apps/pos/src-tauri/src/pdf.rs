@@ -47,7 +47,7 @@
 //! that are saved silently to a file, where there is no dialog to open and no
 //! Indian-language text to set. It stays deliberately small.
 
-use std::fmt::Write as _;
+use std::io::Write as _;
 
 const PAGE_W: f64 = 595.28; // A4 portrait, points
 const PAGE_H: f64 = 841.89;
@@ -162,59 +162,60 @@ pub struct PdfDoc {
     pub footer: Option<String>,
 }
 
-/// Escapes the three characters that would otherwise end a PDF string early,
-/// and drops anything the standard fonts cannot show rather than emitting a
-/// byte the reader would draw as a wrong glyph.
-fn pdf_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
+/// The bytes of a PDF string: WinAnsi, one byte a character, with the three
+/// characters that would end the string early escaped, and anything the
+/// standard fonts cannot show written as something they can.
+///
+/// Bytes, not a `String`. This used to push `é` into a Rust string, which
+/// stores it as the two UTF-8 bytes `C3 A9` -- and the reader, told the font
+/// is WinAnsi, drew each of them: "CafÃ©". Every accented name on a statement
+/// came out as two wrong letters. For U+0080 to U+00FF the character's own
+/// number is its Latin-1 byte, which WinAnsi agrees with for every letter a
+/// name will use.
+fn pdf_text(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len() + 8);
     for ch in s.chars() {
         match ch {
-            '(' => out.push_str("\\("),
-            ')' => out.push_str("\\)"),
-            '\\' => out.push_str("\\\\"),
+            '(' => out.extend_from_slice(b"\\("),
+            ')' => out.extend_from_slice(b"\\)"),
+            '\\' => out.extend_from_slice(b"\\\\"),
             // Written the way the fonts can render it; see the note at the top.
-            '\u{20B9}' => out.push_str("Rs."),
-            '\u{2014}' | '\u{2013}' => out.push('-'),
-            '\u{2018}' | '\u{2019}' => out.push('\''),
-            '\u{201C}' | '\u{201D}' => out.push('"'),
-            '\u{2026}' => out.push_str("..."),
-            c if (c as u32) < 128 => out.push(c),
-            c if (c as u32) < 256 => out.push(c),
-            _ => out.push('?'),
+            '\u{20B9}' => out.extend_from_slice(b"Rs."),
+            '\u{2014}' | '\u{2013}' => out.push(b'-'),
+            '\u{2018}' | '\u{2019}' => out.push(b'\''),
+            '\u{201C}' | '\u{201D}' => out.push(b'"'),
+            '\u{2026}' => out.extend_from_slice(b"..."),
+            c if (c as u32) < 256 => out.push(c as u8),
+            _ => out.push(b'?'),
         }
     }
     out
 }
 
 struct Page {
-    content: String,
+    content: Vec<u8>,
 }
 
 impl Page {
     fn new() -> Self {
-        Page { content: String::new() }
+        Page { content: Vec::new() }
     }
 
     fn text(&mut self, font: &str, size: f64, x: f64, y: f64, s: &str) {
-        let _ = write!(
-            self.content,
-            "BT /{} {} Tf 1 0 0 1 {:.2} {:.2} Tm ({}) Tj ET\n",
-            font, size, x, y, pdf_text(s)
-        );
+        let _ = write!(self.content, "BT /{font} {size} Tf 1 0 0 1 {x:.2} {y:.2} Tm (");
+        self.content.extend_from_slice(&pdf_text(s));
+        self.content.extend_from_slice(b") Tj ET\n");
     }
 
-    /// Positioned by measuring, which is exact because the face is monospaced.
+    /// Positioned by measuring, which is exact because the face is monospaced
+    /// and every character is one byte by the time it is written.
     fn text_right(&mut self, size: f64, right_x: f64, y: f64, s: &str) {
-        let width = pdf_text(s).chars().count() as f64 * size * MONO_EM;
+        let width = pdf_text(s).len() as f64 * size * MONO_EM;
         self.text(FONT_MONO, size, right_x - width, y, s);
     }
 
     fn line(&mut self, x1: f64, y: f64, x2: f64, weight: f64) {
-        let _ = write!(
-            self.content,
-            "{:.2} w 0.75 G {:.2} {:.2} m {:.2} {:.2} l S\n",
-            weight, x1, y, x2, y
-        );
+        let _ = writeln!(self.content, "{weight:.2} w 0.75 G {x1:.2} {y:.2} m {x2:.2} {y:.2} l S");
     }
 }
 
@@ -348,9 +349,11 @@ fn assemble(pages: &[Page]) -> Vec<u8> {
 
     out.extend_from_slice(b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
 
-    let push = |out: &mut Vec<u8>, offsets: &mut Vec<usize>, n: usize, body: &str| {
+    let push = |out: &mut Vec<u8>, offsets: &mut Vec<usize>, n: usize, body: &[u8]| {
         offsets[n] = out.len();
-        out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", n, body).as_bytes());
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
     };
 
     let kids: String = (0..page_count)
@@ -358,15 +361,12 @@ fn assemble(pages: &[Page]) -> Vec<u8> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    push(&mut out, &mut offsets, 1, "<< /Type /Catalog /Pages 2 0 R >>");
+    push(&mut out, &mut offsets, 1, b"<< /Type /Catalog /Pages 2 0 R >>");
     push(
         &mut out,
         &mut offsets,
         2,
-        &format!(
-            "<< /Type /Pages /Count {} /Kids [{}] >>",
-            page_count, kids
-        ),
+        format!("<< /Type /Pages /Count {page_count} /Kids [{kids}] >>").as_bytes(),
     );
 
     for (n, base) in [(3, "Helvetica"), (4, "Helvetica-Bold"), (5, "Courier")] {
@@ -374,10 +374,8 @@ fn assemble(pages: &[Page]) -> Vec<u8> {
             &mut out,
             &mut offsets,
             n,
-            &format!(
-                "<< /Type /Font /Subtype /Type1 /BaseFont /{} /Encoding /WinAnsiEncoding >>",
-                base
-            ),
+            format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding >>")
+                .as_bytes(),
         );
     }
 
@@ -388,30 +386,26 @@ fn assemble(pages: &[Page]) -> Vec<u8> {
             &mut out,
             &mut offsets,
             page_obj,
-            &format!(
+            format!(
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] \
                  /Resources << /Font << /{} 3 0 R /{} 4 0 R /{} 5 0 R >> >> \
                  /Contents {} 0 R >>",
                 PAGE_W, PAGE_H, FONT_REGULAR, FONT_BOLD, FONT_MONO, content_obj
-            ),
+            )
+            .as_bytes(),
         );
-        push(
-            &mut out,
-            &mut offsets,
-            content_obj,
-            &format!(
-                "<< /Length {} >>\nstream\n{}endstream",
-                page.content.len(),
-                page.content
-            ),
-        );
+        // `/Length` counts bytes, which is what the content now is.
+        let mut stream = format!("<< /Length {} >>\nstream\n", page.content.len()).into_bytes();
+        stream.extend_from_slice(&page.content);
+        stream.extend_from_slice(b"endstream");
+        push(&mut out, &mut offsets, content_obj, &stream);
     }
 
     let xref_at = out.len();
     out.extend_from_slice(format!("xref\n0 {}\n", total_objects + 1).as_bytes());
     out.extend_from_slice(b"0000000000 65535 f \n");
-    for n in 1..=total_objects {
-        out.extend_from_slice(format!("{:010} 00000 n \n", offsets[n]).as_bytes());
+    for offset in offsets.iter().skip(1) {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }
     out.extend_from_slice(
         format!(
@@ -514,13 +508,43 @@ mod tests {
     /// read as instructions, which is how a PDF comes out mangled.
     #[test]
     fn escapes_what_would_end_a_string_early() {
-        assert_eq!(pdf_text("Pen (blue) \\ red"), "Pen \\(blue\\) \\\\ red");
+        assert_eq!(pdf_text("Pen (blue) \\ red"), b"Pen \\(blue\\) \\\\ red");
     }
 
     /// The standard fonts have no rupee glyph, so it is spelled rather than
     /// drawn as whatever the reader substitutes.
     #[test]
     fn writes_rupees_in_letters() {
-        assert_eq!(pdf_text("\u{20B9}1,200"), "Rs.1,200");
+        assert_eq!(pdf_text("\u{20B9}1,200"), b"Rs.1,200");
+    }
+
+    /// One byte a character, in the encoding the fonts are declared with. The
+    /// UTF-8 pair used to be written instead, and drawn as two wrong letters.
+    #[test]
+    fn an_accented_name_is_written_as_the_byte_the_font_expects() {
+        assert_eq!(pdf_text("Caf\u{e9} Ren\u{e9}e"), b"Caf\xE9 Ren\xE9e");
+        assert_eq!(pdf_text("\u{fc}\u{f1}"), b"\xFC\xF1");
+        // Beyond Latin-1 the fonts have nothing, and say so plainly.
+        assert_eq!(pdf_text("\u{0ba4}"), b"?");
+
+        let mut d = doc(1);
+        d.title = "Statement for Caf\u{e9} Stores".into();
+        let out = render(&d);
+        assert!(out.windows(4).any(|w| w == b"Caf\xE9"), "the Latin-1 byte must be in the file");
+        assert!(!out.windows(2).any(|w| w == b"\xC3\xA9"), "and the UTF-8 pair must not");
+    }
+
+    /// `/Length` is a count of bytes, and a reader that finds it wrong reads
+    /// past the end of the page or stops short of it.
+    #[test]
+    fn a_page_says_exactly_how_long_it_is() {
+        let mut d = doc(2);
+        d.subtitle = Some("Cr\u{e8}me Br\u{fb}l\u{e9}e".into());
+        let out = render(&d);
+        let at = out.windows(8).position(|w| w == b"/Length ").unwrap() + 8;
+        let digits: String = out[at..].iter().take_while(|b| b.is_ascii_digit()).map(|&b| b as char).collect();
+        let length: usize = digits.parse().unwrap();
+        let start = out[at..].windows(7).position(|w| w == b"stream\n").unwrap() + at + 7;
+        assert_eq!(&out[start + length..start + length + 9], b"endstream");
     }
 }

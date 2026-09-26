@@ -87,7 +87,7 @@ function wireTo(peer: Till, me: Till): SyncTransport {
     fetch: (since, limit) => as(peer, () => collectChanges(peer.db, since, limit)),
     async offer(batch) {
       return as(peer, async () => {
-        await applyBatch(peer.db, batch, await changedHere(peer.db, 0))
+        await applyBatch(peer.db, batch, await changedHere(peer.db, 0, batch.records))
         await peer.db.execute(
           `INSERT INTO sync_peers (device_id, their_cursor, created_at) VALUES (?, ?, ?)
            ON CONFLICT (device_id) DO UPDATE SET their_cursor = excluded.their_cursor`,

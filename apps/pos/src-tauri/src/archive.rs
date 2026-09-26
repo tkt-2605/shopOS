@@ -6,11 +6,14 @@
 /// is self-contained and never rewritten after it is closed, so a zip found on a
 /// USB stick in a year restores a working shop by itself.
 use std::io::{Read, Seek, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
+
+use crate::files::Temp;
 
 pub const FORMAT: u32 = 1;
 pub const DB_ENTRY: &str = "shop.db";
@@ -18,6 +21,17 @@ pub const MANIFEST_ENTRY: &str = "manifest.json";
 /// Attachments keep the layout they have on disk, so restoring them is a copy
 /// rather than a translation.
 pub const ATTACH_PREFIX: &str = "attachments/";
+
+/// The most a database coming out of an archive may unpack to.
+///
+/// An archive is a file off a USB stick, and a zip entry says how big it is in
+/// a header nobody checks: a few kilobytes can claim to inflate to terabytes
+/// and fill the disk the shop's live database is on. A shop's database is tens
+/// of megabytes; this is a ceiling nothing honest reaches.
+pub const MAX_DATABASE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// The manifest is a page of JSON. Anything longer is not one.
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 #[derive(Serialize)]
 struct Manifest {
@@ -47,19 +61,6 @@ struct Entry {
     crc32: u32,
 }
 
-/// Removes its path when it goes out of scope, however it goes out of scope.
-///
-/// Every error path below returns early, and SQLite refuses to vacuum into a
-/// file that already exists — so a temp left behind by a failure would break the
-/// *next* backup rather than the one that failed.
-pub struct Temp(pub PathBuf);
-
-impl Drop for Temp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
 /// Writes `db_file` into a new archive at `target`.
 ///
 /// Built under a temporary name and renamed into place at the end, so a crash
@@ -75,7 +76,7 @@ pub fn write(
     attachments: &[String],
 ) -> Result<(), String> {
     let schema = read_schema(db_file)?;
-    let bytes = std::fs::read(db_file).map_err(|e| format!("Could not read the copy: {e}"))?;
+    let db = std::fs::File::open(db_file).map_err(|e| format!("Could not read the copy: {e}"))?;
 
     let part = Temp(work.join(format!(
         "{}.part",
@@ -84,24 +85,25 @@ pub fn write(
     let file = std::fs::File::create(&part.0).map_err(|e| format!("Could not create {}: {e}", part.0.display()))?;
     let mut zip = zip::ZipWriter::new(file);
 
+    // A SQLite file is mostly empty pages and repeated structure; it compresses
+    // to a fraction. Photographs are already compressed and are stored as they
+    // are — deflating a JPEG costs time and saves nothing.
+    //
+    // Streamed rather than read whole: the database used to be loaded into
+    // memory in one piece and then copied again into the compressor, which on
+    // a shop a few years in is a few hundred megabytes of a till's memory at
+    // two in the morning, for no reason.
+    let database = add(&mut zip, DB_ENTRY, db, zip::CompressionMethod::Deflated)?;
+
     let mut manifest = Manifest {
         format: FORMAT,
         app: app_version.to_string(),
         schema,
         taken_at: taken_at.to_string(),
-        database: Entry {
-            path: DB_ENTRY.to_string(),
-            bytes: bytes.len() as u64,
-            crc32: crc32fast::hash(&bytes),
-        },
+        database,
         attachments: Vec::new(),
         missing: Vec::new(),
     };
-    // A SQLite file is mostly empty pages and repeated structure; it compresses
-    // to a fraction. Photographs are already compressed and are stored as they
-    // are — deflating a JPEG costs time and saves nothing.
-    add(&mut zip, DB_ENTRY, &bytes, zip::CompressionMethod::Deflated)?;
-    drop(bytes);
 
     for rel in attachments {
         let file = match super::paths::stored_rel(rel) {
@@ -113,19 +115,15 @@ pub fn write(
                 continue;
             }
         };
-        let photo = match std::fs::read(&file) {
-            Ok(b) => b,
-            Err(_) => {
-                manifest.missing.push(rel.clone());
-                continue;
-            }
+        // Opened before the entry is started, so a photograph that has gone
+        // is a line in `missing` rather than an empty entry wearing its name.
+        let Ok(photo) = std::fs::File::open(&file) else {
+            manifest.missing.push(rel.clone());
+            continue;
         };
-        add(&mut zip, &format!("{ATTACH_PREFIX}{rel}"), &photo, zip::CompressionMethod::Stored)?;
-        manifest.attachments.push(Entry {
-            path: rel.clone(),
-            bytes: photo.len() as u64,
-            crc32: crc32fast::hash(&photo),
-        });
+        let mut entry = add(&mut zip, &format!("{ATTACH_PREFIX}{rel}"), photo, zip::CompressionMethod::Stored)?;
+        entry.path = rel.clone();
+        manifest.attachments.push(entry);
     }
 
     let manifest_json =
@@ -133,9 +131,16 @@ pub fn write(
     // Stored rather than deflated so it can be read out of a damaged archive
     // with nothing more than a text editor. It goes in last because it is only
     // true once everything it describes is written.
-    add(&mut zip, MANIFEST_ENTRY, &manifest_json, zip::CompressionMethod::Stored)?;
+    add(&mut zip, MANIFEST_ENTRY, manifest_json.as_slice(), zip::CompressionMethod::Stored)?;
 
-    zip.finish().map_err(|e| format!("Could not finish the archive: {e}"))?;
+    /* On the disk before anything reads it back or renames it. `finish` only
+       hands the bytes to the operating system; without this, the rename below
+       can reach the disk before the archive does, and a power cut leaves a
+       file with today's name and nothing in it -- which tomorrow's run reads
+       as "already backed up today". */
+    let file = zip.finish().map_err(|e| format!("Could not finish the archive: {e}"))?;
+    file.sync_all().map_err(|e| format!("Could not finish the archive: {e}"))?;
+    drop(file);
 
     /* Before the rename, deliberately.
 
@@ -151,7 +156,10 @@ pub fn write(
        Backups card red. */
     verify(&part.0, db_file, work)?;
 
-    super::paths::remove_if_present(target)?;
+    /* A rename over the old file, never a delete and then a rename. Deleting
+       first left a moment with no archive under this name at all, and a
+       rename that then failed turned "rewrite today's backup" into "delete
+       today's backup". `rename` replaces the target on Windows too. */
     std::fs::rename(&part.0, target).map_err(|e| format!("Could not save {}: {e}", target.display()))?;
     Ok(())
 }
@@ -222,15 +230,62 @@ fn page_count(conn: &Connection) -> Result<i64, String> {
         .map_err(|e| format!("Could not count the pages: {e}"))
 }
 
-fn add<W: Write + Seek>(
+/// A reader that counts and checksums what passes through it, so an entry's
+/// manifest line is worked out from the same bytes the archive stored.
+struct Tally<R> {
+    inner: R,
+    crc: crc32fast::Hasher,
+    bytes: u64,
+}
+
+impl<R: Read> Read for Tally<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.crc.update(&buf[..n]);
+        self.bytes += n as u64;
+        Ok(n)
+    }
+}
+
+/// Streams `source` into a new entry and says what went in.
+fn add<W: Write + Seek, R: Read>(
     zip: &mut zip::ZipWriter<W>,
     name: &str,
-    bytes: &[u8],
+    source: R,
     method: zip::CompressionMethod,
-) -> Result<(), String> {
+) -> Result<Entry, String> {
     zip.start_file(name, SimpleFileOptions::default().compression_method(method))
         .map_err(|e| format!("Could not add {name}: {e}"))?;
-    zip.write_all(bytes).map_err(|e| format!("Could not write {name}: {e}"))
+    let mut tally = Tally { inner: source, crc: crc32fast::Hasher::new(), bytes: 0 };
+    std::io::copy(&mut tally, zip).map_err(|e| format!("Could not write {name}: {e}"))?;
+    Ok(Entry { path: name.to_string(), bytes: tally.bytes, crc32: tally.crc.finalize() })
+}
+
+/// A writer that hashes what passes through it, so a photograph's name can be
+/// checked against its bytes on the way out of an archive.
+struct Hashing<W> {
+    inner: W,
+    sha: Sha256,
+}
+
+impl<W: Write> Write for Hashing<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.sha.update(&buf[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 /// Pulls the database out of an archive to `into`, so it can be checked and
@@ -245,8 +300,13 @@ pub fn extract_database(archive: &Path, into: &Path) -> Result<i64, String> {
 
     let mut out = std::fs::File::create(into).map_err(|e| format!("Could not write {}: {e}", into.display()))?;
     // Copying through the reader is what verifies the entry's CRC — a truncated
-    // or corrupted archive fails here, before anything has been replaced.
-    std::io::copy(&mut entry, &mut out).map_err(|e| format!("That backup is damaged: {e}"))?;
+    // or corrupted archive fails here, before anything has been replaced. The
+    // ceiling is for an archive that is not damaged but hostile.
+    let copied = std::io::copy(&mut (&mut entry).take(MAX_DATABASE_BYTES + 1), &mut out)
+        .map_err(|e| format!("That backup is damaged: {e}"))?;
+    if copied > MAX_DATABASE_BYTES {
+        return Err("That archive's database is larger than any shop's, so it was not unpacked.".into());
+    }
     out.sync_all().map_err(|e| e.to_string())?;
     drop(entry);
 
@@ -296,10 +356,28 @@ pub fn extract_attachments(archive: &Path, root: &Path) -> Result<Restored, Stri
         // Through a temporary name, so a file wearing a hash is always the whole
         // file. Reading the entry to its end is also what checks its CRC.
         let part = Temp(target.with_extension("part"));
-        let mut writer = std::fs::File::create(&part.0)
+        let file = std::fs::File::create(&part.0)
             .map_err(|e| format!("Could not write {}: {e}", part.0.display()))?;
-        std::io::copy(&mut entry, &mut writer).map_err(|e| format!("That backup is damaged: {e}"))?;
-        writer.sync_all().map_err(|e| e.to_string())?;
+        let mut writer = Hashing { inner: file, sha: Sha256::new() };
+        let limit = crate::attachments::MAX_BYTES as u64;
+        let copied = std::io::copy(&mut (&mut entry).take(limit + 1), &mut writer)
+            .map_err(|e| format!("That backup is damaged: {e}"))?;
+
+        /* The name is a hash, and the whole folder trusts it: the same
+           photograph attached twice is stored once *because* the name says what
+           the bytes are. An entry whose bytes do not hash to its name would
+           sit under the name of a different photograph for ever, and be shown
+           against every bill that attached the real one. So it is checked, and
+           a stranger's file -- or a damaged one the CRC happened to pass -- is
+           refused rather than written. Also refused: anything larger than an
+           attachment is allowed to be. */
+        let digest = hex(&writer.sha.finalize_reset());
+        let named = rel.rsplit('/').next().and_then(|f| f.split('.').next()).unwrap_or("");
+        if copied > limit || digest != named {
+            out.refused += 1;
+            continue;
+        }
+        writer.inner.sync_all().map_err(|e| e.to_string())?;
         drop(writer);
 
         std::fs::rename(&part.0, &target).map_err(|e| format!("Could not save {}: {e}", target.display()))?;
@@ -321,9 +399,9 @@ pub struct Restored {
 pub fn read_manifest(archive: &Path) -> Option<String> {
     let file = std::fs::File::open(archive).ok()?;
     let mut zip = zip::ZipArchive::new(file).ok()?;
-    let mut entry = zip.by_name(MANIFEST_ENTRY).ok()?;
+    let entry = zip.by_name(MANIFEST_ENTRY).ok()?;
     let mut text = String::new();
-    entry.read_to_string(&mut text).ok()?;
+    entry.take(MAX_MANIFEST_BYTES).read_to_string(&mut text).ok()?;
     Some(text)
 }
 
@@ -337,6 +415,7 @@ pub fn read_schema(db_file: &Path) -> Result<i64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("shopos-archive-tests");
@@ -403,8 +482,10 @@ mod tests {
         assert!(!work.join("shop-2026-09-15.zip.part").exists());
     }
 
-    /// A photograph on disk, named the way `attachments.rs` names them.
-    fn a_photo(root: &Path, digest: &str, bytes: &[u8]) -> String {
+    /// A photograph on disk, named the way `attachments.rs` names them: by
+    /// its own hash, which extraction now checks.
+    fn a_photo(root: &Path, bytes: &[u8]) -> String {
+        let digest = hex(&Sha256::digest(bytes));
         let rel = format!("{}/{digest}.jpg", &digest[..2]);
         let path = root.join(&rel[..2]);
         std::fs::create_dir_all(&path).unwrap();
@@ -421,8 +502,8 @@ mod tests {
         let root = work.join("photos-root");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let one = a_photo(&root, &"a".repeat(64), b"first photograph");
-        let two = a_photo(&root, &"b".repeat(64), b"second photograph");
+        let one = a_photo(&root, b"first photograph");
+        let two = a_photo(&root, b"second photograph");
 
         let zip = scratch("shop-2026-09-16.zip");
         write(&zip, &work, &db, "0.1.0", "2026-09-16T03:00:00Z", &root, &[one.clone(), two.clone()]).unwrap();
@@ -451,16 +532,16 @@ mod tests {
         let root = work.join("merge-root");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let carried = a_photo(&root, &"c".repeat(64), b"in the archive");
+        let carried = a_photo(&root, b"in the archive");
 
         let zip = scratch("shop-2026-09-17.zip");
-        write(&zip, &work, &db, "0.1.0", "2026-09-17T03:00:00Z", &root, &[carried.clone()]).unwrap();
+        write(&zip, &work, &db, "0.1.0", "2026-09-17T03:00:00Z", &root, std::slice::from_ref(&carried)).unwrap();
 
         // A machine that already holds an older photograph the archive does not.
         let into = work.join("merge-into");
         let _ = std::fs::remove_dir_all(&into);
         std::fs::create_dir_all(&into).unwrap();
-        let older = a_photo(&into, &"d".repeat(64), b"nine months old");
+        let older = a_photo(&into, b"nine months old");
 
         let done = extract_attachments(&zip, &into).unwrap();
         assert_eq!(done.written, 1);
@@ -481,7 +562,7 @@ mod tests {
 
         let zip = scratch("shop-2026-09-18.zip");
         let vanished = format!("{}/{}.jpg", "e".repeat(2), "e".repeat(64));
-        write(&zip, &work, &db, "0.1.0", "2026-09-18T03:00:00Z", &root, &[vanished.clone()]).unwrap();
+        write(&zip, &work, &db, "0.1.0", "2026-09-18T03:00:00Z", &root, std::slice::from_ref(&vanished)).unwrap();
 
         let manifest: serde_json::Value = serde_json::from_str(&read_manifest(&zip).unwrap()).unwrap();
         assert!(manifest["attachments"].as_array().unwrap().is_empty());
@@ -502,7 +583,7 @@ mod tests {
             r"attachments/..\evil.exe",
             "attachments/ab/not-a-hash.jpg",
         ] {
-            add(&mut zip, name, b"payload", zip::CompressionMethod::Stored).unwrap();
+            add(&mut zip, name, &b"payload"[..], zip::CompressionMethod::Stored).unwrap();
         }
         zip.finish().unwrap();
 
@@ -614,5 +695,66 @@ mod tests {
             extract_database(&zip, &out).is_err(),
             "the reader must refuse a truncated archive, which is what verify relies on"
         );
+    }
+
+    /* The name is the hash, and the folder trusts it. An archive off a USB
+       stick can put any bytes under any name. */
+    #[test]
+    fn a_photograph_whose_bytes_are_not_its_name_is_refused() {
+        let path = scratch("mislabelled.zip");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let real = hex(&Sha256::digest(b"the real photograph"));
+        let honest = format!("{ATTACH_PREFIX}{}/{real}.jpg", &real[..2]);
+        let liar = format!("{ATTACH_PREFIX}ab/ab{}.jpg", "c".repeat(62));
+        add(&mut zip, &honest, &b"the real photograph"[..], zip::CompressionMethod::Stored).unwrap();
+        add(&mut zip, &liar, &b"somebody else's file"[..], zip::CompressionMethod::Stored).unwrap();
+        zip.finish().unwrap();
+
+        let into = path.parent().unwrap().join("mislabelled-into");
+        let _ = std::fs::remove_dir_all(&into);
+        std::fs::create_dir_all(&into).unwrap();
+
+        let done = extract_attachments(&path, &into).unwrap();
+        assert_eq!(done, Restored { written: 1, already: 0, refused: 1 });
+        assert!(!into.join(format!("ab/ab{}.jpg", "c".repeat(62))).exists());
+        // And no half-written part is left beside it either.
+        assert!(!into.join(format!("ab/ab{}.part", "c".repeat(62))).exists());
+    }
+
+    /// A file far larger than any attachment may be is not unpacked, whatever
+    /// it is called.
+    #[test]
+    fn a_photograph_larger_than_any_attachment_is_refused() {
+        let path = scratch("oversized.zip");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let big = vec![0u8; crate::attachments::MAX_BYTES + 1];
+        let digest = hex(&Sha256::digest(&big));
+        let name = format!("{ATTACH_PREFIX}{}/{digest}.jpg", &digest[..2]);
+        add(&mut zip, &name, big.as_slice(), zip::CompressionMethod::Deflated).unwrap();
+        zip.finish().unwrap();
+
+        let into = path.parent().unwrap().join("oversized-into");
+        let _ = std::fs::remove_dir_all(&into);
+        std::fs::create_dir_all(&into).unwrap();
+        assert_eq!(extract_attachments(&path, &into).unwrap().refused, 1);
+    }
+
+    /// Rewriting today's archive replaces it without a moment in which there
+    /// is none, and leaves no part file behind.
+    #[test]
+    fn a_second_backup_on_the_same_day_replaces_the_first() {
+        let db = scratch("rewrite.db");
+        a_database(&db, 4);
+        let work = db.parent().unwrap().to_path_buf();
+        let zip = scratch("shop-2026-09-19.zip");
+        std::fs::write(&zip, b"this morning's archive").unwrap();
+
+        write(&zip, &work, &db, "0.1.0", "2026-09-19T03:00:00Z", &work, &[]).unwrap();
+
+        let back = scratch("rewrite-out.db");
+        assert_eq!(extract_database(&zip, &back).unwrap(), 4);
+        assert!(!work.join("shop-2026-09-19.zip.part").exists());
     }
 }

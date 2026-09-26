@@ -1,0 +1,41 @@
+-- What the shop already owed a supplier when the books moved.
+--
+-- A customer's opening balance is a bill, because a bill is the only thing a
+-- payment can be allocated against, and that has worked since `khata.test.ts`.
+-- A supplier's cannot be: there is no purchase invoice to be the document,
+-- because purchases are Phase 5 and do not exist yet.
+--
+-- So the figure goes on the supplier. Two columns, both additive, both
+-- nullable-or-defaulted, and no new table.
+--
+-- ## Why a column and not a document
+--
+-- The alternative considered was a small `party_opening_balances` table that
+-- both sides could eventually use. It was rejected because it would give one
+-- concept two mechanisms -- a bill for customers, a row for suppliers -- and
+-- Phase 5 would then have to reconcile the table with the purchase invoices
+-- it introduces. A column on `suppliers` is the thing Phase 5's payables
+-- ledger will read as its opening figure, exactly the way
+-- `customerAccount.openingBalance` is read today. Nothing to unpick.
+--
+-- The honest cost of this choice: it is a figure, not an entry. It can be
+-- corrected in place, and correcting it leaves no trail beyond `audit_log`.
+-- That is acceptable *because there is no supplier ledger yet* for it to be
+-- inconsistent with. When Phase 5 builds one, this column becomes its first
+-- row and stops being editable -- and that is the moment to revisit this
+-- paragraph rather than to be surprised by it.
+--
+-- ## The sign
+--
+-- Positive is the ordinary case: the shop owed them. Negative is an advance
+-- the shop had already paid, or an overpayment in the old book -- money the
+-- supplier is holding. Both happen, and refusing the second would mean a shop
+-- recording an advance as a debt and paying it twice.
+
+ALTER TABLE suppliers ADD COLUMN opening_balance INTEGER NOT NULL DEFAULT 0;
+
+-- The day the old book closed. NULL where no opening balance was ever set,
+-- which is not the same as "set to zero on some date" -- a shop that has
+-- deliberately recorded "we owed them nothing" has said something, and a shop
+-- that never answered has not.
+ALTER TABLE suppliers ADD COLUMN opening_as_of TEXT;

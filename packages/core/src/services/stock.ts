@@ -1,6 +1,9 @@
-import type { SqlDriver, SqlValue } from '../db/driver.js'
-import { newId } from '../ids.js'
-import { type Qty, qty, addQty, hasAtLeast, QTY_SCALE } from '../quantity.js'
+import { eq, and, ne, inArray, isNotNull, asc, desc, sql } from 'drizzle-orm'
+import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
+import { newId, observeId } from '../ids.js'
+import { deviceId } from '../device.js'
+import { type Qty, qty, addQty, hasAtLeast, QTY_SCALE, QTY_ZERO } from '../quantity.js'
 import type { Money } from '../money.js'
 import { movingAverage, fifo, type LedgerMovement, type Valuation, type FifoResult } from '../domain/valuation.js'
 
@@ -22,11 +25,11 @@ export interface StockPosting {
 }
 
 export async function currentStock(db: SqlDriver, productId: string): Promise<Qty> {
-  const row = await db.get<{ qty_on_hand: number }>(
-    `SELECT qty_on_hand FROM product_stock WHERE product_id = ?`,
-    [productId],
-  )
-  return qty(row?.qty_on_hand ?? 0)
+  const [row] = await q(db)
+    .select({ onHand: schema.productStock.qtyOnHand })
+    .from(schema.productStock)
+    .where(eq(schema.productStock.productId, productId))
+  return row?.onHand ?? QTY_ZERO
 }
 
 export async function postMovement(tx: SqlDriver, posting: StockPosting): Promise<Qty> {
@@ -45,31 +48,63 @@ export async function postMovement(tx: SqlDriver, posting: StockPosting): Promis
       ? unitValueOf(held) ?? await lastKnownCost(tx, posting.productId)
       : null)
 
-  const afterValue = valueAfter(held, posting.qtyChange, unitCost, after)
+  // An inflow with no cost is valued at the last cost the ledger holds, as the
+  // replay values it. Only asked for when it is needed.
+  const inflowRate = posting.qtyChange > 0
+    ? unitCost ?? await latestLedgerCost(tx, posting.productId)
+    : null
+  const afterValue = valueAfter(held, posting.qtyChange, inflowRate, after)
 
   const now = new Date().toISOString()
 
-  await tx.execute(
-    `INSERT INTO stock_ledger
-       (id, product_id, posting_date, qty_change, unit_cost, balance_qty, voucher_type, voucher_id, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      newId(), posting.productId, posting.postingDate, posting.qtyChange,
-      unitCost, after, posting.voucherType, posting.voucherId,
-      posting.userId ?? null, now,
-    ],
-  )
+  await q(tx).insert(schema.stockLedger).values({
+    id: await nextMovementId(tx, posting.productId),
+    productId: posting.productId,
+    postingDate: posting.postingDate,
+    qtyChange: posting.qtyChange,
+    unitCost,
+    balanceQty: after,
+    voucherType: posting.voucherType,
+    voucherId: posting.voucherId,
+    createdBy: posting.userId ?? null,
+    createdAt: now,
+    /* What the movement was worth: what the stock's value moved by, which is
+       the value that actually came or went -- not the rate times the quantity
+       rounded, which the floor at zero and uneven rates make it not quite.
+       Null when the movement had no rate at all: unknown, and not zero. */
+    valueChange: unitCost === null && inflowRate === null ? null : (afterValue - held.value) as Money,
+    // Whose shelf `balanceQty` is: this till's, and no other's (060).
+    deviceId: deviceId(),
+  })
 
-  await tx.execute(
-    `INSERT INTO product_stock (product_id, qty_on_hand, stock_value, updated_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (product_id) DO UPDATE SET
-       qty_on_hand = excluded.qty_on_hand,
-       stock_value = excluded.stock_value,
-       updated_at = excluded.updated_at`,
-    [posting.productId, after, afterValue, now],
-  )
+  await cacheStock(tx, posting.productId, after, afterValue, now)
 
   return after
+}
+
+/**
+ * The cache, written as one statement.
+ *
+ * Upsert rather than read-then-write: two tills posting movements for the same
+ * product would otherwise both find no row and both insert one.
+ */
+async function cacheStock(
+  db: SqlDriver,
+  productId: string,
+  onHand: Qty,
+  value: number,
+  now: string,
+): Promise<void> {
+  await q(db).insert(schema.productStock)
+    .values({ productId, qtyOnHand: onHand, stockValue: value as Money, updatedAt: now })
+    .onConflictDoUpdate({
+      target: schema.productStock.productId,
+      set: {
+        qtyOnHand: sql`excluded.qty_on_hand`,
+        stockValue: sql`excluded.stock_value`,
+        updatedAt: sql`excluded.updated_at`,
+      },
+    })
 }
 
 interface Holding {
@@ -78,11 +113,11 @@ interface Holding {
 }
 
 async function holding(tx: SqlDriver, productId: string): Promise<Holding> {
-  const row = await tx.get<{ qty_on_hand: number; stock_value: number }>(
-    `SELECT qty_on_hand, stock_value FROM product_stock WHERE product_id = ?`,
-    [productId],
-  )
-  return { qty: qty(row?.qty_on_hand ?? 0), value: row?.stock_value ?? 0 }
+  const [row] = await q(tx)
+    .select({ onHand: schema.productStock.qtyOnHand, value: schema.productStock.stockValue })
+    .from(schema.productStock)
+    .where(eq(schema.productStock.productId, productId))
+  return { qty: row?.onHand ?? QTY_ZERO, value: row?.value ?? 0 }
 }
 
 /** Moving average: what one base unit on the shelf is worth right now. */
@@ -97,19 +132,42 @@ function valueOf(unitCost: Money, quantity: Qty): number {
 
 /**
  * What the holding is worth after a movement. The live half of the rule written
- * out on `movingAverage`; both must agree or the cache and the ledger drift.
+ * out on `movingAverage`, and written the same way, expression for expression:
+ * the replay is the drift detector, so any difference in rounding is drift.
+ *
+ * Goods leaving take their share of the *value*, not a rounded rate times the
+ * quantity. Rounding the rate first and multiplying was a paisa off the replay
+ * on an ordinary sale -- one at 100 and two at 101, sell two -- so the detector
+ * reported drift on items nothing had gone wrong with.
  */
-function valueAfter(held: Holding, change: Qty, unitCost: Money | null, after: Qty): number {
+function valueAfter(held: Holding, change: Qty, inflowRate: Money | null, after: Qty): number {
   if (after <= 0) return 0
 
-  // Coming back from a shortfall: the goods that were owed were never paid for,
-  // so only what is left over carries value, at the rate it arrived at.
-  if (held.qty < 0 && change > 0) {
-    return unitCost === null ? 0 : Math.max(0, valueOf(unitCost, after))
+  if (change > 0) {
+    const rate = inflowRate ?? 0
+    // Coming back from a shortfall: the goods that were owed were never paid for,
+    // so only what is left over carries value, at the rate it arrived at.
+    if (held.qty < 0) return Math.max(0, valueOf(rate as Money, after))
+    return Math.max(0, held.value + valueOf(rate as Money, change))
   }
 
-  const valueChange = unitCost === null ? 0 : valueOf(unitCost, change)
-  return Math.max(0, held.value + valueChange)
+  // Only the part that was actually on the shelf carries value out with it.
+  const covered = Math.max(0, Math.min(-change, held.qty))
+  const value = covered > 0 && held.qty > 0
+    ? held.value - Math.round((held.value / held.qty) * covered)
+    : held.value
+  return Math.max(0, value)
+}
+
+/** The last cost any movement of this item carried, in the order they were made. */
+async function latestLedgerCost(tx: SqlDriver, productId: string): Promise<Money | null> {
+  const [row] = await q(tx)
+    .select({ unitCost: schema.stockLedger.unitCost })
+    .from(schema.stockLedger)
+    .where(and(eq(schema.stockLedger.productId, productId), isNotNull(schema.stockLedger.unitCost)))
+    .orderBy(desc(MADE))
+    .limit(1)
+  return row?.unitCost ?? null
 }
 
 /**
@@ -117,15 +175,58 @@ function valueAfter(held: Holding, change: Qty, unitCost: Money | null, after: Q
  * over goods issued, because a purchase is a price somebody actually paid.
  */
 async function lastKnownCost(tx: SqlDriver, productId: string): Promise<Money | null> {
-  const row = await tx.get<{ unit_cost: number }>(
-    `SELECT unit_cost FROM stock_ledger
-      WHERE product_id = ? AND unit_cost IS NOT NULL
-      ORDER BY (qty_change > 0) DESC, rowid DESC
-      LIMIT 1`,
-    [productId],
-  )
-  return (row?.unit_cost ?? null) as Money | null
+  const [row] = await q(tx)
+    .select({ unitCost: schema.stockLedger.unitCost })
+    .from(schema.stockLedger)
+    .where(and(
+      eq(schema.stockLedger.productId, productId),
+      isNotNull(schema.stockLedger.unitCost),
+    ))
+    /* Purchases before issues, then the most recent of whichever won. The
+       first term is a boolean sorted descending, so every row where goods came
+       *in* sorts ahead of every row where they went out. */
+    .orderBy(desc(sql`${schema.stockLedger.qtyChange} > 0`), desc(MADE))
+    .limit(1)
+  return row?.unitCost ?? null
 }
+
+/**
+ * An id that sorts after every movement of this product already held.
+ *
+ * The ledger is replayed in id order, and the cache was built in the order
+ * movements were posted here, so the two agree only if a new movement's id is
+ * the greatest for its product. `newId` keeps that true of ids this process
+ * mints, but not of rows that arrived from a till whose clock runs ahead --
+ * their ids are in this till's future, and a sale posted now would otherwise
+ * sort before them on replay and show as drift on a product nothing went wrong
+ * with. So the id clock is moved past the product's highest id first: a hybrid
+ * logical clock, read from the one index that already holds the answer.
+ */
+async function nextMovementId(tx: SqlDriver, productId: string): Promise<string> {
+  const [top] = await q(tx)
+    .select({ id: schema.stockLedger.id })
+    .from(schema.stockLedger)
+    .where(eq(schema.stockLedger.productId, productId))
+    .orderBy(desc(MADE))
+    .limit(1)
+  if (top) observeId(top.id)
+  return newId()
+}
+
+/**
+ * The order movements were made in, as every till holding them agrees on it.
+ *
+ * This used to be `rowid`, which is only *this* database's order: a movement
+ * made on another till gets its rowid when it arrives here. Two tills holding
+ * identical ledgers replayed them in different orders, and moving-average
+ * valuation depends on order, so they computed different stock values and the
+ * post-merge repair locked each into its own. The id is a UUIDv7 that `newId`
+ * keeps strictly increasing on the till that mints it, so it is the order the
+ * rows were made in there and the same order everywhere else. `posting_date`
+ * is a different question -- a backdated entry belongs where it was entered,
+ * not where its date puts it.
+ */
+const MADE = schema.stockLedger.id
 
 /**
  * What the goods on hand are worth, and what one unit of them costs. Reported
@@ -150,13 +251,18 @@ export async function issuedUnitCost(
   voucherId: string,
   productId: string,
 ): Promise<Money | null> {
-  const row = await tx.get<{ unit_cost: number | null }>(
-    `SELECT unit_cost FROM stock_ledger
-      WHERE voucher_type = ? AND voucher_id = ? AND product_id = ? AND unit_cost IS NOT NULL
-      ORDER BY rowid LIMIT 1`,
-    [voucherType, voucherId, productId],
-  )
-  return (row?.unit_cost ?? null) as Money | null
+  const [row] = await q(tx)
+    .select({ unitCost: schema.stockLedger.unitCost })
+    .from(schema.stockLedger)
+    .where(and(
+      eq(schema.stockLedger.voucherType, voucherType),
+      eq(schema.stockLedger.voucherId, voucherId),
+      eq(schema.stockLedger.productId, productId),
+      isNotNull(schema.stockLedger.unitCost),
+    ))
+    .orderBy(asc(MADE))
+    .limit(1)
+  return row?.unitCost ?? null
 }
 
 export interface StockRequirement {
@@ -184,11 +290,11 @@ export async function checkAvailability(
   const shortfalls: StockShortfall[] = []
 
   for (const req of requirements) {
-    const tracked = await db.get<{ is_stock_tracked: number }>(
-      `SELECT is_stock_tracked FROM products WHERE id = ?`,
-      [req.productId],
-    )
-    if (!tracked || tracked.is_stock_tracked === 0) continue
+    const [tracked] = await q(db)
+      .select({ isStockTracked: schema.products.isStockTracked })
+      .from(schema.products)
+      .where(eq(schema.products.id, req.productId))
+    if (!tracked || tracked.isStockTracked === 0) continue
 
     const available = await currentStock(db, req.productId)
     if (!hasAtLeast(available, req.required)) {
@@ -268,9 +374,6 @@ async function replay(
   repair: boolean,
   now: string,
 ): Promise<StockDrift[]> {
-  const holes = ids ? `(${ids.map(() => '?').join(', ')})` : ''
-  const params: SqlValue[] = ids ? [...ids] : []
-
   /* Replayed rather than summed.
 
      The cache used to be checked against SUM(qty_change * unit_cost), which is
@@ -280,61 +383,58 @@ async function replay(
      check would report drift on every overdrawn item for ever. So the ledger is
      replayed through the one function that defines the rule.
 
-     `ORDER BY product_id, rowid` and not by `posting_date`: the rule depends on
+     `ORDER BY product_id, id` and not by `posting_date`: the rule depends on
      the order the movements were *made*, because that is the order the cache
      was built in. A backdated stock entry belongs where it was entered, not
      where its date would put it, and sorting by date would make this function
      disagree with `postMovement` about a shop that has ever backdated one. */
-  const ledger = await db.query<{ product_id: string; qty_change: number; unit_cost: number | null }>(
-    `SELECT product_id, qty_change, unit_cost FROM stock_ledger
-      ${ids ? `WHERE product_id IN ${holes}` : ''}
-      ORDER BY product_id, rowid`,
-    params,
-  )
+  const ledger = await q(db)
+    .select({
+      productId: schema.stockLedger.productId,
+      qtyChange: schema.stockLedger.qtyChange,
+      unitCost: schema.stockLedger.unitCost,
+    })
+    .from(schema.stockLedger)
+    .where(ids ? inArray(schema.stockLedger.productId, [...ids]) : undefined)
+    .orderBy(asc(schema.stockLedger.productId), asc(MADE))
 
   const byProduct = new Map<string, LedgerMovement[]>()
   for (const row of ledger) {
-    const movements = byProduct.get(row.product_id) ?? []
-    movements.push({ qtyChange: qty(row.qty_change), unitCost: (row.unit_cost ?? null) as Money | null })
-    byProduct.set(row.product_id, movements)
+    const movements = byProduct.get(row.productId) ?? []
+    movements.push({ qtyChange: row.qtyChange, unitCost: row.unitCost })
+    byProduct.set(row.productId, movements)
   }
 
   /* Driven from `products` rather than from the ledger, so a product whose
      cache says something and whose ledger says nothing is still caught. That is
      the drift worth finding: a row written by something outside this module. */
-  const cache = await db.query<{ product_id: string; cached: number | null; cached_value: number | null }>(
-    `SELECT p.id AS product_id, ps.qty_on_hand AS cached, ps.stock_value AS cached_value
-       FROM products p LEFT JOIN product_stock ps ON ps.product_id = p.id
-      ${ids ? `WHERE p.id IN ${holes}` : ''}`,
-    params,
-  )
+  const cache = await q(db)
+    .select({
+      productId: schema.products.id,
+      cached: schema.productStock.qtyOnHand,
+      cachedValue: schema.productStock.stockValue,
+    })
+    .from(schema.products)
+    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
+    .where(ids ? inArray(schema.products.id, [...ids]) : undefined)
 
   const drift: StockDrift[] = []
 
   for (const row of cache) {
-    const truth = movingAverage(byProduct.get(row.product_id) ?? [])
-    const cached = qty(row.cached ?? 0)
-    const cachedValue = row.cached_value ?? 0
+    const truth = movingAverage(byProduct.get(row.productId) ?? [])
+    const cached = row.cached ?? QTY_ZERO
+    const cachedValue = row.cachedValue ?? 0
     if (cached === truth.qtyOnHand && cachedValue === truth.totalValue) continue
 
     drift.push({
-      productId: row.product_id,
+      productId: row.productId,
       cached,
       actual: truth.qtyOnHand,
       cachedValue: cachedValue as Money,
       actualValue: truth.totalValue,
     })
 
-    if (repair) {
-      await db.execute(
-        `INSERT INTO product_stock (product_id, qty_on_hand, stock_value, updated_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT (product_id) DO UPDATE SET
-           qty_on_hand = excluded.qty_on_hand,
-           stock_value = excluded.stock_value,
-           updated_at = excluded.updated_at`,
-        [row.product_id, truth.qtyOnHand, truth.totalValue, now],
-      )
-    }
+    if (repair) await cacheStock(db, row.productId, truth.qtyOnHand, truth.totalValue, now)
   }
 
   return drift
@@ -353,18 +453,25 @@ export async function reverseVoucher(
   postingDate: string,
   userId?: string | null,
 ): Promise<void> {
-  const movements = await tx.query<{ product_id: string; qty_change: number; unit_cost: number | null }>(
-    `SELECT product_id, qty_change, unit_cost FROM stock_ledger
-      WHERE voucher_type = ? AND voucher_id = ? AND qty_change <> 0
-      ORDER BY rowid`,
-    [voucherType, voucherId],
-  )
+  const movements = await q(tx)
+    .select({
+      productId: schema.stockLedger.productId,
+      qtyChange: schema.stockLedger.qtyChange,
+      unitCost: schema.stockLedger.unitCost,
+    })
+    .from(schema.stockLedger)
+    .where(and(
+      eq(schema.stockLedger.voucherType, voucherType),
+      eq(schema.stockLedger.voucherId, voucherId),
+      ne(schema.stockLedger.qtyChange, QTY_ZERO),
+    ))
+    .orderBy(asc(MADE))
 
   for (const m of movements) {
     await postMovement(tx, {
-      productId: m.product_id,
-      qtyChange: qty(-m.qty_change),
-      unitCost: (m.unit_cost ?? null) as Money | null,
+      productId: m.productId,
+      qtyChange: qty(-m.qtyChange),
+      unitCost: m.unitCost,
       voucherType: `${voucherType}_reversal`,
       voucherId,
       postingDate,
@@ -382,13 +489,14 @@ export async function productValuation(
   productId: string,
   method: 'moving_average' | 'fifo' = 'moving_average',
 ): Promise<Valuation | FifoResult> {
-  const rows = await db.query<{ qty_change: number; unit_cost: number | null }>(
-    `SELECT qty_change, unit_cost FROM stock_ledger WHERE product_id = ? ORDER BY posting_date, rowid`,
-    [productId],
-  )
-  const movements = rows.map((r) => ({
-    qtyChange: qty(r.qty_change),
-    unitCost: (r.unit_cost ?? null) as Money | null,
-  }))
+  const movements = await q(db)
+    .select({
+      qtyChange: schema.stockLedger.qtyChange,
+      unitCost: schema.stockLedger.unitCost,
+    })
+    .from(schema.stockLedger)
+    .where(eq(schema.stockLedger.productId, productId))
+    .orderBy(asc(MADE))
+
   return method === 'fifo' ? fifo(movements) : movingAverage(movements)
 }

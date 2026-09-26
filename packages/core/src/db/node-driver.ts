@@ -48,6 +48,17 @@ class NodeDriver implements SqlDriver {
     }
   }
 
+  async queryValues(sql: string, params: SqlValue[] = []): Promise<SqlValue[][]> {
+    try {
+      /* `raw(true)` is set on this statement and this statement only --
+         better-sqlite3 keeps the flag on the prepared statement, and nothing
+         here caches them, so it cannot leak into a caller expecting objects. */
+      return this.db.prepare(sql).raw(true).all(...params) as SqlValue[][]
+    } catch (cause) {
+      throw new SqlError(describe(cause), sql, cause)
+    }
+  }
+
   async execute(sql: string, params: SqlValue[] = []): Promise<ExecResult> {
     try {
       const info = this.db.prepare(sql).run(...params)

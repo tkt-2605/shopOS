@@ -1,0 +1,39 @@
+-- Two clocks drifting apart, said before it stops the shop.
+--
+-- ── What happens today ────────────────────────────────────────────────────
+--
+-- Every request carries a timestamp and `verify` refuses one more than five
+-- minutes out with `STALE`. That wall is the right wall — it is what stops a
+-- captured request being replayed tomorrow — and it has two problems, both of
+-- which are about the shop rather than about the protocol.
+--
+-- The first is that it arrives all at once. A till whose battery has gone flat
+-- comes back an hour out and every round fails from the first one, with nothing
+-- having warned anybody while it was drifting through four minutes.
+--
+-- The second is worse and is not about authentication at all. The merge settles
+-- a tie on `updated_at`. Two tills three minutes apart are two tills where the
+-- slower one loses edits it genuinely made later — silently, with no refusal,
+-- with both screens saying everything agrees, and with the five-minute wall
+-- never coming near it. A price corrected on the back counter goes back to what
+-- it was, and the only evidence is a `sync_conflicts` row that says the other
+-- till was newer, which it was.
+--
+-- ── What this stores ──────────────────────────────────────────────────────
+--
+-- The gap between the two clocks, as of the last handshake. `/hello` gains the
+-- answering till's own time — it is already an authenticated exchange between
+-- two machines that have agreed to talk, so there is nothing here a peer does
+-- not already know — and the asking side records the difference.
+--
+-- Zero is "level, as far as we can tell", which is also the right reading for
+-- every row that predates this migration. A round trip's worth of latency is in
+-- the number and nothing tries to subtract it: the threshold that matters is
+-- two and a half minutes, and a LAN round trip is not going to move that.
+--
+-- Additive. A till that does not send its time leaves the column at zero, which
+-- reads as nothing to say — and it is worth noticing that this is the one thing
+-- here that cannot be fixed by the newer till alone, because a clock is a fact
+-- about a machine and not about a protocol.
+
+ALTER TABLE sync_peers ADD COLUMN clock_skew_ms INTEGER NOT NULL DEFAULT 0;

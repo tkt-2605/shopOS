@@ -1,0 +1,11 @@
+{
+  "name": "@shopos/portal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The vendor's side: owner accounts, licence issuing, and the cloud tier's endpoints.",
+  "bin": { "portal": "./src/cli.ts" },
+  "dependencies": {
+    "@shopos/core": "*"
+  }
+}

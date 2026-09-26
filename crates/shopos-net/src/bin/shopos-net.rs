@@ -60,7 +60,7 @@ fn forward(port: u16, request: &Request) -> std::io::Result<Reply> {
         "POST {} HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: application/json\r\n\
          content-length: {}\r\n",
         request.path,
-        request.body.as_bytes().len()
+        request.body.len()
     );
     if let Some(auth) = &request.auth {
         head.push_str(&format!("x-shopos-auth: {auth}\r\n"));
@@ -120,8 +120,7 @@ fn dechunk(body: &str) -> String {
     let mut out = String::new();
     let mut rest = body;
 
-    loop {
-        let Some((size, after)) = rest.split_once("\r\n") else { break };
+    while let Some((size, after)) = rest.split_once("\r\n") {
         let size = size.split(';').next().unwrap_or("").trim();
         let Ok(size) = usize::from_str_radix(size, 16) else { break };
         if size == 0 || after.len() < size {
@@ -160,7 +159,7 @@ fn main() {
                 }
             };
 
-            respond_while(
+            let found = respond_while(
                 Announcement {
                     v: 1,
                     device: device.clone(),
@@ -168,9 +167,17 @@ fn main() {
                     shop: arg(&args, "shop"),
                     shop_id: arg(&args, "shop-id"),
                     port: bound.port,
+                    // In a container this is the address on the bench's network,
+                    // which is the one the other containers dial.
+                    host: http::lan_address(),
                 },
                 bound.stop_flag(),
             );
+            // Answering without being findable is still answering; the bench
+            // will say which half is missing.
+            if let Err(why) = found {
+                eprintln!("shopos-net: {why}");
+            }
 
             // One line, parseable, so `run.sh` can wait for readiness rather
             // than sleeping and hoping.

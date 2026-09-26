@@ -1,18 +1,33 @@
+import { eq, ne, and, isNotNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
-import { deviceId } from '../device.js'
+import { q, schema } from '../db/q.js'
+import { deviceId, replacedDevice } from '../device.js'
+import { myFingerprint } from './syncAuth.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import type { PeerHello, SyncTransport } from './sync.js'
-import { encodeAuth, sign } from './syncAuth.js'
+import {
+  encodeAuth, sign, replyIsGenuine, pairingKey, agreeSecret, comparisonDigits, isPairingPublicKey,
+  type PairingKey,
+} from './syncAuth.js'
 import { LISTEN_PORT_HEADER } from './syncServer.js'
 import { clock } from '../clock.js'
+import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
+import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 
 /**
  * The side of a sync that asks.
  *
- * This half runs in the webview, because making a request out is something a
- * webview can do and listening on a port is not. Only the answering side needs
- * anything from Rust, which is why `syncServer.ts` is a plain function and this
- * is plain `fetch`.
+ * Written against `fetch`, and given one rather than reaching for the global,
+ * because who can actually make the request differs by host. The bench passes
+ * Node's, over real sockets. The app cannot pass its own: a webview may not
+ * listen on a port, and under this app's CSP -- `connect-src` inherited from
+ * `default-src 'self'` -- it may not call another till either. The request is
+ * refused before a packet leaves, and it surfaces as "Failed to fetch", which
+ * reads exactly like a till that is switched off. So the app passes a fetch
+ * shaped like this one that hands the parts to Rust; `syncFetch.ts` is it.
+ *
+ * Which is to say both halves of a sync end up in Rust in the app, and this
+ * file cares about neither: it is the protocol, and the socket is the host's.
  */
 
 export interface PeerAddress {
@@ -20,6 +35,8 @@ export interface PeerAddress {
   /** `http://192.168.1.14:7801`, as last reached. A hint, never an authority. */
   baseUrl: string
   secret: string
+  /** `lan` or `cloud`; a `none` peer never appears here. See migration 044. */
+  reach: string
 }
 
 export class SyncHttpError extends Error {
@@ -71,7 +88,7 @@ export function httpTransport(
       body,
     })
 
-    const text = await response.text()
+    const text = await opened(await response.text(), response.status, peer.secret, signed.nonce)
     if (!response.ok) {
       let code = `HTTP_${response.status}`
       try {
@@ -86,10 +103,40 @@ export function httpTransport(
   }
 
   return {
-    hello: () => ask<PeerHello>('/hello', {}),
+    /* Our version, so a till we ask that is behind us learns it is. A build
+       from before this sends nothing and the far side reads nothing into it. */
+    hello: () => ask<PeerHello>('/hello', {
+      schemaVersion: EXPECTED_SCHEMA_VERSION, minPeerSchema: MIN_PEER_SCHEMA_VERSION,
+    }),
     fetch: (since, limit) => ask<ChangeBatch>('/fetch', { since, limit }),
     offer: (batch) => ask<{ upTo: number }>('/offer', batch),
   }
+}
+
+/**
+ * The body of an answer, once its signature has checked out.
+ *
+ * Every answer to a signed request comes back signed over its status, its body
+ * and the nonce of the request it answers (`sealed` on the far side). One that
+ * is not, or does not check, is refused -- except a refusal given before the
+ * far side knew who was asking, which it had no secret to sign and which can
+ * do no more than stop this round.
+ */
+async function opened(text: string, status: number, secret: string, nonce: string): Promise<string> {
+  let envelope: { reply?: unknown; mac?: unknown } | null = null
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (parsed !== null && typeof parsed === 'object') envelope = parsed as { reply?: unknown; mac?: unknown }
+  } catch { /* not JSON at all */ }
+
+  if (envelope !== null && typeof envelope.reply === 'string' && typeof envelope.mac === 'string') {
+    if (!await replyIsGenuine(secret, nonce, status, envelope.reply, envelope.mac)) {
+      throw new SyncHttpError(502, 'BAD_REPLY_SIGNATURE')
+    }
+    return envelope.reply
+  }
+  if (status >= 200 && status < 300) throw new SyncHttpError(502, 'UNSIGNED_REPLY')
+  return text
 }
 
 export interface PairOutcome {
@@ -97,6 +144,15 @@ export interface PairOutcome {
   label: string | null
   shopId: string | null
   schemaVersion: number
+  /**
+   * The other till's certificate fingerprint, if it had one to give.
+   *
+   * Null on every build today, and kept rather than checked. Migration 047 sets
+   * out why it is taken now: pairing is the only exchange two tills have before
+   * they trust each other, a shop performs it once by hand, and a build that
+   * adds the field later cannot ask a shop to re-pair every till it owns.
+   */
+  fingerprint?: string | null
 }
 
 /**
@@ -119,6 +175,7 @@ export async function pairWith(
 ): Promise<PairOutcome> {
   const me = deviceId()
   if (me === null) throw new Error('This machine does not know which machine it is')
+  const key = await pairingKey()
 
   const response = await fetchImpl(`${baseUrl}/pair`, {
     method: 'POST',
@@ -131,51 +188,231 @@ export async function pairWith(
         ? { [LISTEN_PORT_HEADER]: String(self.listenPort) }
         : {}),
     },
-    body: JSON.stringify({ code: code.trim().toUpperCase(), deviceId: me, label }),
+    body: JSON.stringify({
+      code: code.trim().toUpperCase(), deviceId: me, label, publicKey: key.publicKey,
+      // Symmetric, so that when there is one to send neither side has to be
+      // the one that was upgraded first.
+      fingerprint: myFingerprint(),
+      ...succeeding(),
+    }),
   })
 
   const text = await response.text()
-  if (!response.ok) {
-    let reason = `HTTP_${response.status}`
-    try {
-      const parsed: unknown = JSON.parse(text)
-      if (parsed !== null && typeof parsed === 'object' && 'code' in parsed) {
-        reason = String((parsed as { code: unknown }).code)
-      }
-    } catch { /* not ours */ }
-    throw new SyncHttpError(response.status, reason)
-  }
+  if (!response.ok) throw new SyncHttpError(response.status, codeIn(text, response.status))
 
-  const agreed = JSON.parse(text) as PairOutcome & { secret: string }
-  if (typeof agreed.secret !== 'string' || typeof agreed.deviceId !== 'string') {
-    throw new SyncHttpError(502, 'MALFORMED')
-  }
+  const outcome = await agreed(JSON.parse(text) as Record<string, unknown>, key)
+  await rememberTheShop(db, baseUrl, outcome)
+  return justTheShop(outcome)
+}
 
-  await db.execute(
-    `INSERT INTO sync_peers (device_id, label, secret, address, created_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (device_id) DO UPDATE SET
-       label = excluded.label, secret = excluded.secret, address = excluded.address`,
-    [agreed.deviceId, agreed.label, agreed.secret, baseUrl, clock.iso()],
-  )
-
+/* The secret is written to `sync_peers` and goes no further. A caller that had
+   it in hand would eventually put it on a screen or in a log. */
+function justTheShop(o: PairOutcome & { secret: string }): PairOutcome {
   return {
-    deviceId: agreed.deviceId,
-    label: agreed.label,
-    shopId: agreed.shopId,
-    schemaVersion: agreed.schemaVersion,
+    deviceId: o.deviceId, label: o.label, shopId: o.shopId,
+    schemaVersion: o.schemaVersion, fingerprint: o.fingerprint ?? null,
   }
 }
 
-/** Everyone this till can reach, for the sync loop and for a screen. */
+/** The refusal code out of a body, without trusting it to be ours or to be JSON. */
+function codeIn(text: string, status: number): string {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (parsed !== null && typeof parsed === 'object' && 'code' in parsed) {
+      return String((parsed as { code: unknown }).code)
+    }
+  } catch { /* not ours */ }
+  return `HTTP_${status}`
+}
+
+/**
+ * What a shop says about itself when it lets a till in, checked before use,
+ * with the secret worked out here from its public key and ours. The shop never
+ * sends the secret; a reply that tried to would be ignored.
+ */
+async function agreed(
+  said: Record<string, unknown> | (Partial<PairOutcome> & { publicKey?: string }),
+  mine: PairingKey,
+): Promise<PairOutcome & { secret: string }> {
+  const it = said as PairOutcome & { publicKey?: unknown }
+  if (!isPairingPublicKey(it.publicKey) || typeof it.deviceId !== 'string') {
+    throw new SyncHttpError(502, 'MALFORMED')
+  }
+  const secret = await agreeSecret(mine, it.publicKey, mine.publicKey, it.publicKey)
+  return {
+    deviceId: it.deviceId, label: it.label ?? null, shopId: it.shopId ?? null,
+    schemaVersion: it.schemaVersion, fingerprint: it.fingerprint ?? null, secret,
+  }
+}
+
+async function rememberTheShop(
+  db: SqlDriver,
+  baseUrl: string,
+  outcome: PairOutcome & { secret: string },
+): Promise<void> {
+  const peer = {
+    label: outcome.label,
+    secret: outcome.secret,
+    address: baseUrl,
+    fingerprint: typeof outcome.fingerprint === 'string' ? outcome.fingerprint : null,
+  }
+  await q(db).insert(schema.syncPeers)
+    .values({ deviceId: outcome.deviceId, ...peer, createdAt: clock.iso() })
+    .onConflictDoUpdate({ target: schema.syncPeers.deviceId, set: peer })
+}
+
+/**
+ * The key this till is asking to join with, kept between asking and being let
+ * in. In memory only: a restart makes a new one, which the shop notices and
+ * shows fresh digits for, and nothing about a pairing half done survives the
+ * process that was doing it.
+ */
+let joining: PairingKey | null = null
+
+async function joiningKey(): Promise<PairingKey> {
+  joining ??= await pairingKey()
+  return joining
+}
+
+export type JoinProgress =
+  | { state: 'PENDING'; requestId: string; digits: string }
+  | { state: 'ALLOWED'; outcome: PairOutcome }
+  | { state: 'REFUSED' }
+  | { state: 'LAPSED' }
+
+/**
+ * Asking a shop to let this machine in, with nobody typing anything.
+ *
+ * Two calls rather than one held connection: what happens between them is a
+ * person walking to the other counter and reading a screen, and no sensible
+ * request timeout is that long. `ANSWER_TIMEOUT` in the app's listener is sixty
+ * seconds, and a shopkeeper is not.
+ *
+ * Nothing here is authenticated, because nothing here grants anything. The
+ * shop's answer does, and the thing that decides it is a person pressing Allow
+ * on the till that already has the books.
+ */
+export async function askToJoin(
+  baseUrl: string,
+  label: string | null = null,
+  fetchImpl: typeof fetch = fetch,
+  self: SelfAddress = {},
+): Promise<JoinProgress> {
+  const me = deviceId()
+  if (me === null) throw new Error('This machine does not know which machine it is')
+
+  const answer = await knock(baseUrl, { deviceId: me, label, ...succeeding() }, await joiningKey(), fetchImpl, self)
+  /* A shop that answers the very first knock with ALLOWED is not one this
+     asked — there has been nobody to press anything yet. Treated as the
+     protocol being wrong rather than as a pairing. */
+  if (answer.state === 'ALLOWED') throw new SyncHttpError(502, 'MALFORMED')
+  return answer
+}
+
+/** "May I yet?" — the same conversation, asked again until it has an answer. */
+export async function pollJoin(
+  db: SqlDriver,
+  baseUrl: string,
+  requestId: string,
+  fetchImpl: typeof fetch = fetch,
+  self: SelfAddress = {},
+): Promise<JoinProgress> {
+  const me = deviceId()
+  if (me === null) throw new Error('This machine does not know which machine it is')
+
+  const answer = await knock(baseUrl, { deviceId: me, requestId, ...succeeding() }, await joiningKey(), fetchImpl, self)
+  /* The key is kept after being let in, not dropped: if this answer was lost
+     on the way back, the till asks again, and asking with a new key would be
+     a different conversation that the shop turns away. */
+  if (answer.state !== 'ALLOWED') return answer
+
+  /* The secret is written down before anything is synced, so a pairing that
+     succeeded on the far side and then failed on the way back leaves this till
+     able to carry on rather than holding half of one. */
+  await rememberTheShop(db, baseUrl, answer.full)
+  return { state: 'ALLOWED', outcome: justTheShop(answer.full) }
+}
+
+type Knocked =
+  | Exclude<JoinProgress, { state: 'ALLOWED' }>
+  | { state: 'ALLOWED'; full: PairOutcome & { secret: string } }
+
+async function knock(
+  baseUrl: string,
+  body: Record<string, unknown>,
+  key: PairingKey,
+  fetchImpl: typeof fetch,
+  self: SelfAddress,
+): Promise<Knocked> {
+  const response = await fetchImpl(`${baseUrl}/pair`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(typeof self.listenPort === 'number'
+        ? { [LISTEN_PORT_HEADER]: String(self.listenPort) }
+        : {}),
+    },
+    body: JSON.stringify({ ...body, publicKey: key.publicKey }),
+  })
+
+  const text = await response.text()
+  if (!response.ok) throw new SyncHttpError(response.status, codeIn(text, response.status))
+
+  const said = JSON.parse(text) as Partial<PairOutcome> & {
+    state?: string; requestId?: string; digits?: string; publicKey?: string
+  }
+  switch (said.state) {
+    case 'PENDING':
+      if (typeof said.requestId !== 'string' || !isPairingPublicKey(said.publicKey)) {
+        throw new SyncHttpError(502, 'MALFORMED')
+      }
+      /* The digits are worked out here from the two keys, not read off the
+         answer. A machine in the middle chooses what it sends; it cannot make
+         these match the shop's screen without the shop's key. */
+      return {
+        state: 'PENDING', requestId: said.requestId,
+        digits: await comparisonDigits(key.publicKey, said.publicKey),
+      }
+    case 'REFUSED': joining = null; return { state: 'REFUSED' }
+    case 'LAPSED': joining = null; return { state: 'LAPSED' }
+    case 'ALLOWED': return { state: 'ALLOWED', full: await agreed(said, key) }
+    default: throw new SyncHttpError(502, 'MALFORMED')
+  }
+}
+
+/**
+ * Everyone this till can dial, for the sync loop and for a screen.
+ *
+ * `reach` is asked rather than inferred. This used to be "has an address", which
+ * happened to exclude a phone — no port, so no address was ever recorded — and
+ * happened to *include* a cloud peer that a shop behind NAT cannot dial either.
+ * A peer that says it cannot answer is left out, and the loop stops spending a
+ * timeout on it every round and stops reporting the shop as unreachable over a
+ * machine that was never going to pick up. It still converges: a peer that
+ * cannot be dialled is one that does the dialling.
+ */
 export async function pairedPeers(db: SqlDriver): Promise<PeerAddress[]> {
-  const rows = await db.query<{ device_id: string; secret: string | null; address: string | null }>(
-    `SELECT device_id, secret, address FROM sync_peers
-      WHERE secret IS NOT NULL AND address IS NOT NULL
-      ORDER BY created_at`,
-  )
+  const rows = await q(db)
+    .select({
+      deviceId: schema.syncPeers.deviceId,
+      secret: schema.syncPeers.secret,
+      address: schema.syncPeers.address,
+      reach: schema.syncPeers.reach,
+    })
+    .from(schema.syncPeers)
+    .where(and(
+      isNotNull(schema.syncPeers.secret),
+      isNotNull(schema.syncPeers.address),
+      ne(schema.syncPeers.reach, 'none'),
+    ))
+    .orderBy(schema.syncPeers.createdAt)
+
+  /* Both columns are nullable in the table -- a peer that is half set up has
+     one or the other -- and the query has just asked for the rows where
+     neither is. The non-null assertions say that, and the `where` above is
+     what makes them true. */
   return rows.map((r) => ({
-    deviceId: r.device_id, secret: r.secret!, baseUrl: r.address!,
+    deviceId: r.deviceId, secret: r.secret!, baseUrl: r.address!, reach: r.reach,
   }))
 }
 
@@ -183,7 +420,16 @@ export async function pairedPeers(db: SqlDriver): Promise<PeerAddress[]> {
 export async function rememberAddress(
   db: SqlDriver, peerDeviceId: string, baseUrl: string,
 ): Promise<void> {
-  await db.execute(
-    `UPDATE sync_peers SET address = ? WHERE device_id = ?`, [baseUrl, peerDeviceId],
-  )
+  await q(db).update(schema.syncPeers)
+    .set({ address: baseUrl })
+    .where(eq(schema.syncPeers.deviceId, peerDeviceId))
+}
+
+/**
+ * Whose place this till is taking, when it has been restored from a backup.
+ * See `setReplacedDevice`; absent on every ordinary pairing.
+ */
+function succeeding(): { replaces?: string } {
+  const was = replacedDevice()
+  return was === null ? {} : { replaces: was }
 }

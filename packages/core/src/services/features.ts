@@ -1,6 +1,10 @@
+import { eq, and, gt } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
+import { ZERO } from '../money.js'
+import { SUBMITTED } from '../integrity/docstatus.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
-import { getSetting, setSetting } from './bootstrap.js'
+import { getSetting, setSetting } from './settings.js'
 import type { Rounding } from '../domain/billTotals.js'
 import { defaultScheme, isTaxScheme, type TaxScheme } from '../domain/taxScheme.js'
 
@@ -243,12 +247,12 @@ export async function loadTaxScheme(db: SqlDriver): Promise<TaxScheme> {
    * A till that has never charged tax has nothing to preserve, and there the
    * safe reading is the one that does not collect tax in a shop's name without
    * being told it may. */
-  const charged = await db.get<{ found: number }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM bills WHERE docstatus = 1 AND tax_total > 0
-     ) AS found`,
-  )
-  return charged?.found ? 'regular' : 'unregistered'
+  const [charged] = await q(db)
+    .select({ id: schema.bills.id })
+    .from(schema.bills)
+    .where(and(eq(schema.bills.docstatus, SUBMITTED), gt(schema.bills.taxTotal, ZERO)))
+    .limit(1)
+  return charged ? 'regular' : 'unregistered'
 }
 
 /** Whether a person has said, as opposed to the till having worked it out. */

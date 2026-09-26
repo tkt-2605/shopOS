@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "com.shopos.pos.till1",
+  "productName": "ShopOS — Till 1",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ShopOS — Till 1",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": false,
+        "x": 40,
+        "y": 40
+      }
+    ]
+  }
+}

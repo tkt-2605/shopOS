@@ -1,0 +1,39 @@
+-- Telling "they have nothing for us" from "they have never said".
+--
+-- ── The bug this fixes, which was mine and was two hours old ──────────────
+--
+-- 044 added `their_head`, the peer's own feed position, so a till could finally
+-- say what it was *owed* rather than only what it owed. The column is
+-- `NOT NULL DEFAULT 0`, and the code read 0 as "this peer has never told us" —
+-- an older build sends no head, and claiming two tills are level on the
+-- strength of a field that was never sent would be an invention.
+--
+-- 0 is also what a peer says when its feed is empty. `pruneAcknowledged` drops
+-- every entry all peers have read, so a shop that has caught up and gone quiet
+-- has nothing in its feed and `feedHead` returns 0, correctly.
+--
+-- Which makes 0 mean both "I have nothing for you" and "I have not spoken", and
+-- the two want opposite sentences. The healthiest state a shop can be in — every
+-- till level, every feed pruned — was rendering as `?` on the Two tills card and
+-- as "this till cannot tell whether it has everything" on every report. Exactly
+-- backwards, and on the screen a shop looks at every day.
+--
+-- Found by running three real tills for four minutes. The convergence harness
+-- cannot find it: it asserts that the shop goes quiet and never prunes, so the
+-- feed is never empty when a head is read.
+--
+-- ── The fix ───────────────────────────────────────────────────────────────
+--
+-- A date beside the number. NULL means no peer has ever reported a head on this
+-- row, which is the only thing 0 was being asked to carry that it could not.
+--
+-- A column rather than making `their_head` nullable, because that is a table
+-- rebuild for a distinction a nullable timestamp states more plainly — and the
+-- timestamp is worth having anyway: a head is a fact as of a moment, and how
+-- stale it is decides whether "5 behind" is news or history.
+--
+-- Additive, and it reads correctly for every existing row: a shop upgrading has
+-- NULL here, which says nothing is known yet, and the first handshake after
+-- this fills it in.
+
+ALTER TABLE sync_peers ADD COLUMN head_said_at TEXT;

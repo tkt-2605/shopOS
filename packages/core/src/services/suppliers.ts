@@ -1,7 +1,11 @@
+import { eq, ne, and, isNull, isNotNull, asc, desc, count, max, sql, type SQL } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import type { Money } from '../money.js'
+import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
-import { writeAudit } from '../integrity/audit.js'
+import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import { businessDate } from '../dates.js'
+import { SUBMITTED } from '../integrity/docstatus.js'
 
 /**
  * Who the shop buys from.
@@ -22,6 +26,15 @@ export interface Supplier {
 }
 
 export interface SupplierSummary extends Supplier {
+  /**
+   * What the shop owed them when the books moved, and the day they closed.
+   *
+   * Positive: the shop owed them. Negative: they are holding the shop's
+   * money -- an advance paid, or an overpayment in the old book. Null `asOf`
+   * means nobody has ever said, which is not the same as having said zero.
+   */
+  openingBalance: Money
+  openingAsOf: string | null
   entryCount: number
   lastPurchase: string | null
   purchased: Money
@@ -29,49 +42,179 @@ export interface SupplierSummary extends Supplier {
   archived: boolean
 }
 
+/** The five columns both lists return. */
+const supplierShape = {
+  id: schema.suppliers.id,
+  name: schema.suppliers.name,
+  phone: schema.suppliers.phone,
+  gstin: schema.suppliers.gstin,
+  address: schema.suppliers.address,
+  isActive: schema.suppliers.isActive,
+}
+
+/** The two carried by the summary and not by the picker. */
+const openingShape = {
+  openingBalance: schema.suppliers.openingBalance,
+  openingAsOf: schema.suppliers.openingAsOf,
+}
+
 export async function listSuppliers(db: SqlDriver, includeInactive = false): Promise<Supplier[]> {
-  const rows = await db.query<{
-    id: string; name: string; phone: string | null; gstin: string | null
-    address: string | null; is_active: number
-  }>(
-    `SELECT id, name, phone, gstin, address, is_active
-       FROM suppliers
-      WHERE deleted_at IS NULL ${includeInactive ? '' : 'AND is_active = 1'}
-      ORDER BY name`,
-  )
+  const rows = await q(db)
+    .select(supplierShape)
+    .from(schema.suppliers)
+    .where(and(
+      isNull(schema.suppliers.deletedAt),
+      ...(includeInactive ? [] : [eq(schema.suppliers.isActive, 1)]),
+    ))
+    .orderBy(schema.suppliers.name)
   return rows.map(toSupplier)
 }
+
+/**
+ * How the supplier list comes back.
+ *
+ * Decided by the query, the same as `CustomerOrder` -- and for the same
+ * reason, even though this list is rarely long enough for it to bite: a shop
+ * has forty suppliers, not four thousand, but `purchased` and `owed` are both
+ * computed columns, and sorting them in the screen would mean the screen
+ * recomputing money the database already worked out.
+ */
+export type SupplierOrder =
+  /** Alphabetical. The default, and what a picker wants. */
+  | 'name'
+  /** Most owed first -- who to pay. Negative balances last. */
+  | 'owed'
+  /** Most bought from, ever. Who the shop actually depends on. */
+  | 'bought'
+  /** Longest since a delivery. Who has gone quiet. */
+  | 'quietest'
 
 /** The list with what has actually been bought, for the suppliers screen. */
 export async function supplierSummaries(
   db: SqlDriver,
-  opts: { includeArchived?: boolean } = {},
+  opts: { includeArchived?: boolean; order?: SupplierOrder } = {},
 ): Promise<SupplierSummary[]> {
-  const rows = await db.query<{
-    id: string; name: string; phone: string | null; gstin: string | null
-    address: string | null; is_active: number; deleted_at: string | null
-    n: number; last_purchase: string | null; purchased: number
-  }>(
-    `SELECT s.id, s.name, s.phone, s.gstin, s.address, s.is_active, s.deleted_at,
-            COUNT(e.id) AS n,
-            MAX(e.posting_date) AS last_purchase,
-            COALESCE(SUM(
-              (SELECT COALESCE(SUM(CAST(ROUND(i.qty * i.unit_cost / 10000.0) AS INTEGER)), 0)
-                 FROM stock_entry_items i WHERE i.entry_id = e.id)
-            ), 0) AS purchased
-       FROM suppliers s
-       LEFT JOIN stock_entries e ON e.supplier_id = s.id AND e.docstatus = 1
-      ${opts.includeArchived ? '' : 'WHERE s.deleted_at IS NULL'}
-      GROUP BY s.id
-      ORDER BY s.name`,
-  )
+  const rows = await q(db)
+    .select({
+      ...supplierShape,
+      ...openingShape,
+      deletedAt: schema.suppliers.deletedAt,
+      entryCount: count(schema.stockEntries.id),
+      lastPurchase: max(schema.stockEntries.postingDate),
+      /* raw: what each entry came to, summed across the entries. It is a
+         subquery rather than a second join because the entries are already
+         joined and grouped -- joining the lines as well would multiply the
+         count of entries by the number of lines on each. `stock_entries.id` is
+         written out because inside the subquery a bare `id` would bind to
+         `stock_entry_items`. */
+      purchased: sql<Money>`COALESCE(SUM((
+        SELECT COALESCE(SUM(CAST(ROUND(i.qty * i.unit_cost / 10000.0) AS INTEGER)), 0)
+          FROM stock_entry_items i WHERE i.entry_id = stock_entries.id)), 0)`,
+    })
+    .from(schema.suppliers)
+    .leftJoin(schema.stockEntries, and(
+      eq(schema.stockEntries.supplierId, schema.suppliers.id),
+      eq(schema.stockEntries.docstatus, SUBMITTED),
+    ))
+    .where(and(...(opts.includeArchived ? [] : [isNull(schema.suppliers.deletedAt)])))
+    .groupBy(schema.suppliers.id)
+    .orderBy(...supplierOrderFor(opts.order ?? 'name'))
+
   return rows.map((r) => ({
     ...toSupplier(r),
-    entryCount: r.n,
-    lastPurchase: r.last_purchase,
-    purchased: r.purchased as Money,
-    archived: r.deleted_at !== null,
+    openingBalance: r.openingBalance,
+    openingAsOf: r.openingAsOf,
+    entryCount: r.entryCount,
+    lastPurchase: r.lastPurchase,
+    purchased: r.purchased,
+    archived: r.deletedAt !== null,
   }))
+}
+
+export type OpeningResult =
+  | { ok: true; amount: Money }
+  | { ok: false; code: 'NO_SUPPLIER' }
+
+/**
+ * What the shop already owed this supplier before any of this started.
+ *
+ * A figure on the supplier rather than a document, because there is no
+ * purchase invoice for it to be -- `050_what_the_shop_owed_before.sql` carries
+ * the argument and the cost.
+ *
+ * Unlike the customer side there is no `ALREADY_SET`: this is a field, and
+ * correcting a number somebody typed wrong is the ordinary case rather than
+ * an error. The correction is audited, which is the whole of the trail until
+ * Phase 5 gives suppliers a ledger.
+ *
+ * Zero is a real answer and is stored as one -- a shop saying "we owed them
+ * nothing" has said something, and `openingAsOf` is what tells that apart
+ * from never having been asked.
+ */
+export async function setSupplierOpening(
+  db: SqlDriver,
+  ctx: AuditContext,
+  input: { supplierId: string; amount: Money; asOf?: string | null },
+): Promise<OpeningResult> {
+  const [before] = await q(db)
+    .select({
+      openingBalance: schema.suppliers.openingBalance,
+      openingAsOf: schema.suppliers.openingAsOf,
+    })
+    .from(schema.suppliers)
+    .where(eq(schema.suppliers.id, input.supplierId))
+
+  if (!before) return { ok: false, code: 'NO_SUPPLIER' }
+
+  const asOf = input.asOf ?? businessDate()
+
+  await db.transaction(async (tx) => {
+    await q(tx).update(schema.suppliers)
+      .set({
+        openingBalance: input.amount,
+        openingAsOf: asOf,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(schema.suppliers.id, input.supplierId))
+
+    await writeAudit(tx, ctx, {
+      entity: 'suppliers',
+      entityId: input.supplierId,
+      action: 'update',
+      before: { opening_balance: before.openingBalance, opening_as_of: before.openingAsOf },
+      after: { opening_balance: input.amount, opening_as_of: asOf },
+    })
+  })
+
+  return { ok: true, amount: input.amount }
+}
+
+/**
+ * The ORDER BY for a listing order.
+ *
+ * Name is the tiebreak in every case, so two suppliers owed the same amount
+ * do not swap places between one load and the next.
+ */
+function supplierOrderFor(order: SupplierOrder): SQL[] {
+  switch (order) {
+    case 'owed':
+      return [desc(schema.suppliers.openingBalance), asc(schema.suppliers.name)]
+    case 'bought':
+      /* raw: the same per-entry subquery the SELECT sums, because an alias
+         from the projection is not addressable in ORDER BY through the
+         builder. If one changes the other must. */
+      return [
+        desc(sql`COALESCE(SUM((
+          SELECT COALESCE(SUM(CAST(ROUND(i.qty * i.unit_cost / 10000.0) AS INTEGER)), 0)
+            FROM stock_entry_items i WHERE i.entry_id = stock_entries.id)), 0)`),
+        asc(schema.suppliers.name),
+      ]
+    case 'quietest':
+      // Nulls first: a supplier nothing has ever come from is the quietest.
+      return [asc(sql`COALESCE(MAX(stock_entries.posting_date), '')`), asc(schema.suppliers.name)]
+    case 'name':
+      return [asc(schema.suppliers.name)]
+  }
 }
 
 export type SupplierResult =
@@ -91,11 +234,15 @@ export async function createSupplier(
   const now = new Date().toISOString()
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `INSERT INTO suppliers (id, name, phone, gstin, address, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, name, blank(input.phone), blank(input.gstin), blank(input.address), now, now],
-    )
+    await q(tx).insert(schema.suppliers).values({
+      id,
+      name,
+      phone: blank(input.phone),
+      gstin: blank(input.gstin),
+      address: blank(input.address),
+      createdAt: now,
+      updatedAt: now,
+    })
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'suppliers', entityId: id, action: 'create', after: { name },
     })
@@ -115,23 +262,33 @@ export async function updateSupplier(
   if (name === '') return { ok: false, code: 'NO_NAME' }
   if (await nameTaken(db, name, input.supplierId)) return { ok: false, code: 'NAME_TAKEN' }
 
-  const before = await db.get<{ name: string; phone: string | null; gstin: string | null; is_active: number }>(
-    `SELECT name, phone, gstin, is_active FROM suppliers WHERE id = ?`, [input.supplierId],
-  )
+  const [before] = await q(db)
+    .select({
+      name: schema.suppliers.name,
+      phone: schema.suppliers.phone,
+      gstin: schema.suppliers.gstin,
+      is_active: schema.suppliers.isActive,
+    })
+    .from(schema.suppliers)
+    .where(eq(schema.suppliers.id, input.supplierId))
+
+  const isActive = input.isActive === false ? 0 : 1
 
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE suppliers SET name = ?, phone = ?, gstin = ?, address = ?, is_active = ?, updated_at = ?
-         WHERE id = ?`,
-      [
-        name, blank(input.phone), blank(input.gstin), blank(input.address),
-        input.isActive === false ? 0 : 1, new Date().toISOString(), input.supplierId,
-      ],
-    )
+    await q(tx).update(schema.suppliers)
+      .set({
+        name,
+        phone: blank(input.phone),
+        gstin: blank(input.gstin),
+        address: blank(input.address),
+        isActive,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(schema.suppliers.id, input.supplierId))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'suppliers', entityId: input.supplierId, action: 'update',
-      before: before ? { name: before.name, phone: before.phone, gstin: before.gstin, is_active: before.is_active } : null,
-      after: { name, phone: blank(input.phone), gstin: blank(input.gstin), is_active: input.isActive === false ? 0 : 1 },
+      before: before ?? null,
+      after: { name, phone: blank(input.phone), gstin: blank(input.gstin), is_active: isActive },
     })
   })
 
@@ -166,10 +323,12 @@ export async function archiveSupplier(
 ): Promise<ArchiveSupplierResult> {
   const now = new Date().toISOString()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE suppliers SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
-      [now, now, input.supplierId],
-    )
+    await q(tx).update(schema.suppliers)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(and(
+        eq(schema.suppliers.id, input.supplierId),
+        isNull(schema.suppliers.deletedAt),
+      ))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'suppliers', entityId: input.supplierId, action: 'delete',
     })
@@ -184,10 +343,12 @@ export async function restoreSupplier(
 ): Promise<void> {
   const now = new Date().toISOString()
   await db.transaction(async (tx) => {
-    await tx.execute(
-      `UPDATE suppliers SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL`,
-      [now, input.supplierId],
-    )
+    await q(tx).update(schema.suppliers)
+      .set({ deletedAt: null, updatedAt: now })
+      .where(and(
+        eq(schema.suppliers.id, input.supplierId),
+        isNotNull(schema.suppliers.deletedAt),
+      ))
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'suppliers', entityId: input.supplierId, action: 'update',
       after: { Archived: 'no' },
@@ -202,9 +363,15 @@ export async function findOrCreateSupplier(
   const name = input.name.trim()
   if (name === '') return null
 
-  const existing = await db.get<{ id: string }>(
-    `SELECT id FROM suppliers WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL`, [name],
-  )
+  const [existing] = await q(db)
+    .select({ id: schema.suppliers.id })
+    .from(schema.suppliers)
+    // raw: `COLLATE NOCASE`. "Sakthi Agencies" and "sakthi agencies" are the
+    // one supplier this function exists to stop becoming two.
+    .where(and(
+      sql`${schema.suppliers.name} = ${name} COLLATE NOCASE`,
+      isNull(schema.suppliers.deletedAt),
+    ))
   if (existing) return existing.id
 
   const created = await createSupplier(db, { name, actorId: input.actorId })
@@ -226,52 +393,112 @@ export async function supplierPurchases(
   supplierId: string,
   limit = 100,
 ): Promise<PurchaseLine[]> {
-  const rows = await db.query<{
-    posting_date: string; doc_no: string; name: string
-    qty: number; unit_cost: number | null; amount: number
-  }>(
-    `SELECT e.posting_date, e.doc_no, p.name,
-            i.qty, i.unit_cost,
-            CAST(ROUND(i.qty * COALESCE(i.unit_cost, 0) / 10000.0) AS INTEGER) AS amount
-       FROM stock_entry_items i
-       JOIN stock_entries e ON e.id = i.entry_id
-       JOIN products p ON p.id = i.product_id
-      WHERE e.supplier_id = ? AND e.docstatus = 1
-      ORDER BY e.posting_date DESC, e.doc_no DESC
-      LIMIT ?`,
-    [supplierId, limit],
-  )
+  const rows = await q(db)
+    .select({
+      postingDate: schema.stockEntries.postingDate,
+      docNo: schema.stockEntries.docNo,
+      productName: schema.products.name,
+      qty: schema.stockEntryItems.qty,
+      unitCost: schema.stockEntryItems.unitCost,
+      /* The line's own money, which is a quantity scaled by ten thousand times
+         a rate in paise. Rounded in SQLite rather than in JavaScript because
+         that is where the multiplication happens. */
+      amount: sql<Money>`CAST(ROUND(${schema.stockEntryItems.qty} *
+        COALESCE(${schema.stockEntryItems.unitCost}, 0) / 10000.0) AS INTEGER)`,
+    })
+    .from(schema.stockEntryItems)
+    .innerJoin(schema.stockEntries, eq(schema.stockEntries.id, schema.stockEntryItems.entryId))
+    .innerJoin(schema.products, eq(schema.products.id, schema.stockEntryItems.productId))
+    .where(and(
+      eq(schema.stockEntries.supplierId, supplierId),
+      eq(schema.stockEntries.docstatus, SUBMITTED),
+    ))
+    .orderBy(desc(schema.stockEntries.postingDate), desc(schema.stockEntries.docNo))
+    .limit(limit)
 
-  return rows.map((r) => ({
-    postingDate: r.posting_date,
-    docNo: r.doc_no,
-    productName: r.name,
-    qty: r.qty,
-    unitCost: (r.unit_cost ?? 0) as Money,
-    amount: r.amount as Money,
-  }))
+  return rows
 }
 
-function toSupplier(r: {
-  id: string; name: string; phone: string | null
-  gstin: string | null; address: string | null; is_active: number
-}): Supplier {
-  return {
-    id: r.id,
-    name: r.name,
-    phone: r.phone,
-    gstin: r.gstin,
-    address: r.address,
-    isActive: r.is_active === 1,
-  }
+export interface SupplierItem {
+  productId: string
+  name: string
+  /** Base units received, all time. */
+  qty: number
+  /** What those goods cost, all time. */
+  spent: Money
+  /** The rate on the most recent delivery, or null if none was recorded. */
+  lastRate: Money | null
+  /** The rate on the first, so the two together say which way it has moved. */
+  firstRate: Money | null
+  lastReceived: string
+  deliveries: number
+}
+
+/**
+ * What this supplier sends, and what they have been charging for it.
+ *
+ * The deliveries list answers "what arrived on Tuesday". This answers the
+ * question a shopkeeper actually negotiates on -- what do I buy from them, how
+ * much of it, and has the price moved -- which a list ordered by date cannot,
+ * because the two deliveries to compare are six weeks apart and forty rows from
+ * each other.
+ *
+ * First and last rate rather than a computed trend. Two numbers a person can
+ * check against their own paperwork beat one number they have to take on trust,
+ * and "is 285 to 300 a rise worth arguing about" is a judgement about this
+ * supplier that the shopkeeper is better placed to make than this query is.
+ *
+ * `MIN`/`MAX` over `posting_date` picks the rate by date rather than by rowid,
+ * so a delivery entered late lands where it belongs rather than at the end.
+ */
+export async function supplierItems(
+  db: SqlDriver,
+  supplierId: string,
+): Promise<SupplierItem[]> {
+  /* raw: the rate on the earliest and the latest delivery is a per-group
+     first and last value. SQLite has no FIRST_VALUE outside a window, and a
+     window function is not something the builder can say. */
+  return db.query<SupplierItem>(
+    `SELECT i.product_id                         AS productId,
+            MAX(p.name)                          AS name,
+            SUM(i.qty)                           AS qty,
+            CAST(ROUND(SUM(i.qty * COALESCE(i.unit_cost, 0) / 10000.0)) AS INTEGER) AS spent,
+            MAX(CASE WHEN e.posting_date = last.seen_on  THEN i.unit_cost END) AS lastRate,
+            MAX(CASE WHEN e.posting_date = first.seen_on THEN i.unit_cost END) AS firstRate,
+            MAX(e.posting_date)                  AS lastReceived,
+            COUNT(DISTINCT e.id)                 AS deliveries
+       FROM stock_entry_items i
+       JOIN stock_entries e ON e.id = i.entry_id
+       JOIN products      p ON p.id = i.product_id
+       JOIN (SELECT i2.product_id AS pid, MAX(e2.posting_date) AS seen_on
+               FROM stock_entry_items i2 JOIN stock_entries e2 ON e2.id = i2.entry_id
+              WHERE e2.supplier_id = ? AND e2.docstatus = 1
+              GROUP BY i2.product_id) last ON last.pid = i.product_id
+       JOIN (SELECT i3.product_id AS pid, MIN(e3.posting_date) AS seen_on
+               FROM stock_entry_items i3 JOIN stock_entries e3 ON e3.id = i3.entry_id
+              WHERE e3.supplier_id = ? AND e3.docstatus = 1
+              GROUP BY i3.product_id) first ON first.pid = i.product_id
+      WHERE e.supplier_id = ? AND e.docstatus = ?
+      GROUP BY i.product_id
+      ORDER BY spent DESC`,
+    [supplierId, supplierId, supplierId, SUBMITTED],
+  )
+}
+
+function toSupplier(r: Omit<Supplier, 'isActive'> & { isActive: number }): Supplier {
+  return { ...r, isActive: r.isActive === 1 }
 }
 
 async function nameTaken(db: SqlDriver, name: string, exceptId?: string): Promise<boolean> {
-  const row = await db.get<{ id: string }>(
-    `SELECT id FROM suppliers
-      WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL AND (? IS NULL OR id <> ?)`,
-    [name, exceptId ?? null, exceptId ?? ''],
-  )
+  const [row] = await q(db)
+    .select({ id: schema.suppliers.id })
+    .from(schema.suppliers)
+    // raw: `COLLATE NOCASE`, as in `findOrCreateSupplier`.
+    .where(and(
+      sql`${schema.suppliers.name} = ${name} COLLATE NOCASE`,
+      isNull(schema.suppliers.deletedAt),
+      ...(exceptId === undefined ? [] : [ne(schema.suppliers.id, exceptId)]),
+    ))
   return row !== undefined
 }
 

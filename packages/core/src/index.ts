@@ -1,7 +1,7 @@
 export * as Money from './money.js'
 export * as Quantity from './quantity.js'
-export { newId, timestampOf } from './ids.js'
-export { setDeviceId, setDeviceIdSource, deviceId } from './device.js'
+export { newId, derivedId, timestampOf } from './ids.js'
+export { setDeviceId, setDeviceIdSource, deviceId, setReplacedDevice, replacedDevice } from './device.js'
 export { isStateCode } from './domain/states.js'
 export { GSTIN_SHAPE, isGstin, stateFromGstin, resolveCustomerState } from './domain/gstin.js'
 export { clock, setClock } from './clock.js'
@@ -11,7 +11,10 @@ export { MERGE_BUDGET_MS } from './db/driver.js'
 export { SqlError } from './db/driver.js'
 export { migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type Migration } from './db/migrate.js'
 export { EXPECTED_SCHEMA_VERSION } from './db/schemaVersion.js'
-export { createTauriDriver, backupDatabase } from './db/tauri-driver.js'
+export {
+  MIN_PEER_SCHEMA_VERSION, MIGRATION_FILES, type MigrationKind,
+} from './db/migrationKinds.js'
+export { createTauriDriver } from './db/tauri-driver.js'
 
 export * as Tax from './domain/tax.js'
 export * as Pricing from './domain/pricing.js'
@@ -20,11 +23,19 @@ export * as Credit from './domain/credit.js'
 export * as Returns from './domain/returns.js'
 export * as DocFormat from './domain/docFormat.js'
 export { REPLICATED, NOT_REPLICATED, shapeOf, type RecordShape, type ChangeRecord, type ChangeBatch } from './domain/replicaShape.js'
-export { handleSyncRequest, serveAs, setServingRegisterSource, LISTEN_PORT_HEADER, peerAddressFrom, offerPairing, withdrawPairing, pairingOnOffer, PAIRING_WINDOW_MS, type SyncRequest, type SyncResponse } from './services/syncServer.js'
-export { forgetNonces, CLOCK_TOLERANCE_MS } from './services/syncAuth.js'
+export { handleSyncRequest, serveAs, setServingRegisterSource, LISTEN_PORT_HEADER, peerAddressFrom, offerPairing, withdrawPairing, pairingOnOffer, expectingAJoin, pendingJoin, onJoinRequest, allowJoin, refuseJoin, PAIRING_WINDOW_MS, type SyncRequest, type SyncResponse, type JoinRequest } from './services/syncServer.js'
+export {
+  forgetNonces, CLOCK_TOLERANCE_MS, setFingerprintSource, pairingKey, comparisonDigits,
+} from './services/syncAuth.js'
 export { nextBackoff, BACKOFF_START_MS, BACKOFF_MAX_MS } from './services/syncBackoff.js'
-export { httpTransport, pairWith, pairedPeers, rememberAddress, SyncHttpError, type PeerAddress, type PairOutcome, type SelfAddress } from './services/syncClient.js'
+export { httpTransport, pairWith, askToJoin, pollJoin, pairedPeers, rememberAddress, SyncHttpError, type PeerAddress, type PairOutcome, type SelfAddress, type JoinProgress } from './services/syncClient.js'
 export { recentConflicts, acknowledgeConflicts, unreadConflictCount, recordAttempt, type RecordedConflict, type PeerHealth } from './services/sync.js'
+export {
+  quarantinedRecords, unreadQuarantineCount, acknowledgeQuarantine, discardQuarantined,
+  type QuarantinedRecord,
+} from './services/sync.js'
+export { onTillAhead, isAheadOfUs, type TillAhead } from './services/sync.js'
+export { adoptRestoredIdentity, type Adopted } from './services/sync.js'
 export { syncWith, syncUntilDone, collectChanges, applyBatch, changedHere, listPeers, pruneAcknowledged, REPLICATED_TABLES, type SyncTransport, type PeerHello, type SyncResult, type ContestedChange } from './services/sync.js'
 export { decideRow, decideDeletion, type MergeInput, type MergeDecision, type MergeReason, type Versioned, type Side } from './domain/merge.js'
 export * as HtmlTemplate from './domain/htmlTemplate.js'
@@ -59,11 +70,23 @@ export {
   currentStock, postMovement, checkAvailability, recomputeStock, reverseVoucher,
 } from './services/stock.js'
 export type { StockPosting, StockRequirement, StockShortfall, StockDrift } from './services/stock.js'
+export { reconcileLoyalty } from './services/loyaltyLedger.js'
+export type { LoyaltyDrift } from './services/loyaltyLedger.js'
+export { reconcileReturnedQty } from './services/returns/reconcile.js'
+export { reconcileFulfilledQty } from './services/documents/reconcile.js'
+export type { FulfilledDrift } from './services/documents/reconcile.js'
+export type { ReturnedQtyDrift } from './services/returns/reconcile.js'
 
 export { nextDocNo, peekDocNo, fiscalYear, fiscalYearTag, docNoFits, MAX_DOC_NO } from './services/numbering.js'
 export type { DocType } from './services/numbering.js'
 
 export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from './repos/pricing.js'
+
+export { productHistory, productProfit, noCostBasis } from './repos/productHistory.js'
+export type { StockMovement, ProductProfit, NoCostBasis } from './repos/productHistory.js'
+
+export { customerProfit, customerItems } from './repos/customerHistory.js'
+export type { CustomerProfit, CustomerItem } from './repos/customerHistory.js'
 
 export {
   createReturn, submitReturn, cancelReturn, processReturn, previewReturn, listReturns,
@@ -94,14 +117,14 @@ export type {
 
 export {
   getOrOpenSession, openSessionFor, closeSession, sessionSummary, postCashMovement, countDrawer,
-  listSessions,
+  listSessions, recordPayout, sessionMovements,
 } from './services/cash.js'
-export type { ClosedSession } from './services/cash.js'
+export type { ClosedSession, PayoutResult, SessionMovement } from './services/cash.js'
 export type {
   CashMovementInput, OpenSessionInput, SessionSummary, CloseSessionResult, CashDirection, TenderMethod,
 } from './services/cash.js'
 
-export { createStockEntry, submitStockEntry, cancelStockEntry } from './services/stockEntry.js'
+export { createStockEntry, submitStockEntry, cancelStockEntry, directionOf, signedQty } from './services/stockEntry.js'
 export type {
   StockEntryType, StockEntryLineInput, CreateStockEntryInput,
   CreateStockEntryResult, SubmitStockEntryResult,
@@ -132,7 +155,7 @@ export {
 export type {
   BillFilter, BillStatusFilter,
   ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem, CustomerDetail,
-  BillListItem, BillDetail, BillDetailItem,
+  BillListItem, BillDetail, BillDetailItem, CustomerOrder,
 } from './repos/catalog.js'
 
 export { isFirstRun, firstRun, seedDemoData } from './services/seed.js'
@@ -140,10 +163,13 @@ export type { FirstRunInput } from './services/seed.js'
 export type { Page, Resource, Capability, PermissionSet, RoleTemplate } from './integrity/permissions.js'
 
 export {
-  listRegisters, createRegister, renameRegister, setRegisterActive, deleteRegister,
+  listRegisters, createRegister, renameRegister, setRegisterActive,
+  renewClaim, claims, takeRegister, forgetPeer, ghostClaims, clearGhostClaims,
+  CLAIM_GOES_STALE_MS, type Claim, type TakeRegisterResult,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
+  countersOtherTillsUse, claimRegister, claimIfUnclaimed,
 } from './services/registers.js'
-export type { Register, RegisterResult } from './services/registers.js'
+export type { Register, RegisterResult, CounterTaken } from './services/registers.js'
 
 export * as Receipt from './domain/receipt.js'
 export type {
@@ -156,7 +182,8 @@ export {
   billWording, COMPOSITION_STATEMENT,
 } from './domain/taxScheme.js'
 export type { TaxScheme } from './domain/taxScheme.js'
-export { setProductActive } from './services/products.js'
+export { setProductActive, saveProductDetails } from './services/products.js'
+export type { ProductDetails, SaveProductResult } from './services/products.js'
 export { HSN_SHAPE, isHsn, hsnProblem, HSN_SHAPE_MESSAGE } from './domain/hsn.js'
 export type { HsnProblem } from './domain/hsn.js'
 export { buildInvoiceHtml } from './domain/invoiceHtml.js'
@@ -179,6 +206,8 @@ export * as Reports from './repos/reports.js'
 export { reorderList, bySupplier } from './repos/reorder.js'
 export type { ReorderRow, ReorderOptions, SupplierGroup } from './repos/reorder.js'
 export { listShortfalls, countShortfalls } from './repos/shortfalls.js'
+export { lowStock } from './repos/lowStock.js'
+export type { LowStockItem } from './repos/lowStock.js'
 export {
   createCustomer, updateCustomer, customerByPhone, nextCustomerCode, backfillCustomerCodes,
   archiveCustomer, restoreCustomer,
@@ -207,7 +236,7 @@ export {
   listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
   archivePriceList, restorePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
-  listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList,
+  listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList, customerPriceListId,
   setLadder, setCustomerLadder, ladderFor, customerLadderFor, laddersFor,
   perBaseUnit,
 } from './services/pricing.js'
@@ -252,9 +281,12 @@ export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind } fr
 
 export {
   listSuppliers, supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
-  findOrCreateSupplier, supplierPurchases,
+  findOrCreateSupplier, supplierPurchases, supplierItems, setSupplierOpening,
 } from './services/suppliers.js'
-export type { Supplier, SupplierSummary, SupplierResult, PurchaseLine } from './services/suppliers.js'
+export type { SupplierOrder } from './services/suppliers.js'
+export type {
+  Supplier, SupplierSummary, SupplierResult, PurchaseLine, SupplierItem, OpeningResult,
+} from './services/suppliers.js'
 
 export {
   createDocument, submitDocument, cancelDocument, listDocuments, loadDocument,
@@ -274,3 +306,53 @@ export * as Totals from './domain/billTotals.js'
 export type { ComputedTotals, LineTotals, TotalsLine } from './domain/billTotals.js'
 export { pricingContextFor, resolveLinePrice } from './repos/pricing.js'
 export type { BillPricingContext } from './repos/pricing.js'
+
+export {
+  TIERS, isTier, GRACE_DAYS, GATED, verifyToken, readTokenUnverified, stateOf,
+  allows, allowsAny, tierRank, tierFor, overTillLimit, encodePayload, toBase64Url, fromBase64Url,
+} from './domain/licence.js'
+export type {
+  Tier, LicenceToken, LicenceState, GatedFeature, SigningKey,
+  VerifyFailure, VerifyResult,
+} from './domain/licence.js'
+
+export {
+  entitlement, entitled, installToken, removeToken, storedToken, storedCodes,
+  tillOverage, witnessClock, UNLICENSED, CLOCK_SLACK_MS,
+} from './services/licence.js'
+export type {
+  Entitlement, EntitlementOptions, InstallResult, Grant,
+} from './services/licence.js'
+
+export {
+  canInstall, dueForCheck, updateWords, CHECK_EVERY_MS,
+} from './services/update.js'
+export type {
+  AvailableUpdate, UpdateSource, UpdateStage, CanInstall, InstallRefusal,
+} from './services/update.js'
+
+export { describeSchema } from './db/describe.js'
+export type { SchemaDescription, TableShape, ColumnShape } from './db/describe.js'
+export { renderSchemaDoc } from './db/schemaDoc.js'
+
+export { parseCsv, parseCsvRecords, toCsv, normaliseHeader } from './domain/csv.js'
+export {
+  planImport, applyImport, exportCatalogue, IMPORT_COLUMNS,
+} from './services/import.js'
+export type {
+  ImportPlan, PlannedRow, ImportResult, CatalogueImportResult, ImportAction, RowProblem,
+} from './services/import.js'
+
+export {
+  planCustomerImport, applyCustomerImport, exportCustomers, CUSTOMER_COLUMNS,
+} from './services/customerImport.js'
+export type {
+  CustomerPlan, PlannedCustomer, CustomerRowProblem, CustomerImportResult,
+} from './services/customerImport.js'
+
+export {
+  planSupplierImport, applySupplierImport, exportSuppliers, SUPPLIER_COLUMNS,
+} from './services/supplierImport.js'
+export type {
+  SupplierPlan, PlannedSupplier, SupplierRowProblem,
+} from './services/supplierImport.js'

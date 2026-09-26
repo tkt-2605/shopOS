@@ -9,6 +9,7 @@ import {
 } from '@shopos/core'
 import { openDatabase } from '@shopos/core/node'
 import { MIGRATIONS } from '@shopos/core/migrations'
+import { BENCH_KEYS, licenseBenchShop } from './licence.js'
 import { asTill, installTillContext, type TillContext } from './context.js'
 
 /**
@@ -69,6 +70,8 @@ export interface TillOptions {
 export type TillSyncResult =
   | SyncResult
   | { ok: false; code: 'UNREACHABLE'; error: string }
+  /** Paired, and not this till's to dial. See `syncWithPeer`. */
+  | { ok: false; code: 'CANNOT_DIAL'; error: string }
 
 export interface Till {
   readonly db: SqlDriver
@@ -151,6 +154,10 @@ export async function startTill(opts: TillOptions): Promise<Till> {
       )
       registerId = await makeRegister(db, opts.registerPrefix, opts.label, adminId)
       context.registerId = registerId
+      /* A bench shop is a shop that has other tills, so it is on a plan that
+         allows them. Without this `letThemIn` refuses every pairing and no
+         convergence run gets started. */
+      await licenseBenchShop(db)
     }
   })
 
@@ -177,7 +184,7 @@ export async function startTill(opts: TillOptions): Promise<Till> {
             // who called, and the port they say they answer on.
             remoteAddress: callerAddress(req),
             listenPort: Number.isFinite(advertised) ? advertised : null,
-          })
+          }, undefined, { keys: BENCH_KEYS })
           send(res, answer.status, answer.body)
         } catch (err) {
           send(res, 500, JSON.stringify({ code: 'SERVER_ERROR', message: String(err) }))
@@ -231,6 +238,18 @@ export async function startTill(opts: TillOptions): Promise<Till> {
       return asTill(context, async () => {
         const peer = (await pairedPeers(db)).find((p) => p.deviceId === peerDeviceId)
         if (!peer) {
+          /* Paired, but not dialable — a peer whose `reach` is `none` is one
+             this till must never knock on, and `pairedPeers` leaves it out for
+             exactly that reason. It is not an error and it is not unreachable:
+             it is a peer that does the asking, which is a phone and, from
+             behind a shop's NAT, the cloud. Told apart from a till nobody has
+             paired with at all, which really is a mistake in a scenario. */
+          const [known] = await db.query<{ device_id: string }>(
+            `SELECT device_id FROM sync_peers WHERE device_id = ?`, [peerDeviceId],
+          )
+          if (known !== undefined) {
+            return { ok: false as const, code: 'CANNOT_DIAL' as const, error: 'that till does not answer' }
+          }
           throw new Error(`${opts.label} has not paired with ${peerDeviceId}; pair first`)
         }
         const inner = httpTransport(peer, fetch, { listenPort: advertise })

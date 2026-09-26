@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react'
-import { login, Permissions, type Page } from '@shopos/core'
-import { useCore, type FailureKind } from './core/CoreProvider'
-import { advice } from './core/startupAdvice'
+import { Permissions, type Page } from '@shopos/core'
+import { useCore } from './core/CoreProvider'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
+import { JoinShop } from './ui/JoinShop'
+import { lookAround, type FoundTill } from './core/syncHost'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
+import { OutOfDateBanner } from './ui/OutOfDateBanner'
+import { RestoreHoldBanner } from './ui/RestoreHoldBanner'
 import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
 import { ChangePassword } from './ui/ChangePassword'
-import { abandonRestore } from './core/restore'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
-import { appVersion, versionLine, type AppVersion } from './core/version'
+import { appVersion, shopLine, type AppVersion } from './core/version'
 import { ICONS, BrandMark } from './ui/icons'
 import { AdminGate } from './ui/AdminGate'
+import { CounterGate } from './ui/CounterGate'
+import { JoinRequestPrompt } from './ui/JoinRequestPrompt'
 import { Formats } from './pages/Formats'
 import { lock } from './core/adminGate'
 import Billing from './pages/Billing'
@@ -36,6 +40,9 @@ import Pricing from './pages/Pricing'
 import Audit from './pages/Audit'
 import Orders from './pages/Orders'
 import PurchaseOrders from './pages/PurchaseOrders'
+import { CouldNotStart } from './entry/CouldNotStart'
+import { Login } from './entry/Login'
+import { UpdateLine } from './ui/UpdateLine'
 
 /* Grouped by what the person is doing, rather than one flat list of every screen.
    A cashier lives in Sell and never opens Setup. */
@@ -52,10 +59,10 @@ const NAV_GROUPS: { label: string; pages: Page[] }[] = [
    a year. They are still routable pages with their own permissions, reached
    from the "Set up" card on Settings.
 
-   Bill Formats is not one of them, though it was at first and that was wrong.
-   It is not a twice-a-year screen — it is a design tool, opened over and over
-   while a shop gets its bill looking right, and a design tool behind a password
-   prompt inside another screen is a design tool nobody finds. */
+   Bill Formats is a section of Settings, named in its own list beside the shop
+   details and the printer. It stays in the sidebar only for a role that was
+   given Bill Formats and not Settings -- otherwise that role would have no way
+   to reach the one screen it was granted. */
 
 const PAGE_TITLES: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -86,7 +93,6 @@ const PAGE_TITLES: Record<string, string> = {
 
 export default function App() {
   const { status, user } = useCore()
-
   if (status.phase === 'starting') return <Empty>Starting…</Empty>
   if (status.phase === 'failed') return <CouldNotStart error={status.error} kind={status.kind} />
   if (status.phase === 'setup') return <Setup />
@@ -95,65 +101,126 @@ export default function App() {
 }
 
 /**
- * The way out of a shop that will not open.
+ * The first screen a machine ever shows, and it has three doors.
  *
- * Restore lives here as well as in Settings, because a database this build
- * cannot read fails before sign-in — and a fix that sits behind the screen that
- * will not load is not a fix.
+ * It used to have one, which created a shop. That is right for the first
+ * machine in a shop and wrong for every one after it: a second till that sets
+ * itself up has made a *second shop*, with its own Admin role and its own
+ * counter under the same names, and the two can never be merged. The refusal
+ * exists (`DIFFERENT_SHOP`) and arrives after the day's work is in the wrong
+ * database.
+ *
+ * So the machine asks the network first. If a till answers, joining is the
+ * offer that leads; if none does, setting up is. Discovery decides which door
+ * is obvious and never decides for anybody -- a shop opening its second branch
+ * on the same network still has to be able to say "no, a new shop".
  */
+function Setup() {
+  const [door, setDoor] = useState<'asking' | 'new' | 'join' | 'restore'>('asking')
 
-function CouldNotStart({ error, kind }: { error: string; kind: FailureKind }) {
-  const [restoring, setRestoring] = useState(false)
-  const said = advice(kind)
-  // The one screen where the version matters most and was hardest to get: a
-  // shop that cannot start cannot open Settings to read it.
-  const [version, setVersion] = useState<AppVersion | null>(null)
-  useEffect(() => { void appVersion().then(setVersion) }, [])
+  if (door === 'join') return <JoinPanel onCancel={() => setDoor('asking')} />
+  if (door === 'restore') return <RestoreDoor onCancel={() => setDoor('asking')} />
+  if (door === 'new') return <NewShop onCancel={() => setDoor('asking')} />
+  return <WhichDoor choose={setDoor} />
+}
+
+function WhichDoor({ choose }: { choose: (door: 'new' | 'join' | 'restore') => void }) {
+  const [neighbours, setNeighbours] = useState<FoundTill[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void lookAround().then(
+      (tills) => { if (!cancelled) setNeighbours(tills) },
+      // A network that will not answer is not a reason to hold up setting up a
+      // shop. The join door stays; it just has nothing to suggest.
+      () => { if (!cancelled) setNeighbours([]) },
+    )
+    return () => { cancelled = true }
+  }, [])
+
+  const here = neighbours?.[0]
 
   return (
     <div className="centre">
-      <div className="panel" style={{ maxWidth: restoring ? 620 : undefined }}>
+      <div className="panel">
         <div className="panel-head">
-          <h1>{said.title}</h1>
+          <h1>ShopOS</h1>
+          <p>{here
+            ? 'There is already a till on this network.'
+            : 'Nothing else is running on this network.'}</p>
         </div>
-        <div className="panel-body">
-          <Alert>{error}</Alert>
-          {said.says && (
-            <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.6 }}>
-              {said.says}
-            </div>
+        <div className="panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {here && (
+            <button className="btn primary lg" onClick={() => choose('join')}>
+              Join {here.shop ?? 'that shop'}
+            </button>
           )}
-          {!restoring && (
-            <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-              <button
-                className={said.restore === 'first' ? 'btn primary' : said.restore === 'last' ? 'btn ghost' : 'btn'}
-                onClick={() => setRestoring(true)}
-              >
-                Restore a backup…
-              </button>
-              <button className="btn ghost" onClick={() => { void abandonRestore().then(() => window.location.reload()) }}>
-                Cancel a pending restore
-              </button>
-            </div>
+          <button
+            className={here ? 'btn lg' : 'btn primary lg'}
+            onClick={() => choose('new')}
+          >
+            Set up a new shop
+          </button>
+          {!here && (
+            <button className="btn lg" onClick={() => choose('join')}>
+              Join a shop on another till
+            </button>
           )}
-          {restoring && (
-            <div style={{ marginTop: 14 }}>
-              <RestorePanel standalone />
-              <button className="btn ghost sm" style={{ marginTop: 10 }} onClick={() => setRestoring(false)}>
-                Back
-              </button>
-            </div>
-          )}
-          <div style={{ marginTop: 16, fontSize: 12, color: 'var(--ink-3)' }}>
-            ShopOS {versionLine(version)}
-          </div>
+          <button className="btn ghost" onClick={() => choose('restore')}>
+            Restore a backup
+          </button>
+          <p style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4, lineHeight: 1.6 }}>
+            A second counter <strong>joins</strong>. Setting up again makes a
+            separate shop, and two shops cannot be merged afterwards.
+          </p>
         </div>
       </div>
     </div>
   )
 }
 
-function Setup() {
+function JoinPanel({ onCancel }: { onCancel: () => void }) {
+  return (
+    <div className="centre">
+      <div className="panel" style={{ maxWidth: 560 }}>
+        <div className="panel-head">
+          <h1>Join a shop</h1>
+          <p>This machine becomes another counter of a shop that already exists.</p>
+        </div>
+        <JoinShop onCancel={onCancel} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Restore, before anybody has signed in.
+ *
+ * The panel already had to work here -- a database this build cannot read fails
+ * before the login screen, which is why `CouldNotStart` carries it. What was
+ * missing is the case where the machine is fine and the shop is in a zip: a
+ * replacement till, or one being rebuilt.
+ */
+function RestoreDoor({ onCancel }: { onCancel: () => void }) {
+  return (
+    <div className="centre">
+      <div className="panel" style={{ maxWidth: 620 }}>
+        <div className="panel-head">
+          <h1>Restore a backup</h1>
+          <p>The shop comes back exactly as the backup left it, staff and all.</p>
+        </div>
+        <div className="panel-body">
+          <RestorePanel standalone />
+          <button className="btn ghost sm" style={{ marginTop: 10 }} onClick={onCancel}>
+            Back
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NewShop({ onCancel }: { onCancel: () => void }) {
   const { completeSetup } = useCore()
   const [shopName, setShopName] = useState('')
   const [password, setPassword] = useState('')
@@ -192,56 +259,12 @@ function Setup() {
             <input type="checkbox" id="with-demo" checked={withDemo} onChange={(e) => setWithDemo(e.target.checked)} />
             Load a demo catalogue to try it out
           </label>
-          <button className="btn primary lg" disabled={busy || password.length < 6}>
-            {busy ? 'Setting up…' : 'Finish setup'}
-          </button>
-        </div>
-      </form>
-    </div>
-  )
-}
-
-function Login() {
-  const { db, setUser } = useCore()
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    const result = await login(db, { username, password })
-    setBusy(false)
-
-    if (result.ok) {
-      setUser(result.user)
-      return
-    }
-    setError(
-      result.code === 'ACCOUNT_DISABLED'
-        ? 'This account has been turned off.'
-        : 'That username and password do not match.',
-    )
-  }
-
-  return (
-    <div className="centre">
-      <form className="panel" onSubmit={(e) => void submit(e)}>
-        <div className="panel-head">
-          <h1>ShopOS</h1>
-          <p>Sign in to the counter</p>
-        </div>
-        <div className="panel-body">
-          {error && <Alert>{error}</Alert>}
-          <Field label="Username">
-            <input className="input" id="username" value={username} autoFocus onChange={(e) => setUsername(e.target.value)} />
-          </Field>
-          <Field label="Password">
-            <input className="input" id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          </Field>
-          <button className="btn primary lg" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn primary lg" disabled={busy || password.length < 6}>
+              {busy ? 'Setting up…' : 'Finish setup'}
+            </button>
+            <button type="button" className="btn ghost" onClick={onCancel}>Back</button>
+          </div>
         </div>
       </form>
     </div>
@@ -250,6 +273,10 @@ function Login() {
 
 function Shell() {
   const { user, setUser, shopName, registerName } = useCore()
+  /* Which set of books this window has open. Null on every machine that has
+     one company, which is all of them until somebody passes `--shop`. */
+  const [slot, setSlot] = useState<AppVersion | null>(null)
+  useEffect(() => { void appVersion().then(setSlot) }, [])
   const pages = Permissions.visiblePages(user!.permissions)
   const [changingPassword, setChangingPassword] = useState(false)
   const [current, setCurrent] = useState<Page>(
@@ -275,13 +302,22 @@ function Shell() {
           <div className="brand-mark"><BrandMark /></div>
           <div style={{ minWidth: 0 }}>
             <div className="brand-name">{shopName}</div>
-            <div className="brand-sub">{registerName || 'No counter'}</div>
+            <div className="brand-sub">
+              {registerName || 'No counter'}
+              {/* Two companies on one machine are two identical windows. The
+                  shop's own name above usually tells them apart; this is for
+                  when it does not, and for whoever is reading it down a phone
+                  line. Absent entirely on a one-company machine. */}
+              {slot?.shop != null && <> · {shopLine(slot)}</>}
+            </div>
           </div>
         </div>
 
         <nav className="nav">
           {NAV_GROUPS.map((group) => {
-            const visible = group.pages.filter((p) => pages.includes(p))
+            const visible = group.pages
+              .filter((p) => pages.includes(p))
+              .filter((p) => p !== 'formats' || !pages.includes('settings'))
             if (visible.length === 0) return null
             return (
               <div key={group.label}>
@@ -297,6 +333,7 @@ function Shell() {
           })}
         </nav>
 
+        <UpdateLine />
         <div className="sidebar-foot">
           <div className="avatar">{initials}</div>
           <div style={{ minWidth: 0 }}>
@@ -333,12 +370,19 @@ function Shell() {
             who it is also stops running its backup and prints somewhere else,
             and nobody goes to Settings to find that out. */}
         <DeviceTroubleBanner />
+        <OutOfDateBanner />
+        <RestoreHoldBanner />
+        {/* Also on every screen, and for the same reason turned around: the
+            person who has to say yes is standing at this till looking at the
+            counter, while the person adding one is at the other machine. A
+            prompt behind Settings is a prompt nobody is there to answer. */}
+        <JoinRequestPrompt />
         <div className={current === 'billing' ? 'content flush' : 'content'}>
           {/* Inside `main`, not around the shell: a page that throws must not
               take the sidebar with it, or there is no way back to the counter
               except closing the app mid-sale. */}
           <PageErrorBoundary resetKey={current}>
-            <PageBody page={current} />
+            <PageBody page={current} settingsToo={pages.includes('settings')} />
           </PageErrorBoundary>
         </div>
       </main>
@@ -346,9 +390,12 @@ function Shell() {
   )
 }
 
-function PageBody({ page }: { page: Page }) {
+function PageBody({ page, settingsToo }: { page: Page; settingsToo: boolean }) {
   switch (page) {
-    case 'billing': return <Billing />
+    /* The two that mint numbers against a counter, and so are the two that a
+       till which does not know its counter must not reach. `CounterGate` says
+       why. */
+    case 'billing': return <CounterGate><Billing /></CounterGate>
     case 'bills': return <Bills />
     case 'dashboard': return <Dashboard />
     case 'inventory': return <Inventory />
@@ -356,7 +403,7 @@ function PageBody({ page }: { page: Page }) {
     case 'stock_count': return <StockCount />
     case 'reorder': return <Reorder />
     case 'credit': return <Credit />
-    case 'cash_counter': return <CashCounter />
+    case 'cash_counter': return <CounterGate><CashCounter /></CounterGate>
     /* The two screens that can change what every other screen does. Staff is
        deliberately not among them: resetting a cashier's forgotten password is a
        daily job, and a second password in front of it is how an owner ends up
@@ -365,7 +412,11 @@ function PageBody({ page }: { page: Page }) {
       /* Behind the same gate as Settings: this screen decides what every bill
          printed from now on looks like, which is not a thing for whoever was
          left at the counter. */
-      <AdminGate scope="formats" title="Bill Formats"><Formats /></AdminGate>
+      <AdminGate scope="formats" title="Bill Formats">
+        {/* Inside Settings for anyone who can open it, so there is one place
+            a bill's look is decided; on its own for a role that has only this. */}
+        {settingsToo ? <Settings initial="format" /> : <Formats />}
+      </AdminGate>
     )
     case 'settings': return (
       <AdminGate scope="settings" title="Settings"><Settings /></AdminGate>

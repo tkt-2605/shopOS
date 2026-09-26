@@ -32,6 +32,22 @@ export interface SqlDriver {
   query<T = Row>(sql: string, params?: SqlValue[]): Promise<T[]>
   get<T = Row>(sql: string, params?: SqlValue[]): Promise<T | undefined>
   /**
+   * The same read, as rows of values in the order the SELECT names them.
+   *
+   * Here for Drizzle, whose proxy callback is handed positional rows and maps
+   * them onto the columns it asked for. Feeding it objects would mean trusting
+   * the order of their keys, and there is no order to trust: the Tauri driver's
+   * rows are built in Rust as a `serde_json::Map`, which sorts its keys unless
+   * a Cargo feature is on — so `SELECT b, a` arrives as `{a, b}` and every
+   * column in the result is off by one, silently, with plausible values in the
+   * wrong fields.
+   *
+   * Switching that feature on would work until somebody upgraded a dependency
+   * that turned it off again, and nothing would fail loudly when they did.
+   * Asking SQLite for positions instead cannot drift.
+   */
+  queryValues(sql: string, params?: SqlValue[]): Promise<SqlValue[][]>
+  /**
    * A write that is not part of any transaction.
    *
    * Refused by the Tauri driver while one is open, with "a transaction is

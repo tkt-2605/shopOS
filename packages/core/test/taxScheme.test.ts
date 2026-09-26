@@ -277,3 +277,20 @@ describe('what the till charges', () => {
     expect(rows[0]!.taxable).toBe(rupees(118))
   })
 })
+
+describe('a quotation from a shop that may not charge tax', () => {
+  it('quotes what the bill will charge, which is no tax', async () => {
+    const { createDocument } = await import('../src/services/documents.js')
+    await setTaxScheme(fx.db, { actorId: fx.adminId }, 'composition')
+    const { makeCustomer } = await import('./helpers.js')
+    const customer = await makeCustomer(fx.db)
+    const p = await makeProduct(fx.db, { baseRate: rupees(118), taxRateBp: 1800 })
+    const made = await createDocument(fx.db, {
+      kind: 'quotation', registerId: fx.seed.registerId, customerId: customer,
+      lines: [{ productId: p, qty: fromUnits(1) }], actorId: fx.adminId,
+    })
+    if (!made.ok) throw new Error(made.code)
+    const doc = await fx.db.get<{ tax_total: number }>(`SELECT tax_total FROM documents WHERE id = ?`, [made.documentId])
+    expect(doc?.tax_total).toBe(0)
+  })
+})

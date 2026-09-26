@@ -4,6 +4,7 @@ import {
   type BillDetail, type RefundMethod, type ReturnPreview, type ProcessReturnResult,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { useAction } from '../core/useAction'
 import { Modal, Alert, Rupees, Field } from './components'
 
 /**
@@ -52,8 +53,8 @@ export function ReturnSheet({
   const [reason, setReason] = useState('')
   const [preview, setPreview] = useState<ReturnPreview | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
+  const action = useAction(setProblem)
+  const busy = action.busy
   const lines = useMemo(
     () => Object.entries(qtys)
       .map(([billItemId, typed]) => ({ billItemId, qty: Quantity.parseQty(typed.trim()) }))
@@ -72,8 +73,11 @@ export function ReturnSheet({
   useEffect(() => { void look() }, [look])
 
   async function confirm() {
-    if (lines.length === 0 || busy) return
-    setBusy(true)
+    if (lines.length === 0) return
+    await action.run(confirmNow)
+  }
+
+  async function confirmNow() {
     const result = await processReturn(db, {
       billId: bill.id,
       lines,
@@ -81,7 +85,6 @@ export function ReturnSheet({
       ...(reason.trim() ? { reason: reason.trim() } : {}),
       actorId: user.id,
     })
-    setBusy(false)
 
     if (!result.ok) { setProblem(describeProblem(result, bill)); return }
 

@@ -55,11 +55,31 @@ function watching(): { driver: SqlDriver; asked: Asked[] } {
       asked.push({ sql, params })
       return db.get<T>(sql, params)
     },
+    /* Recorded like the other two. A query that Drizzle sends is still a
+       statement this repo issued, and a plan test that could not see it would
+       go quietly blind the day a service moves onto typed queries. */
+    queryValues: (sql: string, params: SqlValue[] = []) => {
+      asked.push({ sql, params })
+      return db.queryValues(sql, params)
+    },
     execute: (sql, params) => db.execute(sql, params),
     transaction: (fn) => fn(driver),
     close: () => Promise.resolve(),
   }
   return { driver, asked }
+}
+
+/**
+ * A statement against the table it reads, however the table is spelled.
+ *
+ * Hand-written SQL says `FROM stock_ledger`; a typed query says
+ * `from "stock_ledger"`, lower case and quoted. The matcher has to see both, or
+ * this file goes red the day a service is rewritten and says only "no statement
+ * matching" -- which is a test failing for a reason that has nothing to do with
+ * what it is checking.
+ */
+function reads(table: string): RegExp {
+  return new RegExp(String.raw`from\s+"?${table}"?`, 'i')
 }
 
 /** The plan for the heaviest statement a call made, as one line. */
@@ -74,10 +94,10 @@ async function planOf(run: (driver: SqlDriver) => Promise<unknown>, match: RegEx
 
 describe('the Bills page, on twenty thousand bills', () => {
   it('finds its fifty rows through an index instead of reading every bill', async () => {
-    const plan = await planOf((d) => listBills(d, { status: 'live' }), /FROM bills b/)
+    const plan = await planOf((d) => listBills(d, { status: 'live' }), reads('bills'))
 
     expect(plan).toContain('USING INDEX idx_bills_ledger')
-    expect(plan).not.toContain('SCAN b')
+    expect(plan).not.toContain('SCAN bills')
     /* The date is in the index, so only the `created_at` tiebreak is sorted.
        "LAST TERM" rather than the whole ORDER BY is the difference between
        sorting fifty rows and sorting nineteen thousand eight hundred. */
@@ -85,7 +105,7 @@ describe('the Bills page, on twenty thousand bills', () => {
   })
 
   it('counts them the same way', async () => {
-    const plan = await planOf((d) => countBills(d, { status: 'live' }), /COUNT\(\*\)/)
+    const plan = await planOf((d) => countBills(d, { status: 'live' }), /count\(\*\)/i)
     expect(plan).toContain('idx_bills_ledger')
   })
 
@@ -94,10 +114,10 @@ describe('the Bills page, on twenty thousand bills', () => {
        answer is fine; reading the whole table is not. */
     const plan = await planOf(
       (d) => listBills(d, { from: '2026-01-01', to: '2026-03-31' }),
-      /FROM bills b/,
+      reads('bills'),
     )
     expect(plan).toMatch(/USING INDEX idx_bills_(date|ledger)/)
-    expect(plan).not.toContain('SCAN b')
+    expect(plan).not.toContain('SCAN bills')
   })
 })
 
@@ -105,7 +125,7 @@ describe('the Audit page, on twenty-one thousand rows', () => {
   it('goes straight to one person rather than walking the whole log', async () => {
     const plan = await planOf(
       (d) => listAuditEntries(d, { actorId: shop.staffIds[3]! }),
-      /FROM audit_log a/,
+      reads('audit_log'),
     )
     expect(plan).toContain('USING INDEX idx_audit_actor')
     expect(plan).not.toContain('idx_audit_at')
@@ -118,19 +138,19 @@ describe('the Audit page, on twenty-one thousand rows', () => {
        forty times slower than having no index at all. */
     const plan = await planOf(
       (d) => listAuditEntries(d, { actorId: shop.staffIds[1]! }),
-      /FROM audit_log a/,
+      reads('audit_log'),
     )
     expect(plan).toContain('USE TEMP B-TREE FOR LAST TERM OF ORDER BY')
     expect(plan).not.toContain('USE TEMP B-TREE FOR ORDER BY')
   })
 
   it('reads the actor list off the index it already has', async () => {
-    const plan = await planOf((d) => auditActors(d), /DISTINCT/)
+    const plan = await planOf((d) => auditActors(d), /distinct/i)
     expect(plan).toContain('COVERING INDEX idx_audit_actor')
   })
 
   it('still opens unfiltered through the date index', async () => {
-    const plan = await planOf((d) => listAuditEntries(d, {}), /FROM audit_log a/)
+    const plan = await planOf((d) => listAuditEntries(d, {}), reads('audit_log'))
     expect(plan).toContain('idx_audit_at')
     expect(plan).not.toContain('TEMP B-TREE')
   })
@@ -138,18 +158,16 @@ describe('the Audit page, on twenty-one thousand rows', () => {
 
 describe('the stock ledger', () => {
   it('replays one product in order without sorting anything', async () => {
-    /* This is why migration 034 did *not* add the third index the phase asked
-       for. `idx_stock_ledger_product` is `(product_id, posting_date)` and an
-       index's key order ends with the rowid, so `ORDER BY posting_date, rowid`
-       is already a prefix of it. Appending `created_at` would put a column in
-       between and hand this query a sort it does not have.
-
-       If a later migration adds that column, this test is what says so. */
+    /* The ledger is replayed in id order since 052 -- the order every till
+       holding the same rows agrees on, where rowid was only this database's --
+       and `idx_stock_ledger_made` is `(product_id, id)`, so one product's
+       movements come off the index already in that order. A sort here would
+       mean the order and the index have drifted apart. */
     const plan = await planOf(
       (d) => productValuation(d, shop.productIds[3]!),
-      /FROM stock_ledger/,
+      reads('stock_ledger'),
     )
-    expect(plan).toContain('USING INDEX idx_stock_ledger_product')
+    expect(plan).toContain('USING INDEX idx_stock_ledger_made')
     expect(plan).not.toContain('TEMP B-TREE')
   })
 })

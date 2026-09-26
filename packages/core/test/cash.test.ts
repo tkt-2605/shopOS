@@ -262,3 +262,25 @@ describe('manual drawer movements', () => {
     expect(summary.expectedCash).toBe(rupees(1750))
   })
 })
+
+describe('a payout', () => {
+  it('goes on the history, and is refused against a drawer already closed', async () => {
+    const { recordPayout, getOrOpenSession, closeSession } = await import('../src/services/cash.js')
+    const { freshDb } = await import('./helpers.js')
+    const fx = await freshDb()
+    try {
+      const { sessionId } = await getOrOpenSession(fx.db, { registerId: fx.seed.registerId, userId: fx.adminId, openingCash: 50_000 as never })
+      expect(await recordPayout(fx.db, { sessionId, amount: 2_000 as never, reason: 'Tea', userId: fx.adminId })).toEqual({ ok: true })
+      const audited = await fx.db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM audit_log WHERE entity = 'cash_sessions' AND entity_id = ? AND diff LIKE '%payout%'`, [sessionId],
+      )
+      expect(audited?.n).toBe(1)
+
+      await closeSession(fx.db, { sessionId, actualCash: 48_000 as never, userId: fx.adminId })
+      expect(await recordPayout(fx.db, { sessionId, amount: 100 as never, reason: null, userId: fx.adminId }))
+        .toEqual({ ok: false, code: 'SESSION_CLOSED' })
+    } finally {
+      await fx.db.close()
+    }
+  })
+})

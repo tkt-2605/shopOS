@@ -108,3 +108,23 @@ describe('the amount in words', () => {
     expect(inWords(rupees(7))).toMatch(/ Only$/)
   })
 })
+
+describe('parseMoney reads digits, not a float', () => {
+  it('rounds a third decimal on the digit typed', () => {
+    // 0.285 is 28.4999… as a float, which rounded to 28.
+    expect(parseMoney('0.285')).toBe(29)
+    expect(parseMoney('0.2849')).toBe(28)
+    expect(parseMoney('-0.285')).toBe(-29)
+  })
+
+  it('takes the shapes a counter types', () => {
+    expect(parseMoney('₹1,23,456.5')).toBe(12_345_650)
+    expect(parseMoney('5.')).toBe(500)
+    expect(parseMoney('.5')).toBe(50)
+    expect(Object.is(parseMoney('-0'), 0)).toBe(true)
+  })
+
+  it('refuses what is not an amount', () => {
+    for (const bad of ['', '.', '-', '1e5', '1.2.3', 'abc', '--1']) expect(parseMoney(bad)).toBeNull()
+  })
+})

@@ -26,7 +26,9 @@ import { invoke } from '@tauri-apps/api/core'
  * registry that checks it, and the webview raises `SchemaTooNewError` with that
  * number already in hand.
  */
-export type StartupFailureKind = 'corrupt' | 'locked' | 'io'
+/* Every kind `db.rs` can send. `restore_incomplete` and `invalid_shop` stop
+   the start before anything is opened -- see `FailureKind` there. */
+export type StartupFailureKind = 'corrupt' | 'locked' | 'io' | 'restore_incomplete' | 'invalid_shop'
 
 export interface StartupFailure {
   /** A sentence for a shopkeeper, with the library's own words on the end. */

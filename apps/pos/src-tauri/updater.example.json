@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "The block to merge into tauri.conf.json when the updater is wired in.",
+    "It is kept out of the real config on purpose: a `plugins.updater` section",
+    "with a placeholder pubkey is a config that looks wired and is not, and the",
+    "first person to read it would believe the till updates itself.",
+    "",
+    "Before merging this, in order:",
+    "  1. npx tauri signer generate   -- back the private half up twice",
+    "  2. cargo add tauri-plugin-updater tauri-plugin-process  (in src-tauri)",
+    "  3. .plugin(tauri_plugin_updater::Builder::new().build()) in lib.rs",
+    "  4. replace <PUBKEY> and <OWNER>/<REPO> below, then merge into tauri.conf.json",
+    "  5. set UPDATE_FEED_URL in packages/core/src/config/licensing.ts",
+    "  6. pass the plugin into tauriUpdateSource() -- see apps/pos/src/core/updater.ts",
+    "",
+    "installMode is 'passive' so the shopkeeper sees a progress bar and not an",
+    "NSIS wizard with questions about install directories. The app is already",
+    "closed at that point; a question nobody answers leaves the till down."
+  ],
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "<PUBKEY from `tauri signer generate`>",
+      "endpoints": [
+        "https://github.com/<OWNER>/<REPO>/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "bundle": {
+    "createUpdaterArtifacts": true
+  }
+}

@@ -3,9 +3,11 @@
  *
  * Two tills that have paired share a secret. Every request afterwards carries a
  * signature made with it over the whole request — who, when, once, and the exact
- * bytes of the body — and **the secret itself never travels again**. Somebody
- * listening on the shop's wifi cannot lift it from a request, and cannot change
- * a request without the signature failing.
+ * bytes of the body — and every answer carries one over its status and body,
+ * tied to the request it answers. **The secret never travels at all**: pairing
+ * agrees it by ECDH (`pairingKey`, `agreeSecret`), each till deriving it from
+ * its own private key and the other's public one, so somebody listening on the
+ * shop's wifi while two tills pair learns two public keys and nothing else.
  *
  * What this does not do is hide anything. The bills cross the LAN in clear.
  * That is stated here and in `docs/multi-device.md` rather than implied away,
@@ -27,6 +29,35 @@ const ALGORITHM = { name: 'HMAC', hash: 'SHA-256' } as const
 /** How far apart two tills' clocks may be before a request is refused. */
 export const CLOCK_TOLERANCE_MS = 5 * 60 * 1000
 
+/**
+ * This machine's own certificate fingerprint, when it has one.
+ *
+ * Null today on every build, because nothing here serves TLS and this file
+ * argues at length that on a shop's own wire it should not have to. What is
+ * coming is a cloud peer over the internet and a phone that will not open a
+ * cleartext socket at all, and the answer to both is Syncthing's: the device id
+ * *is* the fingerprint, swapped once at pairing, with no authority and nothing
+ * to renew.
+ *
+ * A source rather than a value, for the same reason as `setDeviceIdSource` — a
+ * certificate belongs to whatever is holding the socket, which is Rust in the
+ * app and nothing at all in a test. Core never mints one.
+ *
+ * It exists now, unread, because pairing is the only exchange two tills have
+ * before they trust each other, a shop performs it once by hand, and a build
+ * that adds the field later cannot ask a shop to re-pair every till it owns.
+ * Migration 047 carries the rest of the argument.
+ */
+let fingerprintSource: (() => string | null) | null = null
+
+export function setFingerprintSource(fn: (() => string | null) | null): void {
+  fingerprintSource = fn
+}
+
+export function myFingerprint(): string | null {
+  return fingerprintSource ? fingerprintSource() : null
+}
+
 export interface SignedRequest {
   deviceId: string
   timestamp: number
@@ -42,7 +73,8 @@ export type AuthFailure =
   | 'REPLAYED'
 
 export type AuthResult =
-  | { ok: true; deviceId: string }
+  /* The secret and nonce come back so the answer can be signed with them. */
+  | { ok: true; deviceId: string; nonce: string; secret: string }
   | { ok: false; code: AuthFailure }
 
 /** A new shared secret. 32 bytes, which is the whole of the security here. */
@@ -106,8 +138,17 @@ export function decodeAuth(header: string | null | undefined): SignedRequest | n
  * Nonces already seen, so a captured request cannot be sent a second time.
  *
  * In memory and not in the database on purpose. It only has to cover the window
- * a timestamp is accepted in, a restart makes every old request stale anyway,
- * and a table would be one more thing to write on every single request.
+ * a timestamp is accepted in, and a table would be one more thing to write on
+ * every single request.
+ *
+ * What that leaves, said plainly: a restart forgets them, and a request
+ * captured in the five minutes before it can be sent again afterwards. It is
+ * accepted because a replay changes nothing. `/hello` only reads. `/fetch`
+ * moves a cursor forwards and never back. `/offer` carries rows the merge has
+ * already decided on -- an older copy loses to what is here and writes nothing
+ * -- and moves a cursor forwards only. `replayAfterRestart.test.ts` holds that
+ * to be true, because the day an endpoint stops being idempotent is the day
+ * this needs a table.
  */
 const seen = new Map<string, number>()
 
@@ -153,7 +194,7 @@ export async function verify(
     return { ok: false, code: 'REPLAYED' }
   }
 
-  return { ok: true, deviceId: signed.deviceId }
+  return { ok: true, deviceId: signed.deviceId, nonce: signed.nonce, secret }
 }
 
 async function hmac(secret: string, message: string): Promise<string> {
@@ -185,6 +226,114 @@ function sameString(a: string, b: string): boolean {
 
 /** Exported for the pairing code, which is compared the same way. */
 export const constantTimeEquals = sameString
+
+/* ------------------------------------------------------------ answers --- */
+
+/**
+ * The signature on an answer.
+ *
+ * Requests were signed and answers were not, so anybody able to sit in the
+ * middle of the shop's wifi -- one poisoned ARP table -- could hand a till a
+ * batch of rows the other till never sent. The answer is signed with the same
+ * secret over its status and body, and over the nonce of the request it
+ * answers, so an answer cannot be replayed against a different request.
+ */
+export async function signReply(secret: string, nonce: string, status: number, body: string): Promise<string> {
+  return hmac(secret, `reply\n${nonce}\n${status}\n${body}`)
+}
+
+export async function replyIsGenuine(
+  secret: string, nonce: string, status: number, body: string, mac: string,
+): Promise<boolean> {
+  return sameString(await signReply(secret, nonce, status, body), mac)
+}
+
+/* ------------------------------------------------------------ pairing --- */
+
+const ECDH = { name: 'ECDH', namedCurve: 'P-256' } as const
+
+/* The key type, taken from the API rather than named: core is built without the
+   DOM's type library, and node's lives behind an import this file does not make. */
+type Key = Awaited<ReturnType<typeof globalThis.crypto.subtle.importKey>>
+
+/** A key pair for one pairing, and its public half as it travels. */
+export interface PairingKey {
+  publicKey: string
+  privateKey: Key
+}
+
+/**
+ * A fresh key pair, used for one pairing and thrown away.
+ *
+ * P-256 because it is the curve WebCrypto offers everywhere this runs -- the
+ * webview, node, and the phone that is coming -- and the private half is
+ * created unextractable, so it cannot leave this process even by accident.
+ */
+export async function pairingKey(): Promise<PairingKey> {
+  const pair = await globalThis.crypto.subtle.generateKey(ECDH, false, ['deriveBits']) as { publicKey: Key; privateKey: Key }
+  const raw = new Uint8Array(await globalThis.crypto.subtle.exportKey('raw', pair.publicKey))
+  return { publicKey: hex(raw), privateKey: pair.privateKey }
+}
+
+/** Whether a string is a public key as `pairingKey` writes one: 65 bytes, uncompressed. */
+export function isPairingPublicKey(value: unknown): value is string {
+  return typeof value === 'string' && /^04[0-9a-f]{128}$/.test(value)
+}
+
+/**
+ * The secret two tills will share, worked out on each side from its own
+ * private key and the other's public key.
+ *
+ * ECDH, then HKDF-SHA-256 over both public keys in a fixed order -- the joining
+ * till's first -- so the result is bound to this exchange and cannot be moved
+ * to another. Hex, the same shape `mintSecret` produced, so nothing downstream
+ * can tell how it was made.
+ */
+export async function agreeSecret(
+  mine: PairingKey, theirs: string, joinerKey: string, hostKey: string,
+): Promise<string> {
+  const theirKey = await globalThis.crypto.subtle.importKey('raw', unhex(theirs), ECDH, false, [])
+  const shared = await globalThis.crypto.subtle.deriveBits({ name: 'ECDH', public: theirKey }, mine.privateKey, 256)
+  const hkdfKey = await globalThis.crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveBits'])
+  const bits = await globalThis.crypto.subtle.deriveBits(
+    {
+      name: 'HKDF', hash: 'SHA-256',
+      salt: new TextEncoder().encode(`${joinerKey}|${hostKey}`),
+      info: new TextEncoder().encode('shopos sync secret v1'),
+    },
+    hkdfKey, 256,
+  )
+  return hex(new Uint8Array(bits))
+}
+
+/**
+ * The digits a person compares on the two screens, from both public keys.
+ *
+ * They used to be two random digits, honest about proving nothing. Taken from
+ * the keys, they prove the thing that matters: a machine in the middle has to
+ * swap in keys of its own, and then the two screens show different numbers.
+ * Six digits. Four were said to make a machine in the middle win once in ten
+ * thousand tries, each one a shopkeeper pressing Refuse -- which is not so: it
+ * sees the joining till's key before it has to choose the one it shows that
+ * till, so it can try keys offline until the digits match, and ten thousand
+ * key pairs is a moment's work. Six makes that a million, which is a cost and
+ * not a wall. The wall is a commitment -- one side sends a hash of its key
+ * before it sees the other's, as Bluetooth numeric comparison does -- and that
+ * is a change to the pairing exchange, recorded in `progress.md`.
+ */
+export async function comparisonDigits(joinerKey: string, hostKey: string): Promise<string> {
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(`${joinerKey}|${hostKey}`),
+  ))
+  const n = ((digest[0]! << 24) >>> 0) + (digest[1]! << 16) + (digest[2]! << 8) + digest[3]!
+  return String(n % 1_000_000).padStart(6, '0')
+}
+
+function unhex(text: string): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(new ArrayBuffer(text.length / 2))
+  for (let i = 0; i < out.length; i += 1) out[i] = parseInt(text.slice(i * 2, i * 2 + 2), 16)
+  return out
+}
 
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')

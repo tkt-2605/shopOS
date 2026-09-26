@@ -17,12 +17,24 @@ export function rupees(n: number): Money {
   return paise(Math.round(n * 100))
 }
 
-/** Parses user input: "1,234.50", "1234.5", "₹12". Returns null if unparseable. */
+/**
+ * Parses user input: "1,234.50", "1234.5", "₹12". Returns null if unparseable.
+ *
+ * Read as digits rather than through a float. `Math.round(0.285 * 100)` is 28,
+ * because 0.285 is 28.499999… in binary; a third decimal typed at the counter
+ * is rounded half away from zero on the digit itself, so it is 29.
+ */
 export function parseMoney(input: string): Money | null {
   const cleaned = input.replace(/[₹,\s]/g, '')
-  if (cleaned === '' || !/^-?\d*\.?\d*$/.test(cleaned)) return null
-  const n = Number(cleaned)
-  return Number.isFinite(n) ? rupees(n) : null
+  const parts = /^(-?)(\d*)(?:\.(\d*))?$/.exec(cleaned)
+  if (parts === null) return null
+  const [, sign = '', whole = '', fraction = ''] = parts
+  if (whole === '' && fraction === '') return null
+
+  const units = Number(whole === '' ? '0' : whole) * 100 + Number(`${fraction}00`.slice(0, 2))
+  const value = units + (fraction.length > 2 && fraction[2]! >= '5' ? 1 : 0)
+  if (!Number.isSafeInteger(value)) return null
+  return paise(sign === '-' && value !== 0 ? -value : value)
 }
 
 export function toRupees(m: Money): number {

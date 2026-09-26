@@ -1,52 +1,64 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  pairWith, listPeers,
-  offerPairing, withdrawPairing,
+  listPeers,
+  offerPairing, withdrawPairing, entitled,
   recentConflicts, acknowledgeConflicts,
-  SyncHttpError, getSetting,
-  type PeerHealth, type RecordedConflict,
+  quarantinedRecords, acknowledgeQuarantine,
+  forgetPeer,
+  getSetting,
+  type PeerHealth, type RecordedConflict, type QuarantinedRecord,
 } from '@shopos/core'
 import { runOnce, onSyncRound } from '../core/syncLoop'
 import { syncNotice } from '../core/syncNotice'
-import {
-  startServing, stopServing, servingOn, lookAround,
-  type ServeInfo, type FoundTill,
-} from '../core/syncHost'
+import { syncStatus, ago } from '../core/syncStatus'
+import { explain, explainRefusal, explainQuarantine, isVersionGap, looksLikeARefusal } from '../core/syncWords'
+import { startServing, stopServing, servingOn, type ServeInfo } from '../core/syncHost'
 import { useCore } from '../core/CoreProvider'
-import { Card, Field, Alert } from './components'
+import { chosenRegister } from '../core/device'
+import { takeCounter } from '../core/counters'
+import { caughtUpWith } from '../core/outOfDate'
+import { Card, Alert } from './components'
+import { useConfirm } from './useConfirm'
 
 /**
  * Two tills in one shop.
  *
- * The screen is two halves because setting it up is two jobs done on two
- * machines, and confusing them is how somebody ends up pairing a till with
- * itself. The till that already has the shop **shows a code**; the new till
- * **types one in**. Nothing here lets a till do both at once.
+ * This screen belongs to the till that **already has the shop**, and it does
+ * one job: add another one. The joining half is not here, because it cannot be
+ * — a till that has been set up has a shop of its own, and two shops cannot be
+ * merged. It used to be here anyway, as a form with fine print underneath
+ * explaining that it would not work, which is a control that is always visible
+ * and almost always wrong. The joining half lives where it is true, on the
+ * first screen a new machine ever shows.
  *
- * Off until a shop asks for it. A single till never opens a port, which is most
- * shops — a port nothing uses is a way in and no use to anybody.
+ * There is no switch for answering. A shop with a second till answers whenever
+ * it is running and one with none stays closed — `serveIfPaired` says why that
+ * is a fact rather than a question — and "Add a till" opens the door for as
+ * long as it takes to let one in.
  */
 
 export function SyncCard() {
-  const { db, shop } = useCore()
+  const { db, shop, registerId, reloadRegister } = useCore()
+  const [confirmUi, ask] = useConfirm()
   const [serving, setServing] = useState<ServeInfo | null>(null)
   const [code, setCode] = useState<string | null>(null)
   const [peers, setPeers] = useState<PeerHealth[]>([])
   const [conflicts, setConflicts] = useState<RecordedConflict[]>([])
-  const [joining, setJoining] = useState({ address: '', code: '' })
+  const [refused, setRefused] = useState<QuarantinedRecord[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [found, setFound] = useState<FoundTill[] | null>(null)
-  const [looking, setLooking] = useState(false)
-  /* Which shop this is, so a till already in this shop is not offered back to
-     itself, and so two shops on one network are told apart. */
+  /* What this till calls its shop when another one shouts on the network: a
+     name and an opaque id, enough to tell two shops apart on one wire. */
   const [shopId, setShopId] = useState<string | null>(null)
+
+  const status = syncStatus(peers)
 
   const refresh = useCallback(async () => {
     setServing(await servingOn())
     setPeers(await listPeers(db))
     setConflicts(await recentConflicts(db, { limit: 20 }))
+    setRefused(await quarantinedRecords(db, { limit: 20 }))
     setShopId(await getSetting(db, 'shop_id'))
   }, [db])
 
@@ -54,10 +66,7 @@ export function SyncCard() {
 
   /* The catch-up runs whether or not this screen is open, so the screen follows
      it rather than keeping its own idea of when the tills last agreed. */
-  useEffect(() => {
-    onSyncRound(() => { void refresh() })
-    return () => onSyncRound(null)
-  }, [refresh])
+  useEffect(() => onSyncRound(() => { void refresh() }), [refresh])
 
   // A code that lapses on the Rust side should stop being shown here too.
   useEffect(() => {
@@ -66,16 +75,47 @@ export function SyncCard() {
     return () => clearTimeout(timer)
   }, [code])
 
-  async function toggleServing() {
+  /**
+   * Opens the door and shows what to type at the other machine.
+   *
+   * The port may already be open — a shop that has paired once answers all day
+   * — in which case this only mints the code.
+   */
+  async function addATill() {
     setError(null)
+
+    /* Asked here so the answer arrives before the port opens and before a code
+       is minted, rather than after somebody has typed one into the other
+       machine and been refused there. `letThemIn` asks again and is the check
+       that actually holds; this one exists so the refusal reaches the person
+       standing at the till that can do something about it. */
+    if (!await entitled(db, 'multiTill')) {
+      setError(
+        'This shop is on the one-counter plan. The counter you are on is '
+        + 'unaffected and goes on working exactly as it does now — adding a '
+        + 'second one is what needs the multi-counter plan. Settings, Licence '
+        + 'has this shop’s id to quote when you ask us for it.',
+      )
+      return
+    }
+
+    /* This till has been billing on the shop's first counter without ever
+       being asked, which is right while it is the only one. The moment another
+       till is let in it stops guessing -- two tills on one guess mint the same
+       invoice numbers -- so the counter it is on is written down now, while it
+       is still the only till, and claimed where the new one will see it. */
+    if (chosenRegister() === null && registerId !== '') {
+      await takeCounter(db, registerId)
+      await reloadRegister()
+    }
+
     try {
-      if (serving) {
-        withdrawPairing()
-        setCode(null)
-        await stopServing()
-      } else {
-        await startServing(db, 7801, { name: shop.name, id: shopId })
+      if (serving === null) {
+        // No port: the one this machine had last time, so an address a peer
+        // wrote down goes on working across a restart.
+        await startServing(db, undefined, { name: shop.name, id: shopId })
       }
+      setCode(offerPairing())
       await refresh()
     } catch (err) {
       setError(
@@ -86,61 +126,49 @@ export function SyncCard() {
     }
   }
 
-  function showCode() {
-    setCode(offerPairing())
+  /**
+   * Stops offering, and closes the door behind it if nobody has come in.
+   *
+   * A shop that has paired keeps answering: its tills have to reach it. A shop
+   * that was only ever showing a code goes back to being closed, which is the
+   * security property the old toggle existed to protect.
+   */
+  async function doneAdding() {
+    withdrawPairing()
+    setCode(null)
+    if (peers.length === 0) await stopServing()
+    await refresh()
   }
 
   /**
-   * Asks the network rather than asking the shopkeeper.
+   * A till that is not coming back.
    *
-   * Nobody should have to read 192.168.1.11 off one screen and type it into
-   * another, and the address changes whenever the router feels like it — so
-   * typing it once turns into a thing that breaks on a Tuesday. A till found
-   * here still has to be paired with a code; being findable grants nothing.
+   * There was no way to forget a peer anywhere in the product, and what that
+   * cost was not tidiness: the change feed is held at the lowest cursor of
+   * every peer, so one machine that was sold or dropped pins the feed of every
+   * remaining till for the life of the shop. It grows, every round reads
+   * further into it, and nothing anywhere says why.
+   *
+   * Confirmed, because the counter that till was billing on is released with
+   * it — which is the point, and is also why this must not be a stray click.
    */
-  async function findTills() {
-    setError(null)
-    setLooking(true)
-    try {
-      const tills = await lookAround()
-      // This till answers the shout too, and pairing with itself is refused
-      // anyway — but offering it would be a puzzle rather than a choice.
-      const others = tills.filter((t) => t.shopId === null || t.shopId !== shopId)
-      setFound(others)
-      if (others.length === 1) {
-        setJoining((was) => ({ ...was, address: others[0]!.address }))
-      }
-    } catch (err) {
-      setError(`Could not look for tills on this network. ${String(err)}`)
-    } finally {
-      setLooking(false)
-    }
-  }
+  async function forget(peer: PeerHealth) {
+    const who = peer.label ?? `till ${peer.deviceId.slice(0, 8)}`
+    const agreed = await ask(
+      `Forget ${who}?\n\n`
+      + 'Do this only if that machine is gone for good. Anything it had and this '
+      + 'one has not seen is lost, and the counter it was billing on becomes free '
+      + `for another till.\n\n`
+      + 'If it comes back, it can be paired again.',
+    )
+    if (!agreed) return
 
-  async function join() {
     setError(null)
-    setBusy(true)
-    try {
-      const address = joining.address.trim().replace(/\/+$/, '')
-      const url = address.startsWith('http') ? address : `http://${address}`
-      /* Telling the other till where to reach us, at the one moment both are
-         certainly talking. Without it the shop it is joining records a peer
-         with a secret and no address, and could never start a sync back. A
-         till that is not yet listening sends nothing and is recorded when it
-         first makes a signed request instead. */
-      const mine = await servingOn()
-      const outcome = await pairWith(
-        db, url, joining.code, null, fetch, { listenPort: mine?.port ?? null },
-      )
-      setJoining({ address: '', code: '' })
-      setNotice(`Paired with ${outcome.label ?? outcome.deviceId}. Syncing now.`)
-      await syncNow()
-      await refresh()
-    } catch (err) {
-      setError(explain(err))
-    } finally {
-      setBusy(false)
-    }
+    await forgetPeer(db, peer.deviceId)
+    // A till that is gone is not one this till is out of date with any more.
+    await caughtUpWith(peer.deviceId)
+    setNotice(`${who} has been forgotten.`)
+    await refresh()
   }
 
   /* The same code the background loop runs. A "catch up now" that took its own
@@ -169,8 +197,14 @@ export function SyncCard() {
     await refresh()
   }
 
+  async function dismissRefused() {
+    await acknowledgeQuarantine(db)
+    await refresh()
+  }
+
   return (
     <Card title="Two tills">
+      {confirmUi}
       {error && <Alert>{error}</Alert>}
       {notice && !error && <Alert kind="ok">{notice}</Alert>}
 
@@ -183,104 +217,37 @@ export function SyncCard() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <section>
-          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
-            This till answers other tills
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <button className="btn sm" onClick={() => void toggleServing()}>
-              {serving ? 'Stop answering' : 'Start answering'}
-            </button>
-            {serving
-              ? (
-                <span style={{ fontSize: 12.5 }}>
-                  Listening on <strong>{serving.address ?? `port ${serving.port}`}</strong>
-                </span>
-              )
-              : (
-                <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
-                  Closed. Nothing can reach this till.
-                </span>
-              )}
-          </div>
+          {/* The one question a shopkeeper has, and its one answer. The table
+              below is the detail behind it, for whoever wants the detail. */}
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{status.text}</div>
 
-          {serving && (
-            <div style={{ marginTop: 10 }}>
-              {code === null
-                ? (
-                  <button className="btn sm" onClick={showCode}>Show a pairing code</button>
-                )
-                : (
-                  <div>
-                    <div style={{ fontSize: 24, letterSpacing: 4, fontWeight: 600 }}>{code}</div>
-                    <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>
-                      Type this into the other till, along with the address above. It
-                      lasts ten minutes and <strong>one attempt uses it up</strong>,
-                      right or wrong — show a fresh one if it is mistyped.
-                    </div>
-                  </div>
-                )}
-            </div>
-          )}
-        </section>
-
-        <section>
-          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
-            Join a till that already has the shop
-          </div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <Field label="Its address">
-              <input
-                className="input"
-                placeholder="192.168.1.11:7801"
-                value={joining.address}
-                onChange={(e) => setJoining({ ...joining, address: e.target.value })}
-              />
-            </Field>
-            <button className="btn sm" disabled={looking} onClick={() => void findTills()}>
-              {looking ? 'Looking…' : 'Find tills'}
-            </button>
-            <Field label="The code it is showing">
-              <input
-                className="input"
-                placeholder="ABCD2345"
-                style={{ letterSpacing: 2, textTransform: 'uppercase' }}
-                value={joining.code}
-                onChange={(e) => setJoining({ ...joining, code: e.target.value })}
-              />
-            </Field>
-            <button
-              className="btn primary sm"
-              disabled={busy || joining.address.trim() === '' || joining.code.trim() === ''}
-              onClick={() => void join()}
-            >
-              Join
-            </button>
-          </div>
-          {found !== null && (
-            <div style={{ fontSize: 12.5, marginTop: 8 }}>
-              {found.length === 0
-                ? 'No other till answered. Check it is switched on and that "Start answering" is pressed on it.'
-                : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {found.map((t) => (
-                      <button
-                        key={t.device}
-                        className="link-btn"
-                        style={{ textAlign: 'left' }}
-                        onClick={() => setJoining((was) => ({ ...was, address: t.address }))}
-                      >
-                        {t.shop ?? 'A till'} — {t.label} at {t.address}
-                      </button>
-                    ))}
-                  </div>
-                )}
-            </div>
-          )}
-
-          <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>
-            Only on a till that has <em>not</em> been set up with its own shop. A till
-            that has already been set up is a second shop, and the two cannot be merged.
-          </div>
+          {code === null
+            ? (
+              <button className="btn sm" style={{ marginTop: 10 }} onClick={() => void addATill()}>
+                Add a till
+              </button>
+            )
+            : (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12.5, marginBottom: 6 }}>
+                  On the new till, choose <strong>Join a shop</strong> and give it
+                  this machine{'’'}s address and this code.
+                </div>
+                <div style={{ fontSize: 12.5 }}>
+                  Address <strong>{serving?.address ?? `port ${serving?.port ?? 7801}`}</strong>
+                </div>
+                <div style={{ fontSize: 24, letterSpacing: 4, fontWeight: 600, marginTop: 4 }}>
+                  {code}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>
+                  It lasts ten minutes and <strong>one attempt uses it up</strong>,
+                  right or wrong — show a fresh one if it is mistyped.
+                </div>
+                <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => void doneAdding()}>
+                  Done
+                </button>
+              </div>
+            )}
         </section>
 
         {peers.length > 0 && (
@@ -289,7 +256,13 @@ export function SyncCard() {
             <div className="card">
               <table>
                 <thead>
-                  <tr><th>Till</th><th>Last agreed</th><th>Waiting</th><th /></tr>
+                  <tr>
+                    <th>Till</th><th>Last agreed</th><th>Waiting</th>
+                    {/* What that till has which this one has not seen. The half
+                        nothing could say before migration 044, and the half a
+                        total on a report depends on. */}
+                    <th>Behind</th><th /><th />
+                  </tr>
                 </thead>
                 <tbody>
                   {peers.map((p) => (
@@ -297,20 +270,38 @@ export function SyncCard() {
                       <td>{p.label ?? p.deviceId.slice(0, 8)}</td>
                       <td>{ago(p.lastAgreedAt)}</td>
                       <td className="num">{p.waiting === 0 ? '—' : p.waiting}</td>
+                      {/* Null and zero are different answers: zero is level as
+                          of the last handshake, null is a till that has never
+                          said, which is one on an older build. */}
+                      <td className="num">{p.behind === null ? '?' : p.behind === 0 ? '—' : p.behind}</td>
                       <td>
                         {/* A till that agreed at four and has been unreachable
                             since five past looks, at a glance, exactly like one
                             that agreed at four and had nothing to say after. */}
-                        {p.lastError === null
+                        {/* Restored from a backup: the secret was left out of it on
+                            purpose, so this till has to be let in again. */}
+                        {p.needsPairing
+                          ? <span className="badge warn" title="Press Add a till on the other counter, then join it from here">pair again</span>
+                          : p.lastError === null
                           ? <span className="badge ok">talking</span>
                           : (
                             <span title={p.lastError}>
-                              <span className="badge">not answering</span>
+                              {/* Answering and refusing is not "not answering":
+                                  that sends somebody to check a network that works. */}
+                              <span className={looksLikeARefusal(p.lastError) ? 'badge warn' : 'badge'}>
+                                {isVersionGap(p.lastError) ? 'needs update'
+                                  : looksLikeARefusal(p.lastError) ? 'refused' : 'not answering'}
+                              </span>
                               <span style={{ fontSize: 12, color: 'var(--ink-3)', marginLeft: 7 }}>
                                 last agreed {ago(p.lastAgreedAt)}
                               </span>
                             </span>
                           )}
+                      </td>
+                      <td className="r">
+                        <button className="btn ghost sm" onClick={() => void forget(p)}>
+                          This till is gone
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -326,6 +317,35 @@ export function SyncCard() {
               {busy ? 'Catching up…' : 'Catch up now'}
             </button>
           </section>
+        )}
+
+        {/* Above the conflicts, because the two are not the same size of
+            problem. A conflict is a decision this till made and a person may
+            want to know about. This is a row the other till has and this one
+            does not, and it stays that way until somebody acts. */}
+        {refused.length > 0 && (
+          <Alert>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4, flex: 1 }}>
+                {explainQuarantine(refused.length)}
+              </div>
+              <button className="link-btn" onClick={() => void dismissRefused()}>
+                I have seen these
+              </button>
+            </div>
+            {/* The constraint is the whole diagnosis, so it is shown rather
+                than softened into a sentence that could fit any of them. Most
+                are two rows created on two tills for one real thing, and the
+                fix is to merge or rename them here. */}
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12.5 }}>
+              {refused.slice(0, 10).map((r) => (
+                <li key={r.id}>
+                  <strong>{r.table}</strong> — {r.reason}{' '}
+                  <span style={{ color: 'var(--ink-3)' }}>({ago(r.at)})</span>
+                </li>
+              ))}
+            </ul>
+          </Alert>
         )}
 
         {conflicts.length > 0 && (
@@ -357,51 +377,6 @@ export function SyncCard() {
   )
 }
 
-function explainRefusal(code: string): string {
-  switch (code) {
-    case 'SCHEMA_MISMATCH':
-      return 'The two tills are running different versions of ShopOS. Update them both '
-        + 'before they exchange anything — this is refused rather than risked, because '
-        + 'a half-understood row is worse than no row.'
-    case 'DIFFERENT_SHOP':
-      return 'That till has a shop of its own. Two tills set up separately cannot be '
-        + 'merged: each has its own staff, counters and price list under the same names. '
-        + 'A second till has to be installed and left unset-up, then joined to this one.'
-    case 'NO_IDENTITY':
-      return 'This machine could not record which machine it is, so it cannot be told '
-        + 'apart from the other till. See the banner at the top of the screen.'
-    case 'SAME_DEVICE':
-      return 'That address is this same till.'
-    case 'SAME_REGISTER':
-      return 'Both tills are billing on the same counter, so they would give two '
-        + 'different customers the same bill number. Nothing has been exchanged. '
-        + 'Open Counters and press "Use here" on the counter this machine actually '
-        + 'sits at — a till that has never been asked falls back to the first one '
-        + 'in the list, which is the other till’s.'
-    default:
-      return `The other till refused: ${code}.`
-  }
-}
-
-function explain(err: unknown): string {
-  if (err instanceof SyncHttpError) {
-    switch (err.code) {
-      case 'WRONG_CODE':
-        return 'That code was not right. One attempt uses a code up, so show a fresh '
-          + 'one on the other till and try again.'
-      case 'NO_PAIRING_OFFERED':
-        return 'The other till is not offering a code. Press "Show a pairing code" there first.'
-      case 'UNKNOWN_PEER':
-        return 'The other till does not know this one. Pair them again.'
-      case 'BAD_SIGNATURE':
-        return 'The other till would not accept this one. Pair them again.'
-      default:
-        return explainRefusal(err.code)
-    }
-  }
-  return 'Could not reach that till. Check the address, and that it is switched on and '
-    + `answering. ${String(err)}`
-}
 
 /**
  * "four minutes ago", not a timestamp.
@@ -410,14 +385,3 @@ function explain(err: unknown): string {
  * do the subtraction themselves — at a counter, mid-queue, which is where they
  * will get it wrong or not bother.
  */
-function ago(at: string | null): string {
-  if (at === null) return 'never'
-  const seconds = Math.max(0, Math.round((Date.now() - new Date(at).getTime()) / 1000))
-  if (seconds < 60) return 'just now'
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
-  const days = Math.round(hours / 24)
-  return `${days} day${days === 1 ? '' : 's'} ago`
-}

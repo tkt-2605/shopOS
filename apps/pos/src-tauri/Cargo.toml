@@ -2,7 +2,7 @@
 name = "shopos-pos"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.81"
 
 [lib]
 name = "shopos_pos_lib"
@@ -31,4 +31,6 @@ windows = { version = "0.62", features = [
   "Win32_Security",
   "Win32_UI_HiDpi",
   "Win32_Graphics_Gdi",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
 ] }

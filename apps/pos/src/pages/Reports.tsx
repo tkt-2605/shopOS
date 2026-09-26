@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Reports as R, Money, Quantity, listRegisters, chargesTax, listSessions,
-  type DateRange, type Register, type ClosedSession,
+  Reports as R, Money, listRegisters, chargesTax, listSessions, type DateRange, type Register,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'
 import { saveFile } from '../core/exportFile'
 import { reportPdf } from '../core/pdf'
-
-type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer'
+import { useShopChanged } from '../core/useShopChanged'
+import { Completeness } from '../ui/Completeness'
+import { type Data, type Tab, describe, rupeeCell, tableFor } from './reports/tableFor'
+import {
+  DaysTable, DrawerTable, MarginTable, ProductsTable, StaffTable, TaxTable, TendersTable,
+} from './reports/tables'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'days', label: 'By day' },
@@ -19,18 +22,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'staff', label: 'Staff' },
   { id: 'drawer', label: 'Drawer' },
 ]
-
-interface Data {
-  summary: R.SalesSummary
-  days: R.DayRow[]
-  products: R.ProductRow[]
-  margin: R.Margin
-  marginRows: R.ProductMargin[]
-  tax: R.TaxRateRow[]
-  tenders: R.TenderRow[]
-  staff: R.StaffRow[]
-  sessions: ClosedSession[]
-}
 
 export default function Reports() {
   const { db, taxScheme } = useCore()
@@ -81,6 +72,8 @@ export default function Reports() {
   }, [db, range])
 
   useEffect(() => { void load() }, [load])
+  // A report of yesterday's takings is wrong the moment the other till syncs one.
+  useShopChanged(load)
 
   /* A shop that switches to composition while looking at the GST tab would
      otherwise be left on a tab that is no longer offered, with no way back to
@@ -178,6 +171,10 @@ export default function Reports() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {error && <Alert>{error}</Alert>}
       {notice && <Alert kind="ok">{notice}</Alert>}
+      {/* What these figures are figures of. GSTR-1 is filed off the tax tab
+          below, and until this line the screen said nothing at all about
+          whether the other counter's bills were in it. */}
+      <Completeness />
 
       <div className="filter-bar">
         <DateRangePicker value={range} onChange={setRange} />
@@ -241,7 +238,7 @@ export default function Reports() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="segment">
               {TABS.filter((t) => t.id !== 'tax' || collectsTax).map((t) => (
-                <button key={t.id} aria-selected={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</button>
+                <button key={t.id} type="button" aria-pressed={tab === t.id} onClick={() => setTab(t.id)}>{t.label}</button>
               ))}
             </div>
             <div style={{ flex: 1 }} />
@@ -276,376 +273,4 @@ export default function Reports() {
       )}
     </div>
   )
-}
-
-function DaysTable({ rows }: { rows: R.DayRow[] }) {
-  if (rows.length === 0) return <Empty>Nothing was sold in this range</Empty>
-  const peak = Math.max(...rows.map((r) => r.net))
-
-  return (
-    <table>
-      <thead>
-        <tr><th>Date</th><th className="r">Bills</th><th className="r">GST</th><th className="r">Returns</th><th className="r">Net</th><th style={{ width: 110 }} /></tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.date}>
-            <td>{longDate(r.date)}</td>
-            <td className="r num">{r.bills}</td>
-            <td className="r"><Rupees value={r.tax} /></td>
-            <td className="r">{r.returns > 0 ? <Rupees value={r.returns} /> : <span style={{ color: 'var(--ink-3)' }}>—</span>}</td>
-            <td className="r"><Rupees value={r.net} /></td>
-            <td><div className="bar" style={{ width: `${peak === 0 ? 0 : Math.round((r.net / peak) * 100)}%` }} /></td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-function ProductsTable({ rows }: { rows: R.ProductRow[] }) {
-  if (rows.length === 0) return <Empty>Nothing was sold in this range</Empty>
-  return (
-    <table>
-      <thead>
-        <tr><th>Item</th><th className="r">Sold</th><th className="r">Bills</th><th className="r">Revenue</th></tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.productId}>
-            <td>{r.name}</td>
-            <td className="r num">{Quantity.formatQty(r.qty)} {r.unit}</td>
-            <td className="r num">{r.bills}</td>
-            <td className="r"><Rupees value={r.revenue} /></td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-function MarginTable({ rows, total }: { rows: R.ProductMargin[]; total: R.Margin }) {
-  if (rows.length === 0) return <Empty>Nothing was sold in this range</Empty>
-
-  return (
-    <>
-      {total.uncostedLines > 0 && (
-        <div style={{ padding: '11px 16px', borderBottom: '1px solid var(--rule-soft)' }}>
-          <Alert kind="warn">
-            {total.uncostedLines} sold {total.uncostedLines === 1 ? 'line was' : 'lines were'} of
-            stock with no recorded cost, so the profit below is higher than the real figure.
-            Record what you paid on Stock In and later sales will be costed.
-          </Alert>
-        </div>
-      )}
-      <table>
-        <thead>
-          <tr>
-            <th>Item</th><th className="r">Sold</th><th className="r">Revenue</th>
-            <th className="r">Cost</th><th className="r">Profit</th><th className="r">Margin</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.productId}>
-              <td>{r.name}</td>
-              <td className="r num">{Quantity.formatQty(r.qty)} {r.unit}</td>
-              <td className="r"><Rupees value={r.revenue} /></td>
-              <td className="r"><Rupees value={r.cost} /></td>
-              <td className="r"><Rupees value={r.margin} /></td>
-              <td className="r num">{r.cost === 0 ? '—' : `${(r.marginBp / 100).toFixed(1)}%`}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div style={{ padding: '10px 16px', fontSize: 12, color: 'var(--ink-3)', borderTop: '1px solid var(--rule-soft)' }}>
-        Revenue and cost are both before GST, which is the only way the two compare.
-        Cost is what the goods were worth as they left the shelf.
-      </div>
-    </>
-  )
-}
-
-function TaxTable({ rows, total }: { rows: R.TaxRateRow[]; total: number }) {
-  if (rows.length === 0) return <Empty>No tax was charged in this range</Empty>
-  return (
-    <>
-      <table>
-        <thead>
-          <tr><th>Rate</th><th className="r">Taxable value</th><th className="r">CGST</th><th className="r">SGST</th><th className="r">IGST</th><th className="r">Tax</th></tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.rateBp}>
-              <td className="num">{r.rateBp / 100}%</td>
-              <td className="r"><Rupees value={r.taxable} /></td>
-              <td className="r"><Rupees value={r.cgst} /></td>
-              <td className="r"><Rupees value={r.sgst} /></td>
-              <td className="r"><Rupees value={r.igst} /></td>
-              <td className="r"><Rupees value={r.cgst + r.sgst + r.igst} /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div style={{ padding: '10px 16px', fontSize: 12, color: 'var(--ink-3)', borderTop: '1px solid var(--rule-soft)' }}>
-        {Money.formatWithSymbol(total as never)} in total. This is a working figure for your accountant,
-        not a filed return.
-      </div>
-    </>
-  )
-}
-
-function TendersTable({ rows }: { rows: R.TenderRow[] }) {
-  if (rows.length === 0) return <Empty>Nothing was taken in this range</Empty>
-  const total = rows.reduce((sum, r) => sum + r.amount, 0)
-  return (
-    <table>
-      <thead><tr><th>Method</th><th className="r">Bills</th><th className="r">Amount</th><th className="r">Share</th></tr></thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.method}>
-            <td>{titleCase(r.method)}</td>
-            <td className="r num">{r.count}</td>
-            <td className="r"><Rupees value={r.amount} /></td>
-            <td className="r num">{total === 0 ? '—' : `${Math.round((r.amount / total) * 100)}%`}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-/**
- * Every drawer that has been counted, and by how much it was out.
- *
- * `closeSession` has written `expected_cash`, `actual_cash` and `variance`
- * since v1 and nothing read them back. A shop could see tonight's figure on the
- * screen it counted on and never again — so "is it short on the same person's
- * shift every week" had no answer anywhere in the product. It is one query and
- * a table, and it is the whole reason the column exists.
- */
-function DrawerTable({ rows }: { rows: ClosedSession[] }) {
-  if (rows.length === 0) return <Empty>No drawer has been counted in this range</Empty>
-
-  const over = rows.reduce((sum, r) => sum + Math.max(0, r.variance), 0)
-  const short = rows.reduce((sum, r) => sum + Math.min(0, r.variance), 0)
-
-  return (
-    <>
-      <table>
-        <thead>
-          <tr>
-            <th>Closed</th><th>Counter</th><th>Counted by</th>
-            <th className="r">Expected</th><th className="r">Counted</th><th className="r">Out by</th>
-            <th>Note</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td className="num">{r.postingDate}</td>
-              <td>{r.registerName}</td>
-              <td>{r.closedBy ?? '—'}</td>
-              <td className="r"><Rupees value={r.expectedCash} /></td>
-              <td className="r"><Rupees value={r.actualCash} /></td>
-              {/* Red either way. Money over is not good news — it is the same
-                  evidence that something was rung up wrong, and a shop that
-                  only ever looks at the shortfalls finds half the mistakes. */}
-              <td className="r" style={r.variance === 0 ? undefined : { color: 'var(--danger)' }}>
-                {r.variance === 0 ? '—' : Money.formatWithSymbol(r.variance)}
-              </td>
-              <td style={{ color: 'var(--ink-3)' }}>{r.notes ?? ''}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--ink-3)' }}>
-        {rows.length} {rows.length === 1 ? 'close' : 'closes'} in this range
-        {short !== 0 && <>, {Money.formatWithSymbol(Math.abs(short) as never)} short in total</>}
-        {over !== 0 && <>, {Money.formatWithSymbol(over as never)} over</>}
-        {short === 0 && over === 0 && ', every one of them exact'}.
-      </div>
-    </>
-  )
-}
-
-function StaffTable({ rows }: { rows: R.StaffRow[] }) {
-  if (rows.length === 0) return <Empty>Nobody billed in this range</Empty>
-  return (
-    <table>
-      <thead><tr><th>Who</th><th className="r">Bills</th><th className="r">Total</th><th className="r">Average</th></tr></thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.userId}>
-            <td className="num">{r.username}</td>
-            <td className="r num">{r.bills}</td>
-            <td className="r"><Rupees value={r.total} /></td>
-            <td className="r"><Rupees value={Math.round(r.total / r.bills)} /></td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-/**
- * One description of each report's table, which both the CSV and the PDF are
- * built from.
- *
- * Kept as one because the alternative — a list of columns for the spreadsheet
- * and another for the page — is two lists that quietly stop agreeing, and the
- * first anybody hears of it is an accountant looking at a column that is not
- * the one it is labelled.
- *
- * `width` is a share of the page and is ignored by the CSV; `right` marks the
- * figures, which the PDF sets in a monospaced face so they line up.
- */
-interface TableColumn {
-  label: string
-  width: number
-  right?: boolean
-}
-
-interface Table {
-  /** For the filename. */
-  name: string
-  /** For the heading on the page. */
-  title: string
-  columns: TableColumn[]
-  rows: string[][]
-}
-
-function tableFor(tab: Tab, data: Data | null): Table | null {
-  if (!data) return null
-
-  switch (tab) {
-    case 'days':
-      return {
-        name: 'sales-by-day',
-        title: 'Sales by day',
-        columns: [
-          { label: 'Date', width: 1.4 },
-          { label: 'Bills', width: 0.7, right: true },
-          { label: 'Discount', width: 1 , right: true },
-          { label: 'GST', width: 1, right: true },
-          { label: 'Gross', width: 1.1, right: true },
-          { label: 'Returns', width: 1, right: true },
-          { label: 'Net', width: 1.1, right: true },
-        ],
-        rows: data.days.map((r) => [
-          r.date, String(r.bills), rupeeCell(r.discount), rupeeCell(r.tax),
-          rupeeCell(r.total), rupeeCell(r.returns), rupeeCell(r.net),
-        ]),
-      }
-    case 'products':
-      return {
-        name: 'products',
-        title: 'What sold',
-        columns: [
-          { label: 'Item', width: 3.4 },
-          { label: 'Quantity', width: 1, right: true },
-          { label: 'Unit', width: 0.8 },
-          { label: 'Bills', width: 0.7, right: true },
-          { label: 'Revenue', width: 1.2, right: true },
-        ],
-        rows: data.products.map((r) => [
-          r.name, Quantity.formatQty(r.qty), r.unit, String(r.bills), rupeeCell(r.revenue),
-        ]),
-      }
-    case 'margin':
-      return {
-        name: 'profit-by-product',
-        title: 'Profit by product',
-        columns: [
-          { label: 'Item', width: 2.8 },
-          { label: 'Quantity', width: 0.9, right: true },
-          { label: 'Unit', width: 0.7 },
-          { label: 'Revenue', width: 1, right: true },
-          { label: 'Cost', width: 1, right: true },
-          { label: 'Profit', width: 1, right: true },
-          { label: 'Margin %', width: 0.9, right: true },
-        ],
-        rows: data.marginRows.map((r) => [
-          r.name, Quantity.formatQty(r.qty), r.unit,
-          rupeeCell(r.revenue), rupeeCell(r.cost), rupeeCell(r.margin), (r.marginBp / 100).toFixed(1),
-        ]),
-      }
-    case 'tax':
-      return {
-        name: 'gst-summary',
-        title: 'GST summary',
-        columns: [
-          { label: 'Rate %', width: 1, right: true },
-          { label: 'Taxable', width: 1.4, right: true },
-          { label: 'CGST', width: 1.2, right: true },
-          { label: 'SGST', width: 1.2, right: true },
-          { label: 'IGST', width: 1.2, right: true },
-        ],
-        rows: data.tax.map((r) => [
-          (r.rateBp / 100).toString(), rupeeCell(r.taxable),
-          rupeeCell(r.cgst), rupeeCell(r.sgst), rupeeCell(r.igst),
-        ]),
-      }
-    case 'tenders':
-      return {
-        name: 'payments',
-        title: 'How they paid',
-        columns: [
-          { label: 'Method', width: 2 },
-          { label: 'Bills', width: 1, right: true },
-          { label: 'Amount', width: 1.4, right: true },
-        ],
-        rows: data.tenders.map((r) => [r.method, String(r.count), rupeeCell(r.amount)]),
-      }
-    case 'staff':
-      return {
-        name: 'sales-by-staff',
-        title: 'Sales by staff',
-        columns: [
-          { label: 'Username', width: 2 },
-          { label: 'Bills', width: 1, right: true },
-          { label: 'Total', width: 1.4, right: true },
-        ],
-        rows: data.staff.map((r) => [r.username, String(r.bills), rupeeCell(r.total)]),
-      }
-    case 'drawer':
-      return {
-        name: 'drawer-closes',
-        title: 'Drawer closes',
-        columns: [
-          { label: 'Closed', width: 1.2 },
-          { label: 'Counter', width: 1.4 },
-          { label: 'Counted by', width: 1.4 },
-          { label: 'Expected', width: 1.2, right: true },
-          { label: 'Counted', width: 1.2, right: true },
-          { label: 'Out by', width: 1.1, right: true },
-          { label: 'Note', width: 2 },
-        ],
-        rows: data.sessions.map((r) => [
-          r.postingDate, r.registerName, r.closedBy ?? '',
-          rupeeCell(r.expectedCash), rupeeCell(r.actualCash), rupeeCell(r.variance),
-          r.notes ?? '',
-        ]),
-      }
-  }
-}
-
-/** Plain rupees, no symbol and no grouping — a spreadsheet must read it as a number. */
-function rupeeCell(paise: number): string {
-  return (paise / 100).toFixed(2)
-}
-
-function describe(range: DateRange): string {
-  return range.from === range.to ? longDate(range.from) : `${longDate(range.from)} – ${longDate(range.to)}`
-}
-
-function longDate(iso: string): string {
-  const d = new Date(`${iso}T00:00:00`)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
-}
-
-function titleCase(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1)
 }

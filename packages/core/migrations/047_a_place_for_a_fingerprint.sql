@@ -1,0 +1,34 @@
+-- A place for a peer's certificate fingerprint, before there is one.
+--
+-- ── Why now, when nothing reads it ────────────────────────────────────────
+--
+-- Everything these tills exchange goes over plain HTTP. `syncAuth.ts` says so
+-- out loud and is right to: on a shop's own wire, between two machines that a
+-- person paired by standing in front of both, an HMAC over the body with a
+-- shared secret answers the attack that actually exists — somebody else on the
+-- wifi — without a certificate authority, an expiry date or a renewal nobody
+-- will perform.
+--
+-- Two things coming will not accept that, and neither is a security argument so
+-- much as a platform one. A cloud peer is reached over the internet and must be
+-- HTTPS. A phone will not open a cleartext connection at all: iOS App Transport
+-- Security refuses it, and Android has since API 28.
+--
+-- The answer, when it comes, is almost certainly Syncthing's: the device id *is*
+-- the certificate's fingerprint, exchanged at pairing, checked on every later
+-- connection. No authority, nothing to expire, nothing to renew — which is what
+-- makes it fit a shop rather than a data centre, and which is the objection
+-- `syncAuth.ts` raises against TLS in the first place.
+--
+-- That answer has exactly one moment where it can be established: pairing. It
+-- is the only exchange the two tills have before they trust each other, and a
+-- shop performs it once, by hand, in the room. A build that adds the field later
+-- cannot ask a shop to re-pair every till it owns — so the field goes in now,
+-- unread, and a build two years from now finds it already carried by every till
+-- paired since today.
+--
+-- This is the whole of it. No TLS, no certificate, no code that consults this.
+-- It is one nullable column and two fields on a message, which is the cheapest
+-- possible version of not closing a door.
+
+ALTER TABLE sync_peers ADD COLUMN fingerprint TEXT;

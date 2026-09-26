@@ -1,5 +1,7 @@
+import { eq, ne, and, desc, isNull, notInArray, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
-import { newId } from '../ids.js'
+import { q, schema } from '../db/q.js'
+import { derivedId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 
 /**
@@ -31,12 +33,18 @@ export type SetBarcodesResult =
   | { ok: false; code: 'TAKEN'; barcode: string; productId: string; productName: string }
 
 export async function listBarcodes(db: SqlDriver, productId: string): Promise<Barcode[]> {
-  const rows = await db.query<{ id: string; barcode: string; label: string | null; is_primary: number }>(
-    `SELECT id, barcode, label, is_primary FROM product_barcodes
-      WHERE product_id = ? ORDER BY is_primary DESC, barcode`,
-    [productId],
-  )
-  return rows.map((r) => ({ id: r.id, barcode: r.barcode, label: r.label, isPrimary: r.is_primary === 1 }))
+  const rows = await q(db)
+    .select({
+      id: schema.productBarcodes.id,
+      barcode: schema.productBarcodes.barcode,
+      label: schema.productBarcodes.label,
+      isPrimary: schema.productBarcodes.isPrimary,
+    })
+    .from(schema.productBarcodes)
+    .where(and(eq(schema.productBarcodes.productId, productId), isNull(schema.productBarcodes.deletedAt)))
+    .orderBy(desc(schema.productBarcodes.isPrimary), schema.productBarcodes.barcode)
+
+  return rows.map((r) => ({ ...r, isPrimary: r.isPrimary === 1 }))
 }
 
 /**
@@ -64,14 +72,17 @@ export async function setBarcodes(
   // Somebody else's barcode is the one error worth refusing over: a scan that
   // could mean two things is worse than a scan that means nothing.
   for (const input of cleaned) {
-    const owner = await db.get<{ product_id: string; name: string }>(
-      `SELECT b.product_id, p.name FROM product_barcodes b
-         JOIN products p ON p.id = b.product_id
-        WHERE b.barcode = ? AND b.product_id <> ?`,
-      [input.barcode, productId],
-    )
+    const [owner] = await q(db)
+      .select({ productId: schema.productBarcodes.productId, name: schema.products.name })
+      .from(schema.productBarcodes)
+      .innerJoin(schema.products, eq(schema.products.id, schema.productBarcodes.productId))
+      .where(and(
+        eq(schema.productBarcodes.barcode, input.barcode),
+        ne(schema.productBarcodes.productId, productId),
+        isNull(schema.productBarcodes.deletedAt),
+      ))
     if (owner) {
-      return { ok: false, code: 'TAKEN', barcode: input.barcode, productId: owner.product_id, productName: owner.name }
+      return { ok: false, code: 'TAKEN', barcode: input.barcode, productId: owner.productId, productName: owner.name }
     }
   }
 
@@ -79,21 +90,57 @@ export async function setBarcodes(
   const before = await listBarcodes(db, productId)
 
   await db.transaction(async (tx) => {
-    await tx.execute(`DELETE FROM product_barcodes WHERE product_id = ?`, [productId])
+    /* Taken off, not deleted (056): a removal is an edit and merges like one,
+       where a delete left a tombstone that a third till could outlive -- and a
+       barcode brought back that way scans as an item the shop took it off. */
+    const keep = cleaned.map((b) => b.barcode)
+    await q(tx).update(schema.productBarcodes)
+      .set({ deletedAt: now })
+      .where(and(
+        eq(schema.productBarcodes.productId, productId),
+        isNull(schema.productBarcodes.deletedAt),
+        ...(keep.length > 0 ? [notInArray(schema.productBarcodes.barcode, keep)] : []),
+      ))
 
     for (const [index, input] of cleaned.entries()) {
-      await tx.execute(
-        `INSERT INTO product_barcodes (id, product_id, barcode, label, is_primary, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [newId(), productId, input.barcode, input.label ?? null, index === 0 ? 1 : 0, now],
-      )
+      /* Derived from the code itself, which is the one thing about a barcode
+         that cannot be edited into something else — a different code is a
+         different barcode. The set is deleted and rewritten on every save, so
+         with a minted id a barcode nobody touched came back under a new one,
+         and two tills saving the same product wrote two rows for one code.
+         Same id, and the feed folds the delete and the insert into one upsert. */
+      /* The same code, back on this item or moved to it from one it was taken
+         off: the row it always was, alive again. Found by the code rather than
+         by the derived id, because rows written before ids were derived carry
+         a minted one and the code is what is unique. */
+      const [held] = await q(tx)
+        .select({ id: schema.productBarcodes.id })
+        .from(schema.productBarcodes)
+        .where(eq(schema.productBarcodes.barcode, input.barcode))
+      if (held) {
+        await q(tx).update(schema.productBarcodes)
+          .set({ productId, label: input.label ?? null, isPrimary: index === 0 ? 1 : 0, deletedAt: null })
+          .where(eq(schema.productBarcodes.id, held.id))
+        continue
+      }
+      await q(tx).insert(schema.productBarcodes).values({
+        id: await derivedId('product_barcodes', input.barcode),
+        productId,
+        barcode: input.barcode,
+        label: input.label ?? null,
+        isPrimary: index === 0 ? 1 : 0,
+        createdAt: now,
+      })
     }
 
     // The pair, written in the one place that owns it.
-    await tx.execute(
-      `UPDATE products SET barcode = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
-      [cleaned[0]?.barcode ?? null, now, productId],
-    )
+    await q(tx).update(schema.products)
+      .set({
+        barcode: cleaned[0]?.barcode ?? null,
+        updatedAt: now,
+        rev: sql`${schema.products.rev} + 1`,
+      })
+      .where(eq(schema.products.id, productId))
 
     await writeAudit(tx, ctx, {
       entity: 'products',
@@ -114,9 +161,9 @@ export async function setBarcodes(
  * answers the id, that answers the whole product row the counter needs.
  */
 export async function productIdForBarcode(db: SqlDriver, barcode: string): Promise<string | null> {
-  const row = await db.get<{ product_id: string }>(
-    `SELECT product_id FROM product_barcodes WHERE barcode = ?`,
-    [barcode.trim()],
-  )
-  return row?.product_id ?? null
+  const [row] = await q(db)
+    .select({ productId: schema.productBarcodes.productId })
+    .from(schema.productBarcodes)
+    .where(and(eq(schema.productBarcodes.barcode, barcode.trim()), isNull(schema.productBarcodes.deletedAt)))
+  return row?.productId ?? null
 }

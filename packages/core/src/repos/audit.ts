@@ -1,4 +1,6 @@
+import { eq, and, or, like, gte, lt, desc, count, sql, type SQL } from 'drizzle-orm'
 import type { SqlDriver, SqlValue } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 
 /**
  * Reading the trail back.
@@ -54,78 +56,84 @@ export interface AuditFilter {
  * copying it into the log would be one more thing to keep in step. The cost is a
  * handful of left joins on a screen nobody keeps open.
  */
-const SUBJECT = `
-  CASE a.entity
-    WHEN 'bills'          THEN (SELECT doc_no FROM bills WHERE id = a.entity_id)
-    WHEN 'sales_returns'  THEN (SELECT doc_no FROM sales_returns WHERE id = a.entity_id)
-    WHEN 'payment_entries' THEN (SELECT doc_no FROM payment_entries WHERE id = a.entity_id)
-    WHEN 'stock_entries'  THEN (SELECT doc_no FROM stock_entries WHERE id = a.entity_id)
-    WHEN 'stock_counts'   THEN (SELECT doc_no FROM stock_counts WHERE id = a.entity_id)
-    WHEN 'products'       THEN (SELECT name FROM products WHERE id = a.entity_id)
-    WHEN 'customers'      THEN (SELECT name FROM customers WHERE id = a.entity_id)
-    WHEN 'suppliers'      THEN (SELECT name FROM suppliers WHERE id = a.entity_id)
-    WHEN 'users'          THEN (SELECT COALESCE(full_name, username) FROM users WHERE id = a.entity_id)
-    WHEN 'roles'          THEN (SELECT name FROM roles WHERE id = a.entity_id)
-    WHEN 'price_lists'    THEN (SELECT name FROM price_lists WHERE id = a.entity_id)
+/* raw: thirteen scalar subqueries chosen between by the entity of the row
+   being read. `audit_log.entity_id` is written out in each, because a bare
+   `entity_id` inside them would bind to the table being looked in. */
+const SUBJECT = sql<string | null>`
+  CASE audit_log.entity
+    WHEN 'bills'          THEN (SELECT doc_no FROM bills WHERE id = audit_log.entity_id)
+    WHEN 'sales_returns'  THEN (SELECT doc_no FROM sales_returns WHERE id = audit_log.entity_id)
+    WHEN 'payment_entries' THEN (SELECT doc_no FROM payment_entries WHERE id = audit_log.entity_id)
+    WHEN 'stock_entries'  THEN (SELECT doc_no FROM stock_entries WHERE id = audit_log.entity_id)
+    WHEN 'stock_counts'   THEN (SELECT doc_no FROM stock_counts WHERE id = audit_log.entity_id)
+    WHEN 'products'       THEN (SELECT name FROM products WHERE id = audit_log.entity_id)
+    WHEN 'customers'      THEN (SELECT name FROM customers WHERE id = audit_log.entity_id)
+    WHEN 'suppliers'      THEN (SELECT name FROM suppliers WHERE id = audit_log.entity_id)
+    WHEN 'users'          THEN (SELECT COALESCE(full_name, username) FROM users WHERE id = audit_log.entity_id)
+    WHEN 'roles'          THEN (SELECT name FROM roles WHERE id = audit_log.entity_id)
+    WHEN 'price_lists'    THEN (SELECT name FROM price_lists WHERE id = audit_log.entity_id)
     WHEN 'item_prices'    THEN (SELECT p.name FROM item_prices ip JOIN products p ON p.id = ip.product_id
-                                 WHERE ip.id = a.entity_id)
+                                 WHERE ip.id = audit_log.entity_id)
     WHEN 'customer_item_prices' THEN (SELECT p.name FROM customer_item_prices cp JOIN products p ON p.id = cp.product_id
-                                       WHERE cp.id = a.entity_id)
-    WHEN 'attachments'    THEN (SELECT file_name FROM attachments WHERE id = a.entity_id)
+                                       WHERE cp.id = audit_log.entity_id)
+    WHEN 'attachments'    THEN (SELECT file_name FROM attachments WHERE id = audit_log.entity_id)
     ELSE NULL
   END`
 
-export async function listAuditEntries(db: SqlDriver, filter: AuditFilter = {}): Promise<AuditEntry[]> {
-  const where: string[] = []
-  const args: SqlValue[] = []
+/** Who did it, which is their full name when they have one. */
+const ACTOR_NAME = sql<string | null>`COALESCE(${schema.users.fullName}, ${schema.users.username})`
 
-  if (filter.entity) { where.push('a.entity = ?'); args.push(filter.entity) }
-  if (filter.action) { where.push('a.action = ?'); args.push(filter.action) }
-  if (filter.actorId) { where.push('a.actor_id = ?'); args.push(filter.actorId) }
-  if (filter.entityId) { where.push('a.entity_id = ?'); args.push(filter.entityId) }
+export async function listAuditEntries(db: SqlDriver, filter: AuditFilter = {}): Promise<AuditEntry[]> {
+  const where: SQL[] = []
+
+  if (filter.entity) where.push(eq(schema.auditLog.entity, filter.entity))
+  if (filter.action) where.push(eq(schema.auditLog.action, filter.action))
+  if (filter.actorId) where.push(eq(schema.auditLog.actorId, filter.actorId))
+  if (filter.entityId) where.push(eq(schema.auditLog.entityId, filter.entityId))
   // Inclusive of the whole last day: a date without a time is a day, and a
   // shopkeeper asking for "up to the 13th" means the end of it.
-  if (filter.from) { where.push('a.at >= ?'); args.push(filter.from) }
-  if (filter.to) { where.push('a.at < ?'); args.push(`${filter.to}T99`) }
+  if (filter.from) where.push(gte(schema.auditLog.at, filter.from))
+  if (filter.to) where.push(lt(schema.auditLog.at, `${filter.to}T99`))
 
   if (filter.term?.trim()) {
-    const like = `%${filter.term.trim()}%`
-    where.push(`(a.entity LIKE ? OR a.action LIKE ? OR COALESCE(u.full_name, u.username) LIKE ?
-                 OR COALESCE(${SUBJECT}, '') LIKE ? OR COALESCE(a.diff, '') LIKE ?)`)
-    args.push(like, like, like, like, like)
+    const anywhere = `%${filter.term.trim()}%`
+    where.push(or(
+      like(schema.auditLog.entity, anywhere),
+      like(schema.auditLog.action, anywhere),
+      like(ACTOR_NAME, anywhere),
+      // `COALESCE`, because a row whose subject is null must not make the
+      // whole condition null and drop out of a search it matched on action.
+      like(sql`COALESCE(${SUBJECT}, '')`, anywhere),
+      like(sql`COALESCE(${schema.auditLog.diff}, '')`, anywhere),
+    )!)
   }
 
-  const rows = await db.query<{
-    id: string; at: string; entity: string; entity_id: string; action: string
-    actor_id: string | null; actor_name: string | null
-    docstatus_from: number | null; docstatus_to: number | null
-    diff: string | null; subject: string | null
-  }>(
-    `SELECT a.id, a.at, a.entity, a.entity_id, a.action, a.actor_id,
-            COALESCE(u.full_name, u.username) AS actor_name,
-            a.docstatus_from, a.docstatus_to, a.diff,
-            ${SUBJECT} AS subject
-       FROM audit_log a
-       LEFT JOIN users u ON u.id = a.actor_id
-      ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY a.at DESC, a.rowid DESC
-      LIMIT ? OFFSET ?`,
-    [...args, filter.limit ?? 100, filter.offset ?? 0],
-  )
+  const rows = await q(db)
+    .select({
+      id: schema.auditLog.id,
+      at: schema.auditLog.at,
+      entity: schema.auditLog.entity,
+      entityId: schema.auditLog.entityId,
+      action: schema.auditLog.action,
+      actorId: schema.auditLog.actorId,
+      actorName: ACTOR_NAME,
+      docstatusFrom: schema.auditLog.docstatusFrom,
+      docstatusTo: schema.auditLog.docstatusTo,
+      diff: schema.auditLog.diff,
+      subject: SUBJECT,
+    })
+    .from(schema.auditLog)
+    .leftJoin(schema.users, eq(schema.users.id, schema.auditLog.actorId))
+    .where(and(...where))
+    /* raw: `rowid`, which is not a column and so is not in the schema. It is
+       the tiebreak between two rows written in the same millisecond, and
+       without it they come back in whatever order the plan happens to give --
+       which on a page of a history is a page that shuffles as it is scrolled. */
+    .orderBy(desc(schema.auditLog.at), sql`audit_log.rowid DESC`)
+    .limit(filter.limit ?? 100)
+    .offset(filter.offset ?? 0)
 
-  return rows.map((r) => ({
-    id: r.id,
-    at: r.at,
-    entity: r.entity,
-    entityId: r.entity_id,
-    action: r.action,
-    actorId: r.actor_id,
-    actorName: r.actor_name,
-    docstatusFrom: r.docstatus_from,
-    docstatusTo: r.docstatus_to,
-    changes: parseDiff(r.diff),
-    subject: r.subject,
-  }))
+  return rows.map((r) => ({ ...r, changes: parseDiff(r.diff) }))
 }
 
 function parseDiff(raw: string | null): FieldChange[] {
@@ -141,22 +149,23 @@ function parseDiff(raw: string | null): FieldChange[] {
 
 /** The entities that actually appear, for a filter that offers only real choices. */
 export async function auditEntities(db: SqlDriver): Promise<string[]> {
-  const rows = await db.query<{ entity: string }>(
-    `SELECT DISTINCT entity FROM audit_log ORDER BY entity`,
-  )
+  const rows = await q(db)
+    .selectDistinct({ entity: schema.auditLog.entity })
+    .from(schema.auditLog)
+    .orderBy(schema.auditLog.entity)
   return rows.map((r) => r.entity)
 }
 
 export async function auditActors(db: SqlDriver): Promise<{ id: string; name: string }[]> {
-  const rows = await db.query<{ id: string; name: string }>(
-    `SELECT DISTINCT u.id, COALESCE(u.full_name, u.username) AS name
-       FROM audit_log a JOIN users u ON u.id = a.actor_id
-      ORDER BY name`,
-  )
-  return rows.map((r) => ({ id: r.id, name: r.name }))
+  const rows = await q(db)
+    .selectDistinct({ id: schema.users.id, name: ACTOR_NAME })
+    .from(schema.auditLog)
+    .innerJoin(schema.users, eq(schema.users.id, schema.auditLog.actorId))
+    .orderBy(ACTOR_NAME)
+  return rows.map((r) => ({ id: r.id, name: r.name ?? '' }))
 }
 
 export async function countAuditEntries(db: SqlDriver): Promise<number> {
-  const row = await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log`)
+  const [row] = await q(db).select({ n: count() }).from(schema.auditLog)
   return row?.n ?? 0
 }

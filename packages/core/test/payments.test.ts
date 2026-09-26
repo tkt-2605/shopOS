@@ -205,3 +205,32 @@ describe('credit limit uses derived outstanding', () => {
     expect(allowed.ok).toBe(true)
   })
 })
+
+describe('allocations a receipt names itself', () => {
+  async function creditBillIds(): Promise<string[]> {
+    await creditSale(2, '2026-01-01')
+    await creditSale(2, '2026-01-02')
+    const rows = await fx.db.query<{ id: string }>(
+      `SELECT id FROM bills WHERE customer_id = ? ORDER BY posting_date`, [customer],
+    )
+    return rows.map((r) => r.id)
+  }
+
+  it('refuses a share of nothing or less, rather than letting it lower the total', async () => {
+    const [first, second] = await creditBillIds()
+    const r = await recordPayment(fx.db, {
+      customerId: customer, amount: rupees(100), method: 'cash', actorId: fx.adminId,
+      allocations: [{ billId: first!, amount: rupees(150) }, { billId: second!, amount: rupees(-50) }],
+    })
+    expect(r).toEqual({ ok: false, code: 'INVALID_AMOUNT' })
+  })
+
+  it('adds up the same bill named twice before checking what it owes', async () => {
+    const [first] = await creditBillIds()
+    const r = await recordPayment(fx.db, {
+      customerId: customer, amount: rupees(300), method: 'cash', actorId: fx.adminId,
+      allocations: [{ billId: first!, amount: rupees(150) }, { billId: first!, amount: rupees(150) }],
+    })
+    expect(r).toMatchObject({ ok: false, code: 'OVER_ALLOCATED', requested: rupees(300), due: rupees(200) })
+  })
+})

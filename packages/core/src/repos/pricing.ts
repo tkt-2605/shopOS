@@ -1,9 +1,12 @@
+import { eq, and, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import type { Money } from '../money.js'
 import { qty, QTY_SCALE, type Qty } from '../quantity.js'
 import { resolvePrice } from '../domain/pricing.js'
 import type { PriceCandidates, PriceTier, ResolvedPrice } from '../domain/pricing.js'
 import { isOn } from '../services/features.js'
+import { getSetting, DEFAULT_PRICE_LIST } from '../services/settings.js'
 
 export interface PricingContext {
   productId: string
@@ -30,50 +33,32 @@ export interface PricingContext {
  * the pure, well-tested thing it already is.
  */
 export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): Promise<PriceCandidates> {
-  const product = await db.get<{ base_rate: number; base_unit: string }>(
-    `SELECT base_rate, base_unit FROM products WHERE id = ?`, [ctx.productId],
-  )
+  const [product] = await q(db)
+    .select({ baseRate: schema.products.baseRate, baseUnit: schema.products.baseUnit })
+    .from(schema.products)
+    .where(eq(schema.products.id, ctx.productId))
   if (!product) throw new Error(`unknown product: ${ctx.productId}`)
 
   // How many base units one of the line's units is. One, when the line is in
   // the base unit itself.
-  const factor = await baseUnitsPer(db, ctx.productId, ctx.saleUnit, product.base_unit)
+  const factor = await baseUnitsPer(db, ctx.productId, ctx.saleUnit, product.baseUnit)
   const inSaleUnit = (rate: Money): Money => scaleRate(rate, factor)
 
   // The base rate is per base unit, so a box of twelve is twelve times it.
   // Without this a shop selling by the box collects one piece's worth of money
   // and gives away twelve pieces of stock.
   const candidates: PriceCandidates = {
-    baseRate: inSaleUnit(product.base_rate as Money),
+    baseRate: inSaleUnit(product.baseRate),
     quantityBreaks: ctx.quantityBreaks !== false,
   }
-  const ladderUnit = product.base_unit === ctx.saleUnit ? null : product.base_unit
+  const ladderUnit = product.baseUnit === ctx.saleUnit ? null : product.baseUnit
 
   if (ctx.customerId) {
-    const rows = await db.query<{
-      id: string; min_qty: number; rate: number; valid_from: string | null; valid_to: string | null
-    }>(
-      `SELECT id, min_qty, rate, valid_from, valid_to FROM customer_item_prices
-        WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
-      [ctx.customerId, ctx.productId, ctx.saleUnit],
-    )
-    const tiers: PriceTier[] = rows.map((r) => ({
-      id: r.id,
-      minQty: qty(r.min_qty),
-      rate: r.rate as Money,
-      validFrom: r.valid_from,
-      validTo: r.valid_to,
-    }))
+    const tiers: PriceTier[] = await customerTiers(db, ctx.customerId, ctx.productId, ctx.saleUnit)
 
     // Only when this customer has said nothing about this unit — see loadTiers.
     if (ladderUnit && tiers.length === 0) {
-      const base = await db.query<{
-        id: string; min_qty: number; rate: number; valid_from: string | null; valid_to: string | null
-      }>(
-        `SELECT id, min_qty, rate, valid_from, valid_to FROM customer_item_prices
-          WHERE customer_id = ? AND product_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
-        [ctx.customerId, ctx.productId, ladderUnit],
-      )
+      const base = await customerTiers(db, ctx.customerId, ctx.productId, ladderUnit)
       tiers.push(...base.map((r) => converted(r, factor)))
     }
 
@@ -94,12 +79,61 @@ export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): P
   return candidates
 }
 
+/** What a price row says, whichever table it is in. */
 interface TierRow {
   id: string
-  min_qty: number
-  rate: number
-  valid_from: string | null
-  valid_to: string | null
+  minQty: Qty
+  rate: Money
+  validFrom: string | null
+  validTo: string | null
+}
+
+/** One customer's own prices for one product in one unit. */
+async function customerTiers(
+  db: SqlDriver,
+  customerId: string,
+  productId: string,
+  saleUnit: string,
+): Promise<TierRow[]> {
+  return q(db)
+    .select({
+      id: schema.customerItemPrices.id,
+      minQty: schema.customerItemPrices.minQty,
+      rate: schema.customerItemPrices.rate,
+      validFrom: schema.customerItemPrices.validFrom,
+      validTo: schema.customerItemPrices.validTo,
+    })
+    .from(schema.customerItemPrices)
+    .where(and(
+      eq(schema.customerItemPrices.customerId, customerId),
+      eq(schema.customerItemPrices.productId, productId),
+      eq(schema.customerItemPrices.saleUnit, saleUnit),
+      isNull(schema.customerItemPrices.deletedAt),
+    ))
+}
+
+/** A price list's prices for one product in one unit. */
+async function listTiers(
+  db: SqlDriver,
+  productId: string,
+  priceListId: string,
+  saleUnit: string,
+): Promise<TierRow[]> {
+  return q(db)
+    .select({
+      id: schema.itemPrices.id,
+      minQty: schema.itemPrices.minQty,
+      rate: schema.itemPrices.rate,
+      validFrom: schema.itemPrices.validFrom,
+      validTo: schema.itemPrices.validTo,
+    })
+    .from(schema.itemPrices)
+    .where(and(
+      eq(schema.itemPrices.productId, productId),
+      eq(schema.itemPrices.priceListId, priceListId),
+      eq(schema.itemPrices.saleUnit, saleUnit),
+      isNull(schema.itemPrices.deletedAt),
+    ))
 }
 
 async function loadTiers(
@@ -110,19 +144,7 @@ async function loadTiers(
   ladderUnit: string | null,
   factor: Qty,
 ): Promise<PriceTier[]> {
-  const rows = await db.query<TierRow>(
-    `SELECT id, min_qty, rate, valid_from, valid_to FROM item_prices
-      WHERE product_id = ? AND price_list_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
-    [productId, priceListId, saleUnit],
-  )
-
-  const tiers: PriceTier[] = rows.map((r) => ({
-    id: r.id,
-    minQty: qty(r.min_qty),
-    rate: r.rate as Money,
-    validFrom: r.valid_from,
-    validTo: r.valid_to,
-  }))
+  const tiers: PriceTier[] = await listTiers(db, productId, priceListId, saleUnit)
 
   // The base ladder fills in for units the shop has said nothing about, and
   // steps aside entirely for one it has.
@@ -133,11 +155,7 @@ async function loadTiers(
   // one box, which is not a comparison at all. A shop that wants volume breaks
   // on boxes writes a box ladder: 1=110, 2=96.
   if (ladderUnit && tiers.length === 0) {
-    const base = await db.query<TierRow>(
-      `SELECT id, min_qty, rate, valid_from, valid_to FROM item_prices
-        WHERE product_id = ? AND price_list_id = ? AND sale_unit = ? AND deleted_at IS NULL`,
-      [productId, priceListId, ladderUnit],
-    )
+    const base = await listTiers(db, productId, priceListId, ladderUnit)
     tiers.push(...base.map((r) => converted(r, factor)))
   }
 
@@ -147,11 +165,9 @@ async function loadTiers(
 /** A base-unit rung seen from a bigger unit. */
 function converted(row: TierRow, factor: Qty): PriceTier {
   return {
-    id: row.id,
-    minQty: qty(Math.round((row.min_qty * QTY_SCALE) / factor)),
-    rate: scaleRate(row.rate as Money, factor),
-    validFrom: row.valid_from,
-    validTo: row.valid_to,
+    ...row,
+    minQty: qty(Math.round((row.minQty * QTY_SCALE) / factor)),
+    rate: scaleRate(row.rate, factor),
   }
 }
 
@@ -166,15 +182,29 @@ async function baseUnitsPer(
   baseUnit: string,
 ): Promise<Qty> {
   if (saleUnit === baseUnit) return qty(QTY_SCALE)
-  const row = await db.get<{ base_units: number }>(
-    `SELECT base_units FROM product_units WHERE product_id = ? AND sale_unit = ?`,
-    [productId, saleUnit],
-  )
-  return qty(row?.base_units ?? QTY_SCALE)
+  const [row] = await q(db)
+    .select({ baseUnits: schema.productUnits.baseUnits })
+    .from(schema.productUnits)
+    .where(and(
+      eq(schema.productUnits.productId, productId),
+      eq(schema.productUnits.saleUnit, saleUnit),
+      isNull(schema.productUnits.deletedAt),
+    ))
+  return row?.baseUnits ?? qty(QTY_SCALE)
 }
 
 export async function defaultPriceListId(db: SqlDriver): Promise<string | null> {
-  const row = await db.get<{ id: string }>(`SELECT id FROM price_lists WHERE is_default = 1 AND deleted_at IS NULL`)
+  const chosen = await getSetting(db, DEFAULT_PRICE_LIST)
+  if (chosen === null || chosen === '') return null
+
+  /* Checked rather than trusted. The setting can name a list that has since been
+     archived — on this till or, more to the point, on another one — and a
+     default that does not exist must read as no default rather than as a list
+     the resolver will not find. */
+  const [row] = await q(db)
+    .select({ id: schema.priceLists.id })
+    .from(schema.priceLists)
+    .where(and(eq(schema.priceLists.id, chosen), isNull(schema.priceLists.deletedAt)))
   return row?.id ?? null
 }
 
@@ -208,19 +238,20 @@ export async function pricingContextFor(
      Without this, an archived list goes on quietly pricing every line for every
      customer on it, which is exactly what `is_active` did for the whole of this
      table's life. */
-  const customer = customerId
-    ? await db.get<{ price_list_id: string | null }>(
-        `SELECT l.id AS price_list_id
-           FROM customers c
-           LEFT JOIN price_lists l ON l.id = c.price_list_id AND l.deleted_at IS NULL
-          WHERE c.id = ? AND c.deleted_at IS NULL`,
-        [customerId],
-      )
-    : null
+  const [customer] = customerId
+    ? await q(db)
+        .select({ priceListId: schema.priceLists.id })
+        .from(schema.customers)
+        .leftJoin(schema.priceLists, and(
+          eq(schema.priceLists.id, schema.customers.priceListId),
+          isNull(schema.priceLists.deletedAt),
+        ))
+        .where(and(eq(schema.customers.id, customerId), isNull(schema.customers.deletedAt)))
+    : []
 
   return {
     customerId: customerId ?? null,
-    customerPriceListId: customer?.price_list_id ?? null,
+    customerPriceListId: customer?.priceListId ?? null,
     defaultPriceListId: await defaultPriceListId(db),
     quantityBreaks: await isOn(db, 'tieredPricing'),
   }
@@ -251,17 +282,27 @@ export interface SaleUnitInfo {
 
 export async function resolveSaleUnit(db: SqlDriver, productId: string, saleUnit: string | null): Promise<SaleUnitInfo> {
   if (saleUnit) {
-    const row = await db.get<{ sale_unit: string; base_units: number }>(
-      `SELECT sale_unit, base_units FROM product_units WHERE product_id = ? AND sale_unit = ?`,
-      [productId, saleUnit],
-    )
-    if (row) return { saleUnit: row.sale_unit, baseUnits: qty(row.base_units) }
+    const [row] = await q(db)
+      .select({
+        saleUnit: schema.productUnits.saleUnit,
+        baseUnits: schema.productUnits.baseUnits,
+      })
+      .from(schema.productUnits)
+      .where(and(
+        eq(schema.productUnits.productId, productId),
+        eq(schema.productUnits.saleUnit, saleUnit),
+        isNull(schema.productUnits.deletedAt),
+      ))
+    if (row) return row
   }
 
-  const base = await db.get<{ base_unit: string }>(`SELECT base_unit FROM products WHERE id = ?`, [productId])
+  const [base] = await q(db)
+    .select({ baseUnit: schema.products.baseUnit })
+    .from(schema.products)
+    .where(eq(schema.products.id, productId))
   if (!base) throw new Error(`unknown product: ${productId}`)
-  if (saleUnit && saleUnit !== base.base_unit) {
+  if (saleUnit && saleUnit !== base.baseUnit) {
     throw new Error(`product ${productId} has no sale unit "${saleUnit}"`)
   }
-  return { saleUnit: base.base_unit, baseUnits: qty(10_000) }
+  return { saleUnit: base.baseUnit, baseUnits: qty(QTY_SCALE) }
 }

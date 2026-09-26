@@ -1,0 +1,419 @@
+{
+  "salesSummary": {
+    "hash": "f106e81f9ffacb1e",
+    "value": {
+      "bills": 19820,
+      "gross": 8072024160,
+      "discount": 0,
+      "taxable": 7438986440,
+      "tax": 633037720,
+      "roundOff": 212940,
+      "total": 8072237100,
+      "returns": 3853190,
+      "net": 8068383910,
+      "paid": 7261437500,
+      "credit": 810799600,
+      "averageBill": 407277
+    }
+  },
+  "salesByDay": {
+    "hash": "7161c37cbf69484f",
+    "rows": 366,
+    "first": [
+      {
+        "date": "2025-09-16",
+        "bills": 46,
+        "discount": 0,
+        "tax": 1495684,
+        "total": 19203800,
+        "returns": 0,
+        "net": 19203800
+      },
+      {
+        "date": "2025-09-17",
+        "bills": 45,
+        "discount": 0,
+        "tax": 1640698,
+        "total": 18887500,
+        "returns": 0,
+        "net": 18887500
+      },
+      {
+        "date": "2025-09-18",
+        "bills": 45,
+        "discount": 0,
+        "tax": 1091314,
+        "total": 16290500,
+        "returns": 0,
+        "net": 16290500
+      }
+    ],
+    "last": [
+      {
+        "date": "2026-09-14",
+        "bills": 76,
+        "discount": 0,
+        "tax": 2499208,
+        "total": 29199300,
+        "returns": 0,
+        "net": 29199300
+      },
+      {
+        "date": "2026-09-15",
+        "bills": 32,
+        "discount": 0,
+        "tax": 1066838,
+        "total": 12645400,
+        "returns": 0,
+        "net": 12645400
+      },
+      {
+        "date": "2026-09-20",
+        "bills": 0,
+        "discount": 0,
+        "tax": 0,
+        "total": 0,
+        "returns": 3853190,
+        "net": -3853190
+      }
+    ]
+  },
+  "topProducts": {
+    "hash": "5cf80d70523195e4",
+    "rows": 20,
+    "first": [
+      {
+        "productId": "<id>",
+        "name": "Jaggery 250ml #167",
+        "qty": 5040000,
+        "unit": "piece",
+        "revenue": 44150400,
+        "bills": 141
+      },
+      {
+        "productId": "<id>",
+        "name": "Toothpaste 1L #224",
+        "qty": 4960000,
+        "unit": "kg",
+        "revenue": 43742240,
+        "bills": 138
+      },
+      {
+        "productId": "<id>",
+        "name": "Wheat Flour 500g #113",
+        "qty": 4800000,
+        "unit": "piece",
+        "revenue": 42427200,
+        "bills": 136
+      }
+    ],
+    "last": [
+      {
+        "productId": "<id>",
+        "name": "Detergent 100ml #225",
+        "qty": 4280000,
+        "unit": "piece",
+        "revenue": 38258920,
+        "bills": 118
+      },
+      {
+        "productId": "<id>",
+        "name": "Incense 500g #346",
+        "qty": 5180000,
+        "unit": "litre",
+        "revenue": 38047100,
+        "bills": 145
+      },
+      {
+        "productId": "<id>",
+        "name": "Shampoo 1kg #239",
+        "qty": 4360000,
+        "unit": "litre",
+        "revenue": 38041000,
+        "bills": 124
+      }
+    ]
+  },
+  "paymentMix": {
+    "hash": "4f53cda18c2baa0c",
+    "rows": 0,
+    "first": [],
+    "last": []
+  },
+  "taxByRate": {
+    "hash": "bb16a38b2456b2c7",
+    "rows": 4,
+    "first": [
+      {
+        "rateBp": 0,
+        "taxable": 1999843530,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 0
+      },
+      {
+        "rateBp": 500,
+        "taxable": 1696012276,
+        "cgst": 42400352,
+        "sgst": 42400352,
+        "igst": 0
+      },
+      {
+        "rateBp": 1200,
+        "taxable": 2084915128,
+        "cgst": 125094996,
+        "sgst": 125094996,
+        "igst": 0
+      }
+    ],
+    "last": [
+      {
+        "rateBp": 500,
+        "taxable": 1696012276,
+        "cgst": 42400352,
+        "sgst": 42400352,
+        "igst": 0
+      },
+      {
+        "rateBp": 1200,
+        "taxable": 2084915128,
+        "cgst": 125094996,
+        "sgst": 125094996,
+        "igst": 0
+      },
+      {
+        "rateBp": 1800,
+        "taxable": 1654584648,
+        "cgst": 148912346,
+        "sgst": 148912346,
+        "igst": 0
+      }
+    ]
+  },
+  "salesByStaff": {
+    "hash": "91ef6b2c0c5e7663",
+    "rows": 3,
+    "first": [
+      {
+        "userId": "<id>",
+        "username": "meena",
+        "bills": 8692,
+        "total": 3558651300
+      },
+      {
+        "userId": "<id>",
+        "username": "raja",
+        "bills": 8706,
+        "total": 3530413100
+      },
+      {
+        "userId": "<id>",
+        "username": "admin",
+        "bills": 2422,
+        "total": 983172700
+      }
+    ],
+    "last": [
+      {
+        "userId": "<id>",
+        "username": "meena",
+        "bills": 8692,
+        "total": 3558651300
+      },
+      {
+        "userId": "<id>",
+        "username": "raja",
+        "bills": 8706,
+        "total": 3530413100
+      },
+      {
+        "userId": "<id>",
+        "username": "admin",
+        "bills": 2422,
+        "total": 983172700
+      }
+    ]
+  },
+  "gstLines": {
+    "hash": "3b931a944020dbb0",
+    "rows": 38378,
+    "first": [
+      {
+        "kind": "invoice",
+        "docNo": "BMR/2526/00001",
+        "againstDocNo": null,
+        "postingDate": "2025-09-16",
+        "customerName": "Walk-in",
+        "gstin": "",
+        "placeOfSupply": "33",
+        "rateBp": 500,
+        "taxable": 119620,
+        "cgst": 2990,
+        "sgst": 2990,
+        "igst": 0,
+        "total": 125600
+      },
+      {
+        "kind": "invoice",
+        "docNo": "BMR/2526/00002",
+        "againstDocNo": null,
+        "postingDate": "2025-09-16",
+        "customerName": "Priya Gowda 125",
+        "gstin": "",
+        "placeOfSupply": "33",
+        "rateBp": 1200,
+        "taxable": 202098,
+        "cgst": 12126,
+        "sgst": 12126,
+        "igst": 0,
+        "total": 226350
+      },
+      {
+        "kind": "invoice",
+        "docNo": "BMR/2526/00002",
+        "againstDocNo": null,
+        "postingDate": "2025-09-16",
+        "customerName": "Priya Gowda 125",
+        "gstin": "",
+        "placeOfSupply": "33",
+        "rateBp": 1800,
+        "taxable": 216152,
+        "cgst": 19454,
+        "sgst": 19454,
+        "igst": 0,
+        "total": 255050
+      }
+    ],
+    "last": [
+      {
+        "kind": "credit_note",
+        "docNo": "CMR/2627/00018",
+        "againstDocNo": "BMR/2526/00018",
+        "postingDate": "2026-09-20",
+        "customerName": "Walk-in",
+        "gstin": "",
+        "placeOfSupply": "33",
+        "rateBp": 1200,
+        "taxable": -166072,
+        "cgst": -9964,
+        "sgst": -9964,
+        "igst": 0,
+        "total": -186000
+      },
+      {
+        "kind": "credit_note",
+        "docNo": "CMR/2627/00019",
+        "againstDocNo": "BMR/2526/00019",
+        "postingDate": "2026-09-20",
+        "customerName": "Walk-in",
+        "gstin": "",
+        "placeOfSupply": "33",
+        "rateBp": 1200,
+        "taxable": -75268,
+        "cgst": -4516,
+        "sgst": -4516,
+        "igst": 0,
+        "total": -84300
+      },
+      {
+        "kind": "credit_note",
+        "docNo": "CMR/2627/00020",
+        "againstDocNo": "BMR/2526/00020",
+        "postingDate": "2026-09-20",
+        "customerName": "Walk-in",
+        "gstin": "",
+        "placeOfSupply": "33",
+        "rateBp": 0,
+        "taxable": -359400,
+        "cgst": 0,
+        "sgst": 0,
+        "igst": 0,
+        "total": -359400
+      }
+    ]
+  },
+  "gstExceptions": {
+    "hash": "4f53cda18c2baa0c",
+    "rows": 0,
+    "first": [],
+    "last": []
+  },
+  "grossMargin": {
+    "hash": "83114d69d0a679b0",
+    "value": {
+      "revenue": 7435355582,
+      "cost": 5226044969,
+      "margin": 2209310613,
+      "marginBp": 2971,
+      "uncostedLines": 3302
+    }
+  },
+  "marginByProduct": {
+    "hash": "cc67846cc6000f9a",
+    "rows": 25,
+    "first": [
+      {
+        "productId": "<id>",
+        "name": "Wheat Flour 1kg #44",
+        "qty": 4730000,
+        "unit": "litre",
+        "revenue": 38718426,
+        "cost": 0,
+        "margin": 38718426,
+        "marginBp": 10000
+      },
+      {
+        "productId": "<id>",
+        "name": "Broom 100ml #13",
+        "qty": 4470000,
+        "unit": "piece",
+        "revenue": 35700102,
+        "cost": 0,
+        "margin": 35700102,
+        "marginBp": 10000
+      },
+      {
+        "productId": "<id>",
+        "name": "Sugar 250ml #361",
+        "qty": 4080000,
+        "unit": "piece",
+        "revenue": 33231600,
+        "cost": 0,
+        "margin": 33231600,
+        "marginBp": 10000
+      }
+    ],
+    "last": [
+      {
+        "productId": "<id>",
+        "name": "Umbrella 1kg #329",
+        "qty": 4930000,
+        "unit": "litre",
+        "revenue": 40327400,
+        "cost": 25291393,
+        "margin": 15036007,
+        "marginBp": 3728
+      },
+      {
+        "productId": "<id>",
+        "name": "Coconut Oil 1kg #142",
+        "qty": 4790000,
+        "unit": "kg",
+        "revenue": 41716110,
+        "cost": 28056957,
+        "margin": 13659153,
+        "marginBp": 3274
+      },
+      {
+        "productId": "<id>",
+        "name": "Coffee 1kg #343",
+        "qty": 4660000,
+        "unit": "piece",
+        "revenue": 39188388,
+        "cost": 25535402,
+        "margin": 13652986,
+        "marginBp": 3484
+      }
+    ]
+  }
+}

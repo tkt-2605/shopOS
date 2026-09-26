@@ -63,6 +63,21 @@ pub struct Announcement {
     pub shop_id: Option<String>,
     /// Where to knock.
     pub port: u16,
+    /// Where this till believes it is, on the network the shop runs on.
+    ///
+    /// The asker used to take the address straight off the reply packet, which
+    /// is right whenever the shout went out the way the shop's traffic does,
+    /// and wrong on a machine with more than one card. A laptop with WSL on it
+    /// answered from `172.24.224.1` — its Hyper-V switch — while listening on
+    /// the wifi address it was showing on its own screen, so the till that
+    /// found it was handed an address that went nowhere.
+    ///
+    /// Sent rather than deduced, because this side is the only one that can
+    /// look at its own routing table. Optional and still checked: a till that
+    /// does not send one, or sends something unusable, is reached at the packet
+    /// address as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -75,13 +90,43 @@ pub struct Found {
     pub port: u16,
 }
 
+/// How long to keep trying for the discovery port before saying it is taken.
+///
+/// A responder that has just been told to stop is parked in `recv_from` for up
+/// to its 500 ms read timeout before it notices and lets the port go. Turning
+/// sync off and on again inside that window -- which is exactly what somebody
+/// does when it "is not working" -- used to find the port still held, fail to
+/// bind, and say nothing at all: the till answered HTTP and was invisible to
+/// every other till looking for it.
+const BIND_RETRY: Duration = Duration::from_secs(1);
+
 /// Answers the shout, for as long as the flag says to.
 ///
-/// Returns immediately; the work is on its own thread. The flag is the same one
-/// the HTTP listener uses, so discovery and answering start and stop together
-/// and there is no state where one is on without the other.
-pub fn respond_while(announcement: Announcement, stop: Arc<AtomicBool>) {
-    let _ = respond_on(DISCOVERY_PORT, announcement, stop);
+/// Returns once it is listening; the work is on its own thread. The flag is the
+/// same one the HTTP listener uses, so discovery and answering start and stop
+/// together and there is no state where one is on without the other.
+///
+/// A port that stays taken is an error the caller is handed, not one dropped
+/// here: a till nobody can find should be able to say why.
+pub fn respond_while(announcement: Announcement, stop: Arc<AtomicBool>) -> Result<u16, String> {
+    respond_retrying(DISCOVERY_PORT, announcement, stop, BIND_RETRY)
+}
+
+/// `respond_on`, trying again for up to `retry` while the port is held.
+pub fn respond_retrying(
+    port: u16,
+    announcement: Announcement,
+    stop: Arc<AtomicBool>,
+    retry: Duration,
+) -> Result<u16, String> {
+    let started = Instant::now();
+    loop {
+        match respond_on(port, announcement.clone(), Arc::clone(&stop)) {
+            Ok(bound) => return Ok(bound),
+            Err(_) if started.elapsed() < retry => std::thread::sleep(Duration::from_millis(100)),
+            Err(why) => return Err(why),
+        }
+    }
 }
 
 /// The same, on a port of the caller's choosing, waiting until it is listening.
@@ -170,7 +215,15 @@ pub fn look_around(wait: Duration) -> Result<Vec<Found>, String> {
                     continue;
                 }
                 found.push(Found {
-                    address: format!("{}:{}", from.ip(), announcement.port),
+                    /* What the till says about itself, when it says anything
+                       usable. The packet's source is the fallback rather than
+                       the authority: see `Announcement::host`. */
+                    address: format!(
+                        "{}:{}",
+                        usable_host(announcement.host.as_deref())
+                            .unwrap_or_else(|| from.ip().to_string()),
+                        announcement.port,
+                    ),
                     device: announcement.device,
                     label: announcement.label,
                     shop: announcement.shop,
@@ -183,6 +236,23 @@ pub fn look_around(wait: Duration) -> Result<Vec<Found>, String> {
     }
 
     Ok(found)
+}
+
+/// An address a till claimed, kept only if it is one worth dialling.
+///
+/// Checked rather than trusted. The claim costs nothing to make and is not
+/// authenticated — nor does it need to be, since reaching the wrong till ends
+/// at a signature that does not verify — but an unparseable or loopback address
+/// would replace a working fallback with one that cannot work at all. `0.0.0.0`
+/// is what a till that bound every interface would say if it read its own
+/// socket back, and it is not somewhere to knock.
+fn usable_host(claimed: Option<&str>) -> Option<String> {
+    let host = claimed?.trim();
+    let parsed: IpAddr = host.parse().ok()?;
+    if parsed.is_loopback() || parsed.is_unspecified() || parsed.is_multicast() {
+        return None;
+    }
+    Some(host.to_string())
 }
 
 fn broadcast_targets() -> Vec<SocketAddr> {
@@ -217,6 +287,7 @@ mod tests {
             shop: Some("TRT Stationery".into()),
             shop_id: Some("d2a0604bc26129176963137d7f4517ed".into()),
             port: 7801,
+            host: None,
         }
     }
 
@@ -264,6 +335,36 @@ mod tests {
         stop.store(true, Ordering::SeqCst);
     }
 
+    /* Which address a till is offered at. The packet's source is right whenever
+       the shout went out the way the shop's traffic does, and wrong on a machine
+       with a second card: a laptop with WSL answered from its Hyper-V switch
+       while listening on the wifi address it was showing on its own screen. */
+
+    #[test]
+    fn prefers_the_address_a_till_says_it_is_at() {
+        assert_eq!(usable_host(Some("192.168.1.2")).as_deref(), Some("192.168.1.2"));
+        // Trimmed, because a config file that grew a space is not an outage.
+        assert_eq!(usable_host(Some("  192.168.1.2  ")).as_deref(), Some("192.168.1.2"));
+    }
+
+    #[test]
+    fn ignores_a_claim_that_is_no_use_to_anybody() {
+        // Each of these would replace a working fallback with one that cannot
+        // work. `0.0.0.0` is what a till that bound every interface would say
+        // if it read its own socket back.
+        for claimed in ["", "   ", "0.0.0.0", "127.0.0.1", "::1", "224.0.0.1", "not-an-address", "192.168.1.2:7801"] {
+            assert!(usable_host(Some(claimed)).is_none(), "{claimed} should not be dialled");
+        }
+        assert!(usable_host(None).is_none());
+    }
+
+    #[test]
+    fn a_till_that_says_nothing_is_still_reachable() {
+        // An older till, or one that could not work out its own address. The
+        // packet source carries it, exactly as it did before.
+        assert!(usable_host(announcement().host.as_deref()).is_none());
+    }
+
     /// A responder that answers anything can be pointed at somebody else: send it
     /// a packet with a forged source and it posts a reply to a stranger.
     #[test]
@@ -305,6 +406,37 @@ mod tests {
         asking.set_read_timeout(Some(Duration::from_millis(600))).unwrap();
         let _ = asking.send_to(PROBE, ("127.0.0.1", port));
         assert!(asking.recv_from(&mut buffer).is_err());
+    }
+
+    /// The port is held by a responder that has been told to stop and has not
+    /// noticed yet. Starting again inside that window must wait, not fail.
+    #[test]
+    fn waits_for_a_port_that_is_about_to_be_let_go() {
+        let holder = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let releasing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(holder);
+        });
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let bound = respond_retrying(port, announcement(), Arc::clone(&stop), Duration::from_secs(3));
+        releasing.join().unwrap();
+        assert_eq!(bound, Ok(port));
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    /// And a port that stays taken is said, not swallowed.
+    #[test]
+    fn says_so_when_the_port_stays_taken() {
+        let holder = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = holder.local_addr().unwrap().port();
+
+        let started = Instant::now();
+        let refused = respond_retrying(port, announcement(), Arc::new(AtomicBool::new(false)), Duration::from_millis(300));
+        assert!(refused.unwrap_err().contains(&port.to_string()));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(holder);
     }
 
     #[test]

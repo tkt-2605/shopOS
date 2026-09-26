@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { setDeviceId } from '@shopos/core'
+import { setDeviceId, type DeviceStore } from '@shopos/core'
 
 /**
  * Establishes which machine this is, before anything can write a row.
@@ -176,15 +176,56 @@ export function deviceSetting(key: string): string | null {
  *
  * Returns false when the file could not be written, so a screen can say the
  * choice will not survive a restart instead of pretending it was saved.
+ *
+ * A new backup command is shown to a person in a Windows dialog first, and
+ * Cancel also returns false -- but it is an answer, not a broken machine, so it
+ * does not raise the banner that says this till cannot save what it knows.
+ *
+ * The same save asked twice while the first is still open is one save. Pressing
+ * Test blurs the command field, and the blur and the test both save the new
+ * command: without this that is two dialogs, one behind the other.
  */
-export async function setDeviceSetting(key: string, value: string | null): Promise<boolean> {
+export function setDeviceSetting(key: string, value: string | null): Promise<boolean> {
+  const ask = JSON.stringify([key, value])
+  const open = saving.get(ask)
+  if (open) return open
+  const save = writeSetting(key, value).finally(() => saving.delete(ask))
+  saving.set(ask, save)
+  return save
+}
+
+/** What Rust answers when the person pressed Cancel (`device.rs`). */
+const DECLINED = 'DECLINED'
+const saving = new Map<string, Promise<boolean>>()
+
+async function writeSetting(key: string, value: string | null): Promise<boolean> {
   try {
     adopt(await invoke<DeviceIdentity>('device_set_setting', { key, value }))
     return true
   } catch (err) {
+    if (err === DECLINED) return false
     problem = err instanceof Error ? err.message : String(err)
     console.error(`Could not record ${key} for this machine:`, problem)
     announce()
     return false
   }
+}
+
+/**
+ * The two functions above, in the shape core asks for.
+ *
+ * Core takes a `DeviceStore` rather than importing this module, because
+ * `packages/core` may not know what Tauri is. There are now three callers —
+ * `moveSettingsToDevice` at startup, `witnessClock` beside it, and the licence
+ * card — and the first two used to build the object literal inline. A named one
+ * matters more than it looks: the card needs the *same* store the witness wrote
+ * to, and two literals that drift apart would leave the clock warning reading a
+ * key nobody had written.
+ *
+ * `DEVICE_LOCAL_KEYS` is not a gate on what may be stored here. It is the
+ * one-time list of settings moved out of the shop's table; `device_set_setting`
+ * on the Rust side takes any key at all.
+ */
+export function deviceStore(): DeviceStore {
+  return { has: deviceSetting, put: setDeviceSetting }
 }

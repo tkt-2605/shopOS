@@ -1,136 +1,47 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { startupStatus, type StartupFailureKind } from './startup'
+import { startupStatus } from './startup'
 import { logEvent } from './log'
 import {
   createTauriDriver, migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type SqlDriver,
 } from '@shopos/core'
 import {
   DEVICE_LOCAL_KEYS, chooseRegister, chosenRegister, deviceSetting,
-  establishDevice, recordStranded, setDeviceSetting,
+  deviceStore, establishDevice, recordStranded,
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
+import { settleRestore } from './restoreHold'
 import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
 import { runStockCheck, startMaintenanceTimer } from './maintenance'
-import { resumeServing } from './syncHost'
-import { startSyncLoop, stopSyncLoop } from './syncLoop'
+import { serveIfPaired, servingOn } from './syncHost'
+import { syncFetch } from './syncFetch'
+import { startSyncLoop, stopSyncLoop, runOnce, nudgeSync } from './syncLoop'
+import { watchForTillsAhead } from './outOfDate'
+import { nudgingDriver } from './nudgingDriver'
+import { serializingDriver } from './writeLock'
 import {
-  isFirstRun, firstRun, seedDemoData, applyUpgrades, login,
-  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
-  moveSettingsToDevice, resetSyncState,
+  isFirstRun, firstRun, seedDemoData, applyUpgrades, login, pairWith, askToJoin, pollJoin,
+  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister, claimIfUnclaimed,
+  renewClaim,
+  moveSettingsToDevice, resetSyncState, witnessClock,
   loadFeatures, setFeature, FEATURES_OFF,
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
   loadTaxScheme, setTaxScheme, taxSchemeAnswered, type TaxScheme,
   loadShopProfile,
 } from '@shopos/core'
-import type {
-  SessionUser, Features, FeatureKey, StockPolicy, ShopProfile, Rounding,
-} from '@shopos/core'
+import type { SessionUser, Features, FeatureKey, StockPolicy, ShopProfile, Rounding } from '@shopos/core'
+import type { CoreValue, FailureKind, Status } from './coreValue'
+
+/* The types live in `coreValue.ts`; `FailureKind` is re-exported because the
+   screens that explain a failed start have always found it here. */
+export type { FailureKind } from './coreValue'
 
 /** Until the database has been read. Never printed — the setup screen runs first. */
 const NO_SHOP: ShopProfile = {
   name: 'My Shop',
   address: null, phone: null, email: null, gstin: null, stateCode: null,
   receiptFooter: null, terms: null, logo: null,
-}
-
-type Status =
-  | { phase: 'starting' }
-  | { phase: 'setup' }
-  | { phase: 'ready' }
-  /**
-   * `kind` so the screen can offer the right way out, not only the right words.
-   *
-   * A database written by a newer build and a database that is damaged both
-   * stop the till, and the two want opposite advice: one wants this machine
-   * updated, and the other wants a backup restored. Offering "Restore a
-   * backup…" first to a shop whose till is merely behind invites them to
-   * overwrite a newer database with an older copy, which is how a day's billing
-   * is lost while following the instructions on the screen.
-   */
-  | { phase: 'failed'; error: string; kind: FailureKind }
-
-/**
- * Every way the till can fail to open, from both sides of the bridge.
- *
- * The first three are Rust's, decided from SQLite's own error codes before the
- * webview has asked the database anything. The next two are the webview's,
- * raised by the migration runner. They are one union because `CouldNotStart` has
- * to give one answer, and the answers are opposites: a till that is merely
- * behind must not be offered a Restore button, and a till with a damaged file
- * must not be told to go and update itself.
- */
-export type FailureKind =
-  | StartupFailureKind
-  | 'schema_too_new'
-  | 'schema_unversioned'
-  | 'other'
-
-interface CoreValue {
-  db: SqlDriver
-  status: Status
-  user: SessionUser | null
-  registerId: string
-  registerName: string
-  /**
-   * Who the shop is, on paper. Held here rather than read per screen so that
-   * saving a new name or address changes the sidebar and the next receipt at the
-   * same moment — a shop that corrects its GSTIN and then prints the old one
-   * until it restarts would have no way of knowing the save worked.
-   */
-  shop: ShopProfile
-  refreshShop: () => Promise<void>
-  /** `shop.name`, kept for the places that only ever wanted the name. */
-  shopName: string
-  /**
-   * Which optional capabilities this shop uses. Held here rather than read on
-   * every screen so that switching one off takes effect everywhere at once —
-   * the product form, the prices screen and the counter cannot disagree about
-   * whether the shop has quantity breaks.
-   */
-  features: Features
-  setFeatureFlag: (key: FeatureKey, on: boolean) => Promise<void>
-  /** What the counter does when the count says there is nothing left. */
-  stockPolicy: StockPolicy
-  /**
-   * What the counter does with the last few paise.
-   *
-   * In context rather than read per screen because the cart computes its own
-   * totals as the cashier works — the service reads the same setting when it
-   * writes the bill, and the two have to agree to the paisa or the counter
-   * shows one figure and charges another.
-   */
-  rounding: Rounding
-  setRoundingTo: (rule: Rounding) => Promise<void>
-  setStockPolicyTo: (policy: StockPolicy) => Promise<void>
-  /**
-   * Which GST scheme the shop is under, and whether a person has ever said.
-   *
-   * In context for the same reason as `rounding`: the cart works out its own
-   * totals as the cashier types, the service works them out again when it
-   * writes the bill, and a screen that thought the shop charged tax while the
-   * service thought it did not would show one figure and charge another.
-   *
-   * `taxSchemeAsked` is false until somebody answers. Until then the till is
-   * deriving the scheme from whether a GSTIN is set, which is a guess -- a good
-   * one, and still a guess about whether this shop may collect tax.
-   */
-  taxScheme: TaxScheme
-  taxSchemeAsked: boolean
-  setTaxSchemeTo: (scheme: TaxScheme) => Promise<void>
-  /**
-   * How the last automatic backup went, or null before the first one has run.
-   *
-   * Held here rather than fetched by the Settings screen because the screen is
-   * not open when it happens — the backup runs at startup and again at 02:00,
-   * and its failure used to be returned to a `void` call and dropped. A shop
-   * whose backup folder had gone read-only found out when it needed the backup.
-   */
-  backup: DailyResult | null
-  reloadRegister: () => Promise<void>
-  setUser: (user: SessionUser | null) => void
-  completeSetup: (input: { shopName: string; password: string; withDemo: boolean }) => Promise<void>
 }
 
 const Ctx = createContext<CoreValue | null>(null)
@@ -151,7 +62,20 @@ export function useUser(): SessionUser {
   return user
 }
 
-const db = createTauriDriver(invoke)
+/* Two wrappers, innermost first.
+
+   `serializingDriver` queues writes, because this webview has two independent
+   sources of them -- the sync loop and the inbound requests Rust forwards -- on
+   a connection that holds one transaction at a time. `writeLock.ts` carries the
+   argument, including why billing had to be behind the same queue.
+
+   `nudgingDriver` then tells the other tills, rather than waiting up to
+   forty-five seconds for the loop to come round. It is outside, so the nudge
+   fires once the write is committed and the queue is free again. */
+const db = nudgingDriver(
+  serializingDriver(createTauriDriver(invoke)),
+  () => nudgeSync(db),
+)
 
 /**
  * Migration must run exactly once per process. StrictMode invokes effects twice in
@@ -182,6 +106,14 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
        in afterwards. */
     await establishDevice()
 
+    /* The latest instant this machine has ever seen, recorded on the machine
+       rather than in the shop's database — replicating it would let the till
+       with the furthest-wrong clock poison every other till's idea of the time.
+       Here rather than later because a start is exactly the moment worth
+       witnessing, and it touches no table, so it does not wait on `migrate`.
+       Never throws: a machine that cannot record the date still sells. */
+    await witnessClock(deviceStore())
+
     /* Every migration, as it commits. An upgrade is the most dangerous thing
        this program does to a shop's data and it used to happen in silence: if a
        till came back wrong after an update there was no way to tell which
@@ -200,6 +132,9 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
     await resetSyncState(db)
 
     await adoptDeviceSettings(db)
+    /* A till restored from its own backup, taking up where it left off. After
+       the migrations, because a backup can be older than this build. */
+    await settleRestore(db)
     const needsSetup = await isFirstRun(db)
     // A shop that upgrades into a new screen should find it there, without the
     // owner's own permission choices being reset to make room for it.
@@ -219,10 +154,7 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
  * `moveSettingsToDevice` where it is tested.
  */
 async function adoptDeviceSettings(db: SqlDriver): Promise<void> {
-  const { stranded } = await moveSettingsToDevice(db, DEVICE_LOCAL_KEYS, {
-    has: deviceSetting,
-    put: setDeviceSetting,
-  })
+  const { stranded } = await moveSettingsToDevice(db, DEVICE_LOCAL_KEYS, deviceStore())
   // Left in the shared table on purpose; the next start tries again. Recorded
   // rather than only logged, because what the shopkeeper actually sees when this
   // fails is a till that printed somewhere else and stopped backing up.
@@ -249,6 +181,9 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     let stopBackupTimer: (() => void) | null = null
     let stopMaintenance: (() => void) | null = null
+    /* Before anything can talk to another till, so the first hello from a
+       newer one is written down. */
+    const stopWatching = watchForTillsAhead()
 
     void (async () => {
       try {
@@ -274,10 +209,12 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         await loadRegister()
         await applyAppearance()
 
-        /* The port is held by Rust and the subscription by the webview, and a
-           reload ends one without ending the other. Left alone that is a till
+        /* A shop that has a second till answers it, without anybody having
+           pressed anything. Also picks the port back up after a webview reload:
+           the port is held by Rust and the subscription by the webview, and a
+           reload ends one without ending the other, which leaves a till
            listening with nobody behind it. */
-        void resumeServing(db).catch(() => undefined)
+        void serveIfPaired(db).catch(() => undefined)
 
         /* Catching up on its own, because nobody presses a button every ninety
            seconds all day. Does nothing at all until a shop has paired, which
@@ -321,6 +258,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       stopSyncLoop()
       stopBackupTimer?.()
       stopMaintenance?.()
+      stopWatching()
     }
   }, [])
 
@@ -405,9 +343,75 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     }
 
     const id = await resolveDeviceRegister(db, chosenRegister())
+
+    /* A till that is billing on a counter says so, even if nobody ever asked it
+       which one -- a shop that has run on one machine for a year has never been
+       asked, and its counter would otherwise be offered to the second till as
+       free on the day it arrives. Only takes one nobody has spoken for. */
+    if (id !== null) {
+      await claimIfUnclaimed(db, id)
+      /* And says so again every start, which is what turns the claim from a
+         lock with no expiry into a statement with a date on it. A counter whose
+         holder has stopped starting up can then be offered to the machine in
+         front of the shopkeeper, by name and by date, instead of being refused
+         for ever. Migration 045 carries the argument. */
+      await renewClaim(db, id)
+    }
+
     setRegisterId(id ?? '')
     const row = id ? await db.get<{ name: string }>(`SELECT name FROM registers WHERE id = ?`, [id]) : undefined
     setRegisterName(row?.name ?? '')
+  }
+
+  function urlOf(address: string): string {
+    const bare = address.trim().replace(/\/+$/, '')
+    return bare.startsWith('http') ? bare : `http://${bare}`
+  }
+
+  /* Where to call back. A till that is not listening yet sends nothing and is
+     recorded when it first makes a signed request instead -- but if it is
+     listening, saying so now is the difference between the other till being
+     able to start a round and only ever answering one. */
+  async function mineToGiveOut() {
+    return { listenPort: (await servingOn())?.port ?? null }
+  }
+
+  /** Knocking. Nothing is granted here; the other till's shopkeeper decides. */
+  async function askToJoinShop(address: string) {
+    return await askToJoin(urlOf(address), null, syncFetch, await mineToGiveOut())
+  }
+
+  /** "May I yet?" — and, once allowed, the shop arrives. */
+  async function waitToJoinShop(address: string, requestId: string) {
+    const answer = await pollJoin(db, urlOf(address), requestId, syncFetch, await mineToGiveOut())
+    if (answer.state === 'ALLOWED') await theShopHasArrived()
+    return answer
+  }
+
+  /** The bottom rung: a code read off the other till, for a network that
+   *  answers no shouts. `pairWith` settles it in one request. */
+  async function joinShop(input: { address: string; code: string }) {
+    await pairWith(db, urlOf(input.address), input.code.trim(), null, syncFetch, await mineToGiveOut())
+    await theShopHasArrived()
+  }
+
+  async function theShopHasArrived() {
+    /* Everything, in batches, through the loop the app already runs rather than
+       a second path that could differ from it. `force` because the loop's own
+       backoff has no opinion yet about a peer it has never met. */
+    await runOnce(db, true)
+
+    await loadRegister()
+    await applyAppearance()
+    setFeatures(await loadFeatures(db))
+    setPolicy(await loadStockPolicy(db))
+    setRound(await loadRounding(db))
+    await refreshScheme()
+    startSyncLoop(db)
+    /* Not `ready` yet. That swaps the join screen for the sign-in one, and the
+       join screen still has to ask which counter this machine is -- skipped,
+       the machine falls back to the other till's counter and both mint the
+       same invoice numbers. The join screen reloads once that is answered. */
   }
 
   async function completeSetup(input: { shopName: string; password: string; withDemo: boolean }) {
@@ -430,6 +434,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       taxScheme, taxSchemeAsked, setTaxSchemeTo,
       setFeatureFlag, setStockPolicyTo, setRoundingTo,
       reloadRegister: loadRegister, setUser, completeSetup,
+      joinShop, askToJoinShop, waitToJoinShop,
     }}>
       {children}
     </Ctx.Provider>

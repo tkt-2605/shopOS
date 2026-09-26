@@ -1,9 +1,10 @@
 import { format as fmtMoney, inWords, type Money } from '../money.js'
 import { formatQty } from '../quantity.js'
+import { formatDate, escapeHtml as esc } from './docText.js'
 import { BILL_WORDING, type DocWording } from './wording.js'
 /* Type-only, and it has to stay that way: a runtime import of `receipt.ts` from
    here would close the ring back through `docFormat.ts`. See `wording.ts`. */
-import type { ReceiptDoc } from './receipt.js'
+import type { ReceiptDoc } from './receipt/doc.js'
 
 /**
  * The shop's own HTML, for the sheet only.
@@ -388,28 +389,6 @@ const SAFE_DATA_URI = /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0
 
 function signedMoney(amount: Money): string {
   return amount < 0 ? `-${fmtMoney(Math.abs(amount) as Money)}` : `+${fmtMoney(amount)}`
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso.length === 10 ? `${iso}T00:00:00` : iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-}
-
-/**
- * Escaped at the one place a value becomes markup.
- *
- * The values are the shop's own, but a product called "Salt & Pepper 500g" or a
- * customer called "Smith <Retail>" would break the page, and a template is
- * exactly where a shop puts a value somewhere nobody anticipated. The template's
- * own text is never escaped — that is the markup the shop wrote.
- */
-function esc(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }
 
 /* ------------------------------------------------------------- starter --- */

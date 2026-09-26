@@ -25,6 +25,10 @@ class TauriDriver implements SqlDriver {
     return rows[0]
   }
 
+  async queryValues(sql: string, params: SqlValue[] = []): Promise<SqlValue[][]> {
+    return this.call<SqlValue[][]>('sql_query_values', { sql, params }, sql)
+  }
+
   async execute(sql: string, params: SqlValue[] = []): Promise<ExecResult> {
     return this.call<ExecResult>('sql_execute', { sql, params }, sql)
   }
@@ -83,6 +87,15 @@ class TxDriver extends TauriDriver {
     return this.call<T[]>('sql_tx_query', { token: this.token, sql, params }, sql)
   }
 
+  /* Inside the token, like every other statement here. A Drizzle query that
+     went out through `sql_query_values` would read around the transaction it
+     believes it is in: on one connection it would in fact join it and see its
+     uncommitted rows, which is the right answer by accident today and the wrong
+     one the moment reads move off this connection. */
+  override async queryValues(sql: string, params: SqlValue[] = []): Promise<SqlValue[][]> {
+    return this.call<SqlValue[][]>('sql_tx_query_values', { token: this.token, sql, params }, sql)
+  }
+
   override async execute(sql: string, params: SqlValue[] = []): Promise<ExecResult> {
     return this.call<ExecResult>('sql_tx_execute', { token: this.token, sql, params }, sql)
   }
@@ -100,6 +113,3 @@ class TxDriver extends TauriDriver {
   }
 }
 
-export async function backupDatabase(invoke: Invoke, target: string): Promise<void> {
-  await invoke('backup_database', { target })
-}

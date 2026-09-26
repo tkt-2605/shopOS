@@ -14,6 +14,9 @@ import { MERGE_BUDGET_MS } from '../src/db/driver.js'
 import { applyBatch } from '../src/services/sync.js'
 import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
 
+/** One id for a crafted record's `rowId` and its row's key, which a merge now holds to agreeing. */
+const ROW_ID = newId()
+
 /**
  * Stands in for src-tauri/src/db.rs: one connection, one transaction at a time,
  * guarded by a token. Mirroring the token rules here is what makes this a test of
@@ -38,6 +41,12 @@ function fakeRustLayer(backing: SqlDriver) {
     switch (cmd) {
       case 'sql_query':
         return backing.query(sql, params)
+      /* The positional pair. A service on typed queries reaches the bridge
+         through these and nothing else, so a fake without them is a fake of an
+         older `db.rs` — which is how this test caught `billing.ts` moving onto
+         Drizzle before the fake had been told. */
+      case 'sql_query_values':
+        return backing.queryValues(sql, params)
       case 'sql_execute':
         /* Refused while a transaction is open, as `db.rs` refuses it. There is
            one connection, so a statement outside the token would otherwise
@@ -53,6 +62,9 @@ function fakeRustLayer(backing: SqlDriver) {
       case 'sql_tx_query':
         assertToken()
         return backing.query(sql, params)
+      case 'sql_tx_query_values':
+        assertToken()
+        return backing.queryValues(sql, params)
       case 'sql_tx_execute':
         assertToken()
         return backing.execute(sql, params)
@@ -219,10 +231,10 @@ describe('what a transaction is allowed to take', () => {
       schemaVersion: EXPECTED_SCHEMA_VERSION,
       records: [{
         table: 'customers',
-        rowId: newId(),
+        rowId: ROW_ID,
         op: 'upsert',
         row: {
-          id: newId(), code: null, name: 'Someone', phone: null, email: null, gstin: null,
+          id: ROW_ID, code: null, name: 'Someone', phone: null, email: null, gstin: null,
           address: null, state_code: '33', price_list_id: null, credit_limit: 0,
           credit_enforcement: 'hard', is_active: 1, rev: 1, origin_id: null,
           created_at: '2026-03-01T10:00:00.000Z', updated_at: '2026-03-01T10:00:00.000Z',

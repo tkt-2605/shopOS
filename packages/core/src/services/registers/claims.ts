@@ -1,0 +1,290 @@
+import { eq, ne, and, isNull } from 'drizzle-orm'
+import type { SqlDriver } from '../../db/driver.js'
+import { q, schema } from '../../db/q.js'
+import { deviceId } from '../../device.js'
+
+/*
+ * Claims: which till has said it is billing on a counter, and taking one
+ * over from a till that has gone.
+ */
+
+/** A counter another till is sitting at, and which till that is. */
+export interface CounterTaken {
+  registerId: string
+  /** What that till calls itself, for a sentence naming it. */
+  label: string | null
+  deviceId: string
+  /** When the holder last said so, or null if it never has. See migration 045. */
+  at: string | null
+  /**
+   * True when a screen may offer to take it: unrenewed for long enough, or held
+   * by a device id this shop has never met, which is what a restored backup
+   * leaves behind. `claims` carries the reasoning.
+   */
+  stale: boolean
+}
+
+/**
+ * This machine says it sits at this counter, in the shop's own books.
+ *
+ * Written to the database rather than only to `device.json`, because the
+ * question "is this counter free" is one every till in the shop has to be able
+ * to answer, including tills that have never spoken to this one. `registers`
+ * replicates, so the claim travels the same way a price does — through a hub,
+ * through a till that was switched off when it was made.
+ *
+ * Which counter *this* machine sits at is still `device.json`'s answer and not
+ * this. The two say different things: the file says which counter to bill on,
+ * and this says who else must not. A shared row holding "the device's counter"
+ * is the bug that migration 019 exists to undo.
+ *
+ * Claiming releases whatever this machine held before, so a till moved from one
+ * counter to another does not leave the first one looking occupied for ever.
+ */
+export async function claimRegister(
+  db: SqlDriver,
+  input: { registerId: string; deviceId?: string | null },
+): Promise<void> {
+  const me = input.deviceId ?? deviceId()
+  if (me === null) {
+    // Claiming on behalf of a machine that cannot say which machine it is would
+    // write a claim nobody can release and that every till reads as somebody.
+    throw new Error('This machine does not know which machine it is')
+  }
+  const now = new Date().toISOString()
+  await db.transaction(async (tx) => {
+    await q(tx).update(schema.registers)
+      .set({ claimedBy: null, updatedAt: now })
+      .where(and(
+        eq(schema.registers.claimedBy, me),
+        ne(schema.registers.id, input.registerId),
+      ))
+    await q(tx).update(schema.registers)
+      .set({ claimedBy: me, updatedAt: now })
+      .where(eq(schema.registers.id, input.registerId))
+  })
+}
+
+/**
+ * Claims the counter this machine is already billing on, if nobody has.
+ *
+ * Every till that is selling is sitting at a counter, whether it was asked or
+ * fell back to the shop's only one. A till that never says so is a counter the
+ * *next* till will be offered as free — so a shop that has run happily on one
+ * machine for a year hands its counter to the second one on the day it arrives,
+ * which is the original bug wearing a different hat.
+ *
+ * Only when the counter is unspoken for. A claim by another till is not
+ * something to take: `resolveDeviceRegister` refuses that counter, and this
+ * machine is asked to pick again rather than quietly overwriting somebody.
+ */
+export async function claimIfUnclaimed(
+  db: SqlDriver,
+  registerId: string,
+  who: string | null = deviceId(),
+): Promise<void> {
+  if (who === null) return
+  await q(db).update(schema.registers)
+    .set({ claimedBy: who, updatedAt: new Date().toISOString() })
+    .where(and(eq(schema.registers.id, registerId), isNull(schema.registers.claimedBy)))
+}
+
+/**
+ * How long a claim stands without being renewed before a screen will offer it.
+ *
+ * Three days, which is the shortest span that is certainly not a weekend. A
+ * till switched off on Friday evening must still own its counter on Monday
+ * morning — the alternative is a shopkeeper arriving to find the front counter
+ * offered to the back one and taking it in the ordinary course of saying yes to
+ * things.
+ *
+ * Nothing expires on its own. This is the point at which a *person* is offered
+ * the choice, with the till named and the date shown. An automatic release
+ * would be two tills billing on one counter at the end of a long weekend, which
+ * is the one outcome the claim exists to prevent.
+ */
+export const CLAIM_GOES_STALE_MS = 3 * 24 * 60 * 60 * 1000
+
+/** Who holds a counter, and whether anybody should still believe it. */
+export interface Claim {
+  /** The device holding it, or null for a counter nobody has spoken for. */
+  deviceId: string | null
+  /** What that till calls itself, when this shop has met it. Null for a ghost. */
+  label: string | null
+  /** When the claim was last renewed. Null means never — see migration 045. */
+  at: string | null
+  /** True when this machine is the holder. */
+  mine: boolean
+  /**
+   * True when a screen may offer to take it.
+   *
+   * Either unrenewed for long enough, or held by a device id this shop has
+   * never heard of — a restored backup carries the claim of the machine it was
+   * taken from, and `device.json` is deliberately not in the backup, so the
+   * holder is an identity that does not exist anywhere.
+   */
+  stale: boolean
+}
+
+/**
+ * Says so, and renews it.
+ *
+ * Called at startup by the till that holds the counter, which is what turns
+ * `claimed_by` from a lock with no expiry into a statement with a date on it.
+ * A claim that is never renewed is one whose holder has stopped starting up,
+ * and after 045 a screen can say that in words rather than refusing.
+ */
+export async function renewClaim(
+  db: SqlDriver,
+  registerId: string,
+  who: string | null = deviceId(),
+): Promise<void> {
+  if (who === null) return
+  await q(db).update(schema.registers)
+    .set({ claimedAt: new Date().toISOString() })
+    .where(and(eq(schema.registers.id, registerId), eq(schema.registers.claimedBy, who)))
+}
+
+/**
+ * Who holds each counter, and whether the claim still means anything.
+ *
+ * The question `Registers.tsx` and `JoinShop.tsx` both had to answer with
+ * "claimed" and nothing else, which is right when the holder is the machine in
+ * the next aisle and wrong when it is a device id that no longer exists.
+ */
+export async function claims(db: SqlDriver, now = Date.now()): Promise<Map<string, Claim>> {
+  const rows = await q(db)
+    .select({
+      id: schema.registers.id,
+      claimedBy: schema.registers.claimedBy,
+      claimedAt: schema.registers.claimedAt,
+    })
+    .from(schema.registers)
+
+  const peers = await q(db)
+    .select({ deviceId: schema.syncPeers.deviceId, label: schema.syncPeers.label })
+    .from(schema.syncPeers)
+  const known = new Map(peers.map((p) => [p.deviceId, p.label]))
+
+  const me = deviceId()
+  const held = new Map<string, Claim>()
+  for (const row of rows) {
+    if (row.claimedBy === null) {
+      held.set(row.id, { deviceId: null, label: null, at: null, mine: false, stale: false })
+      continue
+    }
+    const mine = me !== null && row.claimedBy === me
+    /* A holder this shop has never paired with and that is not this machine is
+       a ghost: the claim came in on a restored backup, and no amount of waiting
+       will produce the till that made it. */
+    const ghost = !mine && !known.has(row.claimedBy)
+    const age = row.claimedAt === null ? null : now - Date.parse(row.claimedAt)
+    held.set(row.id, {
+      deviceId: row.claimedBy,
+      label: known.get(row.claimedBy) ?? null,
+      at: row.claimedAt,
+      mine,
+      stale: !mine && (ghost || age === null || age > CLAIM_GOES_STALE_MS),
+    })
+  }
+  return held
+}
+
+/**
+ * Takes a counter whose claim has gone stale.
+ *
+ * Deliberately separate from `claimIfUnclaimed`, which takes only what nobody
+ * has spoken for. This one overrides somebody, so it refuses unless the claim
+ * really is stale — a person pressing a button must not be able to take a
+ * counter the till beside them is billing on, whatever the screen says.
+ */
+export type TakeRegisterResult =
+  | { ok: true }
+  | { ok: false; code: 'STILL_HELD'; label: string | null; at: string | null }
+
+export async function takeRegister(
+  db: SqlDriver,
+  registerId: string,
+  now = Date.now(),
+): Promise<TakeRegisterResult> {
+  const me = deviceId()
+  if (me === null) throw new Error('this machine has no device id')
+
+  const claim = (await claims(db, now)).get(registerId)
+  if (claim === undefined) throw new Error('no such register')
+  if (claim.mine || claim.deviceId === null) {
+    await claimIfUnclaimed(db, registerId, me)
+    await renewClaim(db, registerId, me)
+    return { ok: true }
+  }
+  if (!claim.stale) return { ok: false, code: 'STILL_HELD', label: claim.label, at: claim.at }
+
+  await q(db).update(schema.registers)
+    .set({ claimedBy: me, claimedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+    .where(eq(schema.registers.id, registerId))
+  return { ok: true }
+}
+
+/**
+ * A till that is not coming back.
+ *
+ * There was no way to forget a peer anywhere in this codebase, and the cost of
+ * that is not tidiness. `pruneAcknowledged` holds the feed at the lowest cursor
+ * of *every* peer, so one machine that was sold, stolen or thrown away pins the
+ * change feed of every remaining till for the life of the shop — it grows, every
+ * round reads more of it, and nothing ever says why.
+ *
+ * Forgetting takes the row and releases whatever it was holding. The counter it
+ * sat at becomes free rather than stale, because this is a person saying that
+ * machine is gone, which is better evidence than a date.
+ *
+ * Not reversible, and it does not need to be: a till that comes back pairs
+ * again, which is the same walk to the other machine it took the first time.
+ */
+export async function forgetPeer(db: SqlDriver, peerDeviceId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await q(tx).update(schema.registers)
+      .set({ claimedBy: null, claimedAt: null, updatedAt: new Date().toISOString() })
+      .where(eq(schema.registers.claimedBy, peerDeviceId))
+    await q(tx).delete(schema.syncPeers).where(eq(schema.syncPeers.deviceId, peerDeviceId))
+  })
+}
+
+/**
+ * Counters held by a device id nobody in this shop answers to.
+ *
+ * What a restore leaves behind. The backup carries `registers.claimed_by` and
+ * does not carry `device.json`, so the machine that comes up is a new identity
+ * looking at a shop whose counters all belong to a till that no longer exists.
+ * It cannot bill — `resolveDeviceRegister` returns null once any peer row
+ * exists — and until now it could not take its own counter back either, because
+ * every screen refused a claimed one.
+ *
+ * Offered at the moment the shopkeeper is already answering questions about the
+ * restore, rather than discovered on a Saturday.
+ */
+export async function ghostClaims(db: SqlDriver): Promise<Claim[]> {
+  const held = await claims(db)
+  const peers = await q(db)
+    .select({ deviceId: schema.syncPeers.deviceId })
+    .from(schema.syncPeers)
+  const known = new Set(peers.map((p) => p.deviceId))
+  const me = deviceId()
+
+  return [...held.values()].filter(
+    (c) => c.deviceId !== null && c.deviceId !== me && !known.has(c.deviceId),
+  )
+}
+
+/** Releases every ghost claim, so a restored machine can take its counter. */
+export async function clearGhostClaims(db: SqlDriver): Promise<number> {
+  const ghosts = await ghostClaims(db)
+  if (ghosts.length === 0) return 0
+  const now = new Date().toISOString()
+  for (const ghost of ghosts) {
+    await q(db).update(schema.registers)
+      .set({ claimedBy: null, claimedAt: null, updatedAt: now })
+      .where(eq(schema.registers.claimedBy, ghost.deviceId!))
+  }
+  return ghosts.length
+}

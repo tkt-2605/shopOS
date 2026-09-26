@@ -9,6 +9,9 @@ import { EXPECTED_SCHEMA_VERSION } from '../../../packages/core/src/db/schemaVer
 import { MIGRATIONS } from '@shopos/core/migrations'
 import { buildSyntheticShop, type SyntheticShop } from '../src/build.js'
 
+/** One id for a crafted record's `rowId` and its row's key, which a merge now holds to agreeing. */
+const ROW_ID = newId()
+
 /**
  * The Phase 3 checks that only exist at size.
  *
@@ -99,6 +102,11 @@ function counting(db: SqlDriver): { driver: SqlDriver; rows: () => number } {
       return rows
     },
     get: (sql, params) => db.get(sql, params),
+    queryValues: async (sql, params) => {
+      const rows = await db.queryValues(sql, params)
+      read += rows.length
+      return rows
+    },
     execute: (sql, params) => db.execute(sql, params),
     transaction: (fn) => fn(driver),
     close: () => Promise.resolve(),
@@ -134,10 +142,10 @@ describe('replaying the stock ledger, on forty-seven thousand movements', () => 
       schemaVersion: EXPECTED_SCHEMA_VERSION,
       records: [{
         table: 'stock_ledger',
-        rowId: newId(),
+        rowId: ROW_ID,
         op: 'upsert',
         row: {
-          id: newId(), product_id: product, posting_date: '2026-09-15',
+          id: ROW_ID, product_id: product, posting_date: '2026-09-15',
           qty_change: -10_000, unit_cost: 1000, balance_qty: 0,
           voucher_type: 'bill', voucher_id: newId(), created_by: null,
           created_at: '2026-09-15T10:00:00.000Z',

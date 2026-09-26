@@ -10,6 +10,9 @@ import { migrate } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { newId } from '../src/ids.js'
 import { freshDb, type Fixture } from './helpers.js'
+import { bootstrap } from '../src/services/bootstrap.js'
+import { setDeviceId } from '../src/device.js'
+import type { SqlDriver } from '../src/db/driver.js'
 
 /**
  * Telling one customer from another.
@@ -177,5 +180,98 @@ describe('changing a customer', () => {
     const r = await createCustomer(fx.db, ctx(), { name: '   ' })
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.code).toBe('NAME_REQUIRED')
+  })
+})
+
+/**
+ * The shop's reference number, once there is more than one counter.
+ *
+ * `MAX + 1` computed on two machines that cannot see each other returns the
+ * same number twice, and `customers.code` carries no unique index, so the merge
+ * applies both and nothing anywhere says that C0005 now names two people. The
+ * prefix is what `doc_no` has always used against exactly this, and it is what
+ * the series uses now.
+ */
+describe('two counters minting at once', () => {
+  async function till(prefix: string, device: string): Promise<SqlDriver> {
+    const db = openMemoryDatabase()
+    await migrate(db, MIGRATIONS)
+    const seed = await bootstrap(db, { shopName: 'Test Shop', registerPrefix: prefix })
+    await db.execute(`UPDATE registers SET claimed_by = ? WHERE id = ?`, [device, seed.registerId])
+    return db
+  }
+
+  /** A customer the shop already had before the tills lost sight of each other. */
+  async function alreadyHas(db: SqlDriver, code: string): Promise<void> {
+    const now = new Date().toISOString()
+    await db.execute(
+      `INSERT INTO customers (id, code, name, state_code, created_at, updated_at)
+       VALUES (?, ?, 'Before the split', '33', ?, ?)`,
+      [newId(), code, now, now],
+    )
+  }
+
+  afterEach(() => { setDeviceId(null) })
+
+  it('does not give two people the same reference', async () => {
+    const front = await till('MR', 'device-front')
+    const back = await till('B2', 'device-back')
+    for (const db of [front, back]) await alreadyHas(db, 'C0004')
+
+    setDeviceId('device-front')
+    const atTheFront = await nextCustomerCode(front)
+    setDeviceId('device-back')
+    const atTheBack = await nextCustomerCode(back)
+
+    expect(atTheFront).not.toBe(atTheBack)
+    expect([atTheFront, atTheBack]).toEqual(['CMR0005', 'CB20005'])
+
+    await front.close()
+    await back.close()
+  })
+
+  it('carries on from the number the shop had reached, not from one', async () => {
+    /* A year on one till, then a second one arrives. Restarting at CMR0001 is
+       unique and reads like the customer list has been wiped. */
+    const db = await till('MR', 'device-front')
+    setDeviceId('device-front')
+    await alreadyHas(db, 'C0400')
+
+    expect(await nextCustomerCode(db)).toBe('CMR0401')
+    await db.close()
+  })
+
+  it('counts on in its own series once it has started one', async () => {
+    const db = await till('MR', 'device-front')
+    setDeviceId('device-front')
+    await alreadyHas(db, 'C0400')
+
+    const first = await createCustomer(db, { actorId: newId() }, { name: 'One' })
+    const second = await createCustomer(db, { actorId: newId() }, { name: 'Two' })
+    expect(first.ok && first.code).toBe('CMR0401')
+    expect(second.ok && second.code).toBe('CMR0402')
+    await db.close()
+  })
+
+  it('leaves a till that has claimed no counter minting as it always did', async () => {
+    /* One till, never asked which counter it is. There is nobody to collide
+       with, and its codes are printed in the shop's book. */
+    const db = openMemoryDatabase()
+    await migrate(db, MIGRATIONS)
+    await bootstrap(db, { shopName: 'Test Shop' })
+    setDeviceId('device-alone')
+
+    expect(await nextCustomerCode(db)).toBe('C0001')
+    await db.close()
+  })
+
+  it('mints into whatever series it is told to', async () => {
+    const db = await till('MR', 'device-front')
+    setDeviceId('device-front')
+    await alreadyHas(db, 'C0004')
+
+    expect(await nextCustomerCode(db, 'B2')).toBe('CB20005')
+    expect(await nextCustomerCode(db, null)).toBe('C0005')
+    await db.close()
   })
 })

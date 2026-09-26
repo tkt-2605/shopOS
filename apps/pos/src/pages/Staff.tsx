@@ -6,6 +6,7 @@ import {
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert } from '../ui/components'
+import { useShopChanged } from '../core/useShopChanged'
 
 interface NewStaff {
   username: string
@@ -38,6 +39,8 @@ export default function Staff() {
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
+  // And again whenever the other till sends something this list shows.
+  useShopChanged(refresh)
 
   function say(message: string) {
     setNotice(message)

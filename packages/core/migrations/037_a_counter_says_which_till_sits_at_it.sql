@@ -1,0 +1,43 @@
+-- Which till sits at a counter, as a fact about the counter.
+--
+-- ── What was wrong ────────────────────────────────────────────────────────
+--
+-- Two tills on one counter mint invoice numbers from the same series, and the
+-- first bill to cross fails on `bills.doc_no`. That is not hypothetical: it
+-- happened on a bench of three tills, twenty-four times in a row, every one of
+-- them `BT2/2627/00001`.
+--
+-- Stopping a till being *handed* the other's counter was not enough. Nothing
+-- stopped one being *chosen*, and the screens that offer the choice could not
+-- help, because this till had no idea which counters were spoken for.
+--
+-- The first attempt at that was to remember what each peer said its counter was
+-- in `/hello`. It is the wrong shape twice over:
+--
+--   * **It is late.** Two tills that both choose before they have exchanged a
+--     hello each see an empty list and both pick the same one. That is the
+--     ordinary case, not a rare race — a shop sets up its second till and picks
+--     its counter within the same minute.
+--   * **It is only as wide as who you talk to.** A shop with a hub has a till
+--     that has never spoken to its sibling and never will: rows relay through
+--     the middle (see 036), but hellos do not. The third counter would know
+--     nothing about the second's.
+--
+-- ── What this changes ─────────────────────────────────────────────────────
+--
+-- The claim moves onto the counter itself, where it is a fact about the shop
+-- rather than an observation about a conversation. `registers` replicates, so
+-- one till claiming a counter is something every till learns — through a hub,
+-- through a till that was switched off at the time, through whatever path the
+-- rows take.
+--
+-- NULL means nobody has said. That is right for every counter in a shop already
+-- running, and for a single-till shop, which claims nothing and needs to.
+--
+-- Two tills that claim one counter while out of touch is still possible, and it
+-- is now recoverable rather than silent: the merge settles on one of them, and
+-- the till that lost finds its own counter claimed by somebody else and is
+-- asked to pick again before it can bill. `SAME_REGISTER` stays as the backstop
+-- underneath that.
+
+ALTER TABLE registers ADD COLUMN claimed_by TEXT;
