@@ -232,6 +232,11 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
             : 'Nothing here for this machine? Sign in, open Counters and add one — '
               + 'this till will keep asking until it has one of its own.'}
         </p>
+        {/* The shop is here either way; this is the way on when no counter
+            above can be taken. Reloading opens it like any other start. */}
+        <button className="btn ghost" onClick={() => window.location.reload()}>
+          Sign in without choosing
+        </button>
       </div>
     )
   }

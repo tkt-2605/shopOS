@@ -123,6 +123,15 @@ describe('the app', () => {
     expect(scan(TAURI, (f) => !f.startsWith('core/'))).toEqual([])
   })
 
+  it('declares no component inside another', () => {
+    /* A component declared in another's body is a new type on every render,
+       so React throws the old one away with its state. The split of App.tsx
+       left the setup screens inside `App`: joining a shop changed the
+       provider, `App` rendered again, and the join screen went back to the
+       first door before it could ask which counter this machine is. */
+    expect(files.flatMap((f) => componentsInside(name(f), readFileSync(f, 'utf8')))).toEqual([])
+  })
+
   it(`has no file over ${MAX_COMPONENT_LINES} lines`, () => {
     const long = files
       .map((f) => ({ file: name(f), lines: lineCount(readFileSync(f, 'utf8')) }))
@@ -163,7 +172,53 @@ describe('the scanner itself', () => {
     expect(TAURI.test(`const { open } = await import('@tauri-apps/plugin-dialog')`)).toBe(true)
     expect(TAURI.test(withoutComments(`// import { invoke } from '@tauri-apps/api/core'`))).toBe(false)
   })
+
+  it('catches a component declared inside another, however it is indented', () => {
+    const app = [
+      'export default function App() {',
+      '  const { status } = useCore()',
+      'function Setup() {',
+      '  return <div />',
+      '}',
+      '  const Door = () => <span />',
+      "  if (status.phase === 'setup') return <Setup />",
+      '  return <Door />',
+      '}',
+    ].join('\n')
+    expect(componentsInside('App.tsx', app)).toEqual(['App.tsx:3 Setup in App', 'App.tsx:6 Door in App'])
+    expect(componentsInside('ok.tsx', 'function A() { const onClick = () => 1; return null }\nfunction B() { return null }')).toEqual([])
+  })
 })
+
+/**
+ * Components declared in another component's body, as `file:line Inner in Outer`.
+ * A component is a function whose name starts with a capital, which is also how
+ * JSX tells one from an element.
+ */
+function componentsInside(file: string, source: string): string[] {
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const found: string[] = []
+  const isComponent = (n: string | undefined) => n !== undefined && /^[A-Z]/.test(n)
+  const nameOf = (node: ts.Node): string | undefined => {
+    if (ts.isFunctionDeclaration(node)) return node.name?.text
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+      && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) return node.name.text
+    return undefined
+  }
+  const walk = (node: ts.Node, outer: string | null) => {
+    const own = nameOf(node)
+    let inside = outer
+    if (isComponent(own)) {
+      if (outer !== null) {
+        found.push(`${file}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1} ${own} in ${outer}`)
+      }
+      inside = own!
+    }
+    ts.forEachChild(node, (child) => walk(child, inside))
+  }
+  walk(sf, null)
+  return found
+}
 
 /** The methods only a driver has, which is how a driver is recognised by type. */
 const DRIVER_METHODS = new Set(['query', 'queryValues', 'get', 'execute', 'transaction'])

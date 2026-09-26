@@ -399,7 +399,10 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setRound(await loadRounding(db))
     await refreshScheme()
     startSyncLoop(db)
-    setStatus({ phase: 'ready' })
+    /* Not `ready` yet. That swaps the join screen for the sign-in one, and the
+       join screen still has to ask which counter this machine is -- skipped,
+       the machine falls back to the other till's counter and both mint the
+       same invoice numbers. The join screen reloads once that is answered. */
   }
 
   async function completeSetup(input: { shopName: string; password: string; withDemo: boolean }) {

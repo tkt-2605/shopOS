@@ -91,6 +91,13 @@ const PAGE_TITLES: Record<string, string> = {
 
 export default function App() {
   const { status, user } = useCore()
+  if (status.phase === 'starting') return <Empty>Starting…</Empty>
+  if (status.phase === 'failed') return <CouldNotStart error={status.error} kind={status.kind} />
+  if (status.phase === 'setup') return <Setup />
+  if (!user) return <Login />
+  return <Shell />
+}
+
 /**
  * The first screen a machine ever shows, and it has three doors.
  *
@@ -260,13 +267,6 @@ function NewShop({ onCancel }: { onCancel: () => void }) {
       </form>
     </div>
   )
-}
-
-  if (status.phase === 'starting') return <Empty>Starting…</Empty>
-  if (status.phase === 'failed') return <CouldNotStart error={status.error} kind={status.kind} />
-  if (status.phase === 'setup') return <Setup />
-  if (!user) return <Login />
-  return <Shell />
 }
 
 function Shell() {
