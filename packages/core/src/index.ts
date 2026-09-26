@@ -25,7 +25,7 @@ export * as DocFormat from './domain/docFormat.js'
 export { REPLICATED, NOT_REPLICATED, shapeOf, type RecordShape, type ChangeRecord, type ChangeBatch } from './domain/replicaShape.js'
 export { handleSyncRequest, serveAs, setServingRegisterSource, LISTEN_PORT_HEADER, peerAddressFrom, offerPairing, withdrawPairing, pairingOnOffer, expectingAJoin, pendingJoin, onJoinRequest, allowJoin, refuseJoin, PAIRING_WINDOW_MS, type SyncRequest, type SyncResponse, type JoinRequest } from './services/syncServer.js'
 export {
-  forgetNonces, CLOCK_TOLERANCE_MS, setFingerprintSource, pairingKey, comparisonDigits,
+  forgetNonces, CLOCK_TOLERANCE_MS, setFingerprintSource, pairingKey, comparisonDigits, codeProof, codeConfirmation, keyCommitment,
 } from './services/syncAuth.js'
 export { nextBackoff, BACKOFF_START_MS, BACKOFF_MAX_MS } from './services/syncBackoff.js'
 export { httpTransport, pairWith, askToJoin, pollJoin, pairedPeers, rememberAddress, SyncHttpError, type PeerAddress, type PairOutcome, type SelfAddress, type JoinProgress } from './services/syncClient.js'

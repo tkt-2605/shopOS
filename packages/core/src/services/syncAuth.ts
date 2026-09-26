@@ -333,6 +333,57 @@ export async function agreeSecret(
  * shows its own, which the shop checks against this. Bluetooth's numeric
  * comparison and ZRTP do the same thing for the same reason.
  */
+/**
+ * A key made from a pairing code, slowly.
+ *
+ * The typed code used to cross the wire as it was typed, beside the joining
+ * till's key -- so a machine in the middle could read it and relay the whole
+ * request with a key of its own. Now the code never crosses: each side proves
+ * it knows it with an HMAC over the keys, and neither proof can be moved to a
+ * different key.
+ *
+ * Slowly, because a proof is something to guess against. Eight characters from
+ * thirty-two is forty bits, which a fast hash gives up to one graphics card in
+ * minutes; a hundred thousand rounds of PBKDF2 makes that years, against a code
+ * that is spent on the first attempt and gone in ten minutes. Salted with the
+ * joining till's id, so no two pairings share a table.
+ */
+export const CODE_ROUNDS = 100_000
+
+async function codeKey(code: string, joiner: string): Promise<Key> {
+  const material = await globalThis.crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(code.trim().toUpperCase()), 'PBKDF2', false, ['deriveBits'],
+  )
+  const bits = await globalThis.crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2', hash: 'SHA-256', iterations: CODE_ROUNDS,
+      salt: new TextEncoder().encode(`shopos pairing code|${joiner}`),
+    },
+    material, 256,
+  )
+  return globalThis.crypto.subtle.importKey('raw', bits, ALGORITHM, false, ['sign'])
+}
+
+async function macWith(key: Key, message: string): Promise<string> {
+  return hex(new Uint8Array(await globalThis.crypto.subtle.sign(ALGORITHM.name, key, new TextEncoder().encode(message))))
+}
+
+/** The joining till's proof that it was read the code, bound to its key. */
+export async function codeProof(code: string, joiner: string, joinerKey: string): Promise<string> {
+  return macWith(await codeKey(code, joiner), `join\n${joinerKey}`)
+}
+
+/**
+ * The shop's answer to it: that it knows the code too, bound to both keys. A
+ * machine in the middle that swapped either key cannot make this, so the
+ * joining till checks it before it trusts the key it was handed.
+ */
+export async function codeConfirmation(
+  code: string, joiner: string, joinerKey: string, hostKey: string,
+): Promise<string> {
+  return macWith(await codeKey(code, joiner), `shop\n${joinerKey}\n${hostKey}`)
+}
+
 export async function keyCommitment(publicKey: string): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(publicKey))
   return hex(new Uint8Array(digest))

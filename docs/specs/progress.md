@@ -1124,12 +1124,14 @@ The four things left open by that review were closed on 27 September:
   Turso database to being a `SqlDriver` that syncs as a peer, never through
   libSQL's own replication.
 
-Still open, found while doing the above:
+Found while doing the above:
 
-- **The typed-code pairing sends the code and the key in the clear.** A
-  machine in the middle can relay both. The fix is to send a proof made with
-  the code rather than the code, and to show digits on that path too; it is
-  the fallback for a network where discovery finds nothing, so it is second.
+- **The typed-code pairing sent the code in the clear** -- closed the same day.
+  The code never crosses now: the joining till sends an HMAC over its key made
+  with a key derived from the code (PBKDF2, 100,000 rounds, salted with its id),
+  and the shop answers with one over both keys, which the joining till checks
+  before it trusts anything. A request carrying the code as typed is refused and
+  spends the code. `aCodeThatNeverCrosses.test.ts`.
 - Everything under "Verification a person has to do", including the
   multi-till checks added to `hand-checks.md`.
 

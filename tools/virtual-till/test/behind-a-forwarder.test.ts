@@ -54,7 +54,7 @@ describe('the address a till records for a peer', () => {
     const front = await host()
     const back = await joiner()
 
-    const { offerPairing, pairingKey } = await import('@shopos/core')
+    const { offerPairing, pairingKey, codeProof } = await import('@shopos/core')
     const code = await front.as(async () => offerPairing())
     // The joining till's half of the key agreement; the secret is never sent.
     const { publicKey } = await pairingKey()
@@ -66,7 +66,11 @@ describe('the address a till records for a peer', () => {
         'x-shopos-remote': '172.21.0.3',
         'x-shopos-port': '7801',
       },
-      body: JSON.stringify({ code, deviceId: back.deviceId, label: 'Back counter', publicKey }),
+      // A proof of the code, never the code: see `codeProof`.
+      body: JSON.stringify({
+        proof: await codeProof(code, back.deviceId, publicKey), deviceId: back.deviceId,
+        label: 'Back counter', publicKey,
+      }),
     })
 
     const peers = await front.as(() => pairedPeers(front.db))

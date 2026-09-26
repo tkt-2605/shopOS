@@ -2,7 +2,7 @@ import { eq, ne, and, isNotNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { deviceId, replacedDevice } from '../device.js'
-import { myFingerprint, keyCommitment } from './syncAuth.js'
+import { myFingerprint, keyCommitment, codeProof, codeConfirmation, constantTimeEquals } from './syncAuth.js'
 import type { ChangeBatch } from '../domain/replicaShape.js'
 import type { PeerHello, SyncTransport } from './sync.js'
 import {
@@ -192,7 +192,8 @@ export async function pairWith(
         : {}),
     },
     body: JSON.stringify({
-      code: code.trim().toUpperCase(), deviceId: me, label, publicKey: key.publicKey,
+      /* Not the code: a proof of it, bound to our key. See `codeProof`. */
+      proof: await codeProof(code, me, key.publicKey), deviceId: me, label, publicKey: key.publicKey,
       // Symmetric, so that when there is one to send neither side has to be
       // the one that was upgraded first.
       fingerprint: myFingerprint(),
@@ -203,7 +204,14 @@ export async function pairWith(
   const text = await response.text()
   if (!response.ok) throw new SyncHttpError(response.status, codeIn(text, response.status))
 
-  const outcome = await agreed(JSON.parse(text) as Record<string, unknown>, key)
+  const said = JSON.parse(text) as Record<string, unknown>
+  /* The shop proves it knows the code too, over both keys, before anything it
+     said is believed. A key swapped in the middle fails here. */
+  if (typeof said['publicKey'] !== 'string' || typeof said['confirm'] !== 'string'
+    || !constantTimeEquals(await codeConfirmation(code, me, key.publicKey, said['publicKey']), said['confirm'])) {
+    throw new SyncHttpError(502, 'NOT_THE_SHOP')
+  }
+  const outcome = await agreed(said, key)
   await rememberTheShop(db, baseUrl, outcome)
   return justTheShop(outcome)
 }
