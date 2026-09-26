@@ -165,7 +165,7 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
         <h2 style={{ fontSize: 15, margin: '0 0 4px' }}>Waiting for the other till</h2>
         <p style={{ fontSize: 12.5, color: 'var(--ink-2)', marginTop: 0 }}>
           It is asking whoever is standing there to let this machine in. Check
-          these four digits match the ones on its screen before they say yes.
+          these six digits match the ones on its screen before they say yes.
           If they do not, stop: something on the network is between the two tills.
         </p>
         <div style={{ fontSize: 44, letterSpacing: 8, fontWeight: 600, margin: '10px 0' }}>

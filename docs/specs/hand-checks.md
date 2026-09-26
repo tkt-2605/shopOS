@@ -108,6 +108,42 @@ smallest setup that can test sync at all.
 
 ---
 
+## Session 2b — two tills kept apart
+
+From the pre-release review of 26 September. Each of these was a fault a test
+now covers; what a person adds is the real LAN, the real restart and the real
+screens. Two machines, paired, and a way to pull one off the network.
+
+- [ ] **Both apart, same customer.** Unplug one. Edit the same customer on both
+      and ring a bill for them on both. Plug back in: both bills on both tills,
+      one version of the customer, and the Sync card lists the dropped edit.
+
+- [ ] **One apart for days.** Keep the back till off while the front does more
+      than 200 things, including adding a product to a new category and then
+      renaming the category. It catches up to the end; nothing sits in "could
+      not be saved" afterwards.
+
+- [ ] **A name used twice.** Make a login `ravi` on both while apart. After
+      sync, one is listed as not saved. Rename one, sync again, and the list
+      empties by itself.
+
+- [ ] **Restore on the same machine.** Take a backup of the back till, ring
+      three bills on it, sync, then restore that backup there. It starts with
+      "Billing is held" on every screen and refuses a bill. Pair it with the
+      front till again: the front till lists one back till, not two. After the
+      sync the hold is gone, the three bills are back here, and the next bill's
+      number follows the third.
+
+- [ ] **Cancel across the gap.** Ring a bill on the front, sync, take the front
+      off, cancel that bill on the back. Front back on: cancelled on both, with
+      the lines it was printed with.
+
+- [ ] **Two machines with no counter.** A laptop and a till that never chose a
+      counter each post a stock entry while apart. Both numbers start `S` and a
+      lowercase `d`, and they differ.
+
+---
+
 ## Session 3 — three machines
 
 An hour, and it needs a third PC. Everything here is about a shop that is not a
@@ -133,6 +169,35 @@ pair, which is the shape that two machines cannot show you.
       card shows.
       → Migration 048 exists because three caught-up tills displayed "?" and
       nothing on screen could have told you it was wrong.
+
+- [ ] **Two tills apart for a day, then together.** Unplug the switch. On both,
+      edit the same customer and ring up bills for that customer. On the front
+      till add a category, put a product in it, then rename the category. Plug
+      the switch back in. Both tills end with every bill, the renamed
+      category and its product, and the Sync card lists the customer edit as a
+      conflict. Nothing stays under "could not be saved here".
+      → The rename-after-add is the batch-boundary case that used to wedge a
+        pair of tills for good.
+
+- [ ] **One till off for three days.** Leave the back till off while the front
+      rings up a few hundred bills and edits items. Switch it on. It catches up
+      without anyone touching it, and every total matches.
+
+- [ ] **A bill cancelled on the other till.** Ring up a bill on the front till,
+      let it cross, switch the front till off, cancel the bill on the back
+      till, switch the front on. The front shows it cancelled, lines unchanged.
+
+- [ ] **Two machines with no counter.** On a back-office machine and a second
+      one that has not claimed a counter, post a stock entry on each while
+      apart. Their numbers start `Sd…` and differ; both arrive on both.
+
+- [ ] **Restore a till from its own backup, then bill.** Take a backup of the
+      back till, ring up three bills on it, let them cross, then restore that
+      backup on the same machine. After the restart: the counter is still its
+      own, a banner says billing is held, and Billing refuses with the reason.
+      Pair it with the front till again. Once the sync finishes the banner goes,
+      the three bills are back on it, and the next bill takes the number after
+      them -- not one of theirs. The front till shows one back till, not two.
 
 ---
 

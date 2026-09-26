@@ -10,7 +10,7 @@ import { loadRounding, loadTaxScheme } from '../features.js'
 import { chargesTax } from '../../domain/taxScheme.js'
 import { DRAFT } from '../../integrity/docstatus.js'
 import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../../repos/pricing.js'
-import { nextDocNo } from '../numbering.js'
+import { nextDocNo, seriesPrefix } from '../numbering.js'
 import { writeAudit } from '../../integrity/audit.js'
 import type { CreateDocumentInput, CreateDocumentResult } from './types.js'
 import { supplyFor } from '../billing/load.js'
@@ -101,7 +101,7 @@ export async function createDocument(
       .select({ prefix: schema.registers.prefix })
       .from(schema.registers)
       .where(eq(schema.registers.id, input.registerId))
-    docNo = await nextDocNo(tx, input.kind, register?.prefix ?? 'MR', now)
+    docNo = await nextDocNo(tx, input.kind, register?.prefix ?? await seriesPrefix(tx, 'MR'), now)
 
     await q(tx).insert(schema.documents).values({
       id: documentId,

@@ -1,7 +1,8 @@
-import { eq, sql } from 'drizzle-orm'
+import { count, eq, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { myRegisterPrefix } from './registers.js'
+import { deviceId } from '../device.js'
 
 /**
  * Numbers are scoped per register and per fiscal year. The register prefix is not
@@ -44,9 +45,33 @@ import { myRegisterPrefix } from './registers.js'
  * `fallback` is for a till with no counter of its own. A shop with one till
  * cannot collide with anybody, which is what makes it safe there and nowhere
  * else.
+ *
+ * Nowhere else meant exactly that, and was not enforced: two machines without
+ * a counter -- a back-office laptop, a till that never claimed one -- both
+ * numbered their stock entries `SMR/2627/00001` while apart, and the second to
+ * arrive was set aside with its movements landing loose. So once the shop has
+ * another till, a machine with no counter numbers under its own tag: `d` and
+ * three hex characters of its device id, lowercase. A counter's prefix is
+ * `[A-Z0-9]{2,4}`, and the `d` means a tag always holds a character no prefix
+ * can -- an all-digit tag would not -- so the two are never one series. Four
+ * characters because sixteen is the whole budget.
  */
 export async function seriesPrefix(db: SqlDriver, fallback: string): Promise<string> {
-  return (await myRegisterPrefix(db)) ?? fallback
+  const mine = await myRegisterPrefix(db)
+  if (mine !== null) return mine
+  const me = deviceId()
+  if (me === null || !await hasPeers(db)) return fallback
+  return deviceTag(me)
+}
+
+/** The series a machine with no counter numbers under, in a shop of several. */
+export function deviceTag(id: string): string {
+  return `d${id.replace(/[^0-9a-f]/gi, '').slice(0, 3).toLowerCase()}`
+}
+
+async function hasPeers(db: SqlDriver): Promise<boolean> {
+  const [row] = await q(db).select({ n: count() }).from(schema.syncPeers)
+  return (row?.n ?? 0) > 0
 }
 
 export type DocType =

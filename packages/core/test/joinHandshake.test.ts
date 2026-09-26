@@ -104,13 +104,13 @@ describe('a till asking to be let in', () => {
     expect(pendingJoin()).toBeNull()
   })
 
-  it('waits, and says which four digits to look for', async () => {
+  it('waits, and says which six digits to look for', async () => {
     addingATill()
     const asked = await knock('Back Counter')
 
     expect(asked.state).toBe('PENDING')
     if (asked.state !== 'PENDING') return
-    expect(asked.digits).toMatch(/^\d{4}$/)
+    expect(asked.digits).toMatch(/^\d{6}$/)
 
     // And the shop's own screen has the same request, to show beside them.
     const door = pendingJoin()

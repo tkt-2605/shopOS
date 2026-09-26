@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { openMemoryDatabase } from '@shopos/core/node'
 import { migrate, processReturn, type SqlDriver } from '@shopos/core'
 import { MIGRATIONS } from '@shopos/core/migrations'
@@ -43,7 +44,10 @@ import { buildSyntheticShop } from '../src/build.js'
  * changes it, and the diff will show the new figures going in.
  */
 
-const RECORDED = join(dirname(new URL(import.meta.url).pathname.slice(1)), 'reports-recorded.json')
+/* `fileURLToPath`, not `pathname.slice(1)`: the slice turns `/C:/...` into a
+   Windows path and turns `/home/...` into a relative one, so on Linux the file
+   was written under the working directory and never compared against. */
+const RECORDED = join(dirname(fileURLToPath(import.meta.url)), 'reports-recorded.json')
 
 /** The whole generated year, so nothing is excluded by the range. */
 const RANGE = { from: '2025-09-01', to: '2026-09-30' }

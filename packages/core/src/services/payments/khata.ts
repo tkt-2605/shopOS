@@ -6,7 +6,7 @@ import { newId } from '../../ids.js'
 import type { Money } from '../../money.js'
 import { SUBMITTED } from '../../integrity/docstatus.js'
 import { writeAudit } from '../../integrity/audit.js'
-import { nextDocNo } from '../numbering.js'
+import { nextDocNo, seriesPrefix } from '../numbering.js'
 import { type ReceiptMethod, type RecordPaymentResult, recordPayment } from './receipts.js'
 
 /*
@@ -208,7 +208,7 @@ export async function recordOpeningBalance(
       .select({ prefix: schema.registers.prefix })
       .from(schema.registers)
       .where(eq(schema.registers.id, input.registerId))
-    docNo = await nextDocNo(tx, 'bill', input.registerPrefix ?? `OB${at?.prefix ?? ''}`, now)
+    docNo = await nextDocNo(tx, 'bill', input.registerPrefix ?? (at ? `OB${at.prefix}` : await seriesPrefix(tx, 'OB')), now)
     await q(tx).insert(schema.bills).values({
       id: billId,
       docNo,

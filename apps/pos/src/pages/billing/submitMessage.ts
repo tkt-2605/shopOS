@@ -14,7 +14,10 @@ export function submitMessage(result: Extract<SubmitBillResult, { ok: false }>):
         : `Not enough stock.${how}`
     }
     case 'CREDIT_LIMIT_EXCEEDED':
-      return `Over the credit limit by ${Money.formatWithSymbol(result.excess)}. Take a payment first or reduce the bill.`
+      /* Checked against what this till knows. Two tills apart can each give
+         credit up to the limit, so the shop's figure may already be higher. */
+      return `Over the credit limit by ${Money.formatWithSymbol(result.excess)}, going by what this till knows. `
+        + 'Take a payment first or reduce the bill.'
     case 'PAYMENT_MISMATCH':
       return 'The payment does not match the bill total.'
     case 'INVALID_PAYMENT':

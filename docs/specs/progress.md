@@ -1023,6 +1023,93 @@ WhatsApp paperwork. Phase 7 is deliberately deferred.
 
 ---
 
+### Pre-release review, 26 September
+
+A review of the till-sync seam before Phase 4, with the three worst faults
+reproduced against real SQLite before anything was changed. Fixed:
+
+- **A record whose parent is in a later batch wedged the pair.** The feed is a
+  set, so editing a category after putting a product in it moves the category
+  behind the product; across a batch boundary the deferred foreign key failed
+  the COMMIT on both passes and the cursor never moved. The slow pass now asks
+  `PRAGMA foreign_key_check` first and sets the orphans aside
+  (`parentsArriveLater.test.ts`).
+- **Quarantine was a one-way door.** Records are tried again after every merge,
+  including a round that brings nothing, and leave when they land.
+- **A submitted document's lines were not final.** A copy with different lines
+  replaced them wholesale under a frozen header. Refused now, caches aside.
+- **A restore on the same machine lost data both ways and reused invoice
+  numbers.** The machine takes a new identity at the commit, adopts its counter,
+  tells the till it pairs with whose place it takes, and holds billing until it
+  has caught up (`restoreThenSync.test.ts`, `restoreHold.test.tsx`).
+- **Counterless machines shared `MR`.** They number under `d` and three hex
+  characters of their id once the shop has another till.
+- Six comparison digits; the replay window after a restart written down and
+  tested; a CSP test; the credit-limit sentence says whose figure it is; the
+  lockfile carries the portal, so `npm ci` works; the reports snapshot is
+  compared on Linux rather than written beside it.
+
+Left open, deliberately:
+
+- **Pairing has no commitment.** A machine in the middle sees the joining key
+  before choosing the one it shows, so it can grind keys until the digits
+  match; six digits is a cost, not a wall. The fix is a hash of one key sent
+  before the other is seen.
+- **For the cloud peer, not before it:** a record should carry the till that
+  wrote it rather than the one that relayed it; feed pruning is pinned by any
+  peer that is paired and never heard from; the cloud link needs TLS pinned to
+  the fingerprint from 047; Turso must sit behind `SyncTransport` rather than
+  use its own replication; and a merge should refuse while two clocks are
+  further apart than the tie-break can trust.
+- **The restore hold clears on one peer.** A shop of three where the bills
+  went to the till that is off will clear it early. Rare, and the numbering
+  floor still catches the collision when they arrive.
+
+## The pre-release review of 26 September
+
+A review of the sync seam before release found two faults that ended in a shop
+silently losing data, and a handful of smaller ones. All fixed, each with a test
+that fails on the code before it.
+
+- **A record whose parent is in a later batch wedged a pair of tills.** The
+  feed is a set, so renaming a category after adding a product to it put the
+  product's entry first; across a batch boundary the deferred foreign key failed
+  the COMMIT on both passes, nothing was set aside and the cursor never moved.
+  The slow pass now asks `PRAGMA foreign_key_check` before committing and sets
+  orphans aside (`sync/setAside.ts`). `parentsArriveLater.test.ts`.
+- **Set-aside records never came back.** They are tried again after every
+  merge, including one that brings nothing, and leave quarantine when they land.
+- **The lines of a submitted document could be replaced by a peer's copy.**
+  Refused now, caches aside (`refusedLinesOfSubmitted`).
+- **A till restored from its own backup lost data both ways.** The other tills'
+  cursors sat above its restored feed, so its new work never left, and its
+  bills since the backup were filed as its own and never sent back -- after
+  which it could reissue their invoice numbers. A restore now gives the machine
+  a new identity (`restore.rs`), the app moves the counter across and forgets
+  the peers the backup remembered, pairing tells the other till whose place it
+  takes, and billing is held until a sync has caught up, with "Bill anyway" for
+  a person who knows better. `restoreThenSync.test.ts`, over real sockets.
+- **Counterless machines shared the `MR` series.** In a shop of several they
+  number under `d` and three hex characters of their device id, which no
+  counter prefix can be.
+- Smaller: the pairing check is six digits, and its comment no longer claims
+  odds it does not have; the replay window after a restart is written down and
+  held harmless by `replayAfterRestart.test.ts`; the CSP is asserted; the credit
+  refusal says it is this till's view; the lockfile carries the portal, so
+  `npm ci` works; `reportsParity` finds its snapshot on Linux.
+
+Open from the same review, deliberately not done here:
+
+- **Pairing digits need a commitment.** A machine in the middle sees the
+  joining till's key before choosing the one it shows it, so it can grind keys
+  until six digits match. The fix is one side sending a hash of its key first,
+  which is a change to the pairing exchange.
+- **Cloud-tier items:** the wire does not carry a row's true origin, so a hub
+  sends everything one hop too far; a paired peer that is never reached (a phone,
+  a cloud replica) pins the feed; cloud sync must be TLS with the fingerprint
+  pinned; a Turso replica must sit behind `SyncTransport`, not its own
+  replication.
+
 ## Left that is not code
 
 These are the owner's, and nothing in the next four weeks is blocked on them.

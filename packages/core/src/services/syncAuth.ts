@@ -138,8 +138,17 @@ export function decodeAuth(header: string | null | undefined): SignedRequest | n
  * Nonces already seen, so a captured request cannot be sent a second time.
  *
  * In memory and not in the database on purpose. It only has to cover the window
- * a timestamp is accepted in, a restart makes every old request stale anyway,
- * and a table would be one more thing to write on every single request.
+ * a timestamp is accepted in, and a table would be one more thing to write on
+ * every single request.
+ *
+ * What that leaves, said plainly: a restart forgets them, and a request
+ * captured in the five minutes before it can be sent again afterwards. It is
+ * accepted because a replay changes nothing. `/hello` only reads. `/fetch`
+ * moves a cursor forwards and never back. `/offer` carries rows the merge has
+ * already decided on -- an older copy loses to what is here and writes nothing
+ * -- and moves a cursor forwards only. `replayAfterRestart.test.ts` holds that
+ * to be true, because the day an endpoint stops being idempotent is the day
+ * this needs a table.
  */
 const seen = new Map<string, number>()
 
@@ -303,15 +312,21 @@ export async function agreeSecret(
  * They used to be two random digits, honest about proving nothing. Taken from
  * the keys, they prove the thing that matters: a machine in the middle has to
  * swap in keys of its own, and then the two screens show different numbers.
- * Four digits, so a machine in the middle guessing a match wins once in ten
- * thousand tries, and every try is a shopkeeper pressing Refuse.
+ * Six digits. Four were said to make a machine in the middle win once in ten
+ * thousand tries, each one a shopkeeper pressing Refuse -- which is not so: it
+ * sees the joining till's key before it has to choose the one it shows that
+ * till, so it can try keys offline until the digits match, and ten thousand
+ * key pairs is a moment's work. Six makes that a million, which is a cost and
+ * not a wall. The wall is a commitment -- one side sends a hash of its key
+ * before it sees the other's, as Bluetooth numeric comparison does -- and that
+ * is a change to the pairing exchange, recorded in `progress.md`.
  */
 export async function comparisonDigits(joinerKey: string, hostKey: string): Promise<string> {
   const digest = new Uint8Array(await globalThis.crypto.subtle.digest(
     'SHA-256', new TextEncoder().encode(`${joinerKey}|${hostKey}`),
   ))
   const n = ((digest[0]! << 24) >>> 0) + (digest[1]! << 16) + (digest[2]! << 8) + digest[3]!
-  return String(n % 10_000).padStart(4, '0')
+  return String(n % 1_000_000).padStart(6, '0')
 }
 
 function unhex(text: string): Uint8Array<ArrayBuffer> {

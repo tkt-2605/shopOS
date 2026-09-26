@@ -202,3 +202,33 @@ describe('a shop with one till', () => {
     expect(await stockIn()).toMatch(/^SMR\//)
   })
 })
+
+describe('two machines with no counter, in a shop of several', () => {
+  /* The fallback was safe in a shop of one and nowhere else, and nothing
+     stopped it being used elsewhere: a back-office laptop and a till that never
+     claimed a counter both numbered `SMR/...` while apart. */
+  it('number under their own tags, which no counter prefix can be', async () => {
+    await fx.db.execute(`UPDATE registers SET claimed_by = NULL`)
+    await fx.db.execute(
+      `INSERT INTO sync_peers (device_id, created_at) VALUES ('some-other-till', ?)`,
+      [new Date().toISOString()],
+    )
+
+    setDeviceId(TILL_A)
+    const fromA = await stockIn()
+    setDeviceId(TILL_B)
+    const fromB = await stockIn()
+
+    expect(fromA).toMatch(/^Sd111\//)
+    expect(fromB).toMatch(/^Sd222\//)
+    expect(fromA.length).toBeLessThanOrEqual(16)
+  })
+
+  it('never shares a series with a counter', async () => {
+    const { deviceTag } = await import('../src/services/numbering.js')
+    expect(deviceTag('3F9AC0DE-0000-4000-8000-000000000000')).toBe('d3f9')
+    for (const id of ['11111111-1111-4111-8111-111111111111', 'abcdef00-0000-4000-8000-000000000000']) {
+      expect(/^[A-Z0-9]{2,4}$/.test(deviceTag(id)), id).toBe(false)
+    }
+  })
+})
