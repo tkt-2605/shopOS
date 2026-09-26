@@ -49,7 +49,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # tauri::generate_context! wants the frontend folder to exist, not to be built.
       - run: mkdir -p apps/pos/dist
+      - run: cargo test --workspace --no-run
+      # Its own limit, so a hung test fails this step and keeps its log --
+      # the job limit cancels instead, and a cancelled job's log is not kept.
       - run: cargo test --workspace
+        timeout-minutes: 10
 
   windows:
     name: cargo test and unsigned installer (windows)
@@ -65,7 +69,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: npm run build -w @shopos/pos
+      - run: cargo test --workspace --no-run
       - run: cargo test --workspace
+        timeout-minutes: 10
       # Unsigned, and with no update feed: the base config has none, so this
       # installer never looks for an update. Fit for Windows Sandbox.
       - run: npm run tauri -w @shopos/pos -- build
