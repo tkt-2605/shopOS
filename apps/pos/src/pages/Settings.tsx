@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { Permissions, type Page } from '@shopos/core'
 import { useUser } from '../core/CoreProvider'
+import { goTo } from '../core/nav'
 import { SyncCard } from '../ui/SyncCard'
 import { LicenceCard } from '../ui/LicenceCard'
 import { Formats } from './Formats'
@@ -90,6 +91,12 @@ const GROUPS: { label: string; sections: SectionDef[] }[] = [
  * to Settings should not mean finding the section again.
  */
 let lastSection: SettingsSection = 'shop'
+
+/** Opens Settings at one section, for a screen that hands a job over to it. */
+export function openSettings(section: SettingsSection): void {
+  lastSection = section
+  goTo('settings')
+}
 
 export default function Settings({ initial }: { initial?: SettingsSection } = {}) {
   const user = useUser()

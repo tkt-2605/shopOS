@@ -363,3 +363,6 @@ export {
 export type {
   SupplierPlan, PlannedSupplier, SupplierRowProblem,
 } from './services/supplierImport.js'
+
+export { shopProgress, setupHidden, hideSetup } from './services/setup.js'
+export type { ShopStep, ShopProgress } from './services/setup.js'

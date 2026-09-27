@@ -867,3 +867,14 @@ tbody tr:hover { background: var(--accent-soft); }
 .licence-more-body { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; }
 .licence-said:empty { display: none; }
 .licence-said { margin-top: 10px; }
+
+/* Getting started, on the Dashboard (SetupChecklist.tsx). */
+.setup-steps { display: flex; flex-direction: column; gap: 0; padding-top: 4px; padding-bottom: 4px; }
+.setup-step { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--rule-soft); }
+.setup-step:first-child { border-top: 0; }
+.setup-step[data-done="yes"] { color: var(--ink-3); }
+.setup-mark {
+  width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--rule-soft); font-size: 12px; color: var(--ok);
+}
+.setup-step[data-done="yes"] .setup-mark { background: var(--ok-soft); border-color: var(--ok-soft); }

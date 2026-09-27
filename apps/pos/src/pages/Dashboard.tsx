@@ -7,6 +7,7 @@ import { lastStockCheck, type StockCheck } from '../core/maintenance'
 import { Stat, Card, Empty, Alert, Rupees } from '../ui/components'
 import { useShopChanged } from '../core/useShopChanged'
 import { Completeness } from '../ui/Completeness'
+import { SetupChecklist } from '../ui/SetupChecklist'
 
 interface Snapshot {
   todaySales: number
@@ -31,6 +32,7 @@ export default function Dashboard() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Above the numbers rather than under them: a qualification read after
           the figure has already been believed is not a qualification. */}
+      <SetupChecklist />
       <Completeness />
       <div className="stat-row">
         <Stat label="Sales today" value={<Rupees value={snap.todaySales} />} sub={`${snap.todayBills} bills`} />
