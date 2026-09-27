@@ -50,9 +50,11 @@ jobs:
       # tauri::generate_context! wants the frontend folder to exist, not to be built.
       - run: mkdir -p apps/pos/dist
       - run: cargo test --workspace --no-run
-      # Its own limit, so a hung test fails this step and keeps its log --
-      # the job limit cancels instead, and a cancelled job's log is not kept.
-      - run: cargo test --workspace
+      # One test at a time, so each name is printed as it starts, under a hard
+      # kill: the first Linux runs hung past both the step and job limits, and
+      # a cancelled job keeps no log. If this is ever killed, the last
+      # "test ... " line in the log is the one that hung.
+      - run: timeout -s KILL 300 cargo test --workspace -- --test-threads=1
         timeout-minutes: 10
 
   windows:
