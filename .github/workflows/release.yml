@@ -122,6 +122,13 @@ jobs:
           flags=(--draft --title "ShopOS $GITHUB_REF_NAME")
           # A beta tag is a prerelease, which "latest" also skips.
           if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
+          # The same installer under a name that never changes, so the site can
+          # link to .../releases/latest/download/ShopOS-setup.exe and start the
+          # download on one click, whatever the version. latest.json keeps
+          # pointing at the versioned name, which is what tills verify.
+          cp "$installer" ShopOS-setup.exe
+          # Shops read this; the draft state and the commit are for the owner
+          # and are on the release page and in the Actions run already.
           gh release create "$GITHUB_REF_NAME" --repo "$RELEASE_REPO" "${flags[@]}" \
-            --notes "Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA::12}. A draft: no till sees it until it is published. Try the installer in Windows Sandbox first." \
-            "$installer" "$installer.sig" latest.json
+            --notes "ShopOS ${version} for Windows 10 and 11 (64-bit). Download ShopOS-setup.exe and run it. Built from ${GITHUB_SHA::12}." \
+            "$installer" "$installer.sig" latest.json ShopOS-setup.exe
