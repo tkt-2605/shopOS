@@ -127,6 +127,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [59, '059_a_submitted_document_is_final.sql', 'additive'],
   [60, '060_whose_shelf_count.sql', 'additive'],
   [61, '061_a_peer_that_does_not_come_back.sql', 'additive'],
+  /* Three new tables and nothing changed on an old one. A till below this
+     skips batch rows as a table it does not have, which is 054's case. */
+  [62, '062_a_batch_and_the_day_it_expires.sql', 'additive'],
 ]
 
 /**

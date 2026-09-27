@@ -46,6 +46,23 @@ export function FeaturesSection() {
         />
       </Card>
 
+      <Card title="Stock">
+        <Switch
+          id="feature-batch-expiry"
+          on={features.batchExpiry}
+          onChange={(on) => void setFeatureFlag('batchExpiry', on)}
+          title="Batch numbers and expiry dates"
+          note={
+            'For medicines, baby food and anything else with a date on the pack. On, Stock in '
+            + 'asks for the batch and expiry of each line, the counter shows which batch a sale '
+            + 'comes out of — soonest to expire first — and lets the cashier pick another, and '
+            + 'Inventory lists what expires in the next three months. Items received without a '
+            + 'batch go on selling as before. Off, none of that is asked; batches already recorded '
+            + 'keep their balances, and turning it back on finds them right.'
+          }
+        />
+      </Card>
+
       <Card title="Customers">
         <Switch
           id="feature-unique-phone"

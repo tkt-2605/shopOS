@@ -49,6 +49,17 @@ export interface Features {
    * a constraint cannot be switched off.
    */
   uniquePhone: boolean
+  /**
+   * Batch numbers and expiry dates.
+   *
+   * On, a stock entry asks for the batch and expiry of each line, the counter
+   * shows which batch a sale comes out of and lets the cashier pick another,
+   * and Inventory lists what is about to expire. Off, none of those are asked
+   * or shown -- but a sale of an item that already has batches still comes out
+   * of them, so that switching back on finds every balance right. See
+   * `services/batches.ts`.
+   */
+  batchExpiry: boolean
 }
 
 export type FeatureKey = keyof Features
@@ -57,12 +68,14 @@ const SETTING: Record<FeatureKey, string> = {
   multiBarcode: 'feature_multi_barcode',
   tieredPricing: 'feature_tiered_pricing',
   uniquePhone: 'feature_unique_phone',
+  batchExpiry: 'feature_batch_expiry',
 }
 
 const LABEL: Record<FeatureKey, string> = {
   multiBarcode: 'Several barcodes per item',
   tieredPricing: 'Quantity price breaks',
   uniquePhone: 'One customer per phone number',
+  batchExpiry: 'Batch numbers and expiry dates',
 }
 
 /**
@@ -71,7 +84,7 @@ const LABEL: Record<FeatureKey, string> = {
  * does mean never used.
  */
 export const FEATURES_OFF: Features = {
-  multiBarcode: false, tieredPricing: false, uniquePhone: false,
+  multiBarcode: false, tieredPricing: false, uniquePhone: false, batchExpiry: false,
 }
 
 export async function loadFeatures(db: SqlDriver): Promise<Features> {

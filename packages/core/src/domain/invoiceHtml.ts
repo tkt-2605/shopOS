@@ -314,7 +314,7 @@ function columnsFor(doc: ReceiptDoc): Columns {
 function itemRow(item: ReceiptItem, index: number, has: Columns): string {
   return `<tr>
     <td class="c-no">${index + 1}</td>
-    <td class="c-name">${esc(item.name)}</td>
+    <td class="c-name">${esc(item.name)}${item.batch ? `<div class="c-batch">${esc(item.batch)}</div>` : ''}</td>
     ${has.hsn ? `<td class="c-hsn">${esc(item.hsnCode ?? '')}</td>` : ''}
     <td class="c-num">${esc(`${formatQty(item.qty)} ${item.saleUnit}`)}</td>
     <td class="c-num">${esc(fmtMoney(item.rate))}</td>
@@ -467,6 +467,7 @@ function styles(pageSize: string, preview: boolean): string {
     .items tbody tr { break-inside: avoid; }
     .c-no { width: 26px; color: #666; }
     .c-hsn { width: 62px; }
+    .c-batch { font-size: 10px; color: #555; }
     .c-num { text-align: right; white-space: nowrap; }
     th.c-num { text-align: right; }
     .totals, .payments { font-size: 10pt; }

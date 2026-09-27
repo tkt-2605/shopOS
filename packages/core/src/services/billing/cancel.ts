@@ -7,6 +7,7 @@ import {
 import { writeAudit } from '../../integrity/audit.js'
 import { recheckDocStatus } from '../../integrity/transition.js'
 import { reverseVoucher } from '../stock.js'
+import { reverseBatches } from '../batches.js'
 import { openSessionFor, postCashMovement } from '../cash.js'
 import { reverseBillFulfilment } from '../documents.js'
 import { createBill } from './draft.js'
@@ -60,6 +61,7 @@ export async function cancelBill(
   await db.transaction(async (tx) => {
     await recheckDocStatus(tx, 'bills', input.billId, 'bill', 'cancel')
     await reverseVoucher(tx, 'bill', input.billId, bill.postingDate, input.actorId)
+    await reverseBatches(tx, 'bill', input.billId, bill.postingDate, input.actorId)
 
     const session = await openSessionFor(tx, bill.registerId)
     if (session) {

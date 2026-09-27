@@ -16,6 +16,7 @@ import { CatalogueFile } from '../ui/CatalogueFile'
 import { BLANK, levelOf, type Draft } from './inventory/draft'
 import { useParentSearch } from './inventory/useParentSearch'
 import { ProductForm } from './inventory/ProductForm'
+import { ExpiringCard, ProductBatches } from './inventory/Batches'
 
 export default function Inventory() {
   const { db, features } = useCore()
@@ -27,6 +28,7 @@ export default function Inventory() {
      reads the ledger itself, and a snapshot taken here would be one more
      thing to keep in step with it. */
   const [history, setHistory] = useState<ProductListItem | null>(null)
+  const [batchesFor, setBatchesFor] = useState<ProductListItem | null>(null)
   const [confirmUi, ask] = useConfirm()
   const [notice, setNotice] = useState<string | null>(null)
   const [categories, setCategories] = useState<Category[]>([])
@@ -331,6 +333,8 @@ export default function Inventory() {
         {canWrite && <button className="btn primary" onClick={() => setDraft({ ...BLANK })}>New product</button>}
       </div>
 
+      {features.batchExpiry && <ExpiringCard />}
+
       <div className="card card-scroll">
         <table>
           <thead>
@@ -373,6 +377,9 @@ export default function Inventory() {
                       got there. The average is derived, so the rows it is
                       derived from are the answer to any question about it. */}
                   <button className="btn ghost sm" onClick={() => setHistory(p)}>History</button>
+                  {features.batchExpiry && (
+                    <button className="btn ghost sm" onClick={() => setBatchesFor(p)}>Batches</button>
+                  )}
                   {canWrite && (
                     <button className="btn ghost sm" onClick={() => void edit(p)}>Edit</button>
                   )}
@@ -418,6 +425,15 @@ export default function Inventory() {
           name={history.name}
           baseUnit={history.baseUnit}
           onClose={() => setHistory(null)}
+        />
+      )}
+      {batchesFor && (
+        <ProductBatches
+          productId={batchesFor.id}
+          name={batchesFor.name}
+          baseUnit={batchesFor.baseUnit}
+          onHand={batchesFor.qtyOnHand}
+          onClose={() => setBatchesFor(null)}
         />
       )}
     </div>

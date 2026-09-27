@@ -3,6 +3,7 @@ import { useCore } from '../../core/CoreProvider'
 import type { CartLine } from '../../core/useBillTabs'
 import { Empty, Rupees } from '../../ui/components'
 import type { ShortLine } from './cart'
+import { LineBatch } from './LineBatch'
 
 /**
  * The lines of the bill on screen: unit, quantity and rate editable in place,
@@ -17,7 +18,7 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
   onRate: (key: string, value: string) => void
   onRemove: (key: string) => void
 }) {
-  const { stockPolicy } = useCore()
+  const { stockPolicy, features } = useCore()
   return (
       <div className="cart">
         <table>
@@ -44,6 +45,14 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
                     )}
                   </div>
                   <div className="src">{Pricing.describeSource(line.source)}</div>
+                  {features.batchExpiry && line.qty > 0 && (
+                    <LineBatch
+                      productId={line.product.id}
+                      baseQty={baseQtyOf(line)}
+                      pick={line.batchPick ?? null}
+                      onPick={(batchPick) => onEdit(line.key, (l) => ({ ...l, batchPick }))}
+                    />
+                  )}
                   {/* Said where the mistake is being made, not at the end. A
                       cashier who learns at the payment screen has a queue
                       waiting while they work out which line to change. */}
@@ -108,4 +117,10 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
         </table>
       </div>
   )
+}
+
+/** The line in base units, as the batches hold it. */
+function baseQtyOf(line: CartLine): Quantity.Qty {
+  const factor = line.units.find((u) => u.saleUnit === line.saleUnit)?.baseUnits ?? Quantity.fromUnits(1)
+  return Quantity.toBaseUnits(Quantity.fromUnits(line.qty), factor)
 }

@@ -36,6 +36,8 @@ export interface ReceiptItem {
   rate: Money
   lineTotal: Money
   mrp?: Money | null
+  /** The batches the line came out of, already worded ("Batch B101 Exp 03/2027"). See `batchTextFor`. */
+  batch?: string | null
 
   /* A sheet has room for a column per line that a 42-column roll does not, so
      these are optional: the thermal renderer never reads them, and the A4 one

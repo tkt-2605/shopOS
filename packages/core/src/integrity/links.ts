@@ -19,6 +19,7 @@ export const LINK_RULES: Readonly<Record<string, readonly LinkRule[]>> = {
     { table: 'bill_items', column: 'product_id', label: 'bills', displayColumn: 'bill_id' },
     { table: 'stock_entry_items', column: 'product_id', label: 'stock entries' },
     { table: 'stock_ledger', column: 'product_id', label: 'stock ledger entries' },
+    { table: 'batches', column: 'product_id', label: 'batches', displayColumn: 'batch_no' },
     { table: 'item_prices', column: 'product_id', label: 'price list entries' },
     { table: 'customer_item_prices', column: 'product_id', label: 'customer prices' },
     { table: 'sales_return_items', column: 'product_id', label: 'returns' },

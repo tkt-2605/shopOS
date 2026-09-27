@@ -1,6 +1,6 @@
 import {
   buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadReturnDetail, loadShopProfile,
-  loadTaxScheme, billWording, schemeStatement, rateSummaryOf, stateName,
+  loadTaxScheme, billWording, schemeStatement, rateSummaryOf, stateName, batchTextFor,
   type SqlDriver, type ReceiptDoc, type ReceiptItem, type BillDetailItem,
   type DocWording, type DocumentKind, type PlaceOfSupply, type ReturnDetailItem,
 } from '@shopos/core'
@@ -289,12 +289,14 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
   const sum = (pick: (i: BillDetailItem) => number) =>
     bill.items.reduce((total, i) => total + pick(i), 0) as never
 
+  const batches = await batchTextFor(db, billId)
   const items = bill.items.map((i): ReceiptItem => ({
     name: i.productName,
     qty: i.qty,
     saleUnit: i.saleUnit,
     rate: i.rate,
     lineTotal: i.lineTotal,
+    batch: batches.get(i.id) ?? null,
     hsnCode: i.hsnCode,
     taxableValue: i.taxableValue,
     taxRateBp: i.taxRateBp,

@@ -26,6 +26,12 @@ export interface CartLine {
   source: Pricing.PriceSource
   sourceId: string | null
   manual: boolean
+  /**
+   * The batch the cashier picked for this line, when batches are on. Kept on
+   * screen only: a draft brought back after a restart has none, and the line
+   * then comes out soonest expiry first, which is what it would have shown.
+   */
+  batchPick?: string | null
 }
 
 export interface Cart {

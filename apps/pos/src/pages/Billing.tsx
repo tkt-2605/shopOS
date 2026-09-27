@@ -257,6 +257,7 @@ export default function Billing() {
         billId,
         payments: due > 0 ? [{ method, amount: due }] : [],
         ...(redeemPoints > 0 ? { redeemPoints } : {}),
+        batchPicks: picksOf(active.lines),
         actorId: user.id,
       })
     } catch (err) {
@@ -281,7 +282,7 @@ export default function Billing() {
     tabs.released()
     setTerm('')
     focusScan()
-  }, [db, user.id, active.lines.length, tabs, totals.grandTotal, due, redeemPoints, focusScan])
+  }, [db, user.id, active.lines, tabs, totals.grandTotal, due, redeemPoints, focusScan])
 
   /* The counter should not need the mouse. Only bound keys are advertised.
      Every one of these now stands down while a dialog is open — the payment
@@ -435,3 +436,9 @@ export default function Billing() {
   )
 }
 
+/** Each line's picked batch, by position as the bill stores it: the first line is 1. */
+function picksOf(lines: CartLine[]): Record<number, string> {
+  const picks: Record<number, string> = {}
+  lines.forEach((l, i) => { if (l.batchPick) picks[i + 1] = l.batchPick })
+  return picks
+}

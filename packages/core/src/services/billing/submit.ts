@@ -2,19 +2,18 @@ import { eq } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { type Money, ZERO, add, sub } from '../../money.js'
-import { negQty } from '../../quantity.js'
 import { calculateEarned, planRedemption } from '../../domain/loyalty.js'
 import { DRAFT, SUBMITTED, assertCanApply, parseDocStatus } from '../../integrity/docstatus.js'
 import { writeAudit } from '../../integrity/audit.js'
 import { recheckDocStatus } from '../../integrity/transition.js'
 import { loadStockPolicy } from '../features.js'
-import { checkAvailability, postMovement } from '../stock.js'
 import { nextDocNo } from '../numbering.js'
 import { applyBillFulfilment } from '../documents.js'
 import { loadBill, loadLoyaltyEntries, loadLoyaltyProgram, recipientSnapshot } from './load.js'
 import type { SubmitBillInput, SubmitBillResult } from './types.js'
 import { refusedAsInvoice, refusedOnCredit } from './guards.js'
 import { postTenders } from './tender.js'
+import { shortfallsOf, takeOffShelf } from './stock.js'
 
 export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise<SubmitBillResult> {
   const now = input.now ?? new Date()
@@ -48,6 +47,8 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
 
   const lines = await q(db)
     .select({
+      id: schema.billItems.id,
+      idx: schema.billItems.idx,
       productId: schema.billItems.productId,
       productName: schema.billItems.productName,
       baseQty: schema.billItems.baseQty,
@@ -90,16 +91,11 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     if (overLimit) return overLimit
   }
 
-  const requirements = lines.map((l) => ({
-    productId: l.productId,
-    productName: l.productName,
-    required: l.baseQty,
-  }))
   /* The check is the same as it always was; what changed is who it binds.
      Under `block` a short line still refuses the sale. Otherwise the sale goes
      through and the shortfall is reported back on the result, so the counter can
      say what happened and the shortfall report can pick it up afterwards. */
-  const shortfalls = await checkAvailability(db, requirements)
+  const shortfalls = await shortfallsOf(db, lines)
   if (shortfalls.length > 0 && await loadStockPolicy(db) === 'block') {
     return { ok: false, code: 'INSUFFICIENT_STOCK', shortfalls }
   }
@@ -126,16 +122,13 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     await recheckDocStatus(tx, 'bills', input.billId, 'bill', 'submit')
     docNo = await nextDocNo(tx, 'bill', register?.prefix ?? 'XX', now)
 
-    for (const line of lines) {
-      await postMovement(tx, {
-        productId: line.productId,
-        qtyChange: negQty(line.baseQty),
-        voucherType: 'bill',
-        voucherId: input.billId,
-        postingDate: bill.postingDate,
-        userId: input.actorId,
-      })
-    }
+    await takeOffShelf(tx, {
+      billId: input.billId,
+      postingDate: bill.postingDate,
+      actorId: input.actorId,
+      lines,
+      batchPicks: input.batchPicks,
+    })
 
     await postTenders(tx, {
       billId: input.billId,

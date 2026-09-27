@@ -217,6 +217,8 @@ function itemRows(index: number, item: ReceiptItem, width = WIDTH): string {
 
   let rows = `${sno} ${name}${LF}${' '.repeat(INDENT)}${qty}${rate}${amount}${LF}`
 
+  if (item.batch) rows += `${' '.repeat(INDENT)}${cut(item.batch, width - INDENT)}${LF}`
+
   if (item.mrp && item.mrp > item.rate) {
     /* The quantity is on the line. It used to be recovered by dividing the line
        total by the rate, which is a different number whenever the line carries a

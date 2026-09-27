@@ -31,12 +31,12 @@ function rungs(text: string) {
 }
 
 describe('what a shop starts with', () => {
-  /* The two extras are off until asked for. The phone rule is the exception and
-     deliberately so: entering the same customer twice is a mistake, not a
+  /* The extras are off until asked for, batches too since 062. The phone rule
+     is the exception and deliberately so: entering the same customer twice is a mistake, not a
      capability, so a fresh shop is protected from it without being asked. */
   it('starts simple, but already refusing a duplicate phone number', async () => {
     expect(await loadFeatures(fx.db)).toEqual({
-      multiBarcode: false, tieredPricing: false, uniquePhone: true,
+      multiBarcode: false, tieredPricing: false, uniquePhone: true, batchExpiry: false,
     })
   })
 

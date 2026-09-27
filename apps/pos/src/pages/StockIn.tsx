@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
-  directionOf, signedQty, noCostBasis,
-  type ProductListItem, type StockEntryType, type Supplier,
+  directionOf, signedQty, noCostBasis, batchesOf, businessDate, Batches,
+  type ProductListItem, type StockEntryType, type Supplier, type BatchRow,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { useAction } from '../core/useAction'
@@ -16,6 +16,11 @@ interface Line {
   product: ProductListItem
   qty: string
   cost: string
+  /** Typed for goods coming in, chosen from `held` for goods going out. */
+  batchNo: string
+  expiry: string
+  /** The item's batches with stock, soonest expiry first, read when the line was added. */
+  held: BatchRow[]
 }
 
 /* Each note says which way the shelf moves, because that is what the list is
@@ -30,8 +35,9 @@ const TYPES: { id: StockEntryType; name: string; note: string }[] = [
 ]
 
 export default function StockIn() {
-  const { db } = useCore()
+  const { db, features } = useCore()
   const user = useUser()
+  const batched = features.batchExpiry
   const [entryType, setEntryType] = useState<StockEntryType>('purchase')
   const [supplierId, setSupplierId] = useState('')
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
@@ -80,13 +86,22 @@ export default function StockIn() {
     setNewSupplier(null)
   }
 
-  function add(product: ProductListItem) {
-    setLines((prev) =>
-      prev.some((l) => l.product.id === product.id)
-        ? prev
-        : [...prev, { key: `${product.id}-${Date.now()}`, product, qty: '1', cost: '' }])
+  async function add(product: ProductListItem) {
     setTerm('')
+    // One delivery can carry two batches of one item, so with batches on the
+    // same item may be added again, once per batch.
+    const held = batched ? await batchesOf(db, product.id, { inStockOnly: true }) : []
+    setLines((prev) =>
+      !batched && prev.some((l) => l.product.id === product.id)
+        ? prev
+        : [...prev, {
+            key: `${product.id}-${Date.now()}`, product, qty: '1', cost: '', held,
+            batchNo: '', expiry: '',
+          }])
   }
+
+  /** Whether this line takes stock off, once the kind of entry and its sign have had their say. */
+  const outgoing = (l: Line) => signedQty(entryType, Quantity.fromUnits(Number(l.qty) || 0)) < 0
 
   const totalCost = lines.reduce((sum, l) => {
     const qty = Number(l.qty) || 0
@@ -104,13 +119,23 @@ export default function StockIn() {
       setError('A cost cannot be below zero.')
       return
     }
+    const expiries: (string | null)[] = []
+    for (const l of lines) {
+      const parsed = batched && !outgoing(l) ? Batches.parseExpiry(l.expiry) : { ok: true as const, value: null }
+      if (!parsed.ok) {
+        setError(`The expiry for ${l.product.name} is not a date. Type it as on the pack, like 03/2027.`)
+        return
+      }
+      expiries.push(parsed.value)
+    }
     const entry = await createStockEntry(db, {
       entryType,
       supplierId: supplierId || null,
       supplierName: suppliers.find((x) => x.id === supplierId)?.name ?? null,
       reference: reference.trim(),
-      lines: lines.map((l) => ({
+      lines: lines.map((l, i) => ({
         productId: l.product.id,
+        ...(batched && l.batchNo.trim() !== '' ? { batchNo: l.batchNo, expiryDate: expiries[i] ?? null } : {}),
         /* As typed. `createStockEntry` applies the direction, so this screen
            and any other way in agree without each having to remember it. */
         qty: Quantity.fromUnits(Number(l.qty) || 0),
@@ -124,6 +149,12 @@ export default function StockIn() {
         entry.code === 'NO_LINES' ? 'Add at least one item.'
         : entry.code === 'ZERO_QTY' ? 'Every line needs a quantity that is not zero.'
         : entry.code === 'INFLOW_NEEDS_POSITIVE_QTY' ? 'A purchase or opening entry cannot be negative. Use Adjustment instead.'
+        : entry.code === 'BAD_BATCH_NO' ? 'A batch number is too long. Forty letters and digits at most.'
+        : entry.code === 'BAD_EXPIRY' ? 'One of the expiry dates is not a date.'
+        : entry.code === 'EXPIRY_MISMATCH'
+          ? `Batch ${entry.batchNo} is already recorded as expiring ${Batches.formatExpiry(entry.recorded)}. `
+            + 'A batch has one expiry — check the pack and the delivery note.'
+        : entry.code === 'UNKNOWN_BATCH' ? `There is no batch ${entry.batchNo} of that item in stock.`
         : 'One of the items no longer exists.',
       )
       return
@@ -131,7 +162,9 @@ export default function StockIn() {
 
     const submitted = await submitStockEntry(db, { entryId: entry.entryId, actorId: user.id })
     if (!submitted.ok) {
-      setError('That would take stock below zero. Check the quantities.')
+      setError(submitted.code === 'BATCH_WOULD_GO_NEGATIVE'
+        ? `Batch ${submitted.batchNo} holds only ${Quantity.formatQty(submitted.available)}. Check the quantities.`
+        : 'That would take stock below zero. Check the quantities.')
       return
     }
 
@@ -143,7 +176,7 @@ export default function StockIn() {
   const pick = usePickList({
     count: results.length,
     resetKey: term,
-    onPick: (i) => { const hit = results[i]; if (hit) add(hit) },
+    onPick: (i) => { const hit = results[i]; if (hit) void add(hit) },
   })
 
   return (
@@ -234,6 +267,7 @@ export default function StockIn() {
             <tr>
               <th>Item</th>
               <th className="r">{directionOf(entryType) === 'out' ? 'Quantity lost' : 'Quantity'}</th>
+              {batched && <><th>Batch</th><th>Expiry</th></>}
               <th className="r">Unit cost</th><th className="r">Value</th>
               <th className="r">On hand after</th><th />
             </tr>
@@ -255,6 +289,8 @@ export default function StockIn() {
                     <input className="qty-input num" value={l.qty}
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} />
                   </td>
+                  {batched && <BatchCells line={l} outgoing={outgoing(l)}
+                    onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
                   <td className="r">
                     <input className="qty-input num" placeholder="0.00" value={l.cost}
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cost: e.target.value } : x))} />
@@ -284,7 +320,7 @@ export default function StockIn() {
                 </tr>
               )
             })}
-            {lines.length === 0 && <tr><td colSpan={6}><Empty>Nothing added yet</Empty></td></tr>}
+            {lines.length === 0 && <tr><td colSpan={batched ? 8 : 6}><Empty>Nothing added yet</Empty></td></tr>}
           </tbody>
         </table>
       </div>
@@ -301,5 +337,58 @@ export default function StockIn() {
         </button>
       </div>
     </div>
+  )
+}
+
+/**
+ * A line's batch and expiry. Coming in, both are typed off the pack; going
+ * out, the batch is chosen from what is held, soonest expiry first, because
+ * what is written off is nearly always what has gone past its date.
+ */
+function BatchCells({ line, outgoing, onChange }: {
+  line: Line
+  outgoing: boolean
+  onChange: (change: Partial<Line>) => void
+}) {
+  if (outgoing) {
+    const chosen = line.held.find((b) => b.batchNo === line.batchNo)
+    return (
+      <>
+        <td>
+          {line.held.length === 0 ? <span className="src">no batches</span> : (
+            <select className="select unit-select" aria-label="Batch" value={line.batchNo}
+              onChange={(e) => onChange({ batchNo: e.target.value })}>
+              <option value="">No batch</option>
+              {line.held.map((b) => (
+                <option key={b.batchId} value={b.batchNo}>{b.batchNo} · {Quantity.formatQty(b.balance)} left</option>
+              ))}
+            </select>
+          )}
+        </td>
+        <td className="num">
+          {chosen?.expiryDate ? Batches.formatExpiry(chosen.expiryDate) : ''}
+          {chosen && Batches.expiryState(chosen.expiryDate, businessDate()) === 'expired' && (
+            <div className="src warn-note">expired</div>
+          )}
+        </td>
+      </>
+    )
+  }
+  const parsed = Batches.parseExpiry(line.expiry)
+  return (
+    <>
+      <td>
+        <input className="input" style={{ width: 110 }} aria-label="Batch number" placeholder="B1234"
+          value={line.batchNo} onChange={(e) => onChange({ batchNo: e.target.value })} />
+      </td>
+      <td>
+        <input className="input num" style={{ width: 90 }} aria-label="Expiry" placeholder="MM/YYYY"
+          value={line.expiry} onChange={(e) => onChange({ expiry: e.target.value })} />
+        {!parsed.ok && <div className="src warn-note">not a date</div>}
+        {parsed.ok && line.expiry !== '' && line.batchNo.trim() === '' && (
+          <div className="src warn-note">needs a batch number</div>
+        )}
+      </td>
+    </>
   )
 }

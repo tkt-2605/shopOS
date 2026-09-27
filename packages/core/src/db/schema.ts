@@ -586,6 +586,52 @@ export const stockLedger = sqliteTable('stock_ledger', {
   index('idx_stock_ledger_made').on(table.productId, table.id),
 ])
 
+/** One batch of one product (062). The id is derived from the two, see `domain/batches.ts`. */
+export const batches = sqliteTable('batches', {
+  id: text().primaryKey().notNull(),
+  productId: text('product_id').notNull().references(() => products.id),
+  batchNo: text('batch_no').notNull(),
+  /** YYYY-MM-DD, the last day it may be sold. Null when the pack does not say. */
+  expiryDate: text('expiry_date'),
+  rev: integer().default(1).notNull(),
+  originId: text('origin_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_batches_product').on(table.productId),
+  index('idx_batches_expiry').on(table.expiryDate),
+])
+
+/** How much of a batch came or went, and on what. Append-only, like the ledger (062). */
+export const batchMovements = sqliteTable('batch_movements', {
+  id: text().primaryKey().notNull(),
+  batchId: text('batch_id').notNull().references(() => batches.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  qtyChange: qtyCol('qty_change').notNull(),
+  voucherType: text('voucher_type').notNull(),
+  voucherId: text('voucher_id').notNull(),
+  /** The bill or stock-entry line it was for, so a return finds its own batches. */
+  voucherLineId: text('voucher_line_id'),
+  postingDate: text('posting_date').notNull(),
+  createdBy: text('created_by').references(() => users.id),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_batch_movements_batch').on(table.batchId),
+  index('idx_batch_movements_product').on(table.productId),
+  index('idx_batch_movements_voucher').on(table.voucherType, table.voucherId),
+  index('idx_batch_movements_line').on(table.voucherLineId),
+])
+
+/** Which batch a stock-entry line is for, until the entry is posted (062). */
+export const stockEntryBatches = sqliteTable('stock_entry_batches', {
+  id: text().primaryKey().notNull(),
+  entryId: text('entry_id').notNull().references(() => stockEntries.id, { onDelete: 'cascade' }),
+  itemId: text('item_id').notNull(),
+  batchId: text('batch_id').notNull().references(() => batches.id),
+}, (table) => [
+  index('idx_stock_entry_batches_entry').on(table.entryId),
+])
+
 export const productStock = sqliteTable('product_stock', {
   productId: text('product_id').primaryKey().notNull().references(() => products.id),
   qtyOnHand: qtyCol('qty_on_hand').default(QTY_ZERO).notNull(),

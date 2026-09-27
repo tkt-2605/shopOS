@@ -67,6 +67,12 @@ export interface SubmitBillInput {
   payments: PaymentInput[]
   redeemPoints?: number
   idempotencyKey?: string
+  /**
+   * The batch the cashier chose for a line, by the line's position (1 first,
+   * as `bill_items.idx`). A line not named here comes out of its batches soonest
+   * expiry first; see `allocate` in domain/batches.ts.
+   */
+  batchPicks?: Readonly<Record<number, string>>
   actorId: string
   now?: Date
 }

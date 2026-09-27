@@ -5,6 +5,7 @@ import { SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../../inte
 import { writeAudit } from '../../integrity/audit.js'
 import { recheckDocStatus } from '../../integrity/transition.js'
 import { reverseVoucher } from '../stock.js'
+import { reverseBatches } from '../batches.js'
 import { loadReturn } from './read.js'
 import { regrantPoints, unrestorePoints } from './refund.js'
 
@@ -25,6 +26,7 @@ export async function cancelReturn(
   await db.transaction(async (tx) => {
     await recheckDocStatus(tx, 'sales_returns', input.returnId, 'return', 'cancel')
     await reverseVoucher(tx, 'sales_return', input.returnId, ret.postingDate, input.actorId)
+    await reverseBatches(tx, 'sales_return', input.returnId, ret.postingDate, input.actorId)
 
     for (const line of lines) {
       await q(tx).update(schema.billItems)

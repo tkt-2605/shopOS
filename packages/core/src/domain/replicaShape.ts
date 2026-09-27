@@ -97,6 +97,7 @@ export const REPLICATED: readonly RecordShape[] = [
   { table: 'products', key: 'id', lines: [] },
   { table: 'product_barcodes', key: 'id', lines: [] },
   { table: 'product_units', key: 'id', lines: [] },
+  { table: 'batches', key: 'id', lines: [] },
   { table: 'customers', key: 'id', lines: [] },
   { table: 'item_prices', key: 'id', lines: [] },
   { table: 'customer_item_prices', key: 'id', lines: [] },
@@ -141,7 +142,10 @@ export const REPLICATED: readonly RecordShape[] = [
   {
     table: 'stock_entries',
     key: 'id',
-    lines: [{ table: 'stock_entry_items', parentKey: 'entry_id' }],
+    lines: [
+      { table: 'stock_entry_items', parentKey: 'entry_id' },
+      { table: 'stock_entry_batches', parentKey: 'entry_id' },
+    ],
   },
   {
     table: 'stock_counts',
@@ -149,6 +153,9 @@ export const REPLICATED: readonly RecordShape[] = [
     lines: [{ table: 'stock_count_items', parentKey: 'count_id' }],
   },
   { table: 'stock_ledger', key: 'id', lines: [] },
+  /* Append-only and travelling on its own, for the ledger's reasons: a
+     merge of the bill a movement belongs to must not be able to lose it. */
+  { table: 'batch_movements', key: 'id', lines: [] },
   { table: 'loyalty_entries', key: 'id', lines: [] },
   /* Its own row, like the ledger: written once when a line is converted,
      and never lost to a merge of the document it marks (054). */

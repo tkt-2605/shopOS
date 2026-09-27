@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting } from './device'
 import {
   Receipt, loadShopProfile, loadBillDetail, loadCustomer, customerAccount, businessDate, formatFor,
-  loadTaxScheme, billWording, schemeStatement, rateSummaryOf,
+  loadTaxScheme, billWording, schemeStatement, rateSummaryOf, batchTextFor,
   type SqlDriver, type ReceiptDoc, type ReceiptItem,
 } from '@shopos/core'
 
@@ -81,12 +81,14 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
      has to be right about this. */
   const scheme = await loadTaxScheme(db)
 
+  const batches = await batchTextFor(db, billId)
   const items = bill.items.map((i): ReceiptItem => ({
     name: i.productName,
     qty: i.qty,
     saleUnit: i.saleUnit,
     rate: i.rate,
     lineTotal: i.lineTotal,
+    batch: batches.get(i.id) ?? null,
     // Not printed per line on 42 columns; they are what the rate summary is
     // built from.
     taxableValue: i.taxableValue,

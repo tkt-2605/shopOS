@@ -190,3 +190,19 @@ describe('what the roll can print', () => {
     expect(text).toContain('Thank you - it\'s "fresh"')
   })
 })
+
+describe('a line sold out of a batch', () => {
+  it('prints the batch and expiry under the item, and nothing for a line without one', () => {
+    const batched: ReceiptDoc = {
+      ...doc,
+      items: [
+        { ...doc.items[0]!, batch: 'Batch B101 Exp 03/2027' },
+        doc.items[1]!,
+      ],
+    }
+    const lines = visibleLines(buildReceipt(batched))
+    expect(lines.filter((l) => l.includes('Batch'))).toHaveLength(1)
+    expect(lines.find((l) => l.includes('B101'))).toContain('Exp 03/2027')
+    expect(lines.find((l) => l.includes('B101'))!.length).toBeLessThanOrEqual(WIDTH)
+  })
+})

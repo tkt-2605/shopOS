@@ -7,7 +7,6 @@ import { splitRefund } from '../../domain/returns.js'
 import { DRAFT, SUBMITTED, assertCanApply, parseDocStatus } from '../../integrity/docstatus.js'
 import { writeAudit } from '../../integrity/audit.js'
 import { recheckDocStatus } from '../../integrity/transition.js'
-import { postMovement, issuedUnitCost } from '../stock.js'
 import { nextDocNo, seriesPrefix } from '../numbering.js'
 import { openSessionFor, postCashMovement } from '../cash.js'
 import { postCreditNote } from '../payments.js'
@@ -15,6 +14,7 @@ import { loadReturn } from './read.js'
 import { clawBackPoints, outstandingFor, refundBasis, restorePoints } from './refund.js'
 import type { CreateReturnInput, ProcessReturnResult, SubmitReturnResult } from './types.js'
 import { createReturn } from './create.js'
+import { restock } from './restock.js'
 
 /**
  * A return is taken complete, the way a receipt is.
@@ -121,16 +121,15 @@ export async function submitReturn(
        prefix is only the fallback for a till with no counter of its own. */
     docNo = await nextDocNo(tx, 'return', await seriesPrefix(tx, register?.prefix ?? 'XX'), now)
 
+    await restock(tx, {
+      returnId: input.returnId,
+      billId: ret.billId,
+      postingDate: ret.postingDate,
+      actorId: input.actorId,
+      lines,
+    })
+
     for (const line of lines) {
-      await postMovement(tx, {
-        productId: line.productId,
-        qtyChange: line.baseQty,
-        unitCost: await issuedUnitCost(tx, 'bill', ret.billId, line.productId),
-        voucherType: 'sales_return',
-        voucherId: input.returnId,
-        postingDate: ret.postingDate,
-        userId: input.actorId,
-      })
       /* Read-modify-write in one statement rather than two: the figure this
          adds to is the one the other till may be adding to at the same moment. */
       await q(tx).update(schema.billItems)
