@@ -50,12 +50,26 @@ jobs:
       # tauri::generate_context! wants the frontend folder to exist, not to be built.
       - run: mkdir -p apps/pos/dist
       - run: cargo test --workspace --no-run
-      # One test at a time, so each name is printed as it starts, under a hard
-      # kill: the first Linux runs hung past both the step and job limits, and
-      # a cancelled job keeps no log. If this is ever killed, the last
-      # "test ... " line in the log is the one that hung.
-      - run: timeout -s KILL 300 cargo test --workspace -- --test-threads=1
-        timeout-minutes: 10
+      # Split by module. The first three Linux runs froze the runner itself --
+      # past the step limit and a hard kill, with no log kept -- while the same
+      # tests pass on Windows and in a Linux container. GitHub still reports
+      # which step is running when the log is lost, so the step that never
+      # finishes names the module.
+      - name: shopos-net
+        run: cargo test -p shopos-net -- --test-threads=1
+        timeout-minutes: 5
+      - name: app - files, archive, backup, restore
+        run: "cargo test -p shopos-pos --lib -- --test-threads=1 archive:: attachments:: backup:: restore:: files:: exports::"
+        timeout-minutes: 5
+      - name: app - database, device, ids, paths
+        run: "cargo test -p shopos-pos --lib -- --test-threads=1 db:: device:: ids:: paths:: updater::"
+        timeout-minutes: 5
+      - name: app - log, diagnostics, pdf
+        run: "cargo test -p shopos-pos --lib -- --test-threads=1 log:: diagnostics:: pdf::"
+        timeout-minutes: 5
+      - name: app - backup hook
+        run: "cargo test -p shopos-pos --lib -- --test-threads=1 hook::"
+        timeout-minutes: 5
 
   windows:
     name: cargo test and unsigned installer (windows)
