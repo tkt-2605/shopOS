@@ -127,6 +127,23 @@ jobs:
           # download on one click, whatever the version. latest.json keeps
           # pointing at the versioned name, which is what tills verify.
           cp "$installer" ShopOS-setup.exe
+          # GitHub orders releases, and so picks "latest", by the date of the
+          # commit each tag points at. `gh release create` tags the release
+          # repository's newest commit, so two releases with nothing committed
+          # between them tie -- v0.1.1 lost "latest" to v0.1.0 exactly so, and
+          # every till and the site's download follow "latest". So each release
+          # first adds a line to RELEASES.md there and is tagged on that commit.
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${RELEASE_REPO}.git" "$RUNNER_TEMP/release-repo"
+          (
+            cd "$RUNNER_TEMP/release-repo"
+            echo "- ${GITHUB_REF_NAME}, built from ${GITHUB_SHA::12}" >> RELEASES.md
+            git add RELEASES.md
+            git -c user.name="shopos-release" -c user.email="release@users.noreply.github.com" \
+              commit -q -m "${GITHUB_REF_NAME}"
+            git push -q origin HEAD
+          )
+          target="$(git -C "$RUNNER_TEMP/release-repo" rev-parse HEAD)"
+          flags+=(--target "$target")
           # Shops read this; the draft state and the commit are for the owner
           # and are on the release page and in the Actions run already.
           gh release create "$GITHUB_REF_NAME" --repo "$RELEASE_REPO" "${flags[@]}" \
