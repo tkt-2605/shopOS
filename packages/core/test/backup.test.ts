@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   planBackup, backupName, backupZipName, safetyName, backupDate, backupExt,
   describeBackups, sortBackups, KEEP_DAILY,
+  beforeSchemaName, beforeUpdateName, needsSchemaCopy, pruneUpgradeCopies, KEEP_SAFETY,
 } from '../src/services/backup.js'
 
 const on = (iso: string) => new Date(`${iso}T11:00:00`)
@@ -173,3 +174,40 @@ describe('pre-restore copies', () => {
     expect(listed[1]).toMatchObject({ kind: 'daily', time: null, format: 'zip' })
   })
 })
+
+describe('the copies taken before an upgrade', () => {
+  const at = new Date(2026, 8, 27, 19, 5)
+
+  it('names what it was taken before, and when', () => {
+    expect(beforeSchemaName(61, 62, at)).toBe('before-schema-61-to-62-2026-09-27-1905.db')
+    expect(beforeUpdateName('0.1.0', at)).toBe('before-update-0.1.0-2026-09-27-1905.db')
+  })
+
+  it('is taken for a database behind the build, and not for a new one or a current one', () => {
+    expect(needsSchemaCopy(61, 62)).toBe(true)
+    expect(needsSchemaCopy(0, 62), 'a fresh install has nothing to lose').toBe(false)
+    expect(needsSchemaCopy(62, 62)).toBe(false)
+  })
+
+  it('is listed as a safety copy, saying what it came before', () => {
+    const [schema, update] = describeBackups(files(
+      beforeSchemaName(61, 62, at), beforeUpdateName('0.1.0', new Date(2026, 8, 26, 9, 0)),
+    ))
+    expect(schema).toMatchObject({ kind: 'safety', before: 'schema', date: '2026-09-27', time: '19:05' })
+    expect(update).toMatchObject({ kind: 'safety', before: 'update', date: '2026-09-26' })
+  })
+
+  it('is never touched by the daily rotation', () => {
+    const plan = planBackup(files(beforeSchemaName(61, 62, at)), on('2027-01-01'))
+    expect(plan.prune).toEqual([])
+  })
+
+  it('keeps the newest few of each kind, by when they were taken, and never a restore point', () => {
+    const schema = [1, 2, 3, 4].map((d) => beforeSchemaName(9 + d, 10 + d, new Date(2026, 8, d, 9, 0)))
+    const updates = ['0.9.0', '0.10.0'].map((v, i) => beforeUpdateName(v, new Date(2026, 8, 10 + i, 9, 0)))
+    const gone = pruneUpgradeCopies(files(...schema, ...updates, safetyName(new Date(2026, 0, 1, 9, 0))))
+    expect(KEEP_SAFETY).toBe(3)
+    expect(gone, 'the oldest by date, although 10 sorts before 9 as text').toEqual([schema[0]])
+  })
+})
+

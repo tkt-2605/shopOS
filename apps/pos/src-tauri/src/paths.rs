@@ -225,6 +225,11 @@ pub fn backup_kind(name: &str) -> Option<Kind> {
         }
         return None;
     }
+    for prefix in ["before-schema-", "before-update-"] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            return is_upgrade_stamp(rest).then_some(Kind::Safety);
+        }
+    }
     if let Some(rest) = name.strip_prefix("before-restore-") {
         if let Some(stamp) = rest.strip_suffix(".db") {
             // yyyy-mm-dd-hhmm. `split_at` takes a byte index and panics inside
@@ -241,6 +246,30 @@ pub fn backup_kind(name: &str) -> Option<Kind> {
         }
     }
     None
+}
+
+/// The rest of a copy taken before an upgrade: `<what>-yyyy-mm-dd-hhmm.db`,
+/// where `<what>` is `31-to-32` or `0.1.0` and nothing else -- letters, digits,
+/// dots and hyphens, never two dots together. Built by `beforeSchemaName` and
+/// `beforeUpdateName` in the core.
+fn is_upgrade_stamp(rest: &str) -> bool {
+    let Some(body) = rest.strip_suffix(".db") else { return false };
+    if !body.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') || body.contains("..") {
+        return false;
+    }
+    // ASCII only from here, so byte slicing cannot split a character.
+    if body.len() < 17 {
+        return false;
+    }
+    let (what, tail) = body.split_at(body.len() - 16);
+    let (dash, stamp) = tail.split_at(1);
+    let (date, time) = stamp.split_at(10);
+    !what.is_empty()
+        && dash == "-"
+        && is_date(date)
+        && time.len() == 5
+        && time.starts_with('-')
+        && time[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -314,6 +343,23 @@ mod tests {
         assert!(backup_kind("shop-2026-09-13.db").is_some());
         assert!(backup_kind("shop-2026-09-13.zip").is_some());
         assert!(backup_kind("before-restore-2026-09-13-0905.db").is_some());
+    }
+
+    #[test]
+    fn accepts_the_copies_taken_before_an_upgrade() {
+        assert!(backup_kind("before-schema-61-to-62-2026-09-27-1905.db").is_some());
+        assert!(backup_kind("before-update-0.1.0-2026-09-27-1905.db").is_some());
+        assert!(backup_kind("before-update-0.2.0-beta.1-2026-09-27-1905.db").is_some());
+        for name in [
+            "before-schema-2026-09-27-1905.db",
+            "before-schema-61-to-62-2026-09-27-1905.zip",
+            "before-update-../shop-2026-09-27-1905.db",
+            "before-update-..-2026-09-27-1905.db",
+            "before-update-0.1.0-2026-09-27-19O5.db",
+            "before-update-é-2026-09-27-1905.db",
+        ] {
+            assert!(backup_kind(name).is_none(), "{name} should be refused");
+        }
     }
 
     #[test]

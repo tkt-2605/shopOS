@@ -20,7 +20,7 @@ yet except where "Today" says so.
 | Version number | One: `apps/pos/package.json`; `tauri.conf.json` reads it by path, `Cargo.toml` is `0.0.0`; `release.yml` refuses a tag that differs | `tools/release.ts check` |
 | Mixed schemas between tills | Built: each side checks the other's floor; unknown columns are trimmed | `sync.ts:194-206`, `syncServer.ts:498-521, 595`, `schema-skew.test.ts` |
 | Schema floor | `MIN_PEER_SCHEMA_VERSION` = 33 (last breaking migration is 032); head is 50 | `db/migrationKinds.ts`, `db/schemaVersion.ts` |
-| Backup before migrating | **None.** The daily backup runs after `migrate()` | `CoreProvider.tsx` `startOnce()` |
+| Backup before migrating | Built 27 Sep: `before-schema-<from>-to-<to>-<stamp>.db` ahead of `migrate()` whenever the database is behind the build; a failure is shown red and the migrations run anyway. `before-update-<version>-<stamp>.db` when Install is pressed; a failure refuses once and the second press installs. Newest 3 of each kept, never touched by the daily rotation. The off-site hook is not run on them | `CoreProvider.tsx` `startOnce()`, `core/backup.ts` `takeUpgradeCopy`, `backup.rs` `backup_write_safety` |
 | Downgrade | Impossible once migrated (`SchemaTooNewError`) | `db/migrate.ts` |
 | CI / release pipeline | `ci.yml` (tests, typecheck, cargo test on Linux and Windows, unsigned installer artifact) and `release.yml` (tag check, CI, updater-signed build, `latest.json`, **draft** release on the public `RELEASE_REPO`). No migration lint yet, no channels or rollout percentages | `.github/workflows/` |
 | Code signing | Deferred by the owner (2026-09-26). `release.yml` takes `WINDOWS_SIGN_COMMAND` when there is one | — |

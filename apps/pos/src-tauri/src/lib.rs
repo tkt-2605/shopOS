@@ -194,6 +194,7 @@ pub fn run() {
             backup::backup_delete,
             backup::backup_copy,
             backup::backup_write_zip,
+            backup::backup_write_safety,
             backup::choose_folder,
             attachments::attachment_store,
             attachments::attachment_read,

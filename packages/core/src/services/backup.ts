@@ -38,6 +38,19 @@ const NAME = /^shop-(\d{4}-\d{2}-\d{2})\.(db|zip)$/
  */
 const SAFETY = /^before-restore-(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})\.db$/
 
+/**
+ * The copies taken before an upgrade touches the shop's data (`update-rollout.md`,
+ * step 8): one before the migrations run against a database older than this
+ * build, and one before an update is installed. Safety copies like the one
+ * before a restore, so the daily rotation never touches them -- but unlike
+ * that one they come round with every release, so each kind keeps its newest
+ * `KEEP_SAFETY` and no more.
+ */
+const BEFORE_SCHEMA = /^before-schema-(\d+)-to-(\d+)-(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})\.db$/
+const BEFORE_UPDATE = /^before-update-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)-(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})\.db$/
+
+export const KEEP_SAFETY = 3
+
 export function backupName(when: Date = new Date()): string {
   return `shop-${businessDate(when)}.db`
 }
@@ -53,6 +66,47 @@ export function backupFileName(when: Date, format: BackupFormat): string {
 export function safetyName(when: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `before-restore-${businessDate(when)}-${pad(when.getHours())}${pad(when.getMinutes())}.db`
+}
+
+function stamp(when: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${businessDate(when)}-${pad(when.getHours())}${pad(when.getMinutes())}`
+}
+
+/** The copy taken before migrating from schema `from` to `to`. */
+export function beforeSchemaName(from: number, to: number, when: Date = new Date()): string {
+  return `before-schema-${from}-to-${to}-${stamp(when)}.db`
+}
+
+/** The copy taken before installing an update over app version `version`. */
+export function beforeUpdateName(version: string, when: Date = new Date()): string {
+  return `before-update-${version}-${stamp(when)}.db`
+}
+
+/**
+ * Whether starting this build against this database needs a copy first: the
+ * database is behind the build, and is not the empty one a new install makes.
+ */
+export function needsSchemaCopy(current: number, expected: number): boolean {
+  return current > 0 && current < expected
+}
+
+/**
+ * Upgrade copies beyond the newest `keep` of each kind. The copy before a
+ * restore is never on this list; see `SAFETY`.
+ */
+export function pruneUpgradeCopies(files: BackupFile[], keep: number = KEEP_SAFETY): string[] {
+  const out: string[] = []
+  for (const kind of [BEFORE_SCHEMA, BEFORE_UPDATE]) {
+    const named = files.map((f) => f.name).filter((n) => kind.test(n))
+    // The stamp sorts as text; the version or schema numbers before it do not,
+    // so order by what follows them.
+    const byTime = named
+      .map((n) => ({ n, at: n.replace(/^.*-(\d{4}-\d{2}-\d{2}-\d{4})\.db$/, '$1') }))
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+    out.push(...byTime.slice(Math.max(0, keep)).map((x) => x.n))
+  }
+  return out
 }
 
 export function backupDate(name: string): string | null {
@@ -72,6 +126,8 @@ export interface BackupEntry extends BackupFile {
   time: string | null
   kind: BackupKind
   format: BackupFormat
+  /** For a safety copy, what it was taken before. */
+  before?: 'restore' | 'schema' | 'update'
 }
 
 /**
@@ -95,6 +151,21 @@ export function describeBackups(files: BackupFile[]): BackupEntry[] {
         time: `${safety[2]}:${safety[3]}`,
         kind: 'safety',
         format: 'db',
+        before: 'restore',
+      })
+      continue
+    }
+    const schema = BEFORE_SCHEMA.exec(f.name)
+    if (schema) {
+      entries.push({
+        ...f, date: schema[3]!, time: `${schema[4]}:${schema[5]}`, kind: 'safety', format: 'db', before: 'schema',
+      })
+      continue
+    }
+    const update = BEFORE_UPDATE.exec(f.name)
+    if (update) {
+      entries.push({
+        ...f, date: update[2]!, time: `${update[3]}:${update[4]}`, kind: 'safety', format: 'db', before: 'update',
       })
     }
   }

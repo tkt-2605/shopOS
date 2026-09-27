@@ -69,6 +69,13 @@ export const CHECK_EVERY_MS = 24 * 60 * 60 * 1000
 export type InstallRefusal =
   | { ok: false; code: 'NOT_READY'; detail: string }
   | { ok: false; code: 'SESSION_OPEN'; registerName: string | null }
+  /**
+   * The copy taken before installing did not get written. Refused once, with
+   * the reason; pressing Install again goes ahead, because an update that
+   * fixes a bug is not to be held hostage by a full disk (`update-rollout.md`,
+   * step 7).
+   */
+  | { ok: false; code: 'BACKUP_FAILED'; detail: string }
 
 export type CanInstall = { ok: true } | InstallRefusal
 
@@ -115,6 +122,10 @@ export function updateWords(state: UpdateStage, refusal?: InstallRefusal): strin
     case 'downloading':
       return `Getting version ${state.update.version}… ${Math.round(state.percent)}%`
     case 'ready':
+      if (refusal?.code === 'BACKUP_FAILED') {
+        return `Version ${state.update.version} is ready, but the backup before it failed: `
+          + `${refusal.detail}. Press Install again to update anyway`
+      }
       if (refusal?.code === 'SESSION_OPEN') {
         return refusal.registerName === null
           ? `Version ${state.update.version} is ready. It will install once the drawer is closed`

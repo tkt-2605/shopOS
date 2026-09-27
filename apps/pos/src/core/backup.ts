@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting, setDeviceSetting } from './device'
 import { logEvent } from './log'
+import { appVersion } from './version'
 import {
   Backup, attachmentsToCarry, CARRY_WINDOW_DAYS,
   type BackupFile, type BackupEntry, type SqlDriver,
@@ -301,6 +302,54 @@ export async function runDailyBackup(db: SqlDriver, now = new Date()): Promise<D
   }
 
   return { created: plan.create, pruned, attachments: carried, error: null }
+}
+
+/* ------------------------------------------------ before an upgrade --- */
+
+/**
+ * Why the last copy before an upgrade could not be taken, for the top-bar dot
+ * and the Backups card. Held for the life of the process: the one before
+ * migrating is taken at start, before any screen exists to show it.
+ */
+let upgradeProblem: string | null = null
+
+export function upgradeCopyFailure(): string | null {
+  return upgradeProblem
+}
+
+/**
+ * Writes a copy of the database before an upgrade touches it, and trims the
+ * older ones of the same kind. Answers the reason it failed, or null.
+ *
+ * Never throws. The owner's decision (`update-rollout.md`, step 8) is that a
+ * failed copy warns and never blocks: a shop that cannot back up must still be
+ * able to bill, and a migration it cannot take is a till that cannot start.
+ */
+export async function takeUpgradeCopy(name: string): Promise<string | null> {
+  try {
+    await invoke('backup_write_safety', { name })
+  } catch (err) {
+    const said = typeof err === 'string' ? err : err instanceof Error ? err.message : 'the copy was not written'
+    upgradeProblem = `The copy before the upgrade (${name}) was not written: ${said}`
+    logEvent('error', 'backup', upgradeProblem)
+    return said
+  }
+  upgradeProblem = null
+  logEvent('info', 'backup', `wrote ${name}`)
+  try {
+    for (const old of Backup.pruneUpgradeCopies(await invoke<BackupFile[]>('backup_list'))) {
+      await deleteBackup(old).catch(() => undefined)
+    }
+  } catch {
+    // An old copy that will not go is not worth a word to anyone.
+  }
+  return null
+}
+
+/** The copy taken before installing an update over the version running now. */
+export async function beforeUpdateCopy(): Promise<string | null> {
+  const running = await appVersion()
+  return takeUpgradeCopy(Backup.beforeUpdateName(running?.version ?? '0.0.0'))
 }
 
 export function todaysBackupName(now = new Date()): string {

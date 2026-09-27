@@ -149,12 +149,20 @@ export interface UpdaterOptions {
   now?: () => number
   /** Off in tests, which drive `poll` by hand. */
   interval?: boolean
+  /**
+   * Takes a copy of the database before installing, answering why it failed
+   * or null. A failure refuses the first press with the reason; the second
+   * press installs anyway (`update-rollout.md`, step 7).
+   */
+  backupFirst?: () => Promise<string | null>
 }
 
 export function createUpdater(opts: UpdaterOptions): Updater {
   const now = opts.now ?? (() => Date.now())
   let state: UpdateStage = { stage: 'idle', checkedAt: null }
   let refusal: InstallRefusal | undefined
+  // Set once a person has been told the copy failed, so pressing again goes ahead.
+  let backupWaived = false
   const listeners = new Set<(state: UpdateStage) => void>()
 
   const move = (next: UpdateStage): UpdateStage => {
@@ -219,6 +227,15 @@ export function createUpdater(opts: UpdaterOptions): Updater {
 
       refusal = undefined
       if (state.stage !== 'ready') return
+      if (opts.backupFirst && !backupWaived) {
+        const failed = await opts.backupFirst()
+        if (failed !== null) {
+          backupWaived = true
+          refusal = { ok: false, code: 'BACKUP_FAILED', detail: failed }
+          move(state)
+          return refusal
+        }
+      }
       move({ stage: 'installing', update: state.update })
       await opts.source.install()
     },

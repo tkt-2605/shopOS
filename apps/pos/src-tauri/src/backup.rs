@@ -90,6 +90,32 @@ pub fn backup_write_zip(
     archive::write(&target, &work, &copy.0, &version, &now, &photos, &attachments)
 }
 
+/// A plain copy of the database taken before an upgrade touches it: before the
+/// migrations run against a database older than this build, and before an
+/// update is installed (`update-rollout.md`, step 8).
+///
+/// A bare `.db` rather than an archive, because it is taken at a moment that
+/// must be quick -- the first is on the start path, ahead of everything -- and
+/// because what it guards is the database, not the photographs, which an
+/// upgrade never touches. Peer secrets come out of it as they do from an
+/// archive. Written in the work folder and copied across durably, so a copy
+/// that failed half-way never sits in the backups folder looking whole.
+#[tauri::command(async)]
+pub fn backup_write_safety(app: tauri::AppHandle, db: State<'_, DbState>, name: String) -> Result<(), String> {
+    if !(name.starts_with("before-schema-") || name.starts_with("before-update-")) {
+        return Err(format!("\"{name}\" is not a name for a copy taken before an upgrade"));
+    }
+    let dir = paths::backups_dir(&app)?;
+    let target = paths::in_backups(&dir, &name)?;
+
+    let work = paths::work_dir(&app)?;
+    let copy = Temp(work.join("before-upgrade.db"));
+    paths::remove_if_present(&copy.0)?;
+    db.get()?.vacuum_into(&copy.0)?;
+    without_peer_secrets(&copy.0)?;
+    files::copy_durably(&copy.0, &target)
+}
+
 /// Copies a backup somewhere the shopkeeper chose — a USB stick, or a folder that
 /// a drive client syncs off the machine. That is offsite backup without this
 /// program ever opening a network connection.

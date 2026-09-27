@@ -18,6 +18,9 @@ import { MIGRATIONS } from '../../../packages/core/src/db/migrations'
 
 const core: { db: SqlDriver | null } = { db: null }
 vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core }))
+/* The copy before installing is Rust's; here it answers what the test says. */
+const copy: { fails: string | null } = { fails: null }
+vi.mock('../src/core/backup', () => ({ beforeUpdateCopy: async () => copy.fails }))
 const { UpdateLine } = await import('../src/ui/UpdateLine')
 
 const NEXT: AvailableUpdate = { version: '0.2.0', notes: '', publishedAt: null }
@@ -44,6 +47,7 @@ beforeEach(async () => {
   if (!made.ok) throw new Error('no user')
   userId = made.userId
   core.db = db
+  copy.fails = null
 })
 afterEach(async () => {
   cleanup()
@@ -77,5 +81,19 @@ describe('the update line', () => {
     await act(async () => { fireEvent.click(install) })
     await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/drawer/i))
     expect(installed).not.toHaveBeenCalled()
+  })
+
+  it('says so when the copy before installing fails, and installs on the second press', async () => {
+    copy.fails = 'the disk is full'
+    const { it: found, installed } = source(NEXT)
+    render(<UpdateLine source={found} />)
+
+    const install = await screen.findByRole('button', { name: 'Install now' }, { timeout: 5000 })
+    await act(async () => { fireEvent.click(install) })
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/backup before it failed: the disk is full/))
+    expect(installed).not.toHaveBeenCalled()
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Install now' })) })
+    expect(installed, 'a person who has been told may go ahead').toHaveBeenCalledTimes(1)
   })
 })

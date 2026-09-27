@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { UpdateSource, UpdateStage } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { createUpdater, updateSourceForThisBuild, type Updater } from '../core/updater'
+import { beforeUpdateCopy } from '../core/backup'
 
 /**
  * The one line in the sidebar about a new version, and the button to take it.
@@ -28,7 +29,7 @@ export function UpdateLine({ source }: { source?: UpdateSource }) {
 
     void (source ? Promise.resolve(source) : updateSourceForThisBuild()).then((found) => {
       if (gone) return
-      made = createUpdater({ db, source: found })
+      made = createUpdater({ db, source: found, backupFirst: beforeUpdateCopy })
       updater.current = made
       const it = made
       off = it.onChange((next) => {

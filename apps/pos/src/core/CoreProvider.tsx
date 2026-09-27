@@ -11,7 +11,7 @@ import {
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { settleRestore } from './restoreHold'
-import { runDailyBackup, startDailyBackupTimer, type DailyResult } from './backup'
+import { runDailyBackup, startDailyBackupTimer, takeUpgradeCopy, type DailyResult } from './backup'
 import { runStockCheck, startMaintenanceTimer } from './maintenance'
 import { serveIfPaired, servingOn } from './syncHost'
 import { syncFetch } from './syncFetch'
@@ -28,7 +28,7 @@ import {
   loadStockPolicy, setStockPolicy, STOCK_POLICY_DEFAULT,
   loadRounding, setRounding, ROUNDING_DEFAULT,
   loadTaxScheme, setTaxScheme, taxSchemeAnswered, type TaxScheme,
-  loadShopProfile,
+  loadShopProfile, Backup,
 } from '@shopos/core'
 import type { SessionUser, Features, FeatureKey, StockPolicy, ShopProfile, Rounding } from '@shopos/core'
 import type { CoreValue, FailureKind, Status } from './coreValue'
@@ -119,6 +119,15 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
        till came back wrong after an update there was no way to tell which
        migration had run, or how far it got. */
     const before = await currentVersion(db)
+    /* A copy first, whenever this build is about to change the schema of a
+       database that has something in it: an upgrade is the one thing this
+       program does to a shop's data that cannot be undone, and the daily
+       backup runs after it. A failed copy is said on the Backups card and in
+       the top bar, and the migrations run anyway -- warn, never block. */
+    const head = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
+    if (Backup.needsSchemaCopy(before, head)) {
+      await takeUpgradeCopy(Backup.beforeSchemaName(before, head))
+    }
     await migrate(db, MIGRATIONS, (m) => {
       logEvent('info', 'migrate', `applied ${m.version} ${m.name}`)
     })

@@ -5,7 +5,7 @@ import { useCore } from '../../core/CoreProvider'
 import {
   describeBackups, takeBackupNow, deleteBackup, copyBackup, chooseFolder,
   todaysBackupName, recordHookRun, lastHookRun, onHookResult,
-  backupFolderProblem, HOOK_SETTING, type BackupEntry, type HookRun,
+  backupFolderProblem, upgradeCopyFailure, HOOK_SETTING, type BackupEntry, type HookRun,
 } from '../../core/backup'
 import { lastRestore, inspectBackup, type RestoreReport, type RestoreCheck } from '../../core/restore'
 import { Card, Field, Alert } from '../../ui/components'
@@ -153,6 +153,9 @@ export function BackupsSection() {
         }
       >
         {/* The automatic run, which happens with this screen closed. */}
+        {upgradeCopyFailure() && (
+          <div style={{ marginBottom: 11 }}><Alert>{upgradeCopyFailure()}</Alert></div>
+        )}
         {dailyBackup?.error && (
           <div style={{ marginBottom: 11 }}><Alert>Today’s automatic backup did not run: {dailyBackup.error}</Alert></div>
         )}
@@ -180,7 +183,12 @@ export function BackupsSection() {
                     <td className="num">
                       {f.date}{f.time ? ` ${f.time}` : ''}
                       {i === 0 && <span className="badge ok" style={{ marginLeft: 7 }}>latest</span>}
-                      {f.kind === 'safety' && <span className="badge" style={{ marginLeft: 7 }}>before a restore</span>}
+                      {f.kind === 'safety' && (
+                        <span className="badge" style={{ marginLeft: 7 }}>
+                          {f.before === 'schema' ? 'before an upgrade'
+                            : f.before === 'update' ? 'before an update' : 'before a restore'}
+                        </span>
+                      )}
                     </td>
                     <td className="r num">{formatSize(f.size)}</td>
                     <td className="r" style={{ whiteSpace: 'nowrap' }}>

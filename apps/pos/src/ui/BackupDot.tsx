@@ -1,5 +1,6 @@
 import { useCore } from '../core/CoreProvider'
 import { goTo } from '../core/nav'
+import { upgradeCopyFailure } from '../core/backup'
 
 /**
  * A red mark in the top bar for as long as the last automatic backup failed.
@@ -16,12 +17,14 @@ import { goTo } from '../core/nav'
  */
 export function BackupDot() {
   const { backup } = useCore()
-  if (!backup?.error) return null
+  // The daily backup, or the copy taken before this start's upgrade.
+  const problem = backup?.error ?? upgradeCopyFailure()
+  if (!problem) return null
 
   return (
     <button
       className="link-btn"
-      title={backup.error}
+      title={problem}
       onClick={() => goTo('settings')}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 6,
