@@ -225,7 +225,7 @@ mod tree {
 
 #[cfg(not(windows))]
 mod tree {
-    use std::process::{Child, Command};
+    use std::process::Child;
 
     /// The child leads its own process group (see `shell`), so the group is
     /// the tree.
@@ -236,14 +236,37 @@ mod tree {
             Tree
         }
 
+        /// Signals the group directly rather than running `kill -KILL -<pid>`.
+        /// Some builds of `kill` read the negative number as an option, and
+        /// what they did instead took down every process the user owned -- on
+        /// a CI runner, the runner itself.
         pub fn kill(&mut self, child: &mut Child, overran: bool) {
             if overran {
-                let _ = Command::new("kill")
-                    .arg("-KILL")
-                    .arg(format!("-{}", child.id()))
-                    .status();
+                if let Some(group) = group_of(child.id()) {
+                    // SAFETY: a plain syscall; `group` is a real group id > 1.
+                    unsafe { libc::kill(-group, libc::SIGKILL) };
+                }
                 let _ = child.kill();
             }
+        }
+    }
+
+    /// The group to signal, never 0 or 1: `kill(0)` is this process's own
+    /// group and `kill(-1)` is every process there is.
+    pub fn group_of(pid: u32) -> Option<libc::pid_t> {
+        libc::pid_t::try_from(pid).ok().filter(|&p| p > 1)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::group_of;
+
+        #[test]
+        fn never_signals_everything_or_itself() {
+            assert_eq!(group_of(0), None);
+            assert_eq!(group_of(1), None);
+            assert_eq!(group_of(u32::MAX), None);
+            assert_eq!(group_of(4242), Some(4242));
         }
     }
 }
