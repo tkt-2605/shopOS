@@ -15,6 +15,8 @@ named function with the paperwork it needs written above it.
 
 **A licence never stops a shop billing.** Not lapsed, not missing, not forged,
 not when the clock is wrong, not when the portal has been down for a year.
+Since 27 September this means *the shop*: one counter always bills, with the
+whole shop's books; extra counters can stop. See "When paid time ends".
 
 This is not a kindness, it is the product. The counter works with the line
 down is the first rule in `CLAUDE.md`, and a payment dispute is not a reason
@@ -50,9 +52,69 @@ them is built, so a licence gated nothing that existed and there was no product
 to sell. A second counter is built, works, and is the thing a shopkeeper can
 see the value of.
 
-### What it must never mean
+### When paid time ends, the shop becomes a Free shop
 
-**It gates adding a till. It never gates syncing with one already added.**
+**Decided by the owner, 27 September 2026. Not built yet**: until it is, the
+code and `multiTillGate.test.ts` still hold the rule it replaces, described
+after this section.
+
+The plans (`billing.md`, *What is sold*) are Free (one counter, for ever),
+Business (several counters, bought once and permanent) and Cloud (monthly,
+with several counters for as long as it is paid). The old rule -- a lapse
+gates adding a till and never syncing one -- made one month of Cloud worth a
+permanent Business licence: add the tills while paying, stop paying, keep
+syncing for ever. That is unfair to every shop that bought Business, and it
+was the reason for the change.
+
+Stopping sync alone is not the answer either. The danger was never sync
+stopping; it is **counters that go on billing after sync has stopped**, which
+is how stock and the credit book split without anybody seeing it. Tills at
+two locations on Cloud are already in that position the day Cloud stops, so
+the rule has to handle it whatever the wire. It ends in this order:
+
+1. **A warning week.** A banner on every till, every day, before the paid-through
+   date and through grace: when the plan ends, and that extra counters will stop.
+2. **One final sync.** After grace, each extra till sends everything it holds
+   that the main counter has not got, then stops syncing. For a Cloud shop the
+   cloud stays open to that shop for this and nothing else -- uploads from its
+   tills and the main counter's download -- for a window (fourteen days is the
+   working number). Tills in one shop can hand over on the LAN instead. A till
+   switched off at the time hands over when it next reaches the main counter by
+   either road.
+3. **Extra counters stop starting money documents** -- bills, returns, khata
+   payments, cash movements -- from the start of the next business day, never
+   part-way through one. A bill already open may be finished. Looking up,
+   reprinting and reports go on working. The screen says where to bill instead.
+4. **The main counter goes on billing** with the whole shop's books, exactly as
+   a Free shop. The owner chooses which counter is main in Settings while the
+   shop is paid; the first counter set up is the default.
+5. **A renewal or a Business licence pasted on any till** reaches the others the
+   way every setting does, and sync and billing resume on all of them.
+
+| The shop holds | Sync | Extra counters |
+|---|---|---|
+| A Business licence (permanent) | LAN, for ever | For ever |
+| Cloud, paid or in grace | Cloud and LAN | Yes |
+| Nothing in force (never paid, or Cloud lapsed) | Final sync, then none | Stop; the main counter bills |
+
+**What still never happens:** the shop stops being able to take money. The
+first rule is restated as *a licence never stops the shop billing* -- one
+counter always bills, with complete books. It no longer promises that every
+counter bills.
+
+The counter limit becomes enforced when a till is **added** (the number per
+plan is still to be decided). Cloud counts tills on the vendor's server, where
+every Cloud till connects; Business carries the count in its licence.
+
+What building it needs, in order: choosing the main counter; the warning
+banner; the final sync and the state that says a till has handed over; the
+stop on new money documents; renewal lifting it; and tests for each, including
+a till switched off at the lapse that comes back and still delivers its bills.
+`CLAUDE.md` and `multiTillGate.test.ts` change in the same commit as the code.
+
+### The rule this replaces
+
+**It gated adding a till. It never gated syncing with one already added.**
 
 Billing does not stop when a licence lapses — it must not, it is the first rule
 — so a lapse that stopped sync would leave a shop taking money on two counters
@@ -60,6 +122,9 @@ that never merged. Neither screen would say anything, because a peer that has
 gone quiet looks like a peer that has gone quiet. Weeks later the stock, the
 credit book and every report in between are wrong on both machines, and nobody
 connects that to a renewal date.
+
+That argument still holds, and the new rule keeps it: sync stops only after
+the final handover, and only on counters that stop billing at the same time.
 
 So the gate sits on the door and not the wire:
 
@@ -76,8 +141,8 @@ holds, because a UI gate is a suggestion to anyone who can post to the port.
 Over-running the till count is a different shape and deliberately toothless:
 `overTillLimit` returns *how many over*, and nothing turns that number into a
 refusal. `tills` in the payload stays advisory — any paid plan is unlimited
-counters. A shop that opens a fourth counter on a Saturday has not done
-anything wrong; it has done something to talk about on Monday.
+counters. (Superseded by the decision above: the count is to be enforced at
+the door.)
 
 ---
 

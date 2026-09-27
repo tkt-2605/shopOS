@@ -66,13 +66,28 @@ later changes who calls `record()` and nothing downstream.
 
 ## What is sold
 
-| Tier | What it adds | Suggested |
-|---|---|---|
-| *no licence* | one counter: the whole till, GST, stock, credit, reports, backups | free |
-| `single` | nothing over the free tier yet. A paid customer on one counter | ₹W / year |
-| `multi` | **adding** more counters, and LAN sync between them | ₹X / year |
-| `cloud` | off-site replica, phone view, diagnostics upload | ₹Y / year |
-| `branches` | per-branch stock and transfers | ₹Z / year |
+**The plans, as decided by the owner on 27 September 2026.** Prices and the
+number of counters each plan allows are still to be set. There is no trial:
+the Free plan is the way to try it.
+
+| Plan | What it gives | Charged | Tier in the code |
+|---|---|---|---|
+| **Free** | one counter, for ever: the whole till, GST, stock, batches, credit, reports, backups | nothing | *no licence* |
+| **Business** | several counters, synced over the shop's own network | **once**, permanent | `multi`, `paidThrough: null` |
+| **Cloud** | several counters for as long as it is paid, plus the off-site copy, the owner's phone view and diagnostics | **monthly** | `cloud` |
+| **Branches** | several shops, stock per branch, transfers | later | `branches` |
+
+Cloud includes several counters, but only while it is paid. A shop that
+stops paying and holds no Business licence goes back to Free: one final sync,
+then the extra counters stop and the main one bills with the whole shop's
+books. How, and why that replaced "never stop sync", is in
+`licensing-and-accounts.md`, *When paid time ends*. Business is the only way
+to keep several counters for good, which is what makes it fair to the shops
+that bought it.
+
+`single` is still a tier in the code and is to be removed: a paid plan for one
+counter has nothing to sell over Free. Updates stay free on every plan,
+including Free (`update-rollout.md`, principle 5).
 
 The tiers are a ladder, so `cloud` includes `multi`. A shop paying to keep its
 books off-site certainly has more than one counter, and charging twice for that
@@ -117,18 +132,23 @@ free users need nothing issued, nothing supported and nothing renewed. `single`
 exists for the shop that pays for one counter, which mostly means a shop that
 wants an invoice from you.
 
-**`multi` gates the introduction, never the conversation.** Tills already
-paired go on syncing through a lapse, through a removed code, for ever. That is
-held by `multiTillGate.test.ts` and the reasoning is above `GATED` in
-`domain/licence.ts`: billing never stops, so a lapse that stopped sync would
-leave a shop taking money on two counters that no longer merged, with nothing
-on either screen to say so. What a shop bought, it keeps.
+**What a shop bought, it keeps; what it rented, it hands back cleanly.** A
+Business licence keeps its counters syncing for ever. Cloud's counters last
+while it is paid; after it lapses the shop does one final sync and goes back
+to one counter (`licensing-and-accounts.md`, *When paid time ends*). This
+replaced "`multi` gates the introduction, never the conversation" on 27
+September, because under that rule one month of Cloud bought a permanent
+Business licence. Until the new rule is built, `multiTillGate.test.ts` still
+holds the old one.
 
-**Yearly, not monthly.** Three reasons: a kirana shop thinks about software the
-way it thinks about a shop licence renewal; one collection a year beats twelve
-chances for a mandate to fail; and monthly recurring in India means e-mandates,
-which means Razorpay, which is the thing being deferred. Offer monthly when a
-shop asks and take the extra collection effort as the cost of the sale.
+**Cloud is monthly** (owner's decision, 27 September). This was argued the
+other way here first: a kirana shop thinks about software like a licence
+renewal, one collection a year beats twelve chances for a mandate to fail,
+and monthly recurring in India means e-mandates and so Razorpay. Those costs
+are real and are accepted. Monthly Cloud also means twelve renewals a year,
+which is only workable because a Cloud till is online and can fetch its
+renewed code from the portal itself -- nobody pastes a code monthly. Grace
+for a monthly plan should be shorter than thirty days; see `GRACE_DAYS`.
 
 Prices are a `plans` row, not a constant. A shop that signed at one price keeps
 it at renewal unless somebody deliberately moves them — so a subscription points

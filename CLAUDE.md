@@ -37,13 +37,19 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 
 - `npm test` from the root runs every project -- core, the app, the portal and
   both benches (2,207 tests). Types: `npm run typecheck`, which covers all five.
-- A licence never stops a shop billing. It gates what the vendor sells and
-  never anything a shop needs to take money, and that list is asserted in a
-  test. `multiTill` gates **adding** a till and never **syncing** with one
-  already added -- a lapse that stopped sync would leave two counters taking
-  money that never merged, which is worse than any unpaid invoice. Everything
-  unconfigured fails closed and names the file to edit -- `NOT_CONFIGURED`,
-  never `BAD_SIGNATURE`. See `docs/specs/licensing-and-accounts.md`.
+- A licence never stops *the shop* billing: one counter always bills, with the
+  whole shop's books. It gates what the vendor sells and never anything a shop
+  needs to take money, and that list is asserted in a test. Plans (decided 27
+  Sep): Free is one counter for ever; Business is several counters, bought
+  once, permanent; Cloud is monthly and includes several counters only while
+  paid. When paid time ends without Business, the shop does one final sync
+  and goes back to one counter -- extra counters stop starting money
+  documents, and never before they have handed over, because counters billing
+  after sync has stopped is what splits the books. **Decided, not built**:
+  until it is, the code and `multiTillGate.test.ts` still keep the old rule
+  (never gate syncing). Everything unconfigured fails closed and names the
+  file to edit -- `NOT_CONFIGURED`, never `BAD_SIGNATURE`. See
+  `docs/specs/licensing-and-accounts.md`, *When paid time ends*.
 - Staff sign in at the till with a username and a password, offline. Phone and
   OTP is the *owner's* portal account and never reaches the counter.
 - Queries are typed: `q(db).select(...).from(schema.bills)` over `db/schema.ts`,
