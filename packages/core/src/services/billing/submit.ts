@@ -9,7 +9,7 @@ import { recheckDocStatus } from '../../integrity/transition.js'
 import { loadStockPolicy } from '../features.js'
 import { nextDocNo } from '../numbering.js'
 import { applyBillFulfilment } from '../documents.js'
-import { loadBill, loadLoyaltyEntries, loadLoyaltyProgram, recipientSnapshot } from './load.js'
+import { loadBill, loadLoyaltyEntries, loadLoyaltyProgram, monthToDateSpend, recipientSnapshot } from './load.js'
 import type { SubmitBillInput, SubmitBillResult } from './types.js'
 import { refusedAsInvoice, refusedOnCredit } from './guards.js'
 import { postTenders } from './tender.js'
@@ -105,9 +105,14 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
   const earningTotal = add(
     ...lines.filter((l) => l.loyaltyBlocked !== 1).map((l) => l.lineTotal),
   )
+  /* Asked only when there is a target to reach, so a shop without one pays
+     nothing for it on every bill. */
+  const monthToDate = program.enabled && program.monthlyTarget > 0 && bill.customerId
+    ? await monthToDateSpend(db, bill.customerId, bill.postingDate)
+    : ZERO
   const earned = calculateEarned(
     program,
-    { grandTotal: bill.grandTotal, creditPortion: creditTotal, earningTotal },
+    { grandTotal: bill.grandTotal, creditPortion: creditTotal, earningTotal, monthToDate },
     now,
   )
   const [register] = await q(db)

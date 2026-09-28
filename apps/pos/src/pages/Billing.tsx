@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Money, Quantity, Totals, Loyalty, Permissions, searchProducts, saleUnitsFor, searchCustomers,
-  loadLoyaltyProgram, submitBill, pricingContextFor, resolveLinePrice, chargesTax,
+  loadLoyaltyProgram, monthToDateSpend, businessDate, submitBill, pricingContextFor, resolveLinePrice, chargesTax,
   RULE_46F_THRESHOLD, type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -117,6 +117,29 @@ export default function Billing() {
     const affordable = program.pointValue > 0 ? Math.floor(cap / program.pointValue) : 0
     return Math.max(0, Math.min(held, affordable))
   }, [active.customer, program, totals.grandTotal])
+
+  /* Where the customer stands against the monthly target, fetched when the
+     customer changes and again after each bill, so the line the cashier reads
+     out is the one the next bill will be judged on. */
+  const [monthSpent, setMonthSpent] = useState<Money.Money | null>(null)
+  const targetCustomer = program?.enabled && program.monthlyTarget > 0 ? active.customer?.id ?? null : null
+  useEffect(() => {
+    setMonthSpent(null)
+    if (!targetCustomer) return
+    let cancelled = false
+    void monthToDateSpend(db, targetCustomer, businessDate()).then((spent) => { if (!cancelled) setMonthSpent(spent) })
+    return () => { cancelled = true }
+  }, [db, targetCustomer, done])
+
+  const loyaltyMonth = program && targetCustomer && monthSpent !== null
+    ? {
+        spent: monthSpent,
+        target: program.monthlyTarget,
+        thisBill: Money.add(...totals.lines
+          .filter((_, i) => !active.lines[i]?.product.loyaltyBlocked)
+          .map((l) => l.lineTotal)),
+      }
+    : null
 
   const redeemedValue = program && redeemPoints > 0
     ? Loyalty.pointsToMoney(program, redeemPoints, totals.grandTotal)
@@ -376,6 +399,7 @@ export default function Billing() {
         totals={totals}
         blocked={blocked}
         needsRecipient={needsRecipient}
+        loyaltyMonth={loyaltyMonth}
         empty={empty}
         unfinished={unfinished}
         onPickCustomer={() => {

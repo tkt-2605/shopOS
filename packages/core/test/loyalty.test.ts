@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { rupees, ZERO } from '../src/money.js'
 import {
-  calculateEarned, availablePoints, planRedemption,
+  calculateEarned, availablePoints, planRedemption, reachesMonthlyTarget, programProblem,
   type LoyaltyProgram, type LoyaltyEntry,
 } from '../src/domain/loyalty.js'
 
@@ -16,6 +16,7 @@ const program: LoyaltyProgram = {
   earnOnCreditPortion: false,
   minBillForEarn: rupees(100),
   maxRedeemFractionBp: 5000,
+  monthlyTarget: ZERO,
 }
 
 const entry = (id: string, points: number, opts: Partial<LoyaltyEntry> = {}): LoyaltyEntry => ({
@@ -29,6 +30,50 @@ const entry = (id: string, points: number, opts: Partial<LoyaltyEntry> = {}): Lo
 })
 
 const now = new Date('2026-06-01T00:00:00Z')
+
+describe('a monthly target', () => {
+  const withTarget = { ...program, monthlyTarget: rupees(5000) }
+
+  it('earns nothing while the month is short of it', () => {
+    const r = calculateEarned(withTarget, { grandTotal: rupees(1000), creditPortion: ZERO, monthToDate: rupees(3000) }, now)
+    expect(r.points).toBe(0)
+  })
+
+  it('earns on the bill that reaches it', () => {
+    const r = calculateEarned(withTarget, { grandTotal: rupees(2000), creditPortion: ZERO, monthToDate: rupees(3000) }, now)
+    expect(r.points).toBe(20)
+  })
+
+  it('earns on every bill once the month is past it', () => {
+    const r = calculateEarned(withTarget, { grandTotal: rupees(500), creditPortion: ZERO, monthToDate: rupees(8000) }, now)
+    expect(r.points).toBe(5)
+  })
+
+  it('counts the lines the programme covers, not the whole bill', () => {
+    const basis = { grandTotal: rupees(2000), creditPortion: ZERO, earningTotal: rupees(1500), monthToDate: rupees(3000) }
+    expect(calculateEarned(withTarget, basis, now).points).toBe(0)
+  })
+
+  it('counts a khata bill towards it, and then earns only on what was paid', () => {
+    const r = calculateEarned(withTarget, { grandTotal: rupees(2000), creditPortion: rupees(1000), monthToDate: rupees(3000) }, now)
+    expect(r.points).toBe(10)
+  })
+
+  it('is off at zero, whatever the month holds', () => {
+    expect(calculateEarned(program, { grandTotal: rupees(1000), creditPortion: ZERO }, now).points).toBe(10)
+  })
+
+  it('reads a program saved before the target existed as having none', () => {
+    const { monthlyTarget: _dropped, ...old } = withTarget
+    expect(reachesMonthlyTarget(old as LoyaltyProgram, ZERO, rupees(1))).toBe(true)
+  })
+
+  it('refuses a negative or half-typed target', () => {
+    expect(programProblem({ ...program, monthlyTarget: -1 as never })).toMatch(/monthly target/)
+    expect(programProblem({ ...program, monthlyTarget: NaN as never })).toMatch(/monthly target/)
+    expect(programProblem(withTarget)).toBeNull()
+  })
+})
 
 describe('earning', () => {
   it('awards points at the matching tier', () => {

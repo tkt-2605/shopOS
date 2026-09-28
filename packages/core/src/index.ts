@@ -58,7 +58,7 @@ export {
 export type { BootstrapOptions, BootstrapResult } from './services/bootstrap.js'
 
 export {
-  createBill, submitBill, cancelBill, amendBill, loadLoyaltyProgram, billSummary,
+  createBill, submitBill, cancelBill, amendBill, loadLoyaltyProgram, monthToDateSpend, billSummary,
   RULE_46F_THRESHOLD,
 } from './services/billing.js'
 export type {

@@ -1201,6 +1201,36 @@ Found while doing the above:
 - Everything under "Verification a person has to do", including the
   multi-till checks added to `hand-checks.md`.
 
+## Loyalty: a monthly target (29 September, v0.1.2)
+
+Taken from the owner's earlier system (TRT ShopOS, `tkt-2605/erp`, branch
+`bin`), where a customer earned nothing until their spending in the calendar
+month reached a threshold. ShopOS only ever looked at the one bill.
+
+`LoyaltyProgram.monthlyTarget` (paise, zero for none, so a program saved
+before it existed reads as having none). When it is set, a bill earns only if
+the customer's month so far plus this bill reaches it. Decided:
+
+- **The bill that reaches the target earns**, whole; bills earlier in the
+  month do not earn after the fact. Earning stays append-only.
+- **Counted on the earning total** — loyalty-blocked lines left out — and not
+  on what was paid, so a khata regular still reaches it. Whether the credit
+  part then earns is still `earnOnCreditPortion`.
+- **The month is the bill's `posting_date` month**, from submitted sales only,
+  less submitted returns on those lines. A return counts against the month of
+  the bill it returns, so a return in July does not lower June.
+- Tiers still read the single bill. The target is a gate in front of them.
+
+`monthToDateSpend()` in `services/billing/load.ts` is the query; the billing
+screen shows "This month ₹X of ₹Y" under the customer, with whether this bill
+gets there. A till offline from the others counts only the bills it holds, so
+it can under-count; the error is towards fewer points, the direction the rest
+of loyalty already errs in.
+
+Not built: the old system's other reward, an instant percentage off once the
+target is reached. It changes the bill's totals and its tax, not the ledger,
+and wants its own decision.
+
 ## Left that is not code
 
 These are the owner's, and nothing in the next four weeks is blocked on them.

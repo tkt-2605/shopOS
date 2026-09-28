@@ -46,7 +46,9 @@ export function LoyaltySection() {
   return (
     <>
       <Intro>
-        Points are earned per bill and spent soonest-to-expire first. A change
+        Points are earned per bill and spent soonest-to-expire first. With a
+        monthly target, a customer earns only once their month's spending
+        reaches it, from the bill that gets there. A change
         applies to bills from now on; points already earned keep their value and
         their expiry.
       </Intro>
@@ -76,6 +78,10 @@ export function LoyaltySection() {
           <Field label="Minimum bill to earn">
             <input className="input num" id="min-bill" defaultValue={Money.format(program.minBillForEarn)}
               onBlur={(e) => patch({ minBillForEarn: Money.parseMoney(e.target.value) ?? (NaN as Money.Money) })} />
+          </Field>
+          <Field label="Monthly target" hint="Spend in a month before bills earn. 0 for none.">
+            <input className="input num" id="monthly-target" defaultValue={Money.format(program.monthlyTarget)}
+              onBlur={(e) => patch({ monthlyTarget: Money.parseMoney(e.target.value) ?? (NaN as Money.Money) })} />
           </Field>
           <Field label="Points may pay at most" hint="Per cent of the bill.">
             <input className="input num" id="max-redeem" defaultValue={program.maxRedeemFractionBp / 100}

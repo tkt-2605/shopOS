@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { setStockPolicy } from '../src/services/features.js'
 import { rupees, add, type Money } from '../src/money.js'
 import { fromUnits, toUnits } from '../src/quantity.js'
-import { createBill, submitBill, cancelBill, amendBill } from '../src/services/billing.js'
+import { createBill, submitBill, cancelBill, amendBill, monthToDateSpend } from '../src/services/billing.js'
+import { createReturn, submitReturn } from '../src/services/returns.js'
 import { currentStock, postMovement, recomputeStock } from '../src/services/stock.js'
 import { fiscalYear, fiscalYearTag, nextDocNo, docNoFits, MAX_DOC_NO } from '../src/services/numbering.js'
 import { setSetting } from '../src/services/bootstrap.js'
@@ -469,6 +470,88 @@ describe('loyalty through a bill', () => {
       `SELECT cancelled_at FROM loyalty_entries WHERE bill_id = ?`, [draft.billId],
     )
     expect(entry?.cancelled_at).not.toBeNull()
+  })
+})
+
+describe('loyalty with a monthly target', () => {
+  beforeEach(async () => {
+    await setSetting(fx.db, 'loyalty_program', JSON.stringify({
+      enabled: true,
+      tiers: [{ minSpend: 0, pointsPerHundred: 1 }],
+      expiryDays: 365,
+      pointValue: 100,
+      earnOnCreditPortion: false,
+      minBillForEarn: 0,
+      maxRedeemFractionBp: 10_000,
+      monthlyTarget: rupees(2000),
+    }))
+  })
+
+  async function sell(productId: string, units: number, customerId: string, postingDate: string) {
+    const draft = await createBill(fx.db, {
+      registerId: fx.seed.registerId, customerId, postingDate,
+      lines: [{ productId, qty: fromUnits(units) }],
+      actorId: fx.adminId,
+    })
+    if (!draft.ok) throw new Error(draft.code)
+    const r = await submitBill(fx.db, { billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: fx.adminId })
+    if (!r.ok) throw new Error(r.code)
+    return r
+  }
+
+  it('earns nothing until the month reaches it, then earns on the bill that does', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(500), taxRateBp: 0 })
+    await stockUp(fx.db, p, 20)
+    const c = await makeCustomer(fx.db)
+
+    expect((await sell(p, 2, c, '2026-06-03')).pointsEarned).toBe(0)
+    expect(await monthToDateSpend(fx.db, c, '2026-06-10')).toBe(rupees(1000))
+    expect((await sell(p, 2, c, '2026-06-10')).pointsEarned).toBe(10)
+    expect((await sell(p, 1, c, '2026-06-20')).pointsEarned).toBe(5)
+  })
+
+  it('starts again on the first of the next month', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(500), taxRateBp: 0 })
+    await stockUp(fx.db, p, 20)
+    const c = await makeCustomer(fx.db)
+
+    await sell(p, 4, c, '2026-06-28')
+    expect(await monthToDateSpend(fx.db, c, '2026-07-01')).toBe(0)
+    expect((await sell(p, 1, c, '2026-07-01')).pointsEarned).toBe(0)
+  })
+
+  it('counts only this customer, only submitted bills', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(500), taxRateBp: 0 })
+    await stockUp(fx.db, p, 20)
+    const c = await makeCustomer(fx.db)
+    const other = await makeCustomer(fx.db)
+
+    await sell(p, 4, other, '2026-06-05')
+    const cancelled = await sell(p, 4, c, '2026-06-05')
+    await cancelBill(fx.db, { billId: cancelled.billId, actorId: fx.adminId })
+    await createBill(fx.db, {
+      registerId: fx.seed.registerId, customerId: c, postingDate: '2026-06-05',
+      lines: [{ productId: p, qty: fromUnits(4) }], actorId: fx.adminId,
+    })
+
+    expect(await monthToDateSpend(fx.db, c, '2026-06-30')).toBe(0)
+  })
+
+  it('takes a return off the month of the bill it returns', async () => {
+    const p = await makeProduct(fx.db, { baseRate: rupees(500), taxRateBp: 0 })
+    await stockUp(fx.db, p, 20)
+    const c = await makeCustomer(fx.db)
+
+    const sale = await sell(p, 3, c, '2026-06-05')
+    const item = await fx.db.get<{ id: string }>(`SELECT id FROM bill_items WHERE bill_id = ?`, [sale.billId])
+    const ret = await createReturn(fx.db, {
+      billId: sale.billId, lines: [{ billItemId: item!.id, qty: fromUnits(1) }],
+      refundMethod: 'cash', actorId: fx.adminId,
+    })
+    if (!ret.ok) throw new Error(ret.code)
+    await submitReturn(fx.db, { returnId: ret.returnId, actorId: fx.adminId })
+
+    expect(await monthToDateSpend(fx.db, c, '2026-06-30')).toBe(rupees(1000))
   })
 })
 

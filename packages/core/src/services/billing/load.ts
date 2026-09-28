@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm'
+import { and, eq, gte, lte, ne, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
-import { type Money, formatWithSymbol as formatMoney } from '../../money.js'
+import { type Money, formatWithSymbol as formatMoney, sub } from '../../money.js'
 import { supplyTypeFor, type SupplyType } from '../../domain/tax.js'
 import { type LoyaltyProgram, type LoyaltyEntry, DEFAULT_PROGRAM } from '../../domain/loyalty.js'
 import { getSetting } from '../settings.js'
@@ -149,6 +149,55 @@ export async function loadLoyaltyProgram(db: SqlDriver): Promise<LoyaltyProgram>
   } catch {
     return DEFAULT_PROGRAM
   }
+}
+
+/**
+ * What a customer has spent so far in the month of `postingDate`, for the
+ * loyalty program's monthly target.
+ *
+ * On the same footing a bill earns on: submitted sales, the lines that take
+ * part in the programme, less what was refunded on those lines. A return is
+ * counted against the month of the bill it returns, not the month it was
+ * made in, so taking a bill back in the next month does not reach back and
+ * lower a target the customer has already been told they reached.
+ *
+ * `excludeBillId` leaves out the bill being asked about. A draft is not
+ * submitted and would not be counted anyway; the parameter is for a bill
+ * already submitted, where the question is what came before it.
+ */
+export async function monthToDateSpend(
+  db: SqlDriver,
+  customerId: string,
+  postingDate: string,
+  excludeBillId?: string,
+): Promise<Money> {
+  const monthStart = `${postingDate.slice(0, 7)}-01`
+  const onTheseBills = and(
+    eq(schema.bills.customerId, customerId),
+    eq(schema.bills.docstatus, 1),
+    eq(schema.bills.kind, 'sale'),
+    gte(schema.bills.postingDate, monthStart),
+    lte(schema.bills.postingDate, postingDate),
+    eq(schema.billItems.loyaltyBlocked, 0),
+    excludeBillId ? ne(schema.bills.id, excludeBillId) : undefined,
+  )
+
+  const [sold] = await q(db)
+    .select({ total: sql<number>`coalesce(sum(${schema.billItems.lineTotal}), 0)` })
+    .from(schema.billItems)
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.billItems.billId))
+    .where(onTheseBills)
+
+  const [refunded] = await q(db)
+    .select({ total: sql<number>`coalesce(sum(${schema.salesReturnItems.refundAmount}), 0)` })
+    .from(schema.salesReturnItems)
+    .innerJoin(schema.salesReturns, eq(schema.salesReturns.id, schema.salesReturnItems.returnId))
+    .innerJoin(schema.billItems, eq(schema.billItems.id, schema.salesReturnItems.billItemId))
+    .innerJoin(schema.bills, eq(schema.bills.id, schema.billItems.billId))
+    .where(and(onTheseBills, eq(schema.salesReturns.docstatus, 1)))
+
+  const spent = sub((sold?.total ?? 0) as Money, (refunded?.total ?? 0) as Money)
+  return (spent > 0 ? spent : 0) as Money
 }
 
 export async function supplyFor(db: SqlDriver, customerStateCode: string | null): Promise<SupplyType> {

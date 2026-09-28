@@ -1,4 +1,4 @@
-import { type Money, ZERO, sub, min as minMoney } from '../money.js'
+import { type Money, ZERO, add, sub, min as minMoney } from '../money.js'
 
 /**
  * Points are earned per bill into an entry that carries its own expiry, and
@@ -24,6 +24,12 @@ export interface LoyaltyProgram {
   earnOnCreditPortion: boolean
   minBillForEarn: Money
   maxRedeemFractionBp: number
+  /**
+   * What a customer has to spend in a calendar month before their bills earn,
+   * or zero for no target. The bill that reaches it earns; the bills before it
+   * in the month do not earn after the fact.
+   */
+  monthlyTarget: Money
 }
 
 export const DEFAULT_PROGRAM: LoyaltyProgram = {
@@ -34,6 +40,7 @@ export const DEFAULT_PROGRAM: LoyaltyProgram = {
   earnOnCreditPortion: false,
   minBillForEarn: ZERO,
   maxRedeemFractionBp: 10_000,
+  monthlyTarget: ZERO,
 }
 
 export interface LoyaltyEntry {
@@ -65,6 +72,11 @@ export interface EarnBasis {
   creditPortion: Money
   /** Defaults to the whole bill, which is the answer when nothing is excluded. */
   earningTotal?: Money
+  /**
+   * What the customer spent earlier in this bill's month, on the same footing
+   * as `earningTotal`. Only read when the program has a monthly target.
+   */
+  monthToDate?: Money
 }
 
 export function calculateEarned(
@@ -90,6 +102,10 @@ export function calculateEarned(
     return { points: 0, eligibleSpend: ZERO, expiresAt: null }
   }
 
+  if (!reachesMonthlyTarget(program, basis.monthToDate ?? ZERO, earningTotal)) {
+    return { points: 0, eligibleSpend, expiresAt: null }
+  }
+
   const tier = tierFor(program.tiers, eligibleSpend)
   if (!tier) return { points: 0, eligibleSpend, expiresAt: null }
 
@@ -97,6 +113,19 @@ export function calculateEarned(
   if (points <= 0) return { points: 0, eligibleSpend, expiresAt: null }
 
   return { points, eligibleSpend, expiresAt: expiryFrom(program, on) }
+}
+
+/**
+ * Whether this bill takes the customer's month to the target.
+ *
+ * Counted on the earning total, not on what was paid: the target is about how
+ * much the customer buys, and a regular on khata is still a regular. Whether
+ * the credit part then earns is `earnOnCreditPortion`'s question, asked after.
+ */
+export function reachesMonthlyTarget(program: LoyaltyProgram, monthToDate: Money, thisBill: Money): boolean {
+  const target = program.monthlyTarget ?? ZERO
+  if (target <= 0) return true
+  return add(monthToDate, thisBill) >= target
 }
 
 function tierFor(tiers: LoyaltyTier[], spend: Money): LoyaltyTier | null {
@@ -220,6 +249,9 @@ export function programProblem(program: LoyaltyProgram): string | null {
     return 'Points expire after a whole number of days, or leave it blank for never.'
   }
   if (!whole(program.minBillForEarn) || program.minBillForEarn < 0) return 'The minimum bill cannot be below zero.'
+  if (!whole(program.monthlyTarget) || program.monthlyTarget < 0) {
+    return 'The monthly target is an amount of zero or more; zero means none.'
+  }
   if (!whole(program.maxRedeemFractionBp) || program.maxRedeemFractionBp < 0 || program.maxRedeemFractionBp > 10_000) {
     return 'Points can pay between 0 and 100 per cent of a bill.'
   }

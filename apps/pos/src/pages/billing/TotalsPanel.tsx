@@ -7,13 +7,15 @@ import { Field, Alert, Rupees } from '../../ui/components'
  * and the button that takes the money.
  */
 export function TotalsPanel({
-  cart, totals, blocked, needsRecipient, empty, unfinished, onPickCustomer, onDiscount, onPay,
+  cart, totals, blocked, needsRecipient, loyaltyMonth, empty, unfinished, onPickCustomer, onDiscount, onPay,
 }: {
   cart: Cart
   totals: Totals.ComputedTotals
   /** Lines that take no discount. */
   blocked: CartLine[]
   needsRecipient: boolean
+  /** Where the customer stands against the loyalty target, when there is one. */
+  loyaltyMonth: { spent: Money.Money; target: Money.Money; thisBill: Money.Money } | null
   empty: boolean
   unfinished: boolean
   onPickCustomer: () => void
@@ -35,6 +37,7 @@ export function TotalsPanel({
             Outstanding <Rupees value={cart.customer.outstanding} />
           </div>
         )}
+        {loyaltyMonth && <MonthTarget {...loyaltyMonth} />}
         {/* Said while the cart is being built rather than at the moment the
             customer holds out the money. Rule 46(f) refuses this bill at
             submit, and a refusal a cashier could have seen coming is a
@@ -90,6 +93,34 @@ export function TotalsPanel({
         <span className="k">F12</span>
         <span>{unfinished ? 'A line has no quantity' : 'Take payment'}</span>
       </button>
+    </div>
+  )
+}
+
+/**
+ * The loyalty target, said so the cashier can tell the customer: how much
+ * this month so far, and whether this bill gets them there.
+ */
+function MonthTarget({ spent, target, thisBill }: { spent: Money.Money; target: Money.Money; thisBill: Money.Money }) {
+  const reached = spent >= target
+  const withThis = Money.add(spent, thisBill)
+  const pct = Math.min(100, Math.round((Math.min(withThis, target) / target) * 100))
+  const note = reached
+    ? 'Target reached — this bill earns points.'
+    : withThis >= target
+      ? 'This bill reaches the target and earns points.'
+      : <><Rupees value={Money.sub(target, withThis)} /> more this month to earn points.</>
+  return (
+    <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--ink-2)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span>This month</span>
+        <span><Rupees value={spent} /> of <Rupees value={target} /></span>
+      </div>
+      <div role="progressbar" aria-label="Monthly loyalty target" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}
+        style={{ height: 4, background: 'var(--rule-strong)', margin: '4px 0' }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: withThis >= target ? 'var(--ok)' : 'var(--accent)' }} />
+      </div>
+      <div style={{ color: withThis >= target ? 'var(--ok)' : 'var(--ink-3)' }}>{note}</div>
     </div>
   )
 }
