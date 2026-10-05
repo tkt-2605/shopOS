@@ -8,46 +8,18 @@ import { DRAFT, SUBMITTED, assertCanApply, parseDocStatus } from '../../integrit
 import { writeAudit } from '../../integrity/audit.js'
 import { recheckDocStatus } from '../../integrity/transition.js'
 import { nextDocNo, seriesPrefix } from '../numbering.js'
-import { openSessionFor, postCashMovement } from '../cash.js'
-import { postCreditNote } from '../payments.js'
 import { loadReturn } from './read.js'
-import { clawBackPoints, outstandingFor, refundBasis, restorePoints } from './refund.js'
-import type { CreateReturnInput, ProcessReturnResult, SubmitReturnResult } from './types.js'
-import { createReturn } from './create.js'
+import { clawBackPoints, outstandingFor, payRefund, refundBasis, restorePoints } from './refund.js'
+import type { SubmitReturnResult } from './types.js'
 import { restock } from './restock.js'
-
-/**
- * A return is taken complete, the way a receipt is.
- *
- * There is no half-made return to come back to: the customer is standing at the
- * counter holding the goods. The draft step still exists underneath — the
- * document has a docstatus and a cancel path — but nobody is asked to walk it.
- */
-export async function processReturn(db: SqlDriver, input: CreateReturnInput): Promise<ProcessReturnResult> {
-  const created = await createReturn(db, input)
-  if (!created.ok) return created
-
-  const submitted = await submitReturn(db, {
-    returnId: created.returnId,
-    actorId: input.actorId,
-    ...(input.now ? { now: input.now } : {}),
-  })
-
-  // A refusal at submit would otherwise leave a draft nobody will ever finish,
-  // silting the bill up with returns that did not happen.
-  if (!submitted.ok) {
-    await q(db).delete(schema.salesReturnItems)
-      .where(eq(schema.salesReturnItems.returnId, created.returnId))
-    await q(db).delete(schema.salesReturns)
-      .where(eq(schema.salesReturns.id, created.returnId))
-  }
-  return submitted
-}
+import { requirePermission } from '../../integrity/permissions.js'
+import { postVoucherGl } from '../ledger.js'
 
 export async function submitReturn(
   db: SqlDriver,
   input: { returnId: string; actorId: string; now?: Date },
 ): Promise<SubmitReturnResult> {
+  await requirePermission(db, input.actorId, 'sales_return', 'submit')
   const now = input.now ?? new Date()
   const ret = await loadReturn(db, input.returnId)
   assertCanApply('return', parseDocStatus(ret.docstatus), 'submit')
@@ -137,39 +109,18 @@ export async function submitReturn(
         .where(eq(schema.billItems.id, line.billItemId))
     }
 
-    if (split.cash > 0) {
-      if (ret.refundMethod === 'credit') {
-        const note = await postCreditNote(tx, {
-          customerId: bill.customerId!,
-          amount: split.cash,
-          reference: `${docNo} against ${bill.docNo}`,
-          notes: ret.reason,
-          ...(register?.prefix ? { registerPrefix: register.prefix } : {}),
-          actorId: input.actorId,
-          now,
-        })
-        creditNoteDocNo = note.docNo
-        await q(tx).update(schema.salesReturns)
-          .set({ creditNoteId: note.paymentId })
-          .where(eq(schema.salesReturns.id, input.returnId))
-      } else {
-        // Out of whichever drawer is open now — a return days later must not
-        // reach back into a session that has been counted and closed.
-        const session = await openSessionFor(tx, bill.registerId)
-        if (session) {
-          await postCashMovement(tx, {
-            sessionId: session,
-            direction: 'out',
-            amount: split.cash,
-            method: ret.refundMethod,
-            sourceType: 'sales_return',
-            sourceId: input.returnId,
-            userId: input.actorId,
-            now,
-          })
-        }
-      }
-    }
+    creditNoteDocNo = await payRefund(tx, {
+      returnId: input.returnId,
+      method: ret.refundMethod,
+      amount: split.cash,
+      customerId: bill.customerId,
+      reference: `${docNo} against ${bill.docNo}`,
+      reason: ret.reason,
+      registerId: bill.registerId,
+      registerPrefix: register?.prefix ?? null,
+      actorId: input.actorId,
+      now,
+    })
 
     if (split.pointsRestored > 0) await restorePoints(tx, ret.billId, split.pointsRestored)
     if (split.pointsRemoved > 0) await clawBackPoints(tx, ret.billId, split.pointsRemoved, nowIso)
@@ -196,6 +147,7 @@ export async function submitReturn(
         points_removed: split.pointsRemoved,
       },
     })
+    await postVoucherGl(tx, 'sales_return', input.returnId)
     return null
   })
   if (refused) return refused

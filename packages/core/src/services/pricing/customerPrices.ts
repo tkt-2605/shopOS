@@ -7,6 +7,7 @@ import { type Qty, qty } from '../../quantity.js'
 import { writeAudit, type AuditContext } from '../../integrity/audit.js'
 import type { ItemPriceResult } from './itemPrices.js'
 import { unitExists } from './units.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 /*
  * A price agreed with one customer, and the list a customer buys from.
@@ -67,6 +68,7 @@ export async function setCustomerPrice(
     minQty?: Qty; validFrom?: string | null; validTo?: string | null
   },
 ): Promise<ItemPriceResult> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   if (input.validFrom && input.validTo && input.validFrom > input.validTo) {
     return { ok: false, code: 'BAD_DATES' }
   }
@@ -132,6 +134,7 @@ export async function removeCustomerPrice(
   ctx: AuditContext & { actorId: string },
   id: string,
 ): Promise<void> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
     await q(tx).update(schema.customerItemPrices)
@@ -148,6 +151,7 @@ export async function setCustomerPriceList(
   customerId: string,
   priceListId: string | null,
 ): Promise<void> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   const [before] = await q(db)
     .select({ priceListId: schema.customers.priceListId })

@@ -750,6 +750,48 @@ async function raiseBill(till: Till, productId: string): Promise<string> {
   })
 }
 
+describe('the books on a second till', () => {
+  async function paidBill(): Promise<string> {
+    const product = await as(a, () => makeProduct(a.db, { name: 'Notebook', baseRate: rupees(118), taxRateBp: 1800 }))
+    return as(a, async () => {
+      const draft = await createBill(a.db, {
+        registerId: a.fx!.seed.registerId, lines: [{ productId: product, qty: fromUnits(2) }], actorId: a.fx!.adminId,
+      })
+      if (!draft.ok) throw new Error(draft.code)
+      const paid = await submitBill(a.db, {
+        billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: a.fx!.adminId,
+      })
+      if (!paid.ok) throw new Error(paid.code)
+      return draft.billId
+    })
+  }
+
+  const entriesOf = (till: Till, billId: string) => till.db.query<{ id: string; account: string; debit: number; credit: number }>(
+    `SELECT id, account, debit, credit FROM gl_entries WHERE voucher_id = ? ORDER BY id`, [billId])
+
+  it('arrive with the bill, the same rows and no second set', async () => {
+    const billId = await paidBill()
+    await bothWays()
+    const there = await entriesOf(b, billId)
+    expect(there.length).toBeGreaterThan(0)
+    expect(there).toEqual(await entriesOf(a, billId))
+  })
+
+  it('are worked out on arrival for a bill from a till that has no ledger yet', async () => {
+    const billId = await paidBill()
+    /* A as an older build: the bill, and no entries for it -- nor any in the
+       feed to send. */
+    await a.db.execute(`DROP TRIGGER gl_entries_is_append_only_del`)
+    await a.db.execute(`DELETE FROM gl_entries`)
+    await a.db.execute(`DELETE FROM change_feed WHERE table_name = 'gl_entries'`)
+
+    await bothWays()
+    const there = await entriesOf(b, billId)
+    expect(there.length).toBeGreaterThan(0)
+    expect(there.reduce((s, e) => s + e.debit, 0)).toBe(there.reduce((s, e) => s + e.credit, 0))
+  })
+})
+
 describe('points spent on one till', () => {
   /**
    * The schema review's first finding. A loyalty entry had no revision, so a

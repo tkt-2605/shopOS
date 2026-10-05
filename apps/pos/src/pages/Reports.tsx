@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Reports as R, Money, listRegisters, chargesTax, listSessions, type DateRange, type Register,
+  Reports as R, Money, listRegisters, chargesTax, listSessions, profitAndLoss, balanceSheet, ledgerChecks,
+  type DateRange, type Register,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'
@@ -10,7 +11,7 @@ import { useShopChanged } from '../core/useShopChanged'
 import { Completeness } from '../ui/Completeness'
 import { type Data, type Tab, describe, rupeeCell, tableFor } from './reports/tableFor'
 import {
-  DaysTable, DrawerTable, MarginTable, ProductsTable, StaffTable, TaxTable, TendersTable,
+  BooksTable, DaysTable, DrawerTable, MarginTable, ProductsTable, StaffTable, TaxTable, TendersTable,
 } from './reports/tables'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -21,6 +22,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'tenders', label: 'Payments' },
   { id: 'staff', label: 'Staff' },
   { id: 'drawer', label: 'Drawer' },
+  { id: 'books', label: 'Books' },
 ]
 
 export default function Reports() {
@@ -51,7 +53,7 @@ export default function Reports() {
     setBusy(true)
     setError(null)
     try {
-      const [summary, days, products, margin, marginRows, tax, tenders, staff, sessions] = await Promise.all([
+      const [summary, days, products, margin, marginRows, tax, tenders, staff, sessions, pl, bs, checks] = await Promise.all([
         R.salesSummary(db, range),
         R.salesByDay(db, range),
         R.topProducts(db, range, 25),
@@ -61,8 +63,11 @@ export default function Reports() {
         R.paymentMix(db, range),
         R.salesByStaff(db, range),
         listSessions(db, range),
+        profitAndLoss(db, range),
+        balanceSheet(db, range.to),
+        ledgerChecks(db),
       ])
-      setData({ summary, days, products, margin, marginRows, tax, tenders, staff, sessions })
+      setData({ summary, days, products, margin, marginRows, tax, tenders, staff, sessions, pl, bs, checks })
     } catch (err) {
       setData(null)
       setError(`The reports could not be built: ${err instanceof Error ? err.message : String(err)}`)
@@ -129,11 +134,12 @@ export default function Reports() {
        which is what GSTR-1 table 9B is filled from. */
     const csv = R.toCsv(
       ['Document', 'Type', 'Against', 'Date', 'Customer', 'GSTIN', 'Place of supply',
-        'Rate %', 'Taxable', 'CGST', 'SGST', 'IGST', 'Total'],
+        'Rate %', 'Taxable', 'CGST', 'SGST', 'IGST', 'Cess', 'Total'],
       lines.map((l) => [
         l.docNo, l.kind === 'credit_note' ? 'Credit note' : 'Invoice', l.againstDocNo ?? '',
         l.postingDate, l.customerName, l.gstin, l.placeOfSupply, l.rateBp / 100,
-        rupeeCell(l.taxable), rupeeCell(l.cgst), rupeeCell(l.sgst), rupeeCell(l.igst), rupeeCell(l.total),
+        rupeeCell(l.taxable), rupeeCell(l.cgst), rupeeCell(l.sgst), rupeeCell(l.igst), rupeeCell(l.cess),
+        rupeeCell(l.total),
       ]),
     )
     const result = await saveFile(`gst-detail-${range.from}-to-${range.to}.csv`, csv)
@@ -165,6 +171,52 @@ export default function Reports() {
     setTimeout(() => setNotice(null), 8000)
   }
 
+  /**
+   * GSTR-1, one file per section, in the offline tool's columns.
+   *
+   * The whole shop whatever counter is chosen above: a return is filed per
+   * GSTIN, and a GSTR-1 of one till's bills under-declares.
+   */
+  async function exportGstr1() {
+    setError(null)
+    const sections = R.gstr1Files(await R.gstr1(db, { from: range.from, to: range.to }))
+    if (sections.length === 0) { setError('There is nothing to file in this range.'); return }
+    let folder = ''
+    for (const { section, csv } of sections) {
+      const result = await saveFile(`gstr1-${section}-${range.from}-to-${range.to}.csv`, csv)
+      if (!result.ok) { setError(result.message); return }
+      folder = result.path
+    }
+    setNotice(`Saved ${sections.length} GSTR-1 ${sections.length === 1 ? 'file' : 'files'} `
+      + `(${sections.map((x) => x.section).join(', ')}) beside ${folder}`)
+    setTimeout(() => setNotice(null), 10000)
+  }
+
+  /**
+   * Every supplier's bill in the range, with its tax -- what a CA matches
+   * against GSTR-2B -- and the input tax the shop can claim for it.
+   */
+  async function exportPurchases() {
+    setError(null)
+    const register = await R.purchaseRegister(db, { from: range.from, to: range.to })
+    if (register.rows.length === 0) { setError('No supplier’s bill was posted in this range.'); return }
+    const csv = R.toCsv(
+      ['Entry', 'Posted', 'Supplier', 'GSTIN', 'Bill no.', 'Bill date', 'Taxable',
+        'CGST', 'SGST', 'IGST', 'Cess', 'Round off', 'Total', 'Tax claimed'],
+      register.rows.map((r) => [
+        r.entryNo, r.postingDate, r.supplierName, r.supplierGstin, r.invoiceNo, r.invoiceDate,
+        rupeeCell(r.taxable), rupeeCell(r.cgst), rupeeCell(r.sgst), rupeeCell(r.igst), rupeeCell(r.cess),
+        rupeeCell(r.roundOff), rupeeCell(r.total), r.claimed ? 'Yes' : 'No — in the cost of the goods',
+      ]),
+    )
+    const result = await saveFile(`purchase-register-${range.from}-to-${range.to}.csv`, csv)
+    if (!result.ok) { setError(result.message); return }
+    const c = register.claimable
+    setNotice(`Saved to ${result.path}. Input tax to claim: IGST ${Money.formatWithSymbol(c.igst)}, `
+      + `CGST ${Money.formatWithSymbol(c.cgst)}, SGST ${Money.formatWithSymbol(c.sgst)}, cess ${Money.formatWithSymbol(c.cess)}.`)
+    setTimeout(() => setNotice(null), 12000)
+  }
+
   const s = data?.summary
 
   return (
@@ -192,6 +244,18 @@ export default function Reports() {
         <div style={{ flex: 1 }} />
         {collectsTax && (
           <button className="btn sm" onClick={() => void exportGstLines()}>Export GST detail</button>
+        )}
+        {collectsTax && (
+          <button className="btn sm" title="B2B, B2CL, B2CS, credit notes, HSN and document summaries, for the whole shop"
+            onClick={() => void exportGstr1()}>
+            Export GSTR-1
+          </button>
+        )}
+        {collectsTax && (
+          <button className="btn sm" title="Every supplier’s bill, and the input tax to claim"
+            onClick={() => void exportPurchases()}>
+            Export purchases
+          </button>
         )}
       </div>
 
@@ -262,6 +326,7 @@ export default function Reports() {
             {tab === 'tenders' && <TendersTable rows={data.tenders} />}
             {tab === 'staff' && <StaffTable rows={data.staff} />}
             {tab === 'drawer' && <DrawerTable rows={data.sessions} />}
+            {tab === 'books' && <BooksTable pl={data.pl} bs={data.bs} checks={data.checks} asOf={range.to} />}
           </Card>
 
           {s.discount > 0 && (

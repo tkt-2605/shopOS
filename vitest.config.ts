@@ -53,6 +53,15 @@ export default defineConfig({
             '@shopos/core/migrations': new URL('./packages/core/src/db/migrations.ts', import.meta.url).pathname,
             '@shopos/core/licence': new URL('./packages/core/src/domain/licence.ts', import.meta.url).pathname,
             '@shopos/core/config': new URL('./packages/core/src/config/licensing.ts', import.meta.url).pathname,
+            /* The published areas (src/api), before the root: an alias matches
+               by prefix, so the root alone would send these to index.ts/books. */
+            '@shopos/core/foundation': new URL('./packages/core/src/api/foundation.ts', import.meta.url).pathname,
+            '@shopos/core/sync': new URL('./packages/core/src/api/sync.ts', import.meta.url).pathname,
+            '@shopos/core/catalog': new URL('./packages/core/src/api/catalog.ts', import.meta.url).pathname,
+            '@shopos/core/sales': new URL('./packages/core/src/api/sales.ts', import.meta.url).pathname,
+            '@shopos/core/stock': new URL('./packages/core/src/api/stock.ts', import.meta.url).pathname,
+            '@shopos/core/books': new URL('./packages/core/src/api/books.ts', import.meta.url).pathname,
+            '@shopos/core/shop': new URL('./packages/core/src/api/shop.ts', import.meta.url).pathname,
             '@shopos/core': new URL('./packages/core/src/index.ts', import.meta.url).pathname,
           },
         },
@@ -63,6 +72,11 @@ export default defineConfig({
              component to get itself tested. */
           include: ['apps/pos/test/**/*.test.{ts,tsx}'],
           environment: 'jsdom',
+          /* Not `pool: 'vmThreads'`, which Vitest suggests for the jsdom cost.
+             Tried on 4 October: slower here (21 s against 18 s), and the
+             licence card's tests fail under it -- they check real Ed25519
+             signatures, and WebCrypto's byte arrays do not cross the VM
+             context's boundary. */
         },
       },
     ],

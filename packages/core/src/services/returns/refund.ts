@@ -5,6 +5,9 @@ import { type Money, ZERO, paise } from '../../money.js'
 import type { RefundBasis } from '../../domain/returns.js'
 import { SUBMITTED } from '../../integrity/docstatus.js'
 import { ALLOCATED_TO_BILL } from '../payments/outstanding.js'
+import { postCreditNote } from '../payments.js'
+import { openSessionFor, postCashMovement } from '../cash.js'
+import type { RefundMethod } from './types.js'
 
 /*
  * The money and the points a return moves: how a refund divides between the
@@ -227,3 +230,60 @@ export async function outstandingFor(db: SqlDriver, customerId: string): Promise
 }
 
 export const ZERO_REFUND = ZERO
+
+/**
+ * Hands the money part of a refund back: onto the khata as a credit note, or
+ * out of the drawer. Answers the credit note's number when there is one.
+ *
+ * Out of whichever drawer is open now -- a return days later must not reach
+ * back into a session that has been counted and closed. With none open, the
+ * refund is recorded on the return and moves no drawer, as a sale does.
+ */
+export async function payRefund(
+  tx: SqlDriver,
+  input: {
+    returnId: string
+    method: RefundMethod
+    amount: Money
+    customerId: string | null
+    reference: string
+    reason: string | null
+    registerId: string
+    registerPrefix: string | null
+    actorId: string
+    now: Date
+  },
+): Promise<string | null> {
+  if (input.amount <= 0) return null
+
+  if (input.method === 'credit') {
+    const note = await postCreditNote(tx, {
+      customerId: input.customerId!,
+      amount: input.amount,
+      reference: input.reference,
+      notes: input.reason,
+      ...(input.registerPrefix ? { registerPrefix: input.registerPrefix } : {}),
+      actorId: input.actorId,
+      now: input.now,
+    })
+    await q(tx).update(schema.salesReturns)
+      .set({ creditNoteId: note.paymentId })
+      .where(eq(schema.salesReturns.id, input.returnId))
+    return note.docNo
+  }
+
+  const session = await openSessionFor(tx, input.registerId)
+  if (session) {
+    await postCashMovement(tx, {
+      sessionId: session,
+      direction: 'out',
+      amount: input.amount,
+      method: input.method,
+      sourceType: 'sales_return',
+      sourceId: input.returnId,
+      userId: input.actorId,
+      now: input.now,
+    })
+  }
+  return null
+}

@@ -494,7 +494,10 @@ describe('loyalty with a monthly target', () => {
       actorId: fx.adminId,
     })
     if (!draft.ok) throw new Error(draft.code)
-    const r = await submitBill(fx.db, { billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: fx.adminId })
+    const r = await submitBill(fx.db, {
+      billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: fx.adminId,
+      now: new Date(`${postingDate}T12:00:00`),
+    })
     if (!r.ok) throw new Error(r.code)
     return r
   }

@@ -1,9 +1,9 @@
-import { eq, and, isNull } from 'drizzle-orm'
+import { eq, and, isNull, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { type Money, ZERO } from '../money.js'
-import { type Qty, addQty, QTY_ZERO } from '../quantity.js'
+import { type Qty, addQty, QTY_ZERO, QTY_SCALE } from '../quantity.js'
 import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 import { recheckDocStatus } from '../integrity/transition.js'
@@ -11,6 +11,10 @@ import { businessDate } from '../dates.js'
 import { postMovement, reverseVoucher, currentStock } from './stock.js'
 import { checkBatch, ensureBatch, findBatch, moveBatch, reverseBatches } from './batches.js'
 import { nextDocNo, seriesPrefix } from './numbering.js'
+import { closedFor, type PeriodClosed } from './books.js'
+import { purchaseTaxes, inputTaxClaimable } from './purchases.js'
+import { requirePermission } from '../integrity/permissions.js'
+import { postVoucherGl, reverseVoucherGl } from './ledger.js'
 
 export type StockEntryType = 'purchase' | 'adjustment' | 'opening' | 'wastage'
 
@@ -34,6 +38,12 @@ export interface StockEntryLineInput {
   batchNo?: string | null
   /** YYYY-MM-DD. Only read for goods coming in; see `parseExpiry` for what a person may type. */
   expiryDate?: string | null
+  /**
+   * The GST and cess the supplier billed this line at, on a purchase. Absent is
+   * none -- what every purchase recorded before 065 says. See `purchases.ts`.
+   */
+  taxRateBp?: number
+  cessRateBp?: number
 }
 
 export interface CreateStockEntryInput {
@@ -44,6 +54,11 @@ export interface CreateStockEntryInput {
   reference?: string
   notes?: string
   postingDate?: string
+  /** On a purchase: the supplier's own bill number and date, as printed. */
+  supplierInvoiceNo?: string | null
+  supplierInvoiceDate?: string | null
+  /** On a purchase: the supplier's rounding, signed, so the total matches their bill. */
+  roundOff?: Money
   actorId: string
   now?: Date
 }
@@ -63,6 +78,8 @@ export type CreateStockEntryResult =
 
 export type SubmitStockEntryResult =
   | { ok: true; entryId: string; docNo: string }
+  /** Dated on or before the day the books were closed through. */
+  | PeriodClosed
   | { ok: false; code: 'WOULD_GO_NEGATIVE'; productId: string; available: Qty; change: Qty }
   | { ok: false; code: 'BATCH_WOULD_GO_NEGATIVE'; productId: string; batchNo: string; available: Qty; change: Qty }
 
@@ -156,6 +173,21 @@ export async function createStockEntry(
   // The shop's day. The UTC one filed a delivery booked in at 00:30 against yesterday.
   const postingDate = input.postingDate ?? businessDate(now)
 
+  /* A purchase is the supplier's bill: its tax and what it comes to, worked out
+     once here and stored, so the bill the shop owes is the bill it entered. */
+  const purchase = input.entryType === 'purchase'
+  const billed = purchase
+    ? await purchaseTaxes(db, {
+        supplierId: input.supplierId ?? null,
+        lines: input.lines.map((l) => ({
+          qty: l.qty, unitCost: l.unitCost ?? ZERO,
+          ...(l.taxRateBp !== undefined ? { taxRateBp: l.taxRateBp } : {}),
+          ...(l.cessRateBp !== undefined ? { cessRateBp: l.cessRateBp } : {}),
+        })),
+        ...(input.roundOff !== undefined ? { roundOff: input.roundOff } : {}),
+      })
+    : null
+
   await db.transaction(async (tx) => {
     await q(tx).insert(schema.stockEntries).values({
       id: entryId,
@@ -167,6 +199,10 @@ export async function createStockEntry(
       supplierName: input.supplierName ?? null,
       reference: input.reference ?? null,
       notes: input.notes ?? null,
+      supplierInvoiceNo: purchase ? input.supplierInvoiceNo?.trim() || null : null,
+      supplierInvoiceDate: purchase ? input.supplierInvoiceDate || null : null,
+      roundOff: purchase ? input.roundOff ?? ZERO : ZERO,
+      invoiceTotal: billed?.invoiceTotal ?? ZERO,
       createdBy: input.actorId,
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -174,12 +210,17 @@ export async function createStockEntry(
 
     for (const [i, line] of input.lines.entries()) {
       const itemId = newId()
+      const tax = billed?.lines[i]
       await q(tx).insert(schema.stockEntryItems).values({
         id: itemId,
         entryId,
         productId: line.productId,
         qty: signedQty(input.entryType, line.qty),
         unitCost: line.unitCost ?? ZERO,
+        ...(tax ? {
+          taxRateBp: tax.rateBp, cessRateBp: tax.cessRateBp,
+          cgstAmount: tax.cgst, sgstAmount: tax.sgst, igstAmount: tax.igst, cessAmount: tax.cess,
+        } : {}),
       })
       const batch = batchOf[i]
       if (batch) {
@@ -201,9 +242,12 @@ export async function submitStockEntry(
   db: SqlDriver,
   input: { entryId: string; actorId: string; now?: Date },
 ): Promise<SubmitStockEntryResult> {
+  await requirePermission(db, input.actorId, 'stock_entry', 'submit')
   const now = input.now ?? new Date()
   const entry = await loadEntry(db, input.entryId)
   assertCanApply('stock entry', parseDocStatus(entry.docstatus), 'submit')
+  const closed = await closedFor(db, entry.postingDate)
+  if (closed) return closed
 
   const lines = await q(db)
     .select({
@@ -211,9 +255,16 @@ export async function submitStockEntry(
       productId: schema.stockEntryItems.productId,
       qty: schema.stockEntryItems.qty,
       unitCost: schema.stockEntryItems.unitCost,
+      tax: sql<number>`${schema.stockEntryItems.cgstAmount} + ${schema.stockEntryItems.sgstAmount}
+        + ${schema.stockEntryItems.igstAmount} + ${schema.stockEntryItems.cessAmount}`,
     })
     .from(schema.stockEntryItems)
     .where(eq(schema.stockEntryItems.entryId, input.entryId))
+
+  /* Decided as the goods come in, and kept on the entry (065): a shop that may
+     not claim the tax pays it as part of what the goods cost, so it goes into
+     the cost the shelf is valued at. */
+  const claimed = entry.entryType !== 'purchase' || await inputTaxClaimable(db)
 
   const batchRows = await q(db)
     .select({
@@ -265,11 +316,14 @@ export async function submitStockEntry(
     docNo = await nextDocNo(tx, 'stock_entry', await seriesPrefix(tx, 'MR'), now)
 
     for (const line of lines) {
+      const cost = !claimed && line.tax > 0 && line.qty > 0
+        ? (line.unitCost + Math.round((line.tax * QTY_SCALE) / line.qty)) as Money
+        : line.unitCost
       await postMovement(tx, {
         productId: line.productId,
         qtyChange: line.qty,
         // Zero is "not recorded", not "free": the column has no null in it.
-        unitCost: line.unitCost || null,
+        unitCost: cost || null,
         voucherType: 'stock_entry',
         voucherId: input.entryId,
         postingDate: entry.postingDate,
@@ -291,8 +345,9 @@ export async function submitStockEntry(
     }
 
     await q(tx).update(schema.stockEntries)
-      .set({ docstatus: SUBMITTED, docNo, updatedAt: nowIso })
+      .set({ docstatus: SUBMITTED, docNo, inputTaxClaimed: claimed ? 1 : 0, updatedAt: nowIso })
       .where(eq(schema.stockEntries.id, input.entryId))
+    await postVoucherGl(tx, 'stock_entry', input.entryId)
 
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'stock_entries', entityId: input.entryId, action: 'submit',
@@ -307,10 +362,12 @@ export async function submitStockEntry(
 export async function cancelStockEntry(
   db: SqlDriver,
   input: { entryId: string; reason?: string; actorId: string; now?: Date },
-): Promise<{ ok: true; entryId: string }> {
+): Promise<{ ok: true; entryId: string } | PeriodClosed> {
   const now = input.now ?? new Date()
   const entry = await loadEntry(db, input.entryId)
   assertCanApply('stock entry', parseDocStatus(entry.docstatus), 'cancel')
+  const closed = await closedFor(db, entry.postingDate)
+  if (closed) return closed
 
   const nowIso = now.toISOString()
 
@@ -318,6 +375,7 @@ export async function cancelStockEntry(
     await recheckDocStatus(tx, 'stock_entries', input.entryId, 'stock entry', 'cancel')
     await reverseVoucher(tx, 'stock_entry', input.entryId, entry.postingDate, input.actorId)
     await reverseBatches(tx, 'stock_entry', input.entryId, entry.postingDate, input.actorId)
+    await reverseVoucherGl(tx, 'stock_entry', input.entryId)
     await q(tx).update(schema.stockEntries)
       .set({ docstatus: CANCELLED, updatedAt: nowIso })
       .where(eq(schema.stockEntries.id, input.entryId))

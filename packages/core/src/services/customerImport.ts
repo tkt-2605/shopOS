@@ -8,6 +8,7 @@ import { parseCsvRecords, toCsv } from '../domain/csv.js'
 import { isGstin, stateFromGstin } from '../domain/gstin.js'
 import { isStateCode } from '../domain/states.js'
 import type { ImportAction, ImportResult } from './import.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * The customer book, in and out of a spreadsheet.
@@ -210,6 +211,7 @@ export interface CustomerImportResult extends ImportResult {
 export async function applyCustomerImport(
   db: SqlDriver, ctx: AuditContext, plan: CustomerPlan,
 ): Promise<CustomerImportResult> {
+  await requirePermission(db, ctx.actorId, 'customer', 'write')
   const usable = plan.rows.filter((r) => r.problem === null && r.action !== null)
   const now = new Date().toISOString()
   const opening: CustomerImportResult['opening'] = []

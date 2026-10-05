@@ -11,6 +11,9 @@ import { recheckDocStatus } from '../../integrity/transition.js'
 import { nextDocNo, seriesPrefix } from '../numbering.js'
 import { openSessionFor, postCashMovement } from '../cash.js'
 import { loadOpenBills } from './outstanding.js'
+import { closedFor, type PeriodClosed } from '../books.js'
+import { requirePermission } from '../../integrity/permissions.js'
+import { postVoucherGl, reverseVoucherGl } from '../ledger.js'
 
 /*
  * Taking a payment, posting a return's credit against what is owed, and
@@ -45,6 +48,7 @@ export type RecordPaymentResult =
  * allocations because every outstanding query joins on docstatus = 1.
  */
 export async function recordPayment(db: SqlDriver, input: RecordPaymentInput): Promise<RecordPaymentResult> {
+  await requirePermission(db, input.actorId, 'payment', 'create')
   if (input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
 
   /* A share of nothing or less is not a share. A negative one also lowered the
@@ -119,6 +123,7 @@ export async function recordPayment(db: SqlDriver, input: RecordPaymentInput): P
         amount: alloc.amount,
       })
     }
+    await postVoucherGl(tx, 'payment', paymentId)
 
     if (input.registerId && input.method !== 'adjustment') {
       const session = await openSessionFor(tx, input.registerId)
@@ -219,20 +224,24 @@ export async function postCreditNote(
 export async function cancelPayment(
   db: SqlDriver,
   input: { paymentId: string; reason?: string; actorId: string; now?: Date },
-): Promise<{ ok: true; paymentId: string }> {
+): Promise<{ ok: true; paymentId: string } | PeriodClosed> {
+  await requirePermission(db, input.actorId, 'payment', 'cancel')
   const now = input.now ?? new Date()
   const [row] = await q(db)
-    .select({ docstatus: schema.paymentEntries.docstatus })
+    .select({ docstatus: schema.paymentEntries.docstatus, postingDate: schema.paymentEntries.postingDate })
     .from(schema.paymentEntries)
     .where(eq(schema.paymentEntries.id, input.paymentId))
   if (!row) throw new Error(`unknown payment: ${input.paymentId}`)
   assertCanApply('payment', parseDocStatus(row.docstatus), 'cancel')
+  const closed = await closedFor(db, row.postingDate)
+  if (closed) return closed
 
   await db.transaction(async (tx) => {
     await recheckDocStatus(tx, 'payment_entries', input.paymentId, 'payment', 'cancel')
     await q(tx).update(schema.paymentEntries)
       .set({ docstatus: CANCELLED, updatedAt: now.toISOString() })
       .where(eq(schema.paymentEntries.id, input.paymentId))
+    await reverseVoucherGl(tx, 'payment', input.paymentId)
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'payment_entries', entityId: input.paymentId, action: 'cancel',
       docstatusFrom: SUBMITTED, docstatusTo: CANCELLED,

@@ -69,11 +69,13 @@ export function CustomerFile({ onDone }: { onDone: () => void | Promise<void> })
          take the rest of the file with it. */
       let posted = 0
       let already = 0
+      let closed = 0
       for (const row of result.opening) {
         const outcome = await recordOpeningBalance(db, {
           customerId: row.customerId, amount: row.amount, registerId, actorId: user.id,
         })
         if (outcome.ok) posted += 1
+        else if (outcome.code === 'PERIOD_CLOSED') closed += 1
         else already += 1
       }
 
@@ -84,6 +86,7 @@ export function CustomerFile({ onDone }: { onDone: () => void | Promise<void> })
         + (result.skipped > 0 ? `, ${result.skipped} skipped` : '')
         + (posted > 0 ? `, ${posted} opening balances recorded` : '')
         + (already > 0 ? `, ${already} already had one` : '')
+        + (closed > 0 ? `, ${closed} not recorded because the books are closed for today` : '')
         + '.',
       )
       await onDone()

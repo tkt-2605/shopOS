@@ -224,6 +224,32 @@ export interface BillPricingContext {
   defaultPriceListId: string | null
   /** Whether this shop uses quantity breaks. Read once per bill, not per line. */
   quantityBreaks: boolean
+  /** Whether the customer's list quotes its rates with tax in them (063). True with no list. */
+  customerListIncludesTax: boolean
+  /** The same, for the shop's default list. */
+  defaultListIncludesTax: boolean
+}
+
+/**
+ * A resolved rate, and whether it has the tax in it.
+ *
+ * Carried with the rate rather than looked up later, because by then nobody
+ * knows which list it came from. A product's own base rate is a shelf price;
+ * a list's rate is however that list quotes; a customer's own price for an
+ * item is read the way their list quotes, since it is the same negotiation.
+ */
+export interface ResolvedLinePrice extends ResolvedPrice {
+  includesTax: boolean
+}
+
+/** Whether a list quotes with tax in. A list that is gone, or none, is a shelf price. */
+async function listIncludesTax(db: SqlDriver, priceListId: string | null): Promise<boolean> {
+  if (!priceListId) return true
+  const [row] = await q(db)
+    .select({ ratesIncludeTax: schema.priceLists.ratesIncludeTax })
+    .from(schema.priceLists)
+    .where(eq(schema.priceLists.id, priceListId))
+  return row?.ratesIncludeTax !== 0
 }
 
 export async function pricingContextFor(
@@ -249,11 +275,14 @@ export async function pricingContextFor(
         .where(and(eq(schema.customers.id, customerId), isNull(schema.customers.deletedAt)))
     : []
 
+  const defaultList = await defaultPriceListId(db)
   return {
     customerId: customerId ?? null,
     customerPriceListId: customer?.priceListId ?? null,
-    defaultPriceListId: await defaultPriceListId(db),
+    defaultPriceListId: defaultList,
     quantityBreaks: await isOn(db, 'tieredPricing'),
+    customerListIncludesTax: await listIncludesTax(db, customer?.priceListId ?? null),
+    defaultListIncludesTax: await listIncludesTax(db, defaultList),
   }
 }
 
@@ -263,7 +292,7 @@ export async function resolveLinePrice(
   ctx: BillPricingContext,
   line: { productId: string; saleUnit: string; qty: Qty },
   on: Date = new Date(),
-): Promise<ResolvedPrice> {
+): Promise<ResolvedLinePrice> {
   const candidates = await loadPriceCandidates(db, {
     productId: line.productId,
     saleUnit: line.saleUnit,
@@ -272,7 +301,20 @@ export async function resolveLinePrice(
     defaultPriceListId: ctx.defaultPriceListId,
     quantityBreaks: ctx.quantityBreaks,
   })
-  return resolvePrice(candidates, line.qty, on)
+  const resolved = resolvePrice(candidates, line.qty, on)
+  return { ...resolved, includesTax: includesTaxFor(resolved.source, ctx) }
+}
+
+function includesTaxFor(source: ResolvedPrice['source'], ctx: BillPricingContext): boolean {
+  switch (source) {
+    case 'customer_list':
+    case 'customer_override':
+      return ctx.customerListIncludesTax
+    case 'default_list':
+      return ctx.defaultListIncludesTax
+    default:
+      return true
+  }
 }
 
 export interface SaleUnitInfo {

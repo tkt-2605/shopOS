@@ -149,6 +149,10 @@ export interface DocumentItemRow {
   cgst: Money
   sgst: Money
   igst: Money
+  cessRateBp: number
+  cess: Money
+  /** Whether `rate` was quoted with the tax in it (063). */
+  rateIncludesTax: boolean
   fulfilledQty: Qty
   /** What is still to be billed or received on this line. */
   remainingQty: Qty
@@ -244,6 +248,9 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
       cgst: schema.documentItems.cgstAmount,
       sgst: schema.documentItems.sgstAmount,
       igst: schema.documentItems.igstAmount,
+      cessRateBp: schema.documentItems.cessRateBp,
+      cess: schema.documentItems.cessAmount,
+      rateIncludesTax: schema.documentItems.rateIncludesTax,
       fulfilledQty: schema.documentItems.fulfilledQty,
     })
     .from(schema.documentItems)
@@ -252,6 +259,7 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
 
   const lines = items.map((i) => ({
     ...i,
+    rateIncludesTax: i.rateIncludesTax === 1,
     remainingQty: Math.max(0, i.qty - i.fulfilledQty) as Qty,
   }))
 

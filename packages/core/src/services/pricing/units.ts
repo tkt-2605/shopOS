@@ -5,6 +5,7 @@ import { derivedId } from '../../ids.js'
 import type { Money } from '../../money.js'
 import { type Qty, QTY_SCALE } from '../../quantity.js'
 import { writeAudit, type AuditContext } from '../../integrity/audit.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 /*
  * The units a product sells in, and how many of its base unit each one is.
@@ -62,6 +63,7 @@ export async function setUnits(
   productId: string,
   inputs: SaleUnitInput[],
 ): Promise<SetUnitsResult> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const [product] = await q(db)
     .select({ baseUnit: schema.products.baseUnit })
     .from(schema.products)

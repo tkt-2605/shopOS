@@ -7,7 +7,11 @@ import type { Money } from '../../money.js'
 import { SUBMITTED } from '../../integrity/docstatus.js'
 import { writeAudit } from '../../integrity/audit.js'
 import { nextDocNo, seriesPrefix } from '../numbering.js'
+import { closedFor, type PeriodClosed } from '../books.js'
+import { OPENING_ADVANCE_REF } from '../../domain/credit.js'
 import { type ReceiptMethod, type RecordPaymentResult, recordPayment } from './receipts.js'
+import { requirePermission } from '../../integrity/permissions.js'
+import { postVoucherGl } from '../ledger.js'
 
 /*
  * The rest of the khata: the receipts a customer has made, what the shop
@@ -127,6 +131,7 @@ export type OpeningBalanceResult =
   | { ok: true; direction: 'held'; paymentId: string; docNo: string }
   | { ok: false; code: 'INVALID_AMOUNT' }
   | { ok: false; code: 'ALREADY_SET'; docNo: string }
+  | PeriodClosed
 
 /**
  * What the customer already owed before this shop started using ShopOS.
@@ -156,7 +161,11 @@ export async function recordOpeningBalance(
     now?: Date
   },
 ): Promise<OpeningBalanceResult> {
+  await requirePermission(db, input.actorId, 'payment', 'create')
   if (input.amount === 0) return { ok: false, code: 'INVALID_AMOUNT' }
+
+  const closed = await closedFor(db, input.asOf ?? businessDate(input.now ?? new Date()))
+  if (closed) return closed
 
   /* A balance carried over can point either way, and the two are different
      kinds of thing rather than one number with a sign.
@@ -228,6 +237,7 @@ export async function recordOpeningBalance(
       createdAt: nowIso,
       updatedAt: nowIso,
     })
+    await postVoucherGl(tx, 'bill', billId)
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'bills', entityId: billId, action: 'submit',
       docstatusTo: SUBMITTED,
@@ -241,16 +251,6 @@ export async function recordOpeningBalance(
 /** The series an opening advance is numbered in, for a person reading a statement. */
 const OPENING_ADVANCE_PREFIX = 'OA'
 
-/**
- * The marker a second opening advance is spotted by.
- *
- * In `reference` rather than parsed back out of the document number. The
- * number is `MARK + registerPrefix + '/' + fy + '/' + seq` (`numbering.ts`),
- * so a `LIKE 'OA%'` misses it by exactly the one leading letter -- which is
- * how the first version of this shipped a guard that never fired. A column
- * this code sets and reads, compared with `=`, cannot drift with a format.
- */
-const OPENING_ADVANCE_REF = 'opening-balance'
 
 /**
  * Money the shop was already holding for this customer when the books moved.
@@ -330,6 +330,7 @@ async function recordOpeningAdvance(
 
     // No `payment_allocations` rows on purpose: what nothing points at is the
     // advance, and `advanceCredit` reads exactly that.
+    await postVoucherGl(tx, 'payment', paymentId)
 
     await writeAudit(tx, { actorId: input.actorId }, {
       entity: 'payment_entries', entityId: paymentId, action: 'submit',

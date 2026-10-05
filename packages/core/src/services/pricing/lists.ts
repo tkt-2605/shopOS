@@ -5,6 +5,7 @@ import { newId } from '../../ids.js'
 import { writeAudit, type AuditContext } from '../../integrity/audit.js'
 import { setSetting, DEFAULT_PRICE_LIST } from '../settings.js'
 import { defaultPriceListId } from '../../repos/pricing.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 /*
  * Price lists: created, renamed, archived, and brought back.
@@ -14,6 +15,11 @@ export interface PriceList {
   id: string
   name: string
   isDefault: boolean
+  /**
+   * Whether the rates on this list already include GST. True for a shelf
+   * price list; false for a wholesale list quoted before tax (063).
+   */
+  ratesIncludeTax: boolean
   /** Taken off the list of lists. See `archivePriceList`. */
   archived: boolean
   /** How many customers are on this list, so archiving one is an informed act. */
@@ -45,6 +51,7 @@ export async function listPriceLists(
       id: schema.priceLists.id,
       name: schema.priceLists.name,
       deletedAt: schema.priceLists.deletedAt,
+      ratesIncludeTax: schema.priceLists.ratesIncludeTax,
       customerCount: customers,
       priceCount: prices,
     })
@@ -58,7 +65,9 @@ export async function listPriceLists(
   // Live lists first, the default at the top of them, then by name. The first
   // two are the database's business; the third was, until the default moved.
   return rows
-    .map((r) => ({ ...r, isDefault: r.id === chosen, archived: r.deletedAt !== null }))
+    .map((r) => ({
+      ...r, isDefault: r.id === chosen, archived: r.deletedAt !== null, ratesIncludeTax: r.ratesIncludeTax !== 0,
+    }))
     .sort((x, y) => Number(x.archived) - Number(y.archived)
       || Number(y.isDefault) - Number(x.isDefault)
       || x.name.localeCompare(y.name))
@@ -77,8 +86,9 @@ export type PriceListResult =
 export async function createPriceList(
   db: SqlDriver,
   ctx: AuditContext & { actorId: string },
-  input: { name: string; isDefault?: boolean },
+  input: { name: string; isDefault?: boolean; ratesIncludeTax?: boolean },
 ): Promise<PriceListResult> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
   const [taken] = await q(db)
@@ -99,14 +109,17 @@ export async function createPriceList(
   const now = (ctx.now ?? (() => new Date().toISOString()))()
 
   await db.transaction(async (tx) => {
-    await q(tx).insert(schema.priceLists).values({ id, name, createdAt: now, updatedAt: now })
+    await q(tx).insert(schema.priceLists).values({
+      id, name, ratesIncludeTax: input.ratesIncludeTax === false ? 0 : 1, createdAt: now, updatedAt: now,
+    })
     /* One default, always, and now by construction: one setting can only name
        one list. This used to be `UPDATE price_lists SET is_default = 0` across
        every row — which gave every list in the shop a revision and a feed entry
        in order to record one fact about one of them. */
     if (input.isDefault) await setSetting(tx, DEFAULT_PRICE_LIST, id, now)
     await writeAudit(tx, ctx, {
-      entity: 'price_lists', entityId: id, action: 'create', after: { name, is_default: input.isDefault ? 1 : 0 },
+      entity: 'price_lists', entityId: id, action: 'create',
+      after: { name, is_default: input.isDefault ? 1 : 0, rates_include_tax: input.ratesIncludeTax === false ? 0 : 1 },
     })
   })
 
@@ -116,10 +129,18 @@ export async function createPriceList(
 export async function updatePriceList(
   db: SqlDriver,
   ctx: AuditContext & { actorId: string },
-  input: { priceListId: string; name?: string; isDefault?: boolean; isActive?: boolean },
+  input: {
+    priceListId: string; name?: string; isDefault?: boolean; isActive?: boolean
+    /**
+     * Changing it re-reads every rate on the list the other way from the next
+     * bill on. Bills already made keep the way their lines were read.
+     */
+    ratesIncludeTax?: boolean
+  },
 ): Promise<PriceListResult> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   const [before] = await q(db)
-    .select({ name: schema.priceLists.name })
+    .select({ name: schema.priceLists.name, ratesIncludeTax: schema.priceLists.ratesIncludeTax })
     .from(schema.priceLists)
     .where(and(eq(schema.priceLists.id, input.priceListId), isNull(schema.priceLists.deletedAt)))
   if (!before) throw new Error('no such price list')
@@ -148,7 +169,12 @@ export async function updatePriceList(
 
   await db.transaction(async (tx) => {
     await q(tx).update(schema.priceLists)
-      .set({ name, updatedAt: now, rev: sql`${schema.priceLists.rev} + 1` })
+      .set({
+        name,
+        ratesIncludeTax: input.ratesIncludeTax === undefined ? before.ratesIncludeTax : input.ratesIncludeTax ? 1 : 0,
+        updatedAt: now,
+        rev: sql`${schema.priceLists.rev} + 1`,
+      })
       .where(eq(schema.priceLists.id, input.priceListId))
 
     /* Naming this one names it; unnaming it leaves the shop with none, which is
@@ -160,8 +186,11 @@ export async function updatePriceList(
 
     await writeAudit(tx, ctx, {
       entity: 'price_lists', entityId: input.priceListId, action: 'update',
-      before: { name: before.name, is_default: wasDefault ? 1 : 0 },
-      after: { name, is_default: isDefault ? 1 : 0 },
+      before: { name: before.name, is_default: wasDefault ? 1 : 0, rates_include_tax: before.ratesIncludeTax },
+      after: {
+        name, is_default: isDefault ? 1 : 0,
+        rates_include_tax: input.ratesIncludeTax === undefined ? before.ratesIncludeTax : input.ratesIncludeTax ? 1 : 0,
+      },
     })
   })
 
@@ -203,6 +232,7 @@ export async function archivePriceList(
   ctx: AuditContext & { actorId: string },
   priceListId: string,
 ): Promise<ArchivePriceListResult> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   const [list] = await q(db)
     .select({ id: schema.priceLists.id })
     .from(schema.priceLists)
@@ -241,6 +271,7 @@ export async function restorePriceList(
   ctx: AuditContext & { actorId: string },
   priceListId: string,
 ): Promise<void> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
     await q(tx).update(schema.priceLists)

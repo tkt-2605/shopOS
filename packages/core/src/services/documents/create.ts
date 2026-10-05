@@ -14,11 +14,13 @@ import { nextDocNo, seriesPrefix } from '../numbering.js'
 import { writeAudit } from '../../integrity/audit.js'
 import type { CreateDocumentInput, CreateDocumentResult } from './types.js'
 import { supplyFor } from '../billing/load.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 export async function createDocument(
   db: SqlDriver,
   input: CreateDocumentInput,
 ): Promise<CreateDocumentResult> {
+  await requirePermission(db, input.actorId, 'document', 'create')
   if (input.lines.length === 0) return { ok: false, code: 'NO_LINES' }
 
   /* A purchase order with no supplier is an order placed with nobody, and a
@@ -62,6 +64,7 @@ export async function createDocument(
         name: schema.products.name,
         hsnCode: schema.products.hsnCode,
         taxRateBp: schema.products.taxRateBp,
+        cessRateBp: schema.products.cessRateBp,
         discountBlocked: schema.products.discountBlocked,
       })
       .from(schema.products)
@@ -69,11 +72,11 @@ export async function createDocument(
     if (!product) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
 
     const unit = await resolveSaleUnit(db, line.productId, line.saleUnit ?? null)
-    const rate = line.rateOverride != null
-      ? line.rateOverride
-      : (await resolveLinePrice(
+    const resolved = line.rateOverride != null
+      ? { rate: line.rateOverride, includesTax: line.rateIncludesTax ?? !forSupplier }
+      : await resolveLinePrice(
         db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now,
-      )).rate
+      )
 
     priced.push({
       productId: product.id,
@@ -82,9 +85,11 @@ export async function createDocument(
       saleUnit: unit.saleUnit,
       qty: line.qty,
       baseQty: asQty(Math.round((line.qty * unit.baseUnits) / QTY_SCALE)),
-      rate,
+      rate: resolved.rate,
       discount: line.discount ?? ZERO,
       taxRateBp: taxed ? product.taxRateBp : 0,
+      cessRateBp: taxed ? product.cessRateBp : 0,
+      rateIncludesTax: resolved.includesTax,
       discountBlocked: product.discountBlocked === 1,
     })
   }
@@ -145,12 +150,17 @@ export async function createDocument(
         baseQty: line.baseQty,
         rate: line.rate,
         discount: line.discount,
-        lineTotal: computed.lineTotal,
+        /* What the line comes to with its tax, as on a bill. The same figure as
+           before for a shelf price, which is every line written before 063. */
+        lineTotal: computed.net,
         taxableValue: computed.tax.taxableValue,
         taxRateBp: line.taxRateBp,
         cgstAmount: computed.tax.cgst,
         sgstAmount: computed.tax.sgst,
         igstAmount: computed.tax.igst,
+        cessRateBp: line.cessRateBp,
+        cessAmount: computed.tax.cess,
+        rateIncludesTax: line.rateIncludesTax ? 1 : 0,
       })
     }
 
@@ -176,6 +186,8 @@ interface PricedLine {
   rate: Money
   discount: Money
   taxRateBp: number
+  cessRateBp: number
+  rateIncludesTax: boolean
   discountBlocked: boolean
 }
 

@@ -1,0 +1,52 @@
+/*
+ * @shopos/core/catalog -- Items, their prices, units, barcodes and groups, and finding them.
+ *
+ * One of the areas core is published in (`package.json` exports). A caller
+ * that needs only this area imports it here; `@shopos/core` is every area at
+ * once and stays for the callers that want that. Re-exports only: nothing is
+ * defined in a barrel (`architecture.test.ts`).
+ */
+
+export * as Pricing from '../domain/pricing.js'
+export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from '../repos/pricing.js'
+export {
+  searchProducts, findByBarcode, productsByIds, saleUnitsFor, searchCustomers,
+  countCustomers, listBills, countBills, loadBillDetail, loadCustomer,
+} from '../repos/catalog.js'
+export type {
+  BillFilter, BillStatusFilter,
+  ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem, CustomerDetail,
+  BillListItem, BillDetail, BillDetailItem, CustomerOrder,
+} from '../repos/catalog.js'
+export { setProductActive, saveProductDetails } from '../services/products.js'
+export type { ProductDetails, SaveProductResult } from '../services/products.js'
+export {
+  listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
+  archivePriceList, restorePriceList,
+  listItemPrices, setItemPrice, removeItemPrice,
+  listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList, customerPriceListId,
+  setLadder, setCustomerLadder, ladderFor, customerLadderFor, laddersFor,
+  perBaseUnit,
+} from '../services/pricing.js'
+export type {
+  SaleUnit, SaleUnitInput, SetUnitsResult, PriceList, PriceListResult,
+  ArchivePriceListResult,
+  ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice, SetLadderResult,
+} from '../services/pricing.js'
+export * as Ladder from '../domain/ladder.js'
+export type { Rung, LadderRow, RowsResult } from '../domain/ladder.js'
+export {
+  listCategories, createCategory, renameCategory, removeCategory, setProductCategory,
+  setVariantOf, variantFamily,
+} from '../services/grouping.js'
+export type { Category, CategoryResult, VariantMember, VariantResult } from '../services/grouping.js'
+export { listBarcodes, setBarcodes, productIdForBarcode } from '../services/barcodes.js'
+export type { Barcode, BarcodeInput, SetBarcodesResult } from '../services/barcodes.js'
+export { pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
+export type { BillPricingContext, ResolvedLinePrice } from '../repos/pricing.js'
+export {
+  planImport, applyImport, exportCatalogue, IMPORT_COLUMNS,
+} from '../services/import.js'
+export type {
+  ImportPlan, PlannedRow, ImportResult, CatalogueImportResult, ImportAction, RowProblem,
+} from '../services/import.js'

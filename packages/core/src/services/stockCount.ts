@@ -9,6 +9,8 @@ import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../
 import { writeAudit } from '../integrity/audit.js'
 import { nextDocNo, seriesPrefix } from './numbering.js'
 import { createStockEntry, submitStockEntry, cancelStockEntry } from './stockEntry.js'
+import { closedFor, type PeriodClosed } from './books.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * The physical count.
@@ -82,6 +84,7 @@ export interface CountSheet {
  * their difference would apply the same correction twice.
  */
 export async function openCount(db: SqlDriver, input: OpenCountInput): Promise<OpenCountResult> {
+  await requirePermission(db, input.actorId, 'stock_entry', 'submit')
   const existing = await openSheet(db)
   if (existing) return { ok: false, code: 'ALREADY_OPEN', countId: existing.id, docNo: existing.docNo }
 
@@ -316,6 +319,8 @@ export type SubmitCountResult =
     }
   | { ok: false; code: 'NOTHING_COUNTED' }
   | { ok: false; code: 'WOULD_GO_NEGATIVE'; productId: string; available: Qty; change: Qty }
+  /** The sheet was opened on a day the books have since been closed through. */
+  | PeriodClosed
 
 /**
  * Posts what the count found.
@@ -340,6 +345,7 @@ export async function submitCount(
   db: SqlDriver,
   input: { countId: string; actorId: string; now?: Date },
 ): Promise<SubmitCountResult> {
+  await requirePermission(db, input.actorId, 'stock_entry', 'submit')
   try {
     return await db.transaction((tx) => submitCountIn(tx, input))
   } catch (err) {
@@ -364,6 +370,8 @@ async function submitCountIn(
     .where(and(eq(schema.stockCounts.id, input.countId), isNull(schema.stockCounts.deletedAt)))
   if (!head) throw new Error('no such count')
   assertCanApply('stock count', parseDocStatus(head.docstatus), 'submit')
+  const closed = await closedFor(db, head.postingDate)
+  if (closed) return closed
 
   const lines = await q(db)
     .select({
@@ -443,7 +451,7 @@ async function submitCountIn(
   const submitted = await submitStockEntry(db, { entryId: entry.entryId, actorId: input.actorId, now })
   if (!submitted.ok) {
     // Thrown, not returned: the draft entry made above goes with it.
-    throw new Refused({
+    throw new Refused(submitted.code === 'PERIOD_CLOSED' ? submitted : {
       ok: false, code: 'WOULD_GO_NEGATIVE',
       productId: submitted.productId, available: submitted.available, change: submitted.change,
     })
@@ -487,7 +495,8 @@ async function submitCountIn(
 export async function cancelCount(
   db: SqlDriver,
   input: { countId: string; reason?: string; actorId: string; now?: Date },
-): Promise<{ ok: true }> {
+): Promise<{ ok: true } | PeriodClosed> {
+  await requirePermission(db, input.actorId, 'stock_entry', 'submit')
   // As one, for the reason `submitCount` is: the entry's reversal and the
   // sheet's status must not be able to come apart.
   return db.transaction((tx) => cancelCountIn(tx, input))
@@ -496,17 +505,27 @@ export async function cancelCount(
 async function cancelCountIn(
   db: SqlDriver,
   input: { countId: string; reason?: string; actorId: string; now?: Date },
-): Promise<{ ok: true }> {
+): Promise<{ ok: true } | PeriodClosed> {
   const now = input.now ?? new Date()
   const [head] = await q(db)
-    .select({ docstatus: schema.stockCounts.docstatus, entryId: schema.stockCounts.entryId })
+    .select({
+      docstatus: schema.stockCounts.docstatus,
+      entryId: schema.stockCounts.entryId,
+      postingDate: schema.stockCounts.postingDate,
+    })
     .from(schema.stockCounts)
     .where(and(eq(schema.stockCounts.id, input.countId), isNull(schema.stockCounts.deletedAt)))
   if (!head) throw new Error('no such count')
 
   const from = parseDocStatus(head.docstatus)
+  if (from === SUBMITTED) {
+    // A sheet nobody submitted moved nothing and can always be thrown away.
+    const closed = await closedFor(db, head.postingDate)
+    if (closed) return closed
+  }
   if (from === SUBMITTED && head.entryId) {
-    await cancelStockEntry(db, { entryId: head.entryId, actorId: input.actorId, now })
+    const reversed = await cancelStockEntry(db, { entryId: head.entryId, actorId: input.actorId, now })
+    if (!reversed.ok) return reversed
   }
 
   const nowIso = now.toISOString()

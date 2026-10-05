@@ -65,6 +65,12 @@ export function ProductForm({
           <input className="input num" id="p-gst" value={draft.taxPercent}
             onChange={(e) => setDraft({ ...draft, taxPercent: e.target.value })} />
         </Field>
+        {/* Compensation cess: tobacco, pan masala, aerated drinks. Blank for
+            nearly everything a shop sells, which is why it says so. */}
+        <Field label="Cess %" hint="Only for goods that carry compensation cess. Leave blank otherwise.">
+          <input className="input num" id="p-cess" value={draft.cessPercent} placeholder="None"
+            onChange={(e) => setDraft({ ...draft, cessPercent: e.target.value })} />
+        </Field>
         <Field label="Selling rate" hint="Tax inclusive.">
           <input className="input num" id="p-rate" value={draft.baseRate}
             onChange={(e) => setDraft({ ...draft, baseRate: e.target.value })} />

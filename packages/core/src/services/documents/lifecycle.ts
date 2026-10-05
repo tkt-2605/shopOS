@@ -5,6 +5,7 @@ import { SUBMITTED, CANCELLED } from '../../integrity/docstatus.js'
 import { writeAudit } from '../../integrity/audit.js'
 import { recheckDocStatus } from '../../integrity/transition.js'
 import { FINISHED, STARTED } from './read.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 /*
  * A document submitted, and a submitted one cancelled.
@@ -25,6 +26,7 @@ export async function submitDocument(
   db: SqlDriver,
   input: { documentId: string; actorId: string; now?: Date },
 ): Promise<SubmitDocumentResult> {
+  await requirePermission(db, input.actorId, 'document', 'create')
   const [doc] = await q(db)
     .select({ docstatus: schema.documents.docstatus })
     .from(schema.documents)
@@ -69,6 +71,7 @@ export async function cancelDocument(
   db: SqlDriver,
   input: { documentId: string; reason: string; actorId: string; now?: Date },
 ): Promise<CancelDocumentResult> {
+  await requirePermission(db, input.actorId, 'document', 'cancel')
   const [doc] = await q(db)
     .select({ docstatus: schema.documents.docstatus })
     .from(schema.documents)

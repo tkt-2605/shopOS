@@ -1,4 +1,7 @@
-import { Reports as R, Money, Quantity, type ClosedSession } from '@shopos/core'
+import {
+  Reports as R, Money, Quantity, type ClosedSession,
+  type ProfitAndLoss, type BalanceSheet, type LedgerChecks, type AccountBalance,
+} from '@shopos/core'
 import { Empty, Alert, Rupees } from '../../ui/components'
 import { longDate, titleCase } from './tableFor'
 
@@ -98,7 +101,10 @@ export function TaxTable({ rows, total }: { rows: R.TaxRateRow[]; total: number 
     <>
       <table>
         <thead>
-          <tr><th>Rate</th><th className="r">Taxable value</th><th className="r">CGST</th><th className="r">SGST</th><th className="r">IGST</th><th className="r">Tax</th></tr>
+          <tr>
+            <th>Rate</th><th className="r">Taxable value</th><th className="r">CGST</th><th className="r">SGST</th>
+            <th className="r">IGST</th><th className="r">Cess</th><th className="r">Tax</th>
+          </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
@@ -108,7 +114,8 @@ export function TaxTable({ rows, total }: { rows: R.TaxRateRow[]; total: number 
               <td className="r"><Rupees value={r.cgst} /></td>
               <td className="r"><Rupees value={r.sgst} /></td>
               <td className="r"><Rupees value={r.igst} /></td>
-              <td className="r"><Rupees value={r.cgst + r.sgst + r.igst} /></td>
+              <td className="r"><Rupees value={r.cess} /></td>
+              <td className="r"><Rupees value={r.cgst + r.sgst + r.igst + r.cess} /></td>
             </tr>
           ))}
         </tbody>
@@ -212,5 +219,56 @@ export function StaffTable({ rows }: { rows: R.StaffRow[] }) {
         ))}
       </tbody>
     </table>
+  )
+}
+
+/**
+ * The books: what the period made, and what the shop owns and owes on its last
+ * day. For the whole shop whatever counter is chosen -- the books are one set.
+ */
+export function BooksTable({ pl, bs, checks, asOf }: {
+  pl: ProfitAndLoss; bs: BalanceSheet; checks: LedgerChecks; asOf: string
+}) {
+  const rows = (list: AccountBalance[]) => list.map((a) => (
+    <tr key={a.account}><td>{a.name}</td><td className="r"><Rupees value={a.balance} /></td></tr>
+  ))
+  const total = (label: string, value: number) => (
+    <tr><th>{label}</th><th className="r"><Rupees value={value} /></th></tr>
+  )
+  const agree = checks.unbalanced.length === 0 && checks.stockDrift === 0 && bs.totalAssets === bs.totalClaims
+
+  return (
+    <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+        <table>
+          <thead><tr><th>Profit and loss</th><th /></tr></thead>
+          <tbody>
+            {rows(pl.income)}
+            {total('Income', pl.totalIncome)}
+            {rows(pl.expense)}
+            {total('Expenses', pl.totalExpense)}
+            {total(pl.profit < 0 ? 'Loss for the period' : 'Profit for the period', pl.profit)}
+          </tbody>
+        </table>
+        <table>
+          <thead><tr><th>Balance sheet on {longDate(asOf)}</th><th /></tr></thead>
+          <tbody>
+            {rows(bs.assets)}
+            {total('What the shop owns', bs.totalAssets)}
+            {rows(bs.liabilities)}
+            {rows(bs.equity)}
+            <tr><td>Profit retained</td><td className="r"><Rupees value={bs.retainedProfit} /></td></tr>
+            {total('What it owes, and the owner’s share', bs.totalClaims)}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 10, fontSize: 12.5, color: agree ? 'var(--ink-3)' : 'var(--danger)' }}>
+        {agree
+          ? 'The books balance, and the stock account agrees with the stock ledger to the paisa.'
+          : `The books do not agree with themselves: ${checks.unbalanced.length} unbalanced document(s), `
+            + `stock off by ${Money.formatWithSymbol(checks.stockDrift)}. Tell whoever supports this till.`}
+        {' '}Cash here is what was taken through the drawer; a float brought in or takings banked are not recorded yet.
+      </div>
+    </>
   )
 }

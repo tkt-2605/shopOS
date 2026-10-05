@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Permissions,
   supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
-  setSupplierOpening, Money,
+  setSupplierOpening, Money, periodClosedMessage, paySupplier, type SupplierPaymentMethod,
   type SupplierOrder,
   type SupplierSummary,
 } from '@shopos/core'
@@ -25,9 +25,16 @@ interface Draft {
 const EMPTY: Draft = { supplierId: null, name: '', phone: '', gstin: '', address: '', isActive: true }
 
 export default function Suppliers() {
-  const { db } = useCore()
+  const { db, registerId } = useCore()
   const user = useUser()
   const [confirmUi, ask] = useConfirm()
+  /* Paying a supplier is money out, so it asks what taking money in asks. */
+  const canPay = Permissions.can(user.permissions, 'payment', 'create')
+  const [paying, setPaying] = useState<SupplierSummary | null>(null)
+  const [payAmount, setPayAmount] = useState('')
+  const [payMethod, setPayMethod] = useState<SupplierPaymentMethod>('upi')
+  const [payReference, setPayReference] = useState('')
+  const [notice, setNotice] = useState<string | null>(null)
   const canCreate = Permissions.can(user.permissions, 'supplier', 'create')
   const canWrite = Permissions.can(user.permissions, 'supplier', 'write')
   const canDelete = Permissions.can(user.permissions, 'supplier', 'delete')
@@ -39,6 +46,26 @@ export default function Suppliers() {
   const [viewing, setViewing] = useState<SupplierSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  async function pay() {
+    if (!paying) return
+    const amount = Money.parseMoney(payAmount)
+    if (amount === null || amount <= 0) { setError('Enter the amount paid.'); return }
+    const result = await paySupplier(db, {
+      supplierId: paying.id, amount, method: payMethod, reference: payReference,
+      registerId: registerId || null, actorId: user.id,
+    })
+    if (!result.ok) {
+      setError(result.code === 'NO_SUPPLIER' ? 'That supplier is no longer here.' : 'Enter the amount paid.')
+      return
+    }
+    setError(null)
+    setNotice(`${result.docNo} — ${Money.formatWithSymbol(amount)} paid to ${paying.name}.`)
+    setPaying(null)
+    setPayAmount('')
+    setPayReference('')
+    await refresh()
+  }
+
   async function saveOpening() {
     if (!opening) return
     const value = Money.parseMoney(openingAmount.trim() === '' ? '0' : openingAmount)
@@ -49,7 +76,12 @@ export default function Suppliers() {
       amount: value,
       asOf: openingAsOf.trim() === '' ? null : openingAsOf.trim(),
     })
-    if (!result.ok) { setError('That supplier is no longer here.'); return }
+    if (!result.ok) {
+      setError(result.code === 'PERIOD_CLOSED'
+        ? periodClosedMessage(result.closedThrough)
+        : 'That supplier is no longer here.')
+      return
+    }
 
     setError(null)
     setOpening(null)
@@ -130,6 +162,7 @@ export default function Suppliers() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 980 }}>
       {confirmUi}
       {error && <Alert>{error}</Alert>}
+      {notice && <Alert kind="ok">{notice}</Alert>}
 
       <Card
         title="Suppliers"
@@ -174,7 +207,7 @@ export default function Suppliers() {
               <tr>
                 <th>Supplier</th><th>Phone</th><th>GSTIN</th>
                 <th className="r">Deliveries</th><th>Last</th><th className="r">Bought</th>
-                <th className="r">Carried over</th><th />
+                <th className="r">Carried over</th><th className="r">Owed now</th><th />
               </tr>
             </thead>
             <tbody>
@@ -205,6 +238,11 @@ export default function Suppliers() {
                       ? <span style={{ color: 'var(--ink-3)' }}>—</span>
                       : <Rupees value={s.openingBalance} />}
                   </td>
+                  {/* Carried over, plus their bills, less what has been paid them. */}
+                  <td className="r" style={s.owed < 0 ? { color: 'var(--ink-3)' } : undefined}
+                    title={s.owed < 0 ? 'They hold this much of the shop’s money' : undefined}>
+                    <Rupees value={s.owed} />
+                  </td>
                   <td className="r" style={{ whiteSpace: 'nowrap' }}>
                     {canWrite && (
                       <button
@@ -229,6 +267,14 @@ export default function Suppliers() {
                         Edit
                       </button>
                     )}
+                    {canPay && !s.archived && (
+                      <button className="btn ghost sm" onClick={() => {
+                        setPaying(s)
+                        setPayAmount(s.owed > 0 ? Money.format(s.owed) : '')
+                      }}>
+                        Pay
+                      </button>
+                    )}
                     {canDelete && (
                       <button className="btn ghost sm" onClick={() => void archive(s)}>
                         {s.archived ? 'Bring back' : 'Remove'}
@@ -237,11 +283,39 @@ export default function Suppliers() {
                   </td>
                 </tr>
               ))}
-              {rows.length === 0 && <tr><td colSpan={8}><Empty>No suppliers yet</Empty></td></tr>}
+              {rows.length === 0 && <tr><td colSpan={9}><Empty>No suppliers yet</Empty></td></tr>}
             </tbody>
           </table>
         </div>
       </Card>
+
+      {paying && (
+        <Modal
+          title={`Pay ${paying.name}`}
+          onClose={() => setPaying(null)}
+          footer={<>
+            <button className="btn" onClick={() => setPaying(null)}>Cancel</button>
+            <button className="btn primary" onClick={() => void pay()}>Record payment</button>
+          </>}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Field label="Amount" hint={`Owed now: ${Money.formatWithSymbol(paying.owed)}`}>
+              <input className="input num" autoFocus value={payAmount} placeholder="0.00"
+                onChange={(e) => setPayAmount(e.target.value)} />
+            </Field>
+            <Field label="Paid by" hint={payMethod === 'cash' ? 'Comes out of the drawer open at this counter.' : undefined}>
+              <select className="select" value={payMethod} onChange={(e) => setPayMethod(e.target.value as SupplierPaymentMethod)}>
+                <option value="upi">UPI or bank transfer</option>
+                <option value="cash">Cash</option>
+                <option value="card">Card</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Reference" hint="UTR, cheque or note number — whatever the supplier will quote back.">
+            <input className="input" value={payReference} onChange={(e) => setPayReference(e.target.value)} />
+          </Field>
+        </Modal>
+      )}
 
       {opening && (
         <Modal

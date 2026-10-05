@@ -6,7 +6,7 @@ import { writeAudit } from '../integrity/audit.js'
 import { checkLinks } from '../integrity/links.js'
 import {
   RESOURCES, PAGES, noPermissions, fullPermissions,
-  type Resource, type Page, type ResourcePermissions,
+  type Resource, type Page, type ResourcePermissions, requirePermission,
 } from '../integrity/permissions.js'
 
 /**
@@ -104,6 +104,7 @@ export async function createRole(
   db: SqlDriver,
   input: { name: string; description?: string; copyFromId?: string; actorId: string },
 ): Promise<RoleResult> {
+  await requirePermission(db, input.actorId, 'role', 'create')
   const name = input.name.trim()
   const [clash] = await q(db)
     .select({ id: schema.roles.id })
@@ -140,6 +141,7 @@ export async function renameRole(
   db: SqlDriver,
   input: { roleId: string; name: string; description?: string; actorId: string },
 ): Promise<RoleResult> {
+  await requirePermission(db, input.actorId, 'role', 'write')
   const name = input.name.trim()
   const [clash] = await q(db)
     .select({ id: schema.roles.id })
@@ -183,6 +185,7 @@ export async function saveRoleMatrix(
     actorId: string
   },
 ): Promise<RoleResult> {
+  await requirePermission(db, input.actorId, 'role', 'write')
   try {
     await db.transaction(async (tx) => {
       await writeMatrix(tx, input.roleId, input.resources, input.pages)
@@ -212,6 +215,7 @@ export async function deleteRole(
   db: SqlDriver,
   input: { roleId: string; actorId: string },
 ): Promise<DeleteRoleResult> {
+  await requirePermission(db, input.actorId, 'role', 'delete')
   const [role] = await q(db)
     .select({ name: schema.roles.name, isSystem: schema.roles.isSystem })
     .from(schema.roles)

@@ -11,6 +11,8 @@ import { nextDocNo, seriesPrefix } from '../numbering.js'
 import { openSessionFor, postCashMovement } from '../cash.js'
 import { loadOpenBills } from './outstanding.js'
 import type { ReceiptMethod } from './receipts.js'
+import { requirePermission } from '../../integrity/permissions.js'
+import { postVoucherGl } from '../ledger.js'
 
 /*
  * Advance credit: money the shop is holding for a customer, taken before
@@ -136,6 +138,7 @@ export async function applyAdvance(
   db: SqlDriver,
   input: { customerId: string; actorId: string; billId?: string; now?: Date },
 ): Promise<ApplyAdvanceResult> {
+  await requirePermission(db, input.actorId, 'payment', 'create')
   /* The whole of it in one transaction. What the customer holds and what they
      owe are read and spent together; read first and spent after, two presses
      in a row measured the same advance and spent it twice. */
@@ -256,6 +259,7 @@ export async function refundAdvance(
   db: SqlDriver,
   input: RefundAdvanceInput,
 ): Promise<RefundAdvanceResult> {
+  await requirePermission(db, input.actorId, 'payment', 'create')
   if (input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
   // What is held is read inside the transaction that pays it out, or two
   // refunds in a row could each be measured against the same balance.
@@ -299,6 +303,7 @@ async function refundAdvanceIn(
       createdAt: nowIso,
       updatedAt: nowIso,
     })
+    await postVoucherGl(tx, 'payment', paymentId)
 
     if (input.registerId && input.method !== 'adjustment') {
       const session = await openSessionFor(tx, input.registerId)

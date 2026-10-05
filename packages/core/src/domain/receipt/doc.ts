@@ -47,6 +47,14 @@ export interface ReceiptItem {
   cgst?: Money
   sgst?: Money
   igst?: Money
+  /** GST compensation cess on the line, when it carries one. */
+  cess?: Money
+  /**
+   * False when `rate` was quoted before tax -- a wholesale rate. Absent or true
+   * is a shelf price with the tax inside it. `lineTotal` has the tax in it
+   * either way, so a reader adding the lines up never has to ask.
+   */
+  rateIncludesTax?: boolean
   /**
    * The rate this line was charged at, in basis points.
    *
@@ -83,6 +91,8 @@ export interface RateSummaryRow {
   cgst: Money
   sgst: Money
   igst: Money
+  /** Present only when some line at this rate carried a cess. */
+  cess?: Money
 }
 
 export interface ReceiptDoc {
@@ -98,6 +108,8 @@ export interface ReceiptDoc {
   cgst: Money
   sgst: Money
   igst: Money
+  /** GST compensation cess, totalled. Absent or zero prints nothing. */
+  cess?: Money
   /**
    * The paise added or dropped to reach a round figure, signed.
    *
@@ -212,12 +224,15 @@ export function rateSummaryOf(items: ReceiptItem[]): RateSummaryRow[] {
     const row = byRate.get(rateBp)
       ?? { rateBp, taxable: 0 as Money, cgst: 0 as Money, sgst: 0 as Money, igst: 0 as Money }
 
+    const cess = (row.cess ?? 0) + (item.cess ?? 0)
     byRate.set(rateBp, {
       rateBp,
       taxable: (row.taxable + item.taxableValue) as Money,
       cgst: (row.cgst + (item.cgst ?? 0)) as Money,
       sgst: (row.sgst + (item.sgst ?? 0)) as Money,
       igst: (row.igst + (item.igst ?? 0)) as Money,
+      // Only when there is one, so a shop that sells nothing under cess sees no column for it.
+      ...(cess > 0 ? { cess: cess as Money } : {}),
     })
   }
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
+import { AddressThrottle } from '../src/auth/throttle.js'
 import type { Server } from 'node:http'
 import { serve } from '../src/server.js'
 import { DEVICE_HEADER } from '../src/http.js'
@@ -110,6 +111,19 @@ describe('signing in over HTTP', () => {
     const c = await client()
     expect((await c.get('/v1/me')).status).toBe(401)
     expect((await c.get('/v1/me', { Authorization: 'Bearer nonsense' })).status).toBe(401)
+  })
+
+  it('limits how many codes one address asks for, whatever numbers it gives', async () => {
+    /* The per-number limits do nothing about one machine asking for codes to
+       a thousand numbers, which is how SMS is pumped at the sender's cost. */
+    const c = await client()
+    c.portal.throttle = new AddressThrottle(2)
+    expect((await c.post('/v1/auth/start', { phone: '+919876543210' })).status).toBe(200)
+    expect((await c.post('/v1/auth/start', { phone: '+919876543211' })).status).toBe(200)
+    const third = await c.post('/v1/auth/start', { phone: '+919876543212' })
+    expect(third.status).toBe(429)
+    expect(third.body.error).toBe('TOO_MANY_FROM_HERE')
+    expect(third.body.retryAfterSeconds).toBeGreaterThan(0)
   })
 
   it('answers 429 with Retry-After when a resend is too soon', async () => {

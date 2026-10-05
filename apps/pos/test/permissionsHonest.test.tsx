@@ -20,6 +20,9 @@ import { Permissions } from '@shopos/core'
    runs in jsdom, where the module URL is the dev server's http one and not a
    file path at all. Vitest is configured at the repo root, so this is stable. */
 const SRC = join(process.cwd(), 'apps', 'pos', 'src')
+/* Since 4 October the services check too, and a capability that only a service
+   checks -- closing the books -- is as real as one a screen checks. */
+const SERVICES = join(process.cwd(), 'packages', 'core', 'src', 'services')
 
 function everyFile(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -43,6 +46,18 @@ function checksInSource(): Set<string> {
   return found
 }
 
+/** Every pair a service refuses on: `requirePermission(..., 'resource', 'capability')`. */
+function checksInServices(): Set<string> {
+  const found = new Set<string>()
+  const call = /requirePermission\([^,]+,[^,]+,\s*'([a-z_]+)',\s*'([a-z]+)'\)/g
+  for (const file of everyFile(SERVICES)) {
+    for (const [, resource, capability] of readFileSync(file, 'utf8').matchAll(call)) {
+      found.add(`${resource}.${capability}`)
+    }
+  }
+  return found
+}
+
 function claimed(): Set<string> {
   const out = new Set<string>()
   for (const resource of Permissions.RESOURCES) {
@@ -58,7 +73,7 @@ describe('what the roles grid promises', () => {
   })
 
   it('offers no tickbox for a check nothing makes', () => {
-    const inSource = checksInSource()
+    const inSource = new Set([...checksInSource(), ...checksInServices()])
     const hollow = [...claimed()].filter((pair) => !inSource.has(pair))
     expect(hollow, `listed in ENFORCED but nothing reads it: ${hollow.join(', ')}`).toEqual([])
   })

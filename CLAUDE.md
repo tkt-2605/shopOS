@@ -5,7 +5,9 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 
 ## Shape
 
-- `packages/core` — all business logic, pure TypeScript, no Tauri imports.
+- `packages/core` — all business logic, pure TypeScript, no Tauri imports. Published by
+  area (`src/api/`: foundation, sync, catalog, sales, stock, books, shop) as
+  `@shopos/core/<area>`; `@shopos/core` is all of them. A barrel only re-exports.
   `domain/` is pure and DB-free (pricing, tax, money, billTotals); `services/` takes a
   `SqlDriver` and runs transactions; `repos/` is queries; `migrations/` is numbered SQL,
   each file also listed in `src/db/migrations.ts` (a test enforces the list matches the folder).
@@ -28,6 +30,11 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
   — that is UTC and files an 00:30 IST bill against yesterday.
 - Documents follow ERPNext's docstatus: 0 draft, 1 submitted, 2 cancelled. Submitted is immutable.
 - Ledgers are append-only; caches are materialized and have drift detectors.
+  Every submitted document posts balanced `gl_entries` in its own transaction
+  (`services/ledger.ts`); a new document type needs a builder in `ledger/vouchers.ts`.
+- Services check permissions themselves (`requirePermission`), against `ENFORCED`.
+- Books closed through a date (`services/books.ts`) bind cancellations and anything
+  backdated, never today's bill.
 - Valuation stores *value* and derives rate, never the reverse.
 - Modular: code should come apart like a car — parts you can pull out and replace.
 - No rounded corners anywhere, including inputs.
@@ -36,7 +43,7 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 ## Working agreements
 
 - `npm test` from the root runs every project -- core, the app, the portal and
-  both benches (2,219 tests). Types: `npm run typecheck`, which covers all five.
+  both benches (2,300+ tests). Types: `npm run typecheck`, which covers all five.
 - A licence never stops *the shop* billing: one counter always bills, with the
   whole shop's books. It gates what the vendor sells and never anything a shop
   needs to take money, and that list is asserted in a test. Plans (decided 27

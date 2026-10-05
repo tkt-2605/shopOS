@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Money, Quantity, searchProducts, searchCustomers, listSuppliers, createDocument, submitDocument,
-  type ProductListItem, type CustomerListItem, type Supplier, type DocumentKind,
+  type ProductListItem, type CustomerListItem, type Supplier, type DocumentKind, pricingContextFor,
 } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { Field, Modal, Empty, Rupees } from '../components'
@@ -67,6 +67,18 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
     setBusy(true)
     onError(null)
 
+    /* A typed rate is read the way this party's rates are quoted: a supplier's
+       before tax (the service's own default for a purchase order), and a
+       customer's the way their list quotes -- a wholesale customer's typed 100
+       is 100 plus GST, a walk-in's is 100. */
+    let typedIncludesTax: boolean | undefined
+    if (config.party !== 'supplier') {
+      const pricing = await pricingContextFor(db, partyId || null)
+      typedIncludesTax = pricing.customerPriceListId
+        ? pricing.customerListIncludesTax
+        : pricing.defaultListIncludesTax
+    }
+
     const made = await createDocument(db, {
       kind,
       registerId,
@@ -78,7 +90,10 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         return {
           productId: l.product.id,
           qty: Quantity.fromUnits(Number(l.qty) || 0),
-          ...(typed === null ? {} : { rateOverride: typed as never }),
+          ...(typed === null ? {} : {
+            rateOverride: typed as never,
+            ...(typedIncludesTax === undefined ? {} : { rateIncludesTax: typedIncludesTax }),
+          }),
         }
       }),
       ...(validUntil ? { validUntil } : {}),
@@ -196,7 +211,9 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Roughly</span>
         <Rupees value={rough} />
         <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-          Before tax. A blank rate is filled in from the price list when this is saved.
+          {config.party === 'supplier'
+            ? 'Rates are before GST, as a supplier quotes them. A blank rate is filled in when this is saved.'
+            : 'Rates are read the way this customer’s price list quotes them. A blank rate is filled in from that list when this is saved.'}
         </span>
       </div>
     </Modal>

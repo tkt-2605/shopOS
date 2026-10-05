@@ -156,6 +156,10 @@ export const REPLICATED: readonly RecordShape[] = [
   /* Append-only and travelling on its own, for the ledger's reasons: a
      merge of the bill a movement belongs to must not be able to lose it. */
   { table: 'batch_movements', key: 'id', lines: [] },
+  /* The general ledger (064), append-only for the same reasons. Its ids are
+     derived from the document, so two tills that both post one document write
+     the same rows and the union is still a union. */
+  { table: 'gl_entries', key: 'id', lines: [] },
   { table: 'loyalty_entries', key: 'id', lines: [] },
   /* Its own row, like the ledger: written once when a line is converted,
      and never lost to a merge of the document it marks (054). */

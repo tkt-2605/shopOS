@@ -68,12 +68,12 @@ export default function Billing() {
      receipt then corrects. */
   const totals = useMemo(
     () => Totals.computeTotals(
-      totalsLinesOf(active.lines),
+      totalsLinesOf(active.lines, chargesTax(taxScheme)),
       (Money.parseMoney(active.discount) ?? 0) as never,
       'intra_state',
       rounding,
     ),
-    [active.lines, active.discount, rounding],
+    [active.lines, active.discount, rounding, taxScheme],
   )
 
   /* Lines the shop sells at a few rupees a unit. The discount box has to say so,
@@ -177,6 +177,7 @@ export default function Billing() {
         source: resolved.source,
         sourceId: resolved.sourceId,
         manual: false,
+        includesTax: resolved.includesTax,
       }
       return { ...cart, lines: [...cart.lines, line], error: null }
     })

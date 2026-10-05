@@ -11,6 +11,7 @@ import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../../repo
 import { loadRounding, loadTaxScheme } from '../features.js'
 import { chargesTax } from '../../domain/taxScheme.js'
 import { openSessionFor } from '../cash.js'
+import { requirePermission } from '../../integrity/permissions.js'
 import { billingCustomer, supplyFor } from './load.js'
 import type { CreateBillInput, CreateBillResult } from './types.js'
 
@@ -30,11 +31,36 @@ export interface ComputedLine {
   mrp: Money | null
   discount: Money
   taxRateBp: number
+  cessRateBp: number
+  /** Whether `rate` was quoted with the tax in it (063). */
+  rateIncludesTax: boolean
   priceSource: PriceSource
   priceSourceId: string | null
   /** Copied onto the line as it stood at the time of sale, so a bill stays explainable. */
   discountBlocked: boolean
   loyaltyBlocked: boolean
+}
+
+/**
+ * Whether this save types a rate nobody had typed before.
+ *
+ * A typed rate is a price decision, so it takes `price_list.write` -- the right
+ * the counter already asks before it shows the box. But a held bill sends its
+ * typed rates back on every autosave, so a cashier resuming a bill a manager
+ * priced would be refused for a decision they did not make. An override already
+ * saved on this draft, for the same item at the same rate, is the manager's and
+ * goes through; only a new or changed one asks.
+ */
+async function overridesNeedingRight(db: SqlDriver, input: CreateBillInput, draftId?: string): Promise<boolean> {
+  const typed = input.lines.filter((l) => l.rateOverride != null)
+  if (typed.length === 0) return false
+  if (!draftId) return true
+  const saved = await q(db)
+    .select({ productId: schema.billItems.productId, rate: schema.billItems.rate })
+    .from(schema.billItems)
+    .where(and(eq(schema.billItems.billId, draftId), eq(schema.billItems.priceSource, 'manual_override')))
+  const known = new Set(saved.map((s) => `${s.productId}:${s.rate}`))
+  return typed.some((l) => !known.has(`${l.productId}:${l.rateOverride}`))
 }
 
 /**
@@ -58,8 +84,17 @@ interface DraftMeta {
   now: Date
 }
 
-export async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<Priced> {
+export async function priceBill(
+  db: SqlDriver,
+  input: CreateBillInput,
+  /** The draft being saved again, when it is one. See `overridesNeedingRight`. */
+  draftId?: string,
+): Promise<Priced> {
   if (input.lines.length === 0) return { ok: false, code: 'NO_LINES' }
+
+  if (await overridesNeedingRight(db, input, draftId)) {
+    await requirePermission(db, input.actorId, 'price_list', 'write')
+  }
 
   const now = input.now ?? new Date()
   const postingDate = input.postingDate ?? businessDate(now)
@@ -92,6 +127,7 @@ export async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<
         name: schema.products.name,
         hsnCode: schema.products.hsnCode,
         taxRateBp: schema.products.taxRateBp,
+        cessRateBp: schema.products.cessRateBp,
         mrp: schema.products.mrp,
         discountBlocked: schema.products.discountBlocked,
         loyaltyBlocked: schema.products.loyaltyBlocked,
@@ -108,9 +144,12 @@ export async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<
     // A typed rate wins, then a rate already resolved for this line, and only a
     // line with neither is priced from scratch.
     const priced = line.rateOverride != null
-      ? { rate: line.rateOverride, source: 'manual_override' as PriceSource, sourceId: null }
+      ? {
+          rate: line.rateOverride, source: 'manual_override' as PriceSource, sourceId: null,
+          includesTax: line.rateIncludesTax ?? true,
+        }
       : line.resolved
-        ? line.resolved
+        ? { ...line.resolved, includesTax: line.resolved.includesTax ?? true }
         : await resolveLinePrice(db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now)
 
     const discount = line.discount ?? ZERO
@@ -136,6 +175,9 @@ export async function priceBill(db: SqlDriver, input: CreateBillInput): Promise<
       mrp: product.mrp ?? null,
       discount,
       taxRateBp: taxed ? product.taxRateBp : 0,
+      // Cess is a tax like GST: a shop that may not collect one collects neither.
+      cessRateBp: taxed ? product.cessRateBp : 0,
+      rateIncludesTax: priced.includesTax,
       priceSource: priced.source,
       priceSourceId: priced.sourceId,
       discountBlocked,

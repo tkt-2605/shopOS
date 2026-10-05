@@ -141,7 +141,7 @@
     "last": []
   },
   "taxByRate": {
-    "hash": "bb16a38b2456b2c7",
+    "hash": "1fe8cf7ecdc63982",
     "rows": 4,
     "first": [
       {
@@ -149,21 +149,24 @@
         "taxable": 1999843530,
         "cgst": 0,
         "sgst": 0,
-        "igst": 0
+        "igst": 0,
+        "cess": 0
       },
       {
         "rateBp": 500,
         "taxable": 1696012276,
         "cgst": 42400352,
         "sgst": 42400352,
-        "igst": 0
+        "igst": 0,
+        "cess": 0
       },
       {
         "rateBp": 1200,
         "taxable": 2084915128,
         "cgst": 125094996,
         "sgst": 125094996,
-        "igst": 0
+        "igst": 0,
+        "cess": 0
       }
     ],
     "last": [
@@ -172,21 +175,24 @@
         "taxable": 1696012276,
         "cgst": 42400352,
         "sgst": 42400352,
-        "igst": 0
+        "igst": 0,
+        "cess": 0
       },
       {
         "rateBp": 1200,
         "taxable": 2084915128,
         "cgst": 125094996,
         "sgst": 125094996,
-        "igst": 0
+        "igst": 0,
+        "cess": 0
       },
       {
         "rateBp": 1800,
         "taxable": 1654584648,
         "cgst": 148912346,
         "sgst": 148912346,
-        "igst": 0
+        "igst": 0,
+        "cess": 0
       }
     ]
   },
@@ -235,7 +241,7 @@
     ]
   },
   "gstLines": {
-    "hash": "3b931a944020dbb0",
+    "hash": "c48beb4a10a1ded0",
     "rows": 38378,
     "first": [
       {
@@ -251,6 +257,7 @@
         "cgst": 2990,
         "sgst": 2990,
         "igst": 0,
+        "cess": 0,
         "total": 125600
       },
       {
@@ -266,6 +273,7 @@
         "cgst": 12126,
         "sgst": 12126,
         "igst": 0,
+        "cess": 0,
         "total": 226350
       },
       {
@@ -281,6 +289,7 @@
         "cgst": 19454,
         "sgst": 19454,
         "igst": 0,
+        "cess": 0,
         "total": 255050
       }
     ],
@@ -298,6 +307,7 @@
         "cgst": -9964,
         "sgst": -9964,
         "igst": 0,
+        "cess": 0,
         "total": -186000
       },
       {
@@ -313,6 +323,7 @@
         "cgst": -4516,
         "sgst": -4516,
         "igst": 0,
+        "cess": 0,
         "total": -84300
       },
       {
@@ -328,6 +339,7 @@
         "cgst": 0,
         "sgst": 0,
         "igst": 0,
+        "cess": 0,
         "total": -359400
       }
     ]

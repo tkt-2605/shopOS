@@ -126,6 +126,7 @@ export async function creditNoteDocFor(db: SqlDriver, returnId: string): Promise
     cgst: i.cgst,
     sgst: i.sgst,
     igst: i.igst,
+    cess: i.cess,
   }))
 
   const sum = (pick: (i: ReturnDetailItem) => number) =>
@@ -165,6 +166,7 @@ export async function creditNoteDocFor(db: SqlDriver, returnId: string): Promise
     cgst: sum((i) => i.cgst),
     sgst: sum((i) => i.sgst),
     igst: sum((i) => i.igst),
+    cess: sum((i) => i.cess),
     grandTotal: ret.refundTotal,
 
     /* Nothing was taken here; money went the other way. The block renders as
@@ -226,6 +228,8 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
     cgst: i.cgst,
     sgst: i.sgst,
     igst: i.igst,
+    cess: i.cess,
+    rateIncludesTax: i.rateIncludesTax,
   }))
 
   const sheet: ReceiptDoc = {
@@ -244,6 +248,7 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
     cgst: doc.items.reduce((t, i) => t + i.cgst, 0) as never,
     sgst: doc.items.reduce((t, i) => t + i.sgst, 0) as never,
     igst: doc.items.reduce((t, i) => t + i.igst, 0) as never,
+    cess: doc.items.reduce((t, i) => t + i.cess, 0) as never,
     // Printed on its own line when it is not zero, so the lines and the total
     // add up on the sheet a customer is holding.
     roundOff: doc.roundOff,
@@ -303,6 +308,8 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     cgst: i.cgst,
     sgst: i.sgst,
     igst: i.igst,
+    cess: i.cess,
+    rateIncludesTax: i.rateIncludesTax,
   }))
 
   return {
@@ -321,6 +328,7 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     cgst: sum((i) => i.cgst),
     sgst: sum((i) => i.sgst),
     igst: sum((i) => i.igst),
+    cess: sum((i) => i.cess),
     roundOff: bill.roundOff,
     grandTotal: bill.grandTotal,
     payments: bill.payments.map((p) => ({ method: p.method, amount: p.amount })),

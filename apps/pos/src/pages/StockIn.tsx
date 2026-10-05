@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Money, Quantity,
+  Money, Quantity, Permissions,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
-  directionOf, signedQty, noCostBasis, batchesOf, businessDate, Batches,
-  type ProductListItem, type StockEntryType, type Supplier, type BatchRow,
+  directionOf, signedQty, noCostBasis, batchesOf, businessDate, Batches, periodClosedMessage,
+  type ProductListItem, type StockEntryType, type Supplier, type BatchRow, Tax,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { useAction } from '../core/useAction'
@@ -21,6 +21,9 @@ interface Line {
   expiry: string
   /** The item's batches with stock, soonest expiry first, read when the line was added. */
   held: BatchRow[]
+  /** On a purchase: the GST and cess percentages the supplier billed, filled in from the item. */
+  gst: string
+  cess: string
 }
 
 /* Each note says which way the shelf moves, because that is what the list is
@@ -37,12 +40,20 @@ const TYPES: { id: StockEntryType; name: string; note: string }[] = [
 export default function StockIn() {
   const { db, features } = useCore()
   const user = useUser()
+  /* The Stock In page used to check nothing, so unticking "submit" on a role
+     changed nothing here. The service refuses it now; the button says so first. */
+  const canPost = Permissions.can(user.permissions, 'stock_entry', 'submit')
   const batched = features.batchExpiry
   const [entryType, setEntryType] = useState<StockEntryType>('purchase')
   const [supplierId, setSupplierId] = useState('')
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [newSupplier, setNewSupplier] = useState<string | null>(null)
   const [reference, setReference] = useState('')
+  /* A purchase is the supplier's bill (065): its number and date as printed,
+     and their rounding, so what is owed is what they billed. */
+  const [invoiceNo, setInvoiceNo] = useState('')
+  const [invoiceDate, setInvoiceDate] = useState('')
+  const [roundOff, setRoundOff] = useState('')
   const [term, setTerm] = useState('')
   const [results, setResults] = useState<ProductListItem[]>([])
   const [lines, setLines] = useState<Line[]>([])
@@ -97,6 +108,8 @@ export default function StockIn() {
         : [...prev, {
             key: `${product.id}-${Date.now()}`, product, qty: '1', cost: '', held,
             batchNo: '', expiry: '',
+            gst: String(Tax.bpToPercent(product.taxRateBp)),
+            cess: product.cessRateBp ? String(Tax.bpToPercent(product.cessRateBp)) : '',
           }])
   }
 
@@ -108,6 +121,17 @@ export default function StockIn() {
     const cost = Money.parseMoney(l.cost) ?? 0
     return sum + Math.round(qty * cost)
   }, 0)
+
+  const purchase = entryType === 'purchase'
+  const pct = (typed: string) => Math.round((Number(typed) || 0) * 100)
+  /** The tax on a line as the bill will carry it -- the same arithmetic as the service, CGST and SGST each rounded. */
+  const taxOf = (l: Line) => Tax.addTax(
+    Math.round(Math.abs(Number(l.qty) || 0) * (Money.parseMoney(l.cost) ?? 0)) as never,
+    pct(l.gst), 'intra_state', pct(l.cess),
+  ).taxTotal
+  const totalTax = purchase ? lines.reduce((sum, l) => sum + taxOf(l), 0) : 0
+  const rounding = purchase ? Money.parseMoney(roundOff) ?? 0 : 0
+  const showCess = purchase && lines.some((l) => l.cess.trim() !== '')
 
   async function submit() {
     await posting.run(post)
@@ -128,11 +152,24 @@ export default function StockIn() {
       }
       expiries.push(parsed.value)
     }
+    if (purchase && lines.some((l) => !Number.isFinite(Number(l.gst || '0')) || !Number.isFinite(Number(l.cess || '0')))) {
+      setError('A GST or cess rate is not a number.')
+      return
+    }
+    if (purchase && roundOff.trim() !== '' && Money.parseMoney(roundOff) === null) {
+      setError('The round-off is not an amount. Put a minus in front of it if the bill was rounded down.')
+      return
+    }
     const entry = await createStockEntry(db, {
       entryType,
       supplierId: supplierId || null,
       supplierName: suppliers.find((x) => x.id === supplierId)?.name ?? null,
       reference: reference.trim(),
+      ...(purchase ? {
+        supplierInvoiceNo: invoiceNo.trim() || null,
+        supplierInvoiceDate: invoiceDate || null,
+        roundOff: rounding as never,
+      } : {}),
       lines: lines.map((l, i) => ({
         productId: l.product.id,
         ...(batched && l.batchNo.trim() !== '' ? { batchNo: l.batchNo, expiryDate: expiries[i] ?? null } : {}),
@@ -140,6 +177,7 @@ export default function StockIn() {
            and any other way in agree without each having to remember it. */
         qty: Quantity.fromUnits(Number(l.qty) || 0),
         unitCost: (Money.parseMoney(l.cost) ?? 0) as never,
+        ...(purchase ? { taxRateBp: pct(l.gst), cessRateBp: pct(l.cess) } : {}),
       })),
       actorId: user.id,
     })
@@ -164,13 +202,18 @@ export default function StockIn() {
     if (!submitted.ok) {
       setError(submitted.code === 'BATCH_WOULD_GO_NEGATIVE'
         ? `Batch ${submitted.batchNo} holds only ${Quantity.formatQty(submitted.available)}. Check the quantities.`
-        : 'That would take stock below zero. Check the quantities.')
+        : submitted.code === 'PERIOD_CLOSED'
+          ? periodClosedMessage(submitted.closedThrough)
+          : 'That would take stock below zero. Check the quantities.')
       return
     }
 
     setDone({ docNo: submitted.docNo, entryId: entry.entryId })
     setLines([])
     setReference('')
+    setInvoiceNo('')
+    setInvoiceDate('')
+    setRoundOff('')
   }
 
   const pick = usePickList({
@@ -217,9 +260,22 @@ export default function StockIn() {
               <button className="btn sm" onClick={() => setNewSupplier('')} title="Add a supplier">+</button>
             </div>
           </Field>
-          <Field label="Bill or reference">
-            <input className="input" id="reference" value={reference} onChange={(e) => setReference(e.target.value)} />
-          </Field>
+          {purchase ? (
+            <>
+              <Field label="Supplier’s bill no.">
+                <input className="input" id="invoice-no" value={invoiceNo} maxLength={40}
+                  onChange={(e) => setInvoiceNo(e.target.value)} />
+              </Field>
+              <Field label="Bill date">
+                <input className="input" id="invoice-date" type="date" value={invoiceDate}
+                  onChange={(e) => setInvoiceDate(e.target.value)} />
+              </Field>
+            </>
+          ) : (
+            <Field label="Reference">
+              <input className="input" id="reference" value={reference} onChange={(e) => setReference(e.target.value)} />
+            </Field>
+          )}
         </div>
       </div>
 
@@ -268,7 +324,10 @@ export default function StockIn() {
               <th>Item</th>
               <th className="r">{directionOf(entryType) === 'out' ? 'Quantity lost' : 'Quantity'}</th>
               {batched && <><th>Batch</th><th>Expiry</th></>}
-              <th className="r">Unit cost</th><th className="r">Value</th>
+              <th className="r">{purchase ? 'Unit cost before tax' : 'Unit cost'}</th><th className="r">Value</th>
+              {purchase && <th className="r">GST %</th>}
+              {showCess && <th className="r">Cess %</th>}
+              {purchase && <th className="r">Tax</th>}
               <th className="r">On hand after</th><th />
             </tr>
           </thead>
@@ -313,6 +372,19 @@ export default function StockIn() {
                     )}
                   </td>
                   <td className="r"><Rupees value={value} /></td>
+                  {purchase && (
+                    <td className="r">
+                      <input className="qty-input num" style={{ width: 56 }} value={l.gst}
+                        onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, gst: e.target.value } : x))} />
+                    </td>
+                  )}
+                  {showCess && (
+                    <td className="r">
+                      <input className="qty-input num" style={{ width: 56 }} value={l.cess}
+                        onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cess: e.target.value } : x))} />
+                    </td>
+                  )}
+                  {purchase && <td className="r"><Rupees value={taxOf(l)} /></td>}
                   <td className="r num">{Quantity.formatQty(after)} {l.product.baseUnit}</td>
                   <td className="r">
                     <button className="btn ghost sm" onClick={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}>✕</button>
@@ -320,7 +392,9 @@ export default function StockIn() {
                 </tr>
               )
             })}
-            {lines.length === 0 && <tr><td colSpan={batched ? 8 : 6}><Empty>Nothing added yet</Empty></td></tr>}
+            {lines.length === 0 && (
+              <tr><td colSpan={(batched ? 8 : 6) + (purchase ? 2 : 0) + (showCess ? 1 : 0)}><Empty>Nothing added yet</Empty></td></tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -328,11 +402,28 @@ export default function StockIn() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Total value</span>
         <Rupees value={totalCost} />
-        <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-          Unit cost is recorded per movement, so valuation stays correct later.
-        </span>
+        {purchase ? (
+          <>
+            <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Tax</span>
+            <Rupees value={totalTax} />
+            <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Round off</span>
+            <input className="qty-input num" style={{ width: 70 }} placeholder="0.00" value={roundOff}
+              onChange={(e) => setRoundOff(e.target.value)} />
+            <span style={{ fontSize: 12.5, fontWeight: 600 }}>Bill total</span>
+            <Rupees value={totalCost + totalTax + rounding} />
+          </>
+        ) : (
+          <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
+            Unit cost is recorded per movement, so valuation stays correct later.
+          </span>
+        )}
         <span style={{ flex: 1 }} />
-        <button className="btn primary" disabled={lines.length === 0 || posting.busy} onClick={() => void submit()}>
+        <button
+          className="btn primary"
+          disabled={!canPost || lines.length === 0 || posting.busy}
+          title={canPost ? undefined : 'Your role cannot post stock entries'}
+          onClick={() => void submit()}
+        >
           {posting.busy ? 'Posting…' : 'Post entry'}
         </button>
       </div>

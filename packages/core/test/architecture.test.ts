@@ -38,8 +38,11 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const MAX_LINES = 600
 const MAX_FAN_OUT = 16
 const LONG_ALLOWED = new Set(['db/schema.ts'])
-/* A barrel's job is to import everything; its fan-out is its purpose. */
+/* A barrel's job is to import everything; its fan-out is its purpose. The
+   area barrels under `api/` are barrels too (4 October): each is one of the
+   entry points core is published in. */
 const FAN_OUT_ALLOWED = new Set(['index.ts'])
+const isBarrel = (file: string) => FAN_OUT_ALLOWED.has(file) || /^api\/[a-z]+\.ts$/.test(file)
 
 function everyFile(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -186,10 +189,38 @@ describe('the core', () => {
 
   it(`has no module importing more than ${MAX_FAN_OUT} others`, () => {
     const wide = [...graph]
-      .filter(([file]) => !FAN_OUT_ALLOWED.has(name(file)))
+      .filter(([file]) => !isBarrel(name(file)))
       .filter(([, deps]) => deps.length > MAX_FAN_OUT)
       .map(([file, deps]) => `${name(file)}: ${deps.length}`)
     expect(wide).toEqual([])
+  })
+})
+
+describe('the published areas', () => {
+  it('only re-export: nothing is defined in a barrel, so an area is never a second home for code', () => {
+    const offending: string[] = []
+    for (const file of files.filter((f) => isBarrel(name(f)))) {
+      const code = readFileSync(file, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l !== '' && !l.startsWith('//'))
+        .join('\n')
+      // Every statement is an `export ... from '...'`, possibly over several lines.
+      const statements = code.split(/(?<=from '[^']+')\n?/).map((s) => s.trim()).filter(Boolean)
+      for (const s of statements) {
+        if (!/^export\s/.test(s) || !/from '[^']+'$/.test(s)) offending.push(`${name(file)}: ${s.slice(0, 60)}`)
+      }
+    }
+    expect(offending).toEqual([])
+  })
+
+  it('are each a published entry point', () => {
+    const pkg = JSON.parse(readFileSync(join(SRC, '..', 'package.json'), 'utf8')) as { exports: Record<string, string> }
+    for (const file of files.filter((f) => /^api\//.test(name(f)))) {
+      const area = name(file).replace(/^api\//, '').replace(/\.ts$/, '')
+      expect(pkg.exports[`./${area}`], `${area} is published`).toBe(`./src/api/${area}.ts`)
+    }
   })
 })
 

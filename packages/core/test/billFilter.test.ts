@@ -52,6 +52,8 @@ async function billOn(date: string, opts: { customerId?: string; onCredit?: bool
     billId: created.billId,
     payments: [{ method: opts.onCredit ? 'credit' : 'cash', amount: created.grandTotal }],
     actorId: fx.adminId,
+    // A bill is dated the day it is paid, so the day is said here too.
+    now: new Date(`${date}T12:00:00`),
   })
   if (!submitted.ok) throw new Error(`could not submit a bill: ${submitted.code}`)
 

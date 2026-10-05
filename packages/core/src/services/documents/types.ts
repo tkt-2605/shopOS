@@ -9,6 +9,12 @@ export interface DocumentLineInput {
   qty: Qty
   /** A rate someone typed, kept rather than resolved. */
   rateOverride?: Money | null
+  /**
+   * Whether that typed rate has the tax in it. Absent is yes on a quotation or
+   * an order, which a customer reads as a shelf price, and no on a purchase
+   * order, because a supplier quotes before GST.
+   */
+  rateIncludesTax?: boolean
   discount?: Money
 }
 

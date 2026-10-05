@@ -3,11 +3,13 @@ import type { Money } from '../../money.js'
 import { checkCreditLimit, totalOutstanding } from '../../domain/credit.js'
 import { chargesTax } from '../../domain/taxScheme.js'
 import { isStateCode } from '../../domain/states.js'
-import { loadTaxScheme } from '../features.js'
+import { loadStockPolicy, loadTaxScheme } from '../features.js'
 import { getSetting } from '../settings.js'
 import { billingCustomer } from './load.js'
 import { loadOpenBills } from '../payments/outstanding.js'
 import { RULE_46F_THRESHOLD, type SubmitBillResult } from './types.js'
+import { shortfallsOf, type BillStockLine } from './stock.js'
+import type { StockShortfall } from '../stock.js'
 
 /*
  * What stops a bill being issued, asked before anything is written.
@@ -65,4 +67,23 @@ export async function refusedOnCredit(
     return { ok: false, code: 'CREDIT_LIMIT_EXCEEDED', limit: check.limit, projected: check.projected, excess: check.excess }
   }
   return null
+}
+
+/**
+ * The lines the shelf cannot cover, and whether that refuses the sale.
+ *
+ * The check is the same under every policy; what changes is who it binds.
+ * Under `block` a short line refuses the sale. Otherwise the sale goes through
+ * and the shortfall is reported back on the result, so the counter can say
+ * what happened and the shortfall report can pick it up afterwards.
+ */
+export async function shelfFor(
+  db: SqlDriver,
+  lines: readonly BillStockLine[],
+): Promise<{ refusal: Refusal | null; shortfalls: StockShortfall[] }> {
+  const shortfalls = await shortfallsOf(db, lines)
+  if (shortfalls.length > 0 && await loadStockPolicy(db) === 'block') {
+    return { refusal: { ok: false, code: 'INSUFFICIENT_STOCK', shortfalls }, shortfalls }
+  }
+  return { refusal: null, shortfalls }
 }

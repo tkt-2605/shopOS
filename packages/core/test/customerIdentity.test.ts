@@ -1,3 +1,4 @@
+import { createUser } from '../src/services/auth.js'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { rupees } from '../src/money.js'
 import {
@@ -246,8 +247,14 @@ describe('two counters minting at once', () => {
     setDeviceId('device-front')
     await alreadyHas(db, 'C0400')
 
-    const first = await createCustomer(db, { actorId: newId() }, { name: 'One' })
-    const second = await createCustomer(db, { actorId: newId() }, { name: 'Two' })
+    // The first person on a fresh till may be made with nobody signed in.
+    const admin = await createUser(db, {
+      username: 'admin', password: 'counter-9',
+      roleId: (await db.get<{ id: string }>(`SELECT id FROM roles WHERE name = 'Admin'`))!.id,
+    })
+    if (!admin.ok) throw new Error(admin.code)
+    const first = await createCustomer(db, { actorId: admin.userId }, { name: 'One' })
+    const second = await createCustomer(db, { actorId: admin.userId }, { name: 'Two' })
     expect(first.ok && first.code).toBe('CMR0401')
     expect(second.ok && second.code).toBe('CMR0402')
     await db.close()

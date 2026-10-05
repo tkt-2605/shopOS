@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  Money, customerAccount, recordPayment, applyAdvance, refundAdvance, cancelPayment, writeOff,
+  Money, customerAccount, recordPayment, applyAdvance, refundAdvance, cancelPayment, writeOff, periodClosedMessage,
   type CustomerListItem, type CustomerStatementRow, type CustomerPayment, type CustomerAccount,
 } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
@@ -202,7 +202,11 @@ export function AccountPanel({
       : ''
     if (!(await ask(`Cancel ${payment.docNo} for ${Money.formatWithSymbol(payment.amount)}?${back}`))) return
     await action.run(async () => {
-      await cancelPayment(db, { paymentId: payment.paymentId, reason: 'Cancelled from the credit screen', actorId })
+      const result = await cancelPayment(db, { paymentId: payment.paymentId, reason: 'Cancelled from the credit screen', actorId })
+      if (!result.ok) {
+        setError(periodClosedMessage(result.closedThrough))
+        return
+      }
       await onChanged(`${payment.docNo} cancelled.`)
     })
   }

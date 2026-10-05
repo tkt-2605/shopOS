@@ -32,6 +32,7 @@ const productShape = {
   baseRate: schema.products.baseRate,
   mrp: schema.products.mrp,
   taxRateBp: schema.products.taxRateBp,
+  cessRateBp: schema.products.cessRateBp,
   hsnCode: schema.products.hsnCode,
   isStockTracked: schema.products.isStockTracked,
   isActive: schema.products.isActive,
@@ -58,6 +59,8 @@ export interface ProductListItem {
   baseRate: Money
   mrp: Money | null
   taxRateBp: number
+  /** GST compensation cess, in basis points (063). */
+  cessRateBp: number
   hsnCode: string | null
   isStockTracked: boolean
   /**

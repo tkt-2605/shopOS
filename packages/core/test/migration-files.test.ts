@@ -47,15 +47,15 @@ describe('what each migration does to a peer', () => {
     expect(MIGRATION_FILES.map(([, file]) => file).sort()).toEqual(onDisk)
   })
 
-  it('puts the floor one past the last breaking migration', () => {
+  it('puts the floor at the last breaking migration', () => {
     const lastBreaking = [...MIGRATION_FILES].reverse()
       .find(([, , kind]) => kind === 'breaking')
 
     expect(lastBreaking).toBeDefined()
-    expect(MIN_PEER_SCHEMA_VERSION).toBe(lastBreaking![0] + 1)
-    // Everything from the floor to head is additive, which is what it means.
+    expect(MIN_PEER_SCHEMA_VERSION).toBe(lastBreaking![0])
+    // Everything above the floor is additive, which is what it means.
     for (const [version, file, kind] of MIGRATION_FILES) {
-      if (version >= MIN_PEER_SCHEMA_VERSION) {
+      if (version > MIN_PEER_SCHEMA_VERSION) {
         expect(kind, `${file} is above the floor`).toBe('additive')
       }
     }
@@ -63,8 +63,9 @@ describe('what each migration does to a peer', () => {
 
   it('never lets the floor exceed the schema this build is on', () => {
     /* A floor above head would refuse every peer including an identical one,
-       which is a shop that cannot sync with itself. It can only happen by
-       classifying head as breaking, and this is what would say so. */
+       which is a shop that cannot sync with itself. It happened once, when
+       the floor was one past the last breaking migration and head was
+       breaking; this is what said so. */
     expect(MIN_PEER_SCHEMA_VERSION).toBeLessThanOrEqual(EXPECTED_SCHEMA_VERSION)
   })
 

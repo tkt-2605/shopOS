@@ -3,6 +3,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import { requirePermission, type Resource, type Capability } from '../integrity/permissions.js'
 
 /**
  * Photographs and documents kept against a bill, a stock entry, a customer or a
@@ -21,6 +22,18 @@ import { writeAudit, type AuditContext } from '../integrity/audit.js'
 
 export const ATTACHMENT_ENTITIES = ['bill', 'stock_entry', 'customer', 'product'] as const
 export type AttachmentEntity = (typeof ATTACHMENT_ENTITIES)[number]
+
+/**
+ * Who may attach to, or take a file off, each kind of thing: whoever may
+ * change that thing. The same pairs the screens check -- a bill's files under
+ * `bill.write`, the supplier's paper on a delivery under whoever posts it.
+ */
+const ATTACH_PERMISSION: Record<AttachmentEntity, [Resource, Capability]> = {
+  bill: ['bill', 'write'],
+  stock_entry: ['stock_entry', 'submit'],
+  customer: ['customer', 'write'],
+  product: ['product', 'write'],
+}
 
 /**
  * What the counter is allowed to attach.
@@ -136,6 +149,7 @@ export async function recordAttachment(
   ctx: AuditContext & { actorId: string },
   input: AttachInput,
 ): Promise<Attachment> {
+  await requirePermission(db, ctx.actorId, ...ATTACH_PERMISSION[input.entity])
   if (input.file.sizeBytes > MAX_BYTES) {
     throw new Error('That file is larger than ShopOS will keep against a document.')
   }
@@ -188,6 +202,8 @@ export async function removeAttachment(
     .from(schema.attachments)
     .where(and(eq(schema.attachments.id, id), isNull(schema.attachments.deletedAt)))
   if (!row) return { orphaned: null }
+  const entity = row.entity as AttachmentEntity
+  if (entity in ATTACH_PERMISSION) await requirePermission(db, ctx.actorId, ...ATTACH_PERMISSION[entity])
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
 

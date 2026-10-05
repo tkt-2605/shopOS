@@ -1,11 +1,14 @@
-import { Reports as R, Quantity, type DateRange, type ClosedSession } from '@shopos/core'
+import {
+  Reports as R, Quantity, type DateRange, type ClosedSession,
+  type ProfitAndLoss, type BalanceSheet, type LedgerChecks,
+} from '@shopos/core'
 
 /*
  * What a report holds, and the one description of each report's table that
  * the CSV and the PDF are both built from.
  */
 
-export type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer'
+export type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer' | 'books'
 
 export interface Data {
   summary: R.SalesSummary
@@ -17,6 +20,10 @@ export interface Data {
   tenders: R.TenderRow[]
   staff: R.StaffRow[]
   sessions: ClosedSession[]
+  /** The books: the period's profit, what is owned and owed on its last day, and whether they agree. */
+  pl: ProfitAndLoss
+  bs: BalanceSheet
+  checks: LedgerChecks
 }
 
 /**
@@ -111,10 +118,11 @@ export function tableFor(tab: Tab, data: Data | null): Table | null {
           { label: 'CGST', width: 1.2, right: true },
           { label: 'SGST', width: 1.2, right: true },
           { label: 'IGST', width: 1.2, right: true },
+          { label: 'Cess', width: 1.2, right: true },
         ],
         rows: data.tax.map((r) => [
           (r.rateBp / 100).toString(), rupeeCell(r.taxable),
-          rupeeCell(r.cgst), rupeeCell(r.sgst), rupeeCell(r.igst),
+          rupeeCell(r.cgst), rupeeCell(r.sgst), rupeeCell(r.igst), rupeeCell(r.cess),
         ]),
       }
     case 'tenders':
@@ -158,6 +166,27 @@ export function tableFor(tab: Tab, data: Data | null): Table | null {
           r.notes ?? '',
         ]),
       }
+    case 'books': {
+      const line = (section: string) => (a: { name: string; balance: number }) => [section, a.name, rupeeCell(a.balance)]
+      return {
+        name: 'books',
+        title: 'Profit and loss, and balance sheet',
+        columns: [
+          { label: 'Statement', width: 1.4 },
+          { label: 'Account', width: 2.6 },
+          { label: 'Amount', width: 1.2, right: true },
+        ],
+        rows: [
+          ...data.pl.income.map(line('Income')),
+          ...data.pl.expense.map(line('Expense')),
+          ['Profit and loss', 'Profit for the period', rupeeCell(data.pl.profit)],
+          ...data.bs.assets.map(line('Assets')),
+          ...data.bs.liabilities.map(line('Liabilities')),
+          ...data.bs.equity.map(line('Equity')),
+          ['Equity', 'Profit retained', rupeeCell(data.bs.retainedProfit)],
+        ],
+      }
+    }
   }
 }
 

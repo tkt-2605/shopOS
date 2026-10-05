@@ -67,9 +67,9 @@ let answers: Record<string, unknown>
  * Deterministic: the oldest twenty submitted bills by document number, one line
  * off each, refunded in cash.
  */
-async function takeSomeReturns(): Promise<number> {
-  const bills = await db.query<{ id: string; created_by: string }>(
-    `SELECT b.id, b.created_by FROM bills b
+async function takeSomeReturns(ownerId: string): Promise<number> {
+  const bills = await db.query<{ id: string }>(
+    `SELECT b.id FROM bills b
       WHERE b.docstatus = 1 AND b.kind = 'sale'
       ORDER BY b.doc_no LIMIT 20`,
   )
@@ -86,7 +86,10 @@ async function takeSomeReturns(): Promise<number> {
       billId: bill.id,
       lines: [{ billItemId: line.id, qty: line.qty as never }],
       refundMethod: 'cash',
-      actorId: bill.created_by,
+      /* The owner takes them. The cashier who rang the bill up may not: the
+         seeded Cashier role does not take returns, and since the services
+         check roles themselves that is enforced rather than merely hidden. */
+      actorId: ownerId,
       now: new Date('2026-09-20T11:00:00+05:30'),
     })
     if (done.ok) taken += 1
@@ -97,8 +100,8 @@ async function takeSomeReturns(): Promise<number> {
 beforeAll(async () => {
   db = openMemoryDatabase()
   await migrate(db, MIGRATIONS)
-  await buildSyntheticShop(db)
-  const returns = await takeSomeReturns()
+  const shop = await buildSyntheticShop(db)
+  const returns = await takeSomeReturns(shop.adminId)
   if (returns === 0) throw new Error('no returns were taken; the export would prove nothing')
 
   answers = {

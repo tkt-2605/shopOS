@@ -5,6 +5,7 @@ import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { newId } from '../ids.js'
 import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * Taking a product out of use without taking it out of history.
@@ -45,6 +46,7 @@ export async function setProductActive(
   productId: string,
   isActive: boolean,
 ): Promise<void> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const [before] = await q(db)
     .select({ isActive: schema.products.isActive, name: schema.products.name })
     .from(schema.products)
@@ -79,6 +81,12 @@ export interface ProductDetails {
   brand: string | null
   hsnCode: string | null
   taxRateBp: number
+  /**
+   * GST compensation cess, ad valorem, in basis points. Absent leaves an item's
+   * cess as it is (and a new item's at none), so a caller that predates cess
+   * cannot clear one by not knowing about it.
+   */
+  cessRateBp?: number
   baseRate: Money
   mrp: Money | null
   /** Only read for a new item: an item's counting unit does not change under its stock. */
@@ -108,11 +116,17 @@ export async function saveProductDetails(
   ctx: AuditContext & { actorId: string },
   input: ProductDetails,
 ): Promise<SaveProductResult> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
   if (!Number.isInteger(input.baseRate) || input.baseRate < 0) return { ok: false, code: 'BAD_RATE' }
   if (input.mrp !== null && (!Number.isInteger(input.mrp) || input.mrp < 0)) return { ok: false, code: 'BAD_MRP' }
   if (!Number.isInteger(input.taxRateBp) || input.taxRateBp < 0 || input.taxRateBp > 10_000) {
+    return { ok: false, code: 'BAD_TAX' }
+  }
+  // Cess runs well past GST on some goods (pan masala, gutkha), so the ceiling is 300%.
+  if (input.cessRateBp !== undefined
+    && (!Number.isInteger(input.cessRateBp) || input.cessRateBp < 0 || input.cessRateBp > 30_000)) {
     return { ok: false, code: 'BAD_TAX' }
   }
   for (const level of [input.reorderLevel, input.reorderQty]) {
@@ -125,6 +139,7 @@ export async function saveProductDetails(
     brand: input.brand?.trim() || null,
     hsnCode: input.hsnCode?.trim() || null,
     taxRateBp: input.taxRateBp,
+    ...(input.cessRateBp !== undefined ? { cessRateBp: input.cessRateBp } : {}),
     baseRate: input.baseRate,
     mrp: input.mrp,
     discountBlocked: input.discountBlocked ? 1 : 0,
@@ -152,6 +167,7 @@ export async function saveProductDetails(
       .select({
         name: schema.products.name, baseRate: schema.products.baseRate, mrp: schema.products.mrp,
         taxRateBp: schema.products.taxRateBp, hsnCode: schema.products.hsnCode,
+        cessRateBp: schema.products.cessRateBp,
       })
       .from(schema.products)
       .where(eq(schema.products.id, input.id))
@@ -169,6 +185,7 @@ export async function saveProductDetails(
       ['base_rate', before.baseRate, fields.baseRate],
       ['mrp', before.mrp, fields.mrp],
       ['tax_rate_bp', before.taxRateBp, fields.taxRateBp],
+      ['cess_rate_bp', before.cessRateBp, fields.cessRateBp ?? before.cessRateBp],
       ['hsn_code', before.hsnCode, fields.hsnCode],
     ]
     for (const [column, old, next] of compare) {

@@ -97,6 +97,12 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
                       {Money.format(line.rate as never)}
                     </span>
                   )}
+                  {/* A wholesale rate is before tax, so the amount beside it is
+                      more than rate times quantity. Said, so nobody thinks the
+                      till added wrong. */}
+                  {line.includesTax === false && (
+                    <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>+ tax</div>
+                  )}
                 </td>
                 <td className="r"><Rupees value={totals.lines[i]?.net ?? 0} /></td>
                 <td>

@@ -10,9 +10,13 @@ import { reverseVoucher } from '../stock.js'
 import { reverseBatches } from '../batches.js'
 import { openSessionFor, postCashMovement } from '../cash.js'
 import { reverseBillFulfilment } from '../documents.js'
+import { closedFor } from '../books.js'
 import { createBill } from './draft.js'
+import type { PriceSource } from '../../domain/pricing.js'
 import { loadBill } from './load.js'
 import type { CancelBillResult, CreateBillResult } from './types.js'
+import { requirePermission } from '../../integrity/permissions.js'
+import { reverseVoucherGl } from '../ledger.js'
 
 /*
  * Undoing a submitted bill, and replacing one with a corrected copy.
@@ -22,9 +26,14 @@ export async function cancelBill(
   db: SqlDriver,
   input: { billId: string; reason?: string; actorId: string; now?: Date },
 ): Promise<CancelBillResult> {
+  await requirePermission(db, input.actorId, 'bill', 'cancel')
   const now = input.now ?? new Date()
   const bill = await loadBill(db, input.billId)
   assertCanApply('bill', parseDocStatus(bill.docstatus), 'cancel')
+
+  // A bill in a closed month is in a return that has been filed.
+  const closed = await closedFor(db, bill.postingDate)
+  if (closed) return closed
 
   const [returns] = await q(db)
     .select({ n: sql<number>`count(*)` })
@@ -62,6 +71,7 @@ export async function cancelBill(
     await recheckDocStatus(tx, 'bills', input.billId, 'bill', 'cancel')
     await reverseVoucher(tx, 'bill', input.billId, bill.postingDate, input.actorId)
     await reverseBatches(tx, 'bill', input.billId, bill.postingDate, input.actorId)
+    await reverseVoucherGl(tx, 'bill', input.billId)
 
     const session = await openSessionFor(tx, bill.registerId)
     if (session) {
@@ -145,6 +155,7 @@ export async function amendBill(
   db: SqlDriver,
   input: { billId: string; actorId: string; now?: Date },
 ): Promise<CreateBillResult> {
+  await requirePermission(db, input.actorId, 'bill', 'create')
   const source = await loadBill(db, input.billId)
   assertAmendable('bill', parseDocStatus(source.docstatus))
 
@@ -155,6 +166,9 @@ export async function amendBill(
       qty: schema.billItems.qty,
       rate: schema.billItems.rate,
       discount: schema.billItems.discount,
+      priceSource: schema.billItems.priceSource,
+      priceSourceId: schema.billItems.priceSourceId,
+      rateIncludesTax: schema.billItems.rateIncludesTax,
     })
     .from(schema.billItems)
     .where(eq(schema.billItems.billId, input.billId))
@@ -198,11 +212,22 @@ export async function amendBill(
        it had taken, so an amendment that dropped the link would leave the order
        open for goods the shop is about to send out again. */
     convertedFrom: source.convertedFrom,
+    /* Each rate as already decided, with where it came from, rather than as a
+       rate typed now. Passing them as typed rates put every line of every
+       amendment down as a cashier's override -- against the wrong name -- and,
+       once the services checked roles, refused a cashier who may amend a bill
+       but not set prices. The original was priced by whoever was allowed to;
+       carrying it is not a new price decision. */
     lines: lines.map((l) => ({
       productId: l.productId,
       saleUnit: l.saleUnit,
       qty: l.qty,
-      rateOverride: l.rate,
+      resolved: {
+        rate: l.rate,
+        source: l.priceSource as PriceSource,
+        sourceId: l.priceSourceId,
+        includesTax: l.rateIncludesTax === 1,
+      },
       discount: l.discount,
     })),
     ...(source.notes !== null ? { notes: source.notes } : {}),

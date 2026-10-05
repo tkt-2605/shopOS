@@ -193,6 +193,10 @@ export interface BillDetailItem {
   cgst: Money
   sgst: Money
   igst: Money
+  cess: Money
+  cessRateBp: number
+  /** Whether `rate` was quoted with the tax in it. `lineTotal` always is (063). */
+  rateIncludesTax: boolean
   hsnCode: string | null
   /** Rule 46(k): the rate, per line, not only the amount it came to. */
   taxRateBp: number
@@ -243,6 +247,9 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
       cgst: schema.billItems.cgstAmount,
       sgst: schema.billItems.sgstAmount,
       igst: schema.billItems.igstAmount,
+      cess: schema.billItems.cessAmount,
+      cessRateBp: schema.billItems.cessRateBp,
+      rateIncludesTax: schema.billItems.rateIncludesTax,
       hsnCode: schema.billItems.hsnCode,
       taxRateBp: schema.billItems.taxRateBp,
       priceSource: schema.billItems.priceSource,
@@ -251,6 +258,7 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
     .from(schema.billItems)
     .where(eq(schema.billItems.billId, billId))
     .orderBy(schema.billItems.idx)
+    .then((rows) => rows.map((r) => ({ ...r, rateIncludesTax: r.rateIncludesTax === 1 })))
 
   const payments = await q(db)
     .select({

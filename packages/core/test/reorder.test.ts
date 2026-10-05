@@ -49,6 +49,7 @@ async function sell(productId: string, units: number, postingDate = '2026-09-10'
     billId: bill.billId,
     payments: [{ method: 'cash', amount: bill.grandTotal }],
     actorId: fx.adminId,
+    now: new Date(`${postingDate}T12:00:00`),
   })
   return bill.billId
 }

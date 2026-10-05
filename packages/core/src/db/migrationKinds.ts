@@ -130,6 +130,15 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* Three new tables and nothing changed on an old one. A till below this
      skips batch rows as a table it does not have, which is 054's case. */
   [62, '062_a_batch_and_the_day_it_expires.sql', 'additive'],
+  /* Defaulted columns whose defaults -- no cess, rates include tax -- would be
+     a lie about a product or a list an older till relayed. See the file. */
+  [63, '063_cess_and_rates_before_tax.sql', 'breaking'],
+  /* One new table and nothing changed on an old one. A till below this skips
+     ledger rows as a table it does not have, which is 054's case. */
+  [64, '064_the_books.sql', 'additive'],
+  /* Defaulted columns that would be a lie about a purchase an older till
+     relayed -- no tax and owing nothing -- and a guard rebuilt. */
+  [65, '065_what_a_supplier_billed.sql', 'breaking'],
 ]
 
 /**
@@ -161,9 +170,15 @@ export const DROP_AT_NEXT_REBUILD: ReadonlyArray<readonly [column: string, retir
 /**
  * The oldest schema this build will sync with.
  *
- * One past the last breaking migration: everything from there to head is
- * additive, so a till anywhere in that range can exchange rows with this one.
- * A till below it is refused at the handshake, before a row moves.
+ * The last breaking migration itself: a till that has run it has the shape it
+ * made, and everything after it is additive, so a till anywhere from there to
+ * head can exchange rows with this one. A till below it is refused at the
+ * handshake, before a row moves.
+ *
+ * It was one *past* the last breaking migration until 4 October, which kept out
+ * a till that had already run it -- harmless while every breaking migration
+ * had an additive one after it, and a shop that could not sync with itself the
+ * first time the newest migration was breaking (063).
  *
  * Derived rather than written down, because a number typed next to a list is a
  * number that stops matching the list. Adding a breaking migration raises this
@@ -172,5 +187,5 @@ export const DROP_AT_NEXT_REBUILD: ReadonlyArray<readonly [column: string, retir
  */
 export const MIN_PEER_SCHEMA_VERSION: number = (() => {
   const lastBreaking = [...MIGRATION_FILES].reverse().find(([, , kind]) => kind === 'breaking')
-  return (lastBreaking?.[0] ?? 0) + 1
+  return lastBreaking?.[0] ?? 0
 })()

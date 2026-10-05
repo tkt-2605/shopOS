@@ -26,6 +26,7 @@ interface ComputedReturnLine {
   cgst: Money
   sgst: Money
   igst: Money
+  cess: Money
   /* Rule 53 wants the credit note to carry the same HSN and rate as the line it
      reverses. Copied off the bill line, never off the product, because the rate
      on the product today is not the rate that was charged. */
@@ -106,6 +107,7 @@ export async function computeLines(
         returnedQty: schema.billItems.returnedQty,
         lineTotal: schema.billItems.lineTotal,
         taxRateBp: schema.billItems.taxRateBp,
+        cessRateBp: schema.billItems.cessRateBp,
         hsnCode: schema.billItems.hsnCode,
       })
       .from(schema.billItems)
@@ -132,8 +134,10 @@ export async function computeLines(
       : paise(Math.round((item.lineTotal * line.qty) / item.qty))
 
     // Splitting tax out of the refund keeps each credit note internally consistent:
-    // taxable + cgst + sgst equals the refund exactly, as on the original invoice.
-    const tax = splitTax(refund, item.taxRateBp, supply)
+    // taxable + cgst + sgst + cess equals the refund exactly, as on the original
+    // invoice. The refund always has its tax in it -- `line_total` does, whether
+    // the rate was quoted before tax or not -- so it is split, never added to.
+    const tax = splitTax(refund, item.taxRateBp, supply, item.cessRateBp)
 
     computed.push({
       billItemId: item.id,
@@ -148,6 +152,7 @@ export async function computeLines(
       cgst: tax.cgst,
       sgst: tax.sgst,
       igst: tax.igst,
+      cess: tax.cess,
     })
   }
 
@@ -155,7 +160,7 @@ export async function computeLines(
     ok: true,
     lines: computed,
     refundTotal: add(...computed.map((l) => l.refund)),
-    taxReversed: add(...computed.map((l) => add(l.cgst, l.sgst, l.igst))),
+    taxReversed: add(...computed.map((l) => add(l.cgst, l.sgst, l.igst, l.cess))),
   }
 }
 

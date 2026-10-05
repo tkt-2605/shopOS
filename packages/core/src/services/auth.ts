@@ -5,7 +5,7 @@ import { q, schema } from '../db/q.js'
 import { newId, derivedId } from '../ids.js'
 import { deviceId } from '../device.js'
 import { writeAudit } from '../integrity/audit.js'
-import { loadPermissions, type PermissionSet } from '../integrity/permissions.js'
+import { loadPermissions, type PermissionSet, requirePermission } from '../integrity/permissions.js'
 
 const COST = 10
 
@@ -253,6 +253,12 @@ export async function createUser(
   db: SqlDriver,
   input: { username: string; password: string; fullName?: string; roleId: string; actorId?: string; now?: Date },
 ): Promise<CreateUserResult> {
+  /* Nobody is signed in when the shop's first administrator is made, so that
+     one call alone may come without an actor. Every later one is somebody
+     adding staff, and needs the right to. */
+  const [anyone] = await q(db).select({ id: schema.users.id }).from(schema.users).limit(1)
+  if (anyone || input.actorId !== undefined) await requirePermission(db, input.actorId, 'user', 'create')
+
   const username = input.username.trim().toLowerCase()
   const weak = passwordProblem(input.password)
   if (weak) return { ok: false, code: 'WEAK_PASSWORD', reason: weak }
@@ -327,6 +333,7 @@ export async function setUserActive(
   db: SqlDriver,
   input: { userId: string; isActive: boolean; actorId: string; now?: Date },
 ): Promise<void> {
+  await requirePermission(db, input.actorId, 'user', 'write')
   const nowIso = (input.now ?? new Date()).toISOString()
   await db.transaction(async (tx) => {
     await q(tx).update(schema.users)
@@ -417,6 +424,7 @@ export async function updateUser(
   db: SqlDriver,
   input: { userId: string; fullName?: string | null; roleId?: string; actorId: string; now?: Date },
 ): Promise<void> {
+  await requirePermission(db, input.actorId, 'user', 'write')
   const [before] = await q(db)
     .select({ fullName: schema.users.fullName, roleId: schema.users.roleId })
     .from(schema.users)
@@ -447,6 +455,7 @@ export async function resetPassword(
   db: SqlDriver,
   input: { userId: string; newPassword: string; actorId: string; now?: Date },
 ): Promise<ChangePasswordResult> {
+  await requirePermission(db, input.actorId, 'user', 'write')
   const weak = passwordProblem(input.newPassword)
   if (weak) return { ok: false, code: 'WEAK_PASSWORD', reason: weak }
 
@@ -485,6 +494,7 @@ export async function unlockUser(
   db: SqlDriver,
   input: { userId: string; actorId: string; now?: Date },
 ): Promise<void> {
+  await requirePermission(db, input.actorId, 'user', 'write')
   const nowIso = (input.now ?? new Date()).toISOString()
   await db.transaction(async (tx) => {
     await q(tx).update(schema.users)

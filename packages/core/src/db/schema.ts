@@ -177,6 +177,8 @@ export const products = sqliteTable('products', {
   reorderQty: qtyCol('reorder_qty'),
   parentProductId: text('parent_product_id'),
   variantLabel: text('variant_label'),
+  /** GST compensation cess, ad valorem, in basis points (063). */
+  cessRateBp: integer('cess_rate_bp').default(0).notNull(),
 }, (table) => [
   index('idx_products_parent').on(table.parentProductId),
   index('idx_products_reorder').on(table.reorderLevel),
@@ -214,6 +216,8 @@ export const priceLists = sqliteTable('price_lists', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
+  /** Whether the rates on this list already include GST (063). */
+  ratesIncludeTax: integer('rates_include_tax').default(1).notNull(),
   /* Vestigial since 043, which moved the answer to a `default_price_list_id`
      setting because an index cannot express a rule about a shop. Nothing reads
      or writes it; it is still here only because dropping a column means
@@ -427,6 +431,10 @@ export const billItems = sqliteTable('bill_items', {
   returnedQty: qtyCol('returned_qty').default(QTY_ZERO).notNull(),
   discountBlocked: integer('discount_blocked').default(0).notNull(),
   loyaltyBlocked: integer('loyalty_blocked').default(0).notNull(),
+  cessRateBp: integer('cess_rate_bp').default(0).notNull(),
+  cessAmount: money('cess_amount').default(ZERO).notNull(),
+  /** Whether `rate` was quoted with GST in it (063). `line_total` always is. */
+  rateIncludesTax: integer('rate_includes_tax').default(1).notNull(),
 }, (table) => [
   index('idx_bill_items_product').on(table.productId),
   index('idx_bill_items_bill').on(table.billId),
@@ -486,6 +494,7 @@ export const salesReturnItems = sqliteTable('sales_return_items', {
   igstAmount: money('igst_amount').default(ZERO).notNull(),
   hsnCode: text('hsn_code'),
   taxRateBp: integer('tax_rate_bp').default(0).notNull(),
+  cessAmount: money('cess_amount').default(ZERO).notNull(),
 }, (table) => [
   index('idx_sales_return_items_return').on(table.returnId),
   index('idx_sales_return_items_bill_item').on(table.billItemId),
@@ -546,6 +555,14 @@ export const stockEntries = sqliteTable('stock_entries', {
   originId: text('origin_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+  /** The supplier's own bill, as printed (065). */
+  supplierInvoiceNo: text('supplier_invoice_no'),
+  supplierInvoiceDate: text('supplier_invoice_date'),
+  roundOff: money('round_off').default(ZERO).notNull(),
+  /** What the supplier's bill comes to, and what is owed for it. */
+  invoiceTotal: money('invoice_total').default(ZERO).notNull(),
+  /** 1 when the GST on it went to the shop's input credit; 0 when it went into the cost. */
+  inputTaxClaimed: integer('input_tax_claimed').default(1).notNull(),
 }, (table) => [
   foreignKey(() => ({
     columns: [table.amendedFrom],
@@ -561,6 +578,13 @@ export const stockEntryItems = sqliteTable('stock_entry_items', {
   productId: text('product_id').notNull().references(() => products.id),
   qty: qtyCol().notNull(),
   unitCost: money('unit_cost').default(ZERO).notNull(),
+  /* The supplier's GST on the line's cost (065). The cost stays before tax. */
+  taxRateBp: integer('tax_rate_bp').default(0).notNull(),
+  cessRateBp: integer('cess_rate_bp').default(0).notNull(),
+  cgstAmount: money('cgst_amount').default(ZERO).notNull(),
+  sgstAmount: money('sgst_amount').default(ZERO).notNull(),
+  igstAmount: money('igst_amount').default(ZERO).notNull(),
+  cessAmount: money('cess_amount').default(ZERO).notNull(),
 }, (table) => [
   index('idx_stock_entry_items_entry').on(table.entryId),
 ])
@@ -620,6 +644,29 @@ export const batchMovements = sqliteTable('batch_movements', {
   index('idx_batch_movements_product').on(table.productId),
   index('idx_batch_movements_voucher').on(table.voucherType, table.voucherId),
   index('idx_batch_movements_line').on(table.voucherLineId),
+])
+
+/**
+ * The general ledger (064): double entry, append-only, posted with each
+ * document. Accounts are named in `domain/ledger.ts`.
+ */
+export const glEntries = sqliteTable('gl_entries', {
+  id: text().primaryKey().notNull(),
+  postingDate: text('posting_date').notNull(),
+  account: text().notNull(),
+  partyType: text('party_type'),
+  partyId: text('party_id'),
+  debit: money().default(ZERO).notNull(),
+  credit: money().default(ZERO).notNull(),
+  voucherType: text('voucher_type').notNull(),
+  voucherId: text('voucher_id').notNull(),
+  isReversal: integer('is_reversal').default(0).notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_gl_entries_account_date').on(table.account, table.postingDate),
+  index('idx_gl_entries_voucher').on(table.voucherType, table.voucherId),
+  index('idx_gl_entries_party').on(table.partyType, table.partyId),
+  index('idx_gl_entries_date').on(table.postingDate),
 ])
 
 /** Which batch a stock-entry line is for, until the entry is posted (062). */
@@ -855,6 +902,9 @@ export const documentItems = sqliteTable('document_items', {
   sgstAmount: money('sgst_amount').default(ZERO).notNull(),
   igstAmount: money('igst_amount').default(ZERO).notNull(),
   fulfilledQty: qtyCol('fulfilled_qty').default(QTY_ZERO).notNull(),
+  cessRateBp: integer('cess_rate_bp').default(0).notNull(),
+  cessAmount: money('cess_amount').default(ZERO).notNull(),
+  rateIncludesTax: integer('rate_includes_tax').default(1).notNull(),
 }, (table) => [
   index('idx_document_items_doc').on(table.documentId),
 ])

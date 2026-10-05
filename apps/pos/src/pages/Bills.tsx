@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Quantity, Permissions, listBills, countBills, loadBillDetail, cancelBill, amendBill, listReturns,
-  cancelReturn, type BillListItem, type BillDetail, type ReturnListItem, type BillStatusFilter,
+  cancelReturn, periodClosedMessage, type BillListItem, type BillDetail, type ReturnListItem, type BillStatusFilter,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { goTo } from '../core/nav'
@@ -155,7 +155,12 @@ export default function Bills() {
 
   async function undoReturn(returnId: string, docNo: string) {
     if (!(await ask(`Cancel ${docNo}? The goods go back out of stock and the refund is taken back.`))) return
-    await cancelReturn(db, { returnId, actorId: user.id })
+    setError(null)
+    const result = await cancelReturn(db, { returnId, actorId: user.id })
+    if (!result.ok) {
+      setError(periodClosedMessage(result.closedThrough))
+      return
+    }
     if (open) {
       setOpen(await loadBillDetail(db, open.id))
       setReturns(await listReturns(db, open.id))
@@ -226,7 +231,9 @@ export default function Bills() {
       setError(
         result.code === 'HAS_RETURNS'
           ? `This bill has ${result.returnCount} return(s) against it. Cancel those first.`
-          : `Payments have been recorded against this bill. Cancel those first.`,
+          : result.code === 'PERIOD_CLOSED'
+            ? periodClosedMessage(result.closedThrough)
+            : `Payments have been recorded against this bill. Cancel those first.`,
       )
       return
     }

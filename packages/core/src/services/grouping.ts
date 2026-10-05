@@ -4,6 +4,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * Putting items into groups, and tying versions of the same thing together.
@@ -70,6 +71,7 @@ export async function createCategory(
   ctx: AuditContext & { actorId: string },
   input: { name: string; parentId?: string | null },
 ): Promise<CategoryResult> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
 
@@ -105,6 +107,7 @@ export async function renameCategory(
   ctx: AuditContext & { actorId: string },
   input: { categoryId: string; name: string; parentId?: string | null },
 ): Promise<CategoryResult> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
 
@@ -162,6 +165,7 @@ export async function removeCategory(
   ctx: AuditContext & { actorId: string },
   categoryId: string,
 ): Promise<void> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
     await q(tx).update(schema.products)
@@ -183,6 +187,7 @@ export async function setProductCategory(
   productId: string,
   categoryId: string | null,
 ): Promise<void> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const [before] = await q(db)
     .select({ categoryId: schema.products.categoryId })
     .from(schema.products)
@@ -228,6 +233,7 @@ export async function setVariantOf(
   ctx: AuditContext & { actorId: string },
   input: { productId: string; parentProductId: string | null; variantLabel?: string | null },
 ): Promise<VariantResult> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   if (input.parentProductId === input.productId) return { ok: false, code: 'SELF' }
 
   if (input.parentProductId) {

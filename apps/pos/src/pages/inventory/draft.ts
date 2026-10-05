@@ -33,6 +33,8 @@ export interface Draft {
   ladder: LadderRow[]
   hsnCode: string
   taxPercent: string
+  /** GST compensation cess, as a percentage. Blank is none. */
+  cessPercent: string
   baseRate: string
   /** The printed price on the packet. Blank when there is none. */
   mrp: string
@@ -61,7 +63,7 @@ export interface Draft {
 
 export const BLANK: Draft = {
   id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
-  categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', taxPercent: '12',
+  categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', taxPercent: '12', cessPercent: '',
   baseRate: '', mrp: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   returnBlocked: false, stockTracked: true,
   reorderLevel: '', reorderQty: '',

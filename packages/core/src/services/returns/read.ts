@@ -33,6 +33,7 @@ export interface ReturnDetailItem {
   cgst: Money
   sgst: Money
   igst: Money
+  cess: Money
   hsnCode: string | null
   taxRateBp: number
 }
@@ -122,6 +123,7 @@ export async function loadReturnDetail(db: SqlDriver, returnId: string): Promise
       cgstAmount: schema.salesReturnItems.cgstAmount,
       sgstAmount: schema.salesReturnItems.sgstAmount,
       igstAmount: schema.salesReturnItems.igstAmount,
+      cessAmount: schema.salesReturnItems.cessAmount,
       hsnCode: schema.salesReturnItems.hsnCode,
       taxRateBp: schema.salesReturnItems.taxRateBp,
     })
@@ -153,6 +155,7 @@ export async function loadReturnDetail(db: SqlDriver, returnId: string): Promise
       cgst: r.cgstAmount,
       sgst: r.sgstAmount,
       igst: r.igstAmount,
+      cess: r.cessAmount,
       hsnCode: r.hsnCode,
       taxRateBp: r.taxRateBp,
     })),

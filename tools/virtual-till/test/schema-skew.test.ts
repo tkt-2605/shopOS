@@ -26,6 +26,20 @@ import { host, joiner, stopAll, writeBill, countOf } from './bench.js'
 
 afterEach(stopAll)
 
+/**
+ * A peer one additive migration away from this build.
+ *
+ * Behind when the newest migration is additive, so a till that has not taken
+ * it yet can still sync. Ahead when the newest one is breaking (063): then a
+ * till one behind is on the far side of it and is refused, which is the next
+ * describe's case, and the additive difference that exists is a peer that has
+ * taken one more additive migration than this build. Its floor is still this
+ * build's version, so it accepts us and we accept it.
+ */
+const ADDITIVE_SKEW = EXPECTED_SCHEMA_VERSION - 1 >= MIN_PEER_SCHEMA_VERSION
+  ? { schemaVersion: EXPECTED_SCHEMA_VERSION - 1, minPeerSchema: MIN_PEER_SCHEMA_VERSION }
+  : { schemaVersion: EXPECTED_SCHEMA_VERSION + 1, minPeerSchema: MIN_PEER_SCHEMA_VERSION }
+
 /** The far side, answering `hello` as a till on a different build. */
 async function pretending(
   back: Awaited<ReturnType<typeof joiner>>,
@@ -54,16 +68,13 @@ async function pretending(
 }
 
 describe('a version difference that is only additive', () => {
-  it('accepts a peer one migration behind', async () => {
+  it('accepts a peer one additive migration away', async () => {
     const front = await host()
     const back = await joiner()
     await back.pairWith(front)
     await back.sync(front)
 
-    const round = await pretending(back, {
-      schemaVersion: EXPECTED_SCHEMA_VERSION - 1,
-      minPeerSchema: MIN_PEER_SCHEMA_VERSION,
-    })
+    const round = await pretending(back, ADDITIVE_SKEW)
 
     expect(round.ok).toBe(true)
   })
@@ -78,10 +89,7 @@ describe('a version difference that is only additive', () => {
 
     await front.as(() => writeBill(front.db, front.registerId!, { docNo: 'SKEW-1' }))
 
-    const round = await pretending(back, {
-      schemaVersion: EXPECTED_SCHEMA_VERSION - 1,
-      minPeerSchema: MIN_PEER_SCHEMA_VERSION,
-    })
+    const round = await pretending(back, ADDITIVE_SKEW)
 
     expect(round.ok).toBe(true)
     expect(await countOf(back.db, 'bills')).toBeGreaterThan(0)
@@ -165,10 +173,7 @@ describe('what the newer till can say about the older one', () => {
 
     await front.as(() => writeBill(front.db, front.registerId!, { docNo: 'SKEW-2' }))
 
-    const round = await pretending(back, {
-      schemaVersion: EXPECTED_SCHEMA_VERSION - 1,
-      minPeerSchema: MIN_PEER_SCHEMA_VERSION,
-    })
+    const round = await pretending(back, ADDITIVE_SKEW)
 
     expect(round.ok).toBe(true)
     if (round.ok) {

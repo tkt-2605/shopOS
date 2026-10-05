@@ -9,6 +9,13 @@ fixture in it is dummy data** -- the owner confirmed on 16 September 2026 that
 it can be erased or reshaped freely. See the note under "What the fixture
 changed"; it is not the constraint earlier rows of this file treated it as.
 
+**4–6 October: the architecture review's twelve fixes** -- two defects, the
+books closed through a date, permissions in the services, cess and rates
+before tax, GSTR-1 in sections, the general ledger, supplier bills and
+payables, core published by area. Schema at **65**. See `review-fixes.md`,
+which is the record of them and what is left; the rest of this file is as it
+stood before.
+
 State of the tree: **2,207 TypeScript tests** passing and **none skipped**,
 across 187 files (27 September), **122 Rust tests** passing with a clean build
 when last run, typecheck clean across core, app, the portal and both bench

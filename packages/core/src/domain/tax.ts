@@ -1,4 +1,4 @@
-import { type Money, paise, sub, ZERO } from '../money.js'
+import { type Money, add, paise, sub, ZERO } from '../money.js'
 
 /**
  * Indian GST on tax-inclusive retail prices: the shelf price includes tax, so the
@@ -32,6 +32,14 @@ import { type Money, paise, sub, ZERO } from '../money.js'
  * taxable value for a given shelf price can differ by a paisa between an
  * intra-state and an inter-state sale. That is correct: the alternative is
  * making IGST wrong to match a constraint that does not apply to it.
+ *
+ * ## Cess
+ *
+ * GST compensation cess is charged on the same taxable value as GST, at its own
+ * rate, and filed in its own column. On an inclusive price it is backed out
+ * together with GST -- the shelf price includes both -- and then worked out on
+ * the taxable value exactly as each GST half is. With a cess of zero every
+ * figure is what it was before cess existed.
  */
 
 export const BP_SCALE = 10_000
@@ -40,34 +48,58 @@ export type SupplyType = 'intra_state' | 'inter_state'
 
 export interface TaxBreakdown {
   taxableValue: Money
+  /** GST and cess together: what the line carries on top of its taxable value. */
   taxTotal: Money
   cgst: Money
   sgst: Money
   igst: Money
+  cess: Money
   rateBp: number
+  cessRateBp: number
 }
 
-export function splitTax(lineTotal: Money, rateBp: number, supply: SupplyType = 'intra_state'): TaxBreakdown {
+export function splitTax(
+  lineTotal: Money,
+  rateBp: number,
+  supply: SupplyType = 'intra_state',
+  cessRateBp = 0,
+): TaxBreakdown {
   assertRate(rateBp)
+  assertRate(cessRateBp)
 
-  if (rateBp === 0 || lineTotal === 0) {
-    return { taxableValue: lineTotal, taxTotal: ZERO, cgst: ZERO, sgst: ZERO, igst: ZERO, rateBp }
+  if ((rateBp === 0 && cessRateBp === 0) || lineTotal === 0) {
+    return untaxed(lineTotal, rateBp, cessRateBp)
   }
 
-  const backDerived = paise(Math.round((lineTotal * BP_SCALE) / (BP_SCALE + rateBp)))
+  const backDerived = paise(Math.round((lineTotal * BP_SCALE) / (BP_SCALE + rateBp + cessRateBp)))
+  const cess = cessOn(backDerived, cessRateBp)
 
   if (supply === 'inter_state') {
-    const taxTotal = sub(lineTotal, backDerived)
-    return { taxableValue: backDerived, taxTotal, cgst: ZERO, sgst: ZERO, igst: taxTotal, rateBp }
+    const igst = sub(sub(lineTotal, backDerived), cess)
+    return {
+      taxableValue: backDerived, taxTotal: add(igst, cess),
+      cgst: ZERO, sgst: ZERO, igst, cess, rateBp, cessRateBp,
+    }
   }
 
   /* Each half from the taxable value at half the rate, then the taxable value
      re-derived from what the two halves actually came to. The order matters:
      halving a rounded total is what produced 1821/1822. */
   const half = halfOf(backDerived, rateBp)
-  const taxTotal = paise(half * 2)
+  const taxTotal = add(paise(half * 2), cess)
   const taxableValue = sub(lineTotal, taxTotal)
-  return { taxableValue, taxTotal, cgst: half, sgst: half, igst: ZERO, rateBp }
+  return { taxableValue, taxTotal, cgst: half, sgst: half, igst: ZERO, cess, rateBp, cessRateBp }
+}
+
+function untaxed(value: Money, rateBp: number, cessRateBp: number): TaxBreakdown {
+  return {
+    taxableValue: value, taxTotal: ZERO, cgst: ZERO, sgst: ZERO, igst: ZERO, cess: ZERO, rateBp, cessRateBp,
+  }
+}
+
+/** Cess on a taxable value, rounded the way each GST half is. */
+function cessOn(taxableValue: Money, cessRateBp: number): Money {
+  return paise(Math.round((taxableValue * cessRateBp) / BP_SCALE))
 }
 
 /**
@@ -82,22 +114,34 @@ function halfOf(taxableValue: Money, rateBp: number): Money {
 }
 
 /** For a tax-exclusive rate, where tax is added on top. */
-export function addTax(taxableValue: Money, rateBp: number, supply: SupplyType = 'intra_state'): TaxBreakdown {
+export function addTax(
+  taxableValue: Money,
+  rateBp: number,
+  supply: SupplyType = 'intra_state',
+  cessRateBp = 0,
+): TaxBreakdown {
   assertRate(rateBp)
+  assertRate(cessRateBp)
 
-  if (rateBp === 0 || taxableValue === 0) {
-    return { taxableValue, taxTotal: ZERO, cgst: ZERO, sgst: ZERO, igst: ZERO, rateBp }
+  if ((rateBp === 0 && cessRateBp === 0) || taxableValue === 0) {
+    return untaxed(taxableValue, rateBp, cessRateBp)
   }
 
+  const cess = cessOn(taxableValue, cessRateBp)
+
   if (supply === 'inter_state') {
-    const taxTotal = paise(Math.round((taxableValue * rateBp) / BP_SCALE))
-    return { taxableValue, taxTotal, cgst: ZERO, sgst: ZERO, igst: taxTotal, rateBp }
+    const igst = paise(Math.round((taxableValue * rateBp) / BP_SCALE))
+    return {
+      taxableValue, taxTotal: add(igst, cess), cgst: ZERO, sgst: ZERO, igst, cess, rateBp, cessRateBp,
+    }
   }
 
   /* The easier of the two: `taxableValue` is given, so nothing has to absorb a
      leftover paisa — the total is simply whatever the two equal halves add to. */
   const half = halfOf(taxableValue, rateBp)
-  return { taxableValue, taxTotal: paise(half * 2), cgst: half, sgst: half, igst: ZERO, rateBp }
+  return {
+    taxableValue, taxTotal: add(paise(half * 2), cess), cgst: half, sgst: half, igst: ZERO, cess, rateBp, cessRateBp,
+  }
 }
 
 export function supplyTypeFor(supplierStateCode: string | null, customerStateCode: string | null): SupplyType {

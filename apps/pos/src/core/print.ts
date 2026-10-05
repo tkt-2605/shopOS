@@ -96,6 +96,8 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
     cgst: i.cgst,
     sgst: i.sgst,
     igst: i.igst,
+    cess: i.cess,
+    rateIncludesTax: i.rateIncludesTax,
   }))
 
   const doc: ReceiptDoc = {
@@ -114,6 +116,7 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
     cgst: bill.items.reduce((s, i) => s + i.cgst, 0) as never,
     sgst: bill.items.reduce((s, i) => s + i.sgst, 0) as never,
     igst: bill.items.reduce((s, i) => s + i.igst, 0) as never,
+    cess: bill.items.reduce((s, i) => s + i.cess, 0) as never,
     roundOff: bill.roundOff,
     grandTotal: bill.grandTotal,
     payments: bill.payments.map((p) => ({ method: p.method, amount: p.amount })),

@@ -3,6 +3,7 @@ import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { derivedId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * The barcodes an item answers to.
@@ -60,6 +61,7 @@ export async function setBarcodes(
   productId: string,
   inputs: BarcodeInput[],
 ): Promise<SetBarcodesResult> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const cleaned: BarcodeInput[] = []
   const seen = new Set<string>()
   for (const input of inputs) {

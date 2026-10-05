@@ -2,6 +2,7 @@ import type { Money } from '../../money.js'
 import type { Qty } from '../../quantity.js'
 import type { PriceSource } from '../../domain/pricing.js'
 import type { StockShortfall } from '../stock.js'
+import type { PeriodClosed } from '../books.js'
 
 /*
  * What a bill is asked for with, and what it answers.
@@ -31,8 +32,15 @@ export interface BillLineInput {
    * re-runs the whole resolution chain, so a bill parked past a price list's
    * `valid_to` silently changes what the customer was quoted.
    */
-  resolved?: { rate: Money; source: PriceSource; sourceId: string | null } | null
+  resolved?: { rate: Money; source: PriceSource; sourceId: string | null; includesTax?: boolean } | null
   discount?: Money
+  /**
+   * Whether a typed rate has the tax in it. Absent is yes. The counter sends
+   * the mode of the line the cashier retyped, so a wholesale line stays a
+   * before-tax line when its rate is changed. A resolved rate carries its own
+   * answer in `resolved.includesTax`.
+   */
+  rateIncludesTax?: boolean
 }
 
 export interface CreateBillInput {
@@ -145,5 +153,6 @@ export type SubmitBillResult =
 
 export type CancelBillResult =
   | { ok: true; billId: string }
+  | PeriodClosed
   | { ok: false; code: 'HAS_RETURNS'; returnCount: number }
   | { ok: false; code: 'HAS_PAYMENTS'; paymentCount: number }

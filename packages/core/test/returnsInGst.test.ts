@@ -46,6 +46,7 @@ async function sell(
     billId: draft.billId,
     payments: [{ method: 'cash', amount: draft.grandTotal }],
     actorId: fx.adminId,
+    ...(opts.date ? { now: new Date(`${opts.date}T12:00:00`) } : {}),
   })
   if (!done.ok) throw new Error(`submit failed: ${done.code}`)
 

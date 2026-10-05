@@ -1,6 +1,6 @@
 import { type Money, ZERO, paise, add, sub, allocate } from '../money.js'
 import { type Qty, QTY_SCALE } from '../quantity.js'
-import { splitTax, type SupplyType, type TaxBreakdown } from './tax.js'
+import { addTax, splitTax, type SupplyType, type TaxBreakdown } from './tax.js'
 
 /**
  * What a bill adds up to.
@@ -18,6 +18,18 @@ export interface TotalsLine {
   /** Taken off this line before any share of the bill-level discount. */
   discount?: Money
   taxRateBp: number
+  /** GST compensation cess on the line, in basis points. Absent is none. */
+  cessRateBp?: number
+  /**
+   * Whether `rate` already has the tax in it. Absent is yes: a shelf price.
+   *
+   * No is a rate quoted before tax, from a wholesale list. Its gross, its own
+   * discount and its share of the bill's discount are then all before tax too,
+   * and the tax goes on top of what is left. Per line, not per bill, because a
+   * cart can hold lines priced from two lists and each rate has to be read the
+   * way it was quoted.
+   */
+  rateIncludesTax?: boolean
   /**
    * The line sells on too thin a margin to carry a discount.
    *
@@ -29,12 +41,13 @@ export interface TotalsLine {
 }
 
 export interface LineTotals {
+  /** Rate times quantity, before tax when the rate was quoted before tax. */
   gross: Money
   /** Gross less this line's own discount. */
   lineTotal: Money
   /** This line's share of the bill-level discount. */
   billDiscountShare: Money
-  /** What the customer actually pays for the line, tax included. */
+  /** What the customer actually pays for the line, tax included. Always. */
   net: Money
   tax: TaxBreakdown
 }
@@ -47,7 +60,15 @@ export interface ComputedTotals {
   /** The discount actually applied, which is never more than the discountable part. */
   discount: Money
   taxableTotal: Money
+  /** GST and cess together. */
   taxTotal: Money
+  /** The cess within `taxTotal`, for the line that shows it. */
+  cessTotal: Money
+  /**
+   * The tax added on top of rates quoted before tax -- the part of `taxTotal`
+   * that is not already inside `subtotal`. Zero on a bill of shelf prices.
+   */
+  taxAdded: Money
   /** What the lines add up to, before the rupee is tidied. */
   payable: Money
   /**
@@ -130,15 +151,28 @@ export function computeTotals(
 
   let taxableTotal: Money = ZERO
   let taxTotal: Money = ZERO
+  let cessTotal: Money = ZERO
+  let taxAdded: Money = ZERO
   let payable: Money = ZERO
 
   const detailed = lineTotals.map((l, i): LineTotals => {
+    const line = lines[i]!
     const share = shares[i] ?? ZERO
-    const net = sub(l.lineTotal, share)
-    const tax = splitTax(net, lines[i]!.taxRateBp, supply)
+    const afterDiscount = sub(l.lineTotal, share)
+    /* A shelf price has the tax inside it, so the tax is backed out of what is
+       paid. A rate quoted before tax is the taxable value, and the tax goes on
+       top -- after every discount, because tax is charged on what was actually
+       charged. Either way `net` is what the customer pays, tax included. */
+    const inclusive = line.rateIncludesTax !== false
+    const tax = inclusive
+      ? splitTax(afterDiscount, line.taxRateBp, supply, line.cessRateBp ?? 0)
+      : addTax(afterDiscount, line.taxRateBp, supply, line.cessRateBp ?? 0)
+    const net = inclusive ? afterDiscount : add(afterDiscount, tax.taxTotal)
 
     taxableTotal = add(taxableTotal, tax.taxableValue)
     taxTotal = add(taxTotal, tax.taxTotal)
+    cessTotal = add(cessTotal, tax.cess)
+    if (!inclusive) taxAdded = add(taxAdded, tax.taxTotal)
     payable = add(payable, net)
 
     return { gross: l.gross, lineTotal: l.lineTotal, billDiscountShare: share, net, tax }
@@ -151,7 +185,7 @@ export function computeTotals(
 
   return {
     lines: detailed,
-    subtotal, discountableSubtotal, discount, taxableTotal, taxTotal,
+    subtotal, discountableSubtotal, discount, taxableTotal, taxTotal, cessTotal, taxAdded,
     payable, roundOff, grandTotal: add(payable, roundOff),
   }
 }

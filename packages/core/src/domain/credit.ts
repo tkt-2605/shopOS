@@ -1,6 +1,20 @@
 import { type Money, ZERO, add, sub, paise } from '../money.js'
 
 /**
+ * The marker a second opening advance is spotted by.
+ *
+ * In `reference` rather than parsed back out of the document number. The
+ * number is `MARK + registerPrefix + '/' + fy + '/' + seq` (`numbering.ts`),
+ * so a `LIKE 'OA%'` misses it by exactly the one leading letter -- which is
+ * how the first version of this shipped a guard that never fired. A column
+ * this code sets and reads, compared with `=`, cannot drift with a format.
+ *
+ * Here rather than beside the khata, because the general ledger reads it too:
+ * an opening advance is money held from the old book, not money taken today.
+ */
+export const OPENING_ADVANCE_REF = 'opening-balance'
+
+/**
  * Outstanding is derived from documents, never held in a mutable column. The
  * previous system kept both a `customers.balance` field and a `balance_after`
  * running total, and shipped an RPC whose job was to resync them when they

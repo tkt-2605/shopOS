@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Money, searchCustomers, recordOpeningBalance, type CustomerListItem } from '@shopos/core'
+import { Money, searchCustomers, recordOpeningBalance, periodClosedMessage, type CustomerListItem } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { Modal, Field, Alert } from '../../ui/components'
 import { usePickList, Results } from '../../ui/PickList'
@@ -65,7 +65,9 @@ export function OpeningBalance({
       setError(
         result.code === 'ALREADY_SET'
           ? `${chosen.name} already has an opening balance (${result.docNo}). Cancel that first from the Bills screen.`
-          : 'Enter an amount. Put a minus in front of it if the shop is holding their money.',
+          : result.code === 'PERIOD_CLOSED'
+            ? periodClosedMessage(result.closedThrough)
+            : 'Enter an amount. Put a minus in front of it if the shop is holding their money.',
       )
       return
     }

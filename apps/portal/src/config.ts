@@ -1,6 +1,7 @@
 import { openDatabase } from '@shopos/core/node'
 import type { PortalDeps } from './http.js'
 import { migratePortal } from './store.js'
+import { AddressThrottle } from './auth/throttle.js'
 import { loadSigningKey } from './keys.js'
 import { firstThatWorks, type OtpChannel } from './otp/channel.js'
 import { telegramGateway } from './otp/telegram.js'
@@ -66,6 +67,7 @@ export async function fromEnvironment(
     kid: env['SHOPOS_LICENCE_KID'] ?? 'shopos-dev',
     adminToken: env['SHOPOS_ADMIN_TOKEN'] ?? null,
     ...(exposeCodes ? { exposeCodes: true } : {}),
+    throttle: new AddressThrottle(),
     close: () => db.close(),
   }
 }

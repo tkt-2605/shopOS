@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import {
   Quantity, submitDocument, cancelDocument, quotationToSalesOrder, receivePurchaseOrder,
-  documentToCart, type DocumentDetail,
+  documentToCart, periodClosedMessage, type DocumentDetail,
 } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { printDocumentSheet } from '../../core/printHtml'
@@ -102,6 +102,7 @@ export function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onC
         saleUnit: l.saleUnit,
         qty: Quantity.toUnits(l.qty),
         rate: l.rate,
+        includesTax: l.includesTax,
       })),
     })
   }
@@ -114,6 +115,7 @@ export function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onC
       onError(
         result.code === 'NOTHING_LEFT' ? 'Everything on that order has already been received.'
         : result.code === 'NOT_SUBMITTED' ? 'Issue the order first.'
+        : result.code === 'PERIOD_CLOSED' ? periodClosedMessage(result.closedThrough)
         : 'Those goods could not be received.',
       )
       return

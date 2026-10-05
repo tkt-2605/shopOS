@@ -2,6 +2,7 @@ import type { TaxScheme } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { Card, Alert } from '../../ui/components'
 import { Choice, Group, Intro } from './parts'
+import { BooksCard } from './BooksCard'
 
 /** For the sentence that says what the till is assuming while nobody has said. */
 const SCHEME_LABEL: Record<TaxScheme, string> = {
@@ -72,6 +73,8 @@ export function TaxSection() {
           />
         </Group>
       </Card>
+
+      <BooksCard />
 
       <Card title="At the counter">
         <Group

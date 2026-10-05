@@ -7,6 +7,8 @@ import { type Money, ZERO, add, sub, paise } from '../money.js'
 import { DRAFT, SUBMITTED, assertCanApply, parseDocStatus } from '../integrity/docstatus.js'
 import { writeAudit } from '../integrity/audit.js'
 import { recheckDocStatus } from '../integrity/transition.js'
+import { requirePermission } from '../integrity/permissions.js'
+import { postVoucherGl } from './ledger.js'
 
 export type CashDirection = 'in' | 'out'
 export type TenderMethod = 'cash' | 'upi' | 'card' | 'credit' | 'loyalty' | 'adjustment'
@@ -23,15 +25,36 @@ export interface CashMovementInput {
   now?: Date
 }
 
+export class CashSessionClosedError extends Error {
+  constructor(readonly sessionId: string) {
+    super(`cash session ${sessionId} is closed; money cannot be posted into it`)
+    this.name = 'CashSessionClosedError'
+  }
+}
+
 /**
  * Every tender is recorded, but only cash moves the drawer — a UPI sale is logged
  * for reporting and deliberately excluded from the closing count.
  */
-export async function postCashMovement(tx: SqlDriver, input: CashMovementInput): Promise<void> {
-  if (input.amount <= 0) return
+export async function postCashMovement(tx: SqlDriver, input: CashMovementInput): Promise<string | null> {
+  if (input.amount <= 0) return null
 
+  /* A drawer that has been counted is finished: money posted into it is in no
+     count anybody will make. Every caller is meant to have found the open
+     session already, so arriving here with a closed one is a bug, and it throws
+     rather than quietly losing the money between two counts. A trigger would be
+     the wrong place: another till's movements arrive by sync after it has
+     closed its own drawer, and they must still land. */
+  const [session] = await q(tx)
+    .select({ closedAt: schema.cashSessions.closedAt })
+    .from(schema.cashSessions)
+    .where(eq(schema.cashSessions.id, input.sessionId))
+  if (!session) throw new Error(`unknown cash session: ${input.sessionId}`)
+  if (session.closedAt !== null) throw new CashSessionClosedError(input.sessionId)
+
+  const id = newId()
   await q(tx).insert(schema.cashMovements).values({
-    id: newId(),
+    id,
     sessionId: input.sessionId,
     direction: input.direction,
     amount: input.amount,
@@ -42,6 +65,7 @@ export async function postCashMovement(tx: SqlDriver, input: CashMovementInput):
     createdBy: input.userId ?? null,
     createdAt: (input.now ?? new Date()).toISOString(),
   })
+  return id
 }
 
 export async function openSessionFor(db: SqlDriver, registerId: string): Promise<string | null> {
@@ -66,6 +90,7 @@ export async function getOrOpenSession(
   db: SqlDriver,
   input: OpenSessionInput,
 ): Promise<{ sessionId: string; opened: boolean }> {
+  await requirePermission(db, input.userId, 'cash_session', 'create')
   const existing = await openSessionFor(db, input.registerId)
   if (existing) return { sessionId: existing, opened: false }
 
@@ -190,6 +215,7 @@ export async function closeSession(
   db: SqlDriver,
   input: { sessionId: string; actualCash: Money; userId: string; notes?: string; now?: Date },
 ): Promise<CloseSessionResult> {
+  await requirePermission(db, input.userId, 'cash_session', 'submit')
   const [session] = await q(db)
     .select({ docstatus: schema.cashSessions.docstatus })
     .from(schema.cashSessions)
@@ -215,6 +241,8 @@ export async function closeSession(
         updatedAt: now,
       })
       .where(eq(schema.cashSessions.id, input.sessionId))
+    // A drawer that counted over or short has its difference in the books.
+    await postVoucherGl(tx, 'cash_session', input.sessionId)
     await writeAudit(tx, { actorId: input.userId }, {
       entity: 'cash_sessions', entityId: input.sessionId, action: 'submit',
       docstatusFrom: DRAFT, docstatusTo: SUBMITTED,
@@ -343,6 +371,7 @@ export async function recordPayout(
   db: SqlDriver,
   input: { sessionId: string; amount: Money; reason: string | null; userId: string; now?: Date },
 ): Promise<PayoutResult> {
+  await requirePermission(db, input.userId, 'cash_session', 'write')
   if (!Number.isInteger(input.amount) || input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
   const now = input.now ?? new Date()
 
@@ -353,10 +382,11 @@ export async function recordPayout(
       .where(eq(schema.cashSessions.id, input.sessionId))
     if (!session || session.closedAt !== null) return { ok: false, code: 'SESSION_CLOSED' }
 
-    await postCashMovement(tx, {
+    const movementId = await postCashMovement(tx, {
       sessionId: input.sessionId, direction: 'out', amount: input.amount,
       sourceType: 'expense', reference: input.reason?.trim() || null, userId: input.userId, now,
     })
+    if (movementId) await postVoucherGl(tx, 'cash_payout', movementId)
     await writeAudit(tx, { actorId: input.userId }, {
       entity: 'cash_sessions', entityId: input.sessionId, action: 'update',
       after: { payout: input.amount, reason: input.reason?.trim() || null },

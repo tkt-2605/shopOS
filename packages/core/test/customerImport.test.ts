@@ -15,7 +15,9 @@ import { freshDb, makeCustomer, type Fixture } from './helpers.js'
  * accounts that owe different amounts.
  */
 
-const ctx = { actorId: 'owner' }
+/* The shop's own administrator, read when used: an actor is checked against
+   the roles now, so a made-up name would be refused. */
+const ctx = { get actorId(): string { return fx.adminId } }
 
 let fx: Fixture
 beforeEach(async () => { fx = await freshDb() })

@@ -63,6 +63,8 @@ export interface DraftLine {
   /** Which rule set this rate, and the row it came from. */
   priceSource: PriceSource
   priceSourceId: string | null
+  /** Whether `rate` was quoted with the tax in it (063). */
+  rateIncludesTax: boolean
 }
 
 export interface DraftDetail {
@@ -107,6 +109,7 @@ export async function loadDraft(db: SqlDriver, billId: string): Promise<DraftDet
       discount: schema.billItems.discount,
       priceSource: schema.billItems.priceSource,
       priceSourceId: schema.billItems.priceSourceId,
+      rateIncludesTax: schema.billItems.rateIncludesTax,
     })
     .from(schema.billItems)
     .where(eq(schema.billItems.billId, billId))
@@ -122,7 +125,9 @@ export async function loadDraft(db: SqlDriver, billId: string): Promise<DraftDet
        of words for it. A row written by a later build could hold another, and
        it is passed on rather than refused: the draft is the cashier's own cart,
        and a word this build does not recognise is not worth losing it over. */
-    lines: lines.map((l) => ({ ...l, priceSource: l.priceSource as PriceSource })),
+    lines: lines.map((l) => ({
+      ...l, priceSource: l.priceSource as PriceSource, rateIncludesTax: l.rateIncludesTax === 1,
+    })),
   }
 }
 

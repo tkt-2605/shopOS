@@ -46,7 +46,7 @@ const DEFAULT_FOOTER = 'Thank you. Goods once sold are not returnable without th
 
 /** Whether the document charged tax under any head at all. */
 function taxCharged(doc: ReceiptDoc): boolean {
-  return doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0
+  return doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0 || (doc.cess ?? 0) > 0
 }
 
 function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
@@ -121,6 +121,7 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
       if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
       if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
       if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
+      if ((doc.cess ?? 0) > 0) out.push(kv('Cess', fmtMoney(doc.cess ?? (0 as Money)), width))
       /* Signed, and shown with its sign: "Round off -0.40" says the shop gave
          forty paise up, which is a different sentence from "Round off 0.40". */
       if (doc.roundOff) out.push(kv('Round off', signed(doc.roundOff), width))
@@ -133,7 +134,7 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     case 'tax_summary': {
       // Deliberately not the same lines as `totals`: this one is the block a
       // shop turns on *instead*, having turned the tax lines off up there.
-      if (doc.cgst === 0 && doc.sgst === 0 && doc.igst === 0) return ''
+      if (doc.cgst === 0 && doc.sgst === 0 && doc.igst === 0 && (doc.cess ?? 0) === 0) return ''
       const out = [`${BOLD_ON}Tax${BOLD_OFF}${LF}`, kv('Taxable value', fmtMoney(doc.taxableTotal), width)]
 
       /* Rate by rate when the document knows its rates, because a bill carrying
@@ -142,7 +143,7 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
          nowhere to go in 42 columns, and a roll that runs to a second page is a
          roll the shop stops using. */
       for (const r of doc.rateSummary ?? []) {
-        const tax = (r.cgst + r.sgst + r.igst) as Money
+        const tax = (r.cgst + r.sgst + r.igst + (r.cess ?? 0)) as Money
         out.push(kv(`${formatRate(r.rateBp)} on ${fmtMoney(r.taxable)}`, fmtMoney(tax), width))
       }
 
@@ -152,6 +153,7 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
       if (doc.cgst > 0) out.push(kv('CGST', fmtMoney(doc.cgst), width))
       if (doc.sgst > 0) out.push(kv('SGST', fmtMoney(doc.sgst), width))
       if (doc.igst > 0) out.push(kv('IGST', fmtMoney(doc.igst), width))
+      if ((doc.cess ?? 0) > 0) out.push(kv('Cess', fmtMoney(doc.cess ?? (0 as Money)), width))
 
       out.push(rule('-', width))
       return out.join('')
@@ -219,7 +221,9 @@ function itemRows(index: number, item: ReceiptItem, width = WIDTH): string {
 
   if (item.batch) rows += `${' '.repeat(INDENT)}${cut(item.batch, width - INDENT)}${LF}`
 
-  if (item.mrp && item.mrp > item.rate) {
+  /* Only against a shelf price. A rate quoted before tax is not comparable with
+     an MRP that has the tax in it, and the "saving" would be the tax. */
+  if (item.mrp && item.mrp > item.rate && item.rateIncludesTax !== false) {
     /* The quantity is on the line. It used to be recovered by dividing the line
        total by the rate, which is a different number whenever the line carries a
        discount -- the saving was then understated by the discount, which is the

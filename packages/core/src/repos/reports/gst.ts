@@ -11,6 +11,8 @@ export interface TaxRateRow {
   cgst: Money
   sgst: Money
   igst: Money
+  /** GST compensation cess, which GSTR-1 files in its own column (063). */
+  cess: Money
 }
 
 /**
@@ -42,6 +44,7 @@ export async function taxByRate(db: SqlDriver, range: DateRange): Promise<TaxRat
       cgst: schema.billItems.cgstAmount,
       sgst: schema.billItems.sgstAmount,
       igst: schema.billItems.igstAmount,
+      cess: schema.billItems.cessAmount,
     })
     .from(schema.billItems)
     .innerJoin(schema.bills, eq(schema.bills.id, schema.billItems.billId))
@@ -54,6 +57,7 @@ export async function taxByRate(db: SqlDriver, range: DateRange): Promise<TaxRat
       cgst: negated(schema.salesReturnItems.cgstAmount),
       sgst: negated(schema.salesReturnItems.sgstAmount),
       igst: negated(schema.salesReturnItems.igstAmount),
+      cess: negated(schema.salesReturnItems.cessAmount),
     })
     .from(schema.salesReturnItems)
     .innerJoin(schema.salesReturns, eq(schema.salesReturns.id, schema.salesReturnItems.returnId))
@@ -69,6 +73,7 @@ export async function taxByRate(db: SqlDriver, range: DateRange): Promise<TaxRat
       cgst: money(lines.cgst),
       sgst: money(lines.sgst),
       igst: money(lines.igst),
+      cess: money(lines.cess),
     })
     .from(lines)
     .groupBy(lines.rate)
@@ -90,6 +95,7 @@ export interface GstLine {
   cgst: Money
   sgst: Money
   igst: Money
+  cess: Money
   total: Money
 }
 
@@ -102,7 +108,9 @@ export interface GstLine {
  * row, negative, carrying the invoice number it reverses. GSTR-1 has a table
  * for exactly this (9B) and it cannot be filled from an export that pretends
  * returns do not happen. Cancelled bills stay excluded rather than negated —
- * they were never filed, and there is nothing to reverse.
+ * they were never filed, and there is nothing to reverse. That holds because
+ * a bill cannot be cancelled once the books are closed through its date
+ * (`services/books.ts`); before that lock existed, it held only by luck.
  *
  * **The recipient comes off the bill, not off `customers`.** The GSTIN printed
  * on the invoice the customer holds is the one in `bills.customer_gstin`,
@@ -133,7 +141,7 @@ export async function gstLines(db: SqlDriver, range: DateRange): Promise<GstLine
     kind: string; doc_no: string; against_doc_no: string | null; posting_date: string
     customer_name: string | null; gstin: string | null; place_of_supply: string | null
     doc_id: string; round_off: number; rate: number
-    taxable: number; cgst: number; sgst: number; igst: number
+    taxable: number; cgst: number; sgst: number; igst: number; cess: number
   }>(
     `SELECT 'invoice' AS kind, b.doc_no AS doc_no, NULL AS against_doc_no,
             b.posting_date AS posting_date,
@@ -144,7 +152,8 @@ export async function gstLines(db: SqlDriver, range: DateRange): Promise<GstLine
             SUM(bi.taxable_value) AS taxable,
             SUM(bi.cgst_amount) AS cgst,
             SUM(bi.sgst_amount) AS sgst,
-            SUM(bi.igst_amount) AS igst
+            SUM(bi.igst_amount) AS igst,
+            SUM(bi.cess_amount) AS cess
        FROM bill_items bi
        JOIN bills b ON b.id = bi.bill_id
       WHERE b.docstatus = 1 AND b.kind = 'sale' AND b.posting_date BETWEEN ? AND ? ${s.clause}
@@ -159,7 +168,8 @@ export async function gstLines(db: SqlDriver, range: DateRange): Promise<GstLine
             -SUM(ri.taxable_value),
             -SUM(ri.cgst_amount),
             -SUM(ri.sgst_amount),
-            -SUM(ri.igst_amount)
+            -SUM(ri.igst_amount),
+            -SUM(ri.cess_amount)
        FROM sales_return_items ri
        JOIN sales_returns r ON r.id = ri.return_id
        JOIN bills b ON b.id = r.bill_id
@@ -182,7 +192,8 @@ export async function gstLines(db: SqlDriver, range: DateRange): Promise<GstLine
     cgst: r.cgst as Money,
     sgst: r.sgst as Money,
     igst: r.igst as Money,
-    total: (r.taxable + r.cgst + r.sgst + r.igst) as Money,
+    cess: r.cess as Money,
+    total: (r.taxable + r.cgst + r.sgst + r.igst + r.cess) as Money,
   }))
 
   // The rows of one document are next to each other, so its last rate row is the

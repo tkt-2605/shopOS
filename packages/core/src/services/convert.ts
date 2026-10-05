@@ -5,9 +5,11 @@ import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
 import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
+import { closedFor, type PeriodClosed } from './books.js'
 import { createDocument, loadDocument } from './documents.js'
 import { writeAudit } from '../integrity/audit.js'
 import { newId } from '../ids.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * Turning one document into the next.
@@ -48,6 +50,7 @@ export async function quotationToSalesOrder(
   db: SqlDriver,
   input: { quotationId: string; actorId: string; postingDate?: string; now?: Date },
 ): Promise<ConvertResult> {
+  await requirePermission(db, input.actorId, 'document', 'create')
   const source = await loadDocument(db, input.quotationId)
   if (!source) return { ok: false, code: 'NOT_FOUND' }
   if (source.kind !== 'quotation') return { ok: false, code: 'WRONG_KIND' }
@@ -78,8 +81,9 @@ export async function quotationToSalesOrder(
         productId: i.productId,
         saleUnit: i.saleUnit,
         qty: i.remainingQty,
-        // The rate that was quoted, not today's.
+        // The rate that was quoted, not today's, read the way it was quoted.
         rateOverride: i.rate,
+        rateIncludesTax: i.rateIncludesTax,
       })),
       ...(input.postingDate ? { postingDate: input.postingDate } : {}),
       terms: source.terms,
@@ -106,6 +110,8 @@ export interface OrderCartLine {
   qty: Qty
   /** The rate the shop promised, to be kept rather than resolved again. */
   rate: Money
+  /** Whether that rate has the tax in it -- as the order quoted it. */
+  includesTax: boolean
 }
 
 export type ToCartResult =
@@ -158,6 +164,7 @@ export async function documentToCart(
       saleUnit: i.saleUnit,
       qty: i.remainingQty,
       rate: i.rate,
+      includesTax: i.rateIncludesTax,
     })),
   }
 }
@@ -165,6 +172,8 @@ export async function documentToCart(
 export type ReceiveResult =
   | { ok: true; stockEntryId: string }
   | { ok: false; code: 'NOT_FOUND' | 'NOT_SUBMITTED' | 'CANCELLED' | 'WRONG_KIND' | 'NOTHING_LEFT' }
+  /** Received with a date the books are closed through. */
+  | PeriodClosed
 
 /**
  * Goods arriving against a purchase order.
@@ -179,6 +188,7 @@ export async function receivePurchaseOrder(
   db: SqlDriver,
   input: { purchaseOrderId: string; actorId: string; postingDate?: string; now?: Date },
 ): Promise<ReceiveResult> {
+  await requirePermission(db, input.actorId, 'document', 'create')
   const source = await loadDocument(db, input.purchaseOrderId)
   if (!source) return { ok: false, code: 'NOT_FOUND' }
   if (source.kind !== 'purchase_order') return { ok: false, code: 'WRONG_KIND' }
@@ -186,6 +196,11 @@ export async function receivePurchaseOrder(
   if (source.docstatus !== 1) return { ok: false, code: 'NOT_SUBMITTED' }
 
   const now = input.now ?? new Date()
+
+  /* Asked before anything is made, so a refusal is said as what it is rather
+     than as the "nothing left" every other refusal part-way becomes. */
+  const closed = await closedFor(db, input.postingDate ?? businessDate(now))
+  if (closed) return closed
 
   /* One transaction for the goods in, the order marked off and the record of
      it. A refusal part-way throws, so nothing of it is kept. */

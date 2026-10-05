@@ -16,6 +16,8 @@ export function PriceLists({ canWrite }: { canWrite: boolean }) {
   const [confirmUi, ask] = useConfirm()
   const [lists, setLists] = useState<PriceList[]>([])
   const [name, setName] = useState('')
+  /** A new list quotes before tax -- a wholesale list. Off is a shelf price list. */
+  const [beforeTax, setBeforeTax] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
 
@@ -28,7 +30,7 @@ export function PriceLists({ canWrite }: { canWrite: boolean }) {
   useShopChanged(refresh)
 
   async function add() {
-    const result = await createPriceList(db, { actorId: user.id }, { name })
+    const result = await createPriceList(db, { actorId: user.id }, { name, ratesIncludeTax: !beforeTax })
     if (!result.ok) {
       /* The archived clash is its own message because it has its own answer.
          The name is still taken -- the row is still there -- and telling a shop
@@ -45,6 +47,25 @@ export function PriceLists({ canWrite }: { canWrite: boolean }) {
     }
     setError(null)
     setName('')
+    setBeforeTax(false)
+    await refresh()
+  }
+
+  /**
+   * Turns a list from shelf prices to rates before tax, or back.
+   *
+   * Asked first, because every rate on the list is read the other way from the
+   * next bill: a 100 that meant "100 with tax in it" becomes 100 plus tax.
+   * Bills already made keep the way their lines were read.
+   */
+  async function flipTax(list: PriceList) {
+    const next = !list.ratesIncludeTax
+    if (!(await ask(
+      next
+        ? `Read the rates on ${list.name} as including tax?\n\nFrom the next bill, a rate of 100 is 100 with the tax in it.`
+        : `Read the rates on ${list.name} as before tax?\n\nFrom the next bill, a rate of 100 is 100 plus GST and any cess.`,
+    ))) return
+    await updatePriceList(db, { actorId: user.id }, { priceListId: list.id, ratesIncludeTax: next })
     await refresh()
   }
 
@@ -114,7 +135,9 @@ export function PriceLists({ canWrite }: { canWrite: boolean }) {
 
       <table>
         <thead>
-          <tr><th>Name</th><th className="r">Rates</th><th className="r">Customers</th><th>Default</th><th /></tr>
+          <tr>
+            <th>Name</th><th className="r">Rates</th><th>Tax</th><th className="r">Customers</th><th>Default</th><th />
+          </tr>
         </thead>
         <tbody>
           {lists.map((l) => (
@@ -124,6 +147,14 @@ export function PriceLists({ canWrite }: { canWrite: boolean }) {
                 {l.archived && <span className="badge" style={{ marginLeft: 7 }}>removed</span>}
               </td>
               <td className="r num">{l.priceCount}</td>
+              <td>
+                {canWrite && !l.archived ? (
+                  <button className="cell-btn" title="Change how this list's rates are read"
+                    onClick={() => void flipTax(l)}>
+                    {l.ratesIncludeTax ? 'Included' : 'Added on top'}
+                  </button>
+                ) : (l.ratesIncludeTax ? 'Included' : 'Added on top')}
+              </td>
               <td className="r num">{l.customerCount}</td>
               <td>{l.isDefault ? <span className="badge ok">default</span> : ''}</td>
               <td className="r" style={{ whiteSpace: 'nowrap' }}>
@@ -147,6 +178,12 @@ export function PriceLists({ canWrite }: { canWrite: boolean }) {
             value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1 }} />
           <button className="btn" disabled={name.trim() === ''} onClick={() => void add()}>Add</button>
         </div>
+      )}
+      {canWrite && (
+        <label style={{ fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 5, alignItems: 'center', marginTop: 8 }}>
+          <input type="checkbox" checked={beforeTax} onChange={(e) => setBeforeTax(e.target.checked)} />
+          Its rates are before tax, as a wholesaler quotes — GST is added on top at the counter
+        </label>
       )}
     </Card>
   )

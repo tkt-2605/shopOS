@@ -52,9 +52,12 @@ export function BillBody({
               </td>
               <td className="num">{i.hsnCode ?? '—'}</td>
               <td className="r num">{Quantity.formatQty(i.qty)} {i.saleUnit}</td>
-              <td className="r"><Rupees value={i.rate} /></td>
+              <td className="r">
+                <Rupees value={i.rate} />
+                {!i.rateIncludesTax && <div className="src">before tax</div>}
+              </td>
               <td className="r"><Rupees value={i.taxableValue} /></td>
-              <td className="r"><Rupees value={i.cgst + i.sgst + i.igst} /></td>
+              <td className="r"><Rupees value={i.cgst + i.sgst + i.igst + i.cess} /></td>
               <td className="r"><Rupees value={i.lineTotal} /></td>
             </tr>
           ))}

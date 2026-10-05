@@ -11,6 +11,7 @@ import { myRegisterPrefix } from './registers.js'
 import { isGstin, resolveCustomerState, stateFromGstin } from '../domain/gstin.js'
 import { isStateCode } from '../domain/states.js'
 import type { CreditEnforcement } from '../domain/credit.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * Who the shop's customers are.
@@ -90,6 +91,7 @@ export async function createCustomer(
   ctx: AuditContext & { actorId: string },
   input: CustomerInput,
 ): Promise<SaveCustomerResult> {
+  await requirePermission(db, ctx.actorId, 'customer', 'create')
   return save(db, ctx, null, input)
 }
 
@@ -99,6 +101,7 @@ export async function updateCustomer(
   customerId: string,
   input: CustomerInput,
 ): Promise<SaveCustomerResult> {
+  await requirePermission(db, ctx.actorId, 'customer', 'write')
   return save(db, ctx, customerId, input)
 }
 
@@ -131,6 +134,7 @@ export async function archiveCustomer(
   ctx: AuditContext & { actorId: string },
   customerId: string,
 ): Promise<ArchiveCustomerResult> {
+  await requirePermission(db, ctx.actorId, 'customer', 'write')
   /* Billed on credit, less what has been paid against those bills. It was one
      statement with the second half as a correlated subquery; it is two now,
      because a subtraction of two sums reads as a subtraction of two sums. Both
@@ -170,6 +174,7 @@ export async function restoreCustomer(
   ctx: AuditContext & { actorId: string },
   customerId: string,
 ): Promise<void> {
+  await requirePermission(db, ctx.actorId, 'customer', 'write')
   const now = ctx.now?.() ?? new Date().toISOString()
   await db.transaction(async (tx) => {
     await q(tx).update(schema.customers)

@@ -6,6 +6,7 @@ import type { Rung } from '../../domain/ladder.js'
 import { removeCustomerPrice, setCustomerPrice } from './customerPrices.js'
 import { removeItemPrice, setItemPrice } from './itemPrices.js'
 import { unitExists } from './units.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 /*
  * Quantity breaks: the rate that applies from each quantity up, for a
@@ -30,6 +31,7 @@ export async function setLadder(
   ctx: AuditContext & { actorId: string },
   input: { productId: string; priceListId: string; saleUnit: string; rungs: Rung[] },
 ): Promise<SetLadderResult> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   if (!(await unitExists(db, input.productId, input.saleUnit))) {
     return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
   }
@@ -69,6 +71,7 @@ export async function setCustomerLadder(
   ctx: AuditContext & { actorId: string },
   input: { customerId: string; productId: string; saleUnit: string; rungs: Rung[] },
 ): Promise<SetLadderResult> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   if (!(await unitExists(db, input.productId, input.saleUnit))) {
     return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
   }

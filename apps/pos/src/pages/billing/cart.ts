@@ -7,11 +7,21 @@ import type { CartLine } from '../../core/useBillTabs'
  */
 
 /** The one mapping from cart lines to what the totals engine wants. */
-export function totalsLinesOf(lines: CartLine[]): Totals.TotalsLine[] {
+/**
+ * The cart as the totals see it.
+ *
+ * `taxed` is whether this shop charges tax at all. A composition or an
+ * unregistered shop charges none, which the service applies by zeroing the
+ * rates; the screen has to do the same, or a rate quoted before tax would show
+ * a total with tax added that the bill will not carry.
+ */
+export function totalsLinesOf(lines: CartLine[], taxed = true): Totals.TotalsLine[] {
   return lines.map((l) => ({
     qty: Quantity.fromUnits(l.qty),
     rate: l.rate as never,
-    taxRateBp: l.product.taxRateBp,
+    taxRateBp: taxed ? l.product.taxRateBp : 0,
+    cessRateBp: taxed ? l.product.cessRateBp : 0,
+    rateIncludesTax: l.includesTax !== false,
     discountBlocked: l.product.discountBlocked,
   }))
 }

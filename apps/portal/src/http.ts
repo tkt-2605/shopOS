@@ -6,6 +6,7 @@ import {
 } from './auth/otp.js'
 import { currentLicence, issueLicence, noteDevice, tillsSeen } from './licences.js'
 import { isTier } from '@shopos/core/licence'
+import type { AddressThrottle } from './auth/throttle.js'
 
 /**
  * The portal's HTTP surface, as a function from request to response.
@@ -36,6 +37,8 @@ export interface PortalRequest {
   headers: Record<string, string | undefined>
   /** Parsed JSON body, or null. */
   body: unknown
+  /** The socket's address, for the per-address limit on sign-in codes. Absent in tests that do not say. */
+  remoteAddress?: string | null
 }
 
 export interface PortalResponse {
@@ -57,6 +60,8 @@ export interface PortalDeps {
   adminToken: string | null
   /** Development only: lets `auth/start` return the code in its response. */
   exposeCodes?: boolean
+  /** How many codes one address may ask for. See `auth/throttle.ts`. */
+  throttle?: AddressThrottle
   now?: () => Date
 }
 
@@ -82,6 +87,15 @@ export async function handle(
   if (method === 'POST' && path === '/v1/auth/start') {
     const phone = field(request.body, 'phone')
     if (phone === null) return bad('a phone number is required')
+
+    const wait = deps.throttle?.take(request.remoteAddress, now) ?? null
+    if (wait !== null) {
+      return {
+        status: 429,
+        body: { error: 'TOO_MANY_FROM_HERE', retryAfterSeconds: wait },
+        headers: { 'Retry-After': String(wait) },
+      }
+    }
 
     const started = await startOtp(
       deps.db,

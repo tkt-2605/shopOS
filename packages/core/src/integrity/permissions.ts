@@ -32,7 +32,10 @@ export type Capability = (typeof CAPABILITIES)[number]
 export type ResourcePermissions = Record<Capability, boolean>
 
 /**
- * Which capabilities the software actually checks, per resource.
+ * Which capabilities the software actually checks, per resource -- in a
+ * service, which refuses the call (`requirePermission`), and usually in the
+ * screen as well, which hides the button. `servicePermissions.test.ts` holds
+ * the services to this list and `permissionsHonest.test.tsx` the screens.
  *
  * The grid on the Roles screen offered every capability against every resource
  * — ninety-eight checkboxes — and eleven of them were read by anything. An
@@ -57,10 +60,12 @@ export const ENFORCED: Record<Resource, readonly Capability[]> = {
   cash_session: ['create', 'write', 'submit'],
   user: ['create', 'write'],
   role: ['create', 'write', 'delete'],
-  /* Reaching the screen at all is the control on these two: a page a role was
-     not granted is not in the sidebar and cannot be routed to. */
+  /* Reaching the screen at all is the control on reports: a page a role was
+     not granted is not in the sidebar and cannot be routed to. Settings are
+     the same, except for closing the books, which a service refuses on its
+     own -- it is the one setting that stops other people's work. */
   report: [],
-  settings: [],
+  settings: ['write'],
   document: ['create', 'cancel'],
 }
 
@@ -128,6 +133,46 @@ export function can(perms: PermissionSet, resource: Resource, capability: Capabi
 
 export function assertCan(perms: PermissionSet, resource: Resource, capability: Capability): void {
   if (!can(perms, resource, capability)) throw new PermissionError(resource, capability)
+}
+
+const CAPABILITY_COLUMN: Record<Capability, string> = {
+  read: 'can_read', create: 'can_create', write: 'can_write', delete: 'can_delete',
+  submit: 'can_submit', cancel: 'can_cancel', amend: 'can_amend',
+}
+
+/**
+ * Refuses unless `actorId` is an active user whose role may do this.
+ *
+ * The screens hide what a role may not do, and until 4 October that was the
+ * whole of the control: every service took an `actorId`, wrote it into the
+ * audit log, and never asked whether that person was allowed. A screen that
+ * forgot to hide a button, or any caller that is not a screen -- the cloud
+ * peer, a phone, a script -- went straight through. So each service that does
+ * something `ENFORCED` names asks here first, against the database rather
+ * than a permission set a screen loaded at sign-in, so a role changed on
+ * another till binds as soon as it has synced.
+ *
+ * Thrown rather than returned: the screens already hide the button, so
+ * arriving here refused means something is wrong, not that a person made a
+ * choice the screen should explain.
+ */
+export async function requirePermission(
+  db: SqlDriver,
+  actorId: string | null | undefined,
+  resource: Resource,
+  capability: Capability,
+): Promise<void> {
+  if (!actorId) throw new PermissionError(resource, capability)
+  /* raw: the column is chosen by the capability at run time, from a closed
+     list above, so the builder cannot name it. */
+  const row = await db.get<{ is_active: number; allowed: number | null }>(
+    `SELECT u.is_active, p.${CAPABILITY_COLUMN[capability]} AS allowed
+       FROM users u
+       LEFT JOIN role_permissions p ON p.role_id = u.role_id AND p.resource = ?
+      WHERE u.id = ?`,
+    [resource, actorId],
+  )
+  if (!row || row.is_active !== 1 || row.allowed !== 1) throw new PermissionError(resource, capability)
 }
 
 export function canSeePage(perms: PermissionSet, page: string): boolean {

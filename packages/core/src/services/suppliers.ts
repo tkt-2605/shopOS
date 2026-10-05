@@ -6,6 +6,10 @@ import { newId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { businessDate } from '../dates.js'
 import { SUBMITTED } from '../integrity/docstatus.js'
+import { closedFor, type PeriodClosed } from './books.js'
+import { postVoucherGl } from './ledger.js'
+import { OWED } from './payables.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * Who the shop buys from.
@@ -38,6 +42,11 @@ export interface SupplierSummary extends Supplier {
   entryCount: number
   lastPurchase: string | null
   purchased: Money
+  /**
+   * What the shop owes them now: the balance carried over, plus their bills,
+   * less what has been paid them (065). Negative: they hold the shop's money.
+   */
+  owed: Money
   /** Off the list entirely, as against `isActive`, which is "not just now". */
   archived: boolean
 }
@@ -82,7 +91,7 @@ export async function listSuppliers(db: SqlDriver, includeInactive = false): Pro
 export type SupplierOrder =
   /** Alphabetical. The default, and what a picker wants. */
   | 'name'
-  /** Most owed first -- who to pay. Negative balances last. */
+  /** Most owed now first -- who to pay. Negative balances last. */
   | 'owed'
   /** Most bought from, ever. Who the shop actually depends on. */
   | 'bought'
@@ -100,6 +109,7 @@ export async function supplierSummaries(
       ...openingShape,
       deletedAt: schema.suppliers.deletedAt,
       entryCount: count(schema.stockEntries.id),
+      owed: OWED,
       lastPurchase: max(schema.stockEntries.postingDate),
       /* raw: what each entry came to, summed across the entries. It is a
          subquery rather than a second join because the entries are already
@@ -127,6 +137,7 @@ export async function supplierSummaries(
     entryCount: r.entryCount,
     lastPurchase: r.lastPurchase,
     purchased: r.purchased,
+    owed: r.owed,
     archived: r.deletedAt !== null,
   }))
 }
@@ -134,6 +145,7 @@ export async function supplierSummaries(
 export type OpeningResult =
   | { ok: true; amount: Money }
   | { ok: false; code: 'NO_SUPPLIER' }
+  | PeriodClosed
 
 /**
  * What the shop already owed this supplier before any of this started.
@@ -156,6 +168,7 @@ export async function setSupplierOpening(
   ctx: AuditContext,
   input: { supplierId: string; amount: Money; asOf?: string | null },
 ): Promise<OpeningResult> {
+  await requirePermission(db, ctx.actorId, 'supplier', 'write')
   const [before] = await q(db)
     .select({
       openingBalance: schema.suppliers.openingBalance,
@@ -167,6 +180,11 @@ export async function setSupplierOpening(
   if (!before) return { ok: false, code: 'NO_SUPPLIER' }
 
   const asOf = input.asOf ?? businessDate()
+  /* Both ends: moving a figure out of a closed period changes it as surely as
+     moving one in. */
+  const closed = await closedFor(db, asOf) ??
+    (before.openingAsOf === null ? null : await closedFor(db, before.openingAsOf))
+  if (closed) return closed
 
   await db.transaction(async (tx) => {
     await q(tx).update(schema.suppliers)
@@ -176,6 +194,9 @@ export async function setSupplierOpening(
         updatedAt: new Date().toISOString(),
       })
       .where(eq(schema.suppliers.id, input.supplierId))
+
+    // The books carry the difference, as a voucher of its own. See `supplierOpeningLines`.
+    await postVoucherGl(tx, 'supplier_opening', input.supplierId)
 
     await writeAudit(tx, ctx, {
       entity: 'suppliers',
@@ -198,7 +219,10 @@ export async function setSupplierOpening(
 function supplierOrderFor(order: SupplierOrder): SQL[] {
   switch (order) {
     case 'owed':
-      return [desc(schema.suppliers.openingBalance), asc(schema.suppliers.name)]
+      /* What is owed now, not the balance carried over from before. Sorting by
+         that one figure put a supplier owed nothing from the old book and
+         ₹40,000 since at the bottom of "who to pay" (review, 4 October). */
+      return [desc(OWED), asc(schema.suppliers.name)]
     case 'bought':
       /* raw: the same per-entry subquery the SELECT sums, because an alias
          from the projection is not addressable in ORDER BY through the
@@ -226,6 +250,7 @@ export async function createSupplier(
   db: SqlDriver,
   input: { name: string; phone?: string; gstin?: string; address?: string; actorId: string },
 ): Promise<SupplierResult> {
+  await requirePermission(db, input.actorId, 'supplier', 'create')
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
   if (await nameTaken(db, name)) return { ok: false, code: 'NAME_TAKEN' }
@@ -258,6 +283,7 @@ export async function updateSupplier(
     address?: string; isActive?: boolean; actorId: string
   },
 ): Promise<SupplierResult> {
+  await requirePermission(db, input.actorId, 'supplier', 'write')
   const name = input.name.trim()
   if (name === '') return { ok: false, code: 'NO_NAME' }
   if (await nameTaken(db, name, input.supplierId)) return { ok: false, code: 'NAME_TAKEN' }
@@ -321,6 +347,7 @@ export async function archiveSupplier(
   db: SqlDriver,
   input: { supplierId: string; actorId: string },
 ): Promise<ArchiveSupplierResult> {
+  await requirePermission(db, input.actorId, 'supplier', 'delete')
   const now = new Date().toISOString()
   await db.transaction(async (tx) => {
     await q(tx).update(schema.suppliers)
@@ -341,6 +368,7 @@ export async function restoreSupplier(
   db: SqlDriver,
   input: { supplierId: string; actorId: string },
 ): Promise<void> {
+  await requirePermission(db, input.actorId, 'supplier', 'delete')
   const now = new Date().toISOString()
   await db.transaction(async (tx) => {
     await q(tx).update(schema.suppliers)
@@ -360,6 +388,7 @@ export async function findOrCreateSupplier(
   db: SqlDriver,
   input: { name: string; actorId: string },
 ): Promise<string | null> {
+  await requirePermission(db, input.actorId, 'supplier', 'create')
   const name = input.name.trim()
   if (name === '') return null
 

@@ -80,6 +80,8 @@ export default function Inventory() {
     if (draft.mrp.trim() !== '' && mrp === null) { setNotice('The MRP is not an amount. Nothing was saved.'); return }
     const percent = draft.taxPercent.trim() === '' ? 0 : Number(draft.taxPercent)
     if (!Number.isFinite(percent)) { setNotice('The tax rate is not a number. Nothing was saved.'); return }
+    const cessPercent = draft.cessPercent.trim() === '' ? 0 : Number(draft.cessPercent)
+    if (!Number.isFinite(cessPercent)) { setNotice('The cess rate is not a number. Nothing was saved.'); return }
 
     // Through the core, which checks the figures and writes the change to the
     // history. The barcode column is not written here: setBarcodes owns the pair
@@ -90,6 +92,7 @@ export default function Inventory() {
       brand: draft.brand,
       hsnCode: draft.hsnCode,
       taxRateBp: Math.round(percent * 100),
+      cessRateBp: Math.round(cessPercent * 100),
       baseRate: rate,
       mrp,
       baseUnit: draft.baseUnit,
@@ -102,7 +105,7 @@ export default function Inventory() {
     })
     if (!saved.ok) {
       setNotice(
-        saved.code === 'BAD_TAX' ? 'A tax rate is between 0 and 100 per cent. Nothing was saved.'
+        saved.code === 'BAD_TAX' ? 'GST is between 0 and 100 per cent, and cess between 0 and 300. Nothing was saved.'
         : saved.code === 'BAD_LEVEL' ? 'The reorder figures have to be quantities, zero or more. Nothing was saved.'
         : saved.code === 'UNKNOWN_PRODUCT' ? 'This item is no longer in the catalogue.'
         : 'The item could not be saved. Check its name and price.',
@@ -245,6 +248,7 @@ export default function Inventory() {
       parentProductId: p.parentProductId ?? '',
       variantLabel: p.variantLabel ?? '',
       hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
+      cessPercent: p.cessRateBp === 0 ? '' : String(Tax.bpToPercent(p.cessRateBp)),
       baseRate: Money.format(p.baseRate), mrp: p.mrp === null ? '' : Money.format(p.mrp),
       baseUnit: p.baseUnit,
       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,

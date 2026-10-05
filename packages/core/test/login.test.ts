@@ -23,7 +23,7 @@ beforeEach(async () => {
   setDeviceId('1111aaaa-1111-4111-8111-111111111111')
   fx = await freshDb()
   const created = await createUser(fx.db, {
-    username: 'ramesh', password: PASSWORD, roleId: fx.seed.roleIds['Admin']!,
+    username: 'ramesh', password: PASSWORD, roleId: fx.seed.roleIds['Admin']!, actorId: fx.adminId,
   })
   if (!created.ok) throw new Error('could not create the test user')
   userId = created.userId

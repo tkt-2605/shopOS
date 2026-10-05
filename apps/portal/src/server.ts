@@ -105,5 +105,6 @@ async function readRequest(req: IncomingMessage): Promise<PortalRequest | null> 
     query: url.searchParams,
     headers,
     body,
+    remoteAddress: req.socket.remoteAddress ?? null,
   }
 }

@@ -11,7 +11,7 @@ export function businessDate(when: Date = new Date()): string {
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`
 }
 
-/** The date `days` before (or after, if negative) the given day, in local terms. */
+/** The date `days` after (or before, if negative) the given day, in local terms. */
 export function addDays(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00`)
   d.setDate(d.getDate() + days)

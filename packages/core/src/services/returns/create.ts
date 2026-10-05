@@ -6,6 +6,7 @@ import { DRAFT } from '../../integrity/docstatus.js'
 import { writeAudit } from '../../integrity/audit.js'
 import { computeLines } from './compute.js'
 import type { CreateReturnInput, CreateReturnResult } from './types.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 /*
  * A return raised as a draft: the lines checked against what the bill sold and
@@ -13,6 +14,7 @@ import type { CreateReturnInput, CreateReturnResult } from './types.js'
  */
 
 export async function createReturn(db: SqlDriver, input: CreateReturnInput): Promise<CreateReturnResult> {
+  await requirePermission(db, input.actorId, 'sales_return', 'create')
   const computed = await computeLines(db, input.billId, input.lines)
   if (!computed.ok) return computed
 
@@ -50,6 +52,7 @@ export async function createReturn(db: SqlDriver, input: CreateReturnInput): Pro
         cgstAmount: line.cgst,
         sgstAmount: line.sgst,
         igstAmount: line.igst,
+        cessAmount: line.cess,
         hsnCode: line.hsnCode,
         taxRateBp: line.taxRateBp,
       })

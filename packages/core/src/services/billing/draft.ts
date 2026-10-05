@@ -8,6 +8,7 @@ import { DRAFT } from '../../integrity/docstatus.js'
 import { writeAudit } from '../../integrity/audit.js'
 import { type ComputedLine, priceBill } from './price.js'
 import type { CreateBillInput, CreateBillResult } from './types.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 /*
  * A bill before it is final: created, and saved again as the cashier works.
@@ -46,6 +47,9 @@ async function writeLines(
       cgstAmount: t.tax.cgst,
       sgstAmount: t.tax.sgst,
       igstAmount: t.tax.igst,
+      cessRateBp: line.cessRateBp,
+      cessAmount: t.tax.cess,
+      rateIncludesTax: line.rateIncludesTax ? 1 : 0,
       priceSource: line.priceSource,
       priceSourceId: line.priceSourceId,
       discountBlocked: line.discountBlocked ? 1 : 0,
@@ -55,6 +59,7 @@ async function writeLines(
 }
 
 export async function createBill(db: SqlDriver, input: CreateBillInput): Promise<CreateBillResult> {
+  await requirePermission(db, input.actorId, 'bill', 'create')
   const priced = await priceBill(db, input)
   if (!priced.ok) return priced
 
@@ -130,13 +135,14 @@ export async function saveDraft(
   db: SqlDriver,
   input: CreateBillInput & { billId: string },
 ): Promise<SaveDraftResult> {
+  await requirePermission(db, input.actorId, 'bill', 'create')
   const [existing] = await q(db)
     .select({ docstatus: schema.bills.docstatus })
     .from(schema.bills)
     .where(eq(schema.bills.id, input.billId))
   if (!existing || existing.docstatus !== DRAFT) return { ok: false, code: 'NOT_A_DRAFT' }
 
-  const priced = await priceBill(db, input)
+  const priced = await priceBill(db, input, input.billId)
   if (!priced.ok) return priced
 
   const { computed, totals, meta, subtotal } = priced

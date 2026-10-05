@@ -3,7 +3,7 @@ import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { newId } from '../../ids.js'
 import type { Money } from '../../money.js'
-import { postCashMovement } from '../cash.js'
+import { openSessionFor, postCashMovement } from '../cash.js'
 import type { PaymentInput } from './types.js'
 
 /*
@@ -14,7 +14,8 @@ import type { PaymentInput } from './types.js'
 
 export interface Tenders {
   billId: string
-  sessionId: string | null
+  /** The counter the bill is paid at. Its open drawer, if any, takes the money. */
+  registerId: string
   customerId: string | null
   payments: PaymentInput[]
   /** Points spent against this bill, as the entries they come out of. */
@@ -24,8 +25,13 @@ export interface Tenders {
   now: Date
 }
 
-export async function postTenders(tx: SqlDriver, t: Tenders): Promise<void> {
+/**
+ * Answers the drawer session the money went into -- the one open at this
+ * counter now, or none -- so the bill can record it.
+ */
+export async function postTenders(tx: SqlDriver, t: Tenders): Promise<string | null> {
   const nowIso = t.now.toISOString()
+  const sessionId = await openSessionFor(tx, t.registerId)
 
   for (const payment of t.payments) {
     await q(tx).insert(schema.billPayments).values({
@@ -36,9 +42,9 @@ export async function postTenders(tx: SqlDriver, t: Tenders): Promise<void> {
       reference: payment.reference ?? null,
     })
     // Credit moves no money today and loyalty never does.
-    if (t.sessionId && payment.method !== 'credit') {
+    if (sessionId && payment.method !== 'credit') {
       await postCashMovement(tx, {
-        sessionId: t.sessionId,
+        sessionId,
         direction: 'in',
         amount: payment.amount,
         method: payment.method,
@@ -90,4 +96,5 @@ export async function postTenders(tx: SqlDriver, t: Tenders): Promise<void> {
       createdAt: nowIso,
     })
   }
+  return sessionId
 }

@@ -27,6 +27,12 @@ export interface CartLine {
   sourceId: string | null
   manual: boolean
   /**
+   * Whether `rate` has the tax in it. Absent is yes, which is every cart saved
+   * before 063. Taken from wherever the rate came from and kept with it -- a
+   * wholesale list's rate stays a before-tax rate if the cashier retypes it.
+   */
+  includesTax?: boolean
+  /**
    * The batch the cashier picked for this line, when batches are on. Kept on
    * screen only: a draft brought back after a restart has none, and the line
    * then comes out soonest expiry first, which is what it would have shown.
@@ -80,8 +86,13 @@ export function snapshotOf(
     // A typed rate is the cashier's; anything else is passed back as already
     // resolved so a held bill is not re-priced behind the customer.
     ...(line.manual
-      ? { rateOverride: line.rate as never }
-      : { resolved: { rate: line.rate as never, source: line.source, sourceId: line.sourceId } }),
+      ? { rateOverride: line.rate as never, rateIncludesTax: line.includesTax !== false }
+      : {
+          resolved: {
+            rate: line.rate as never, source: line.source, sourceId: line.sourceId,
+            includesTax: line.includesTax !== false,
+          },
+        }),
   }))
 
   // The clamped figure, not the typed one. The service rejects a discount larger
@@ -93,6 +104,7 @@ export function snapshotOf(
       qty: Quantity.fromUnits(l.qty),
       rate: l.rate as never,
       taxRateBp: l.product.taxRateBp,
+      rateIncludesTax: l.includesTax !== false,
       discountBlocked: l.product.discountBlocked,
     })),
     (Money.parseMoney(cart.discount) ?? 0) as never,
@@ -130,6 +142,7 @@ export async function cartFromDraft(db: SqlDriver, detail: DraftDetail): Promise
       source: saved.priceSource,
       sourceId: saved.priceSourceId,
       manual: saved.priceSource === 'manual_override',
+      includesTax: saved.rateIncludesTax,
     })
   }
 
@@ -194,7 +207,10 @@ export async function cartFromRepeat(
        counter typed it, and calling it a cashier's override would put an
        unusual price against the wrong person's name. */
     const priced = wanted.rate != null && request.order
-      ? { rate: wanted.rate, source: 'order_rate' as Pricing.PriceSource, sourceId: request.order.id }
+      ? {
+          rate: wanted.rate, source: 'order_rate' as Pricing.PriceSource, sourceId: request.order.id,
+          includesTax: wanted.includesTax !== false,
+        }
       : await resolveLinePrice(db, pricing, {
         productId: product.id,
         saleUnit: unit,
@@ -211,6 +227,7 @@ export async function cartFromRepeat(
       source: priced.source,
       sourceId: priced.sourceId,
       manual: false,
+      includesTax: priced.includesTax,
     })
   }
 

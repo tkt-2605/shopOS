@@ -53,7 +53,7 @@ Existing rules in `CLAUDE.md` stand. Four more, earned this week:
 
 ## Architect pass — the open calls, decided
 
-The brief in `fable-shopos-architect-prompt.md` asks for the layer above this
+The brief in `docs/prompts/fable-shopos-architect-prompt.md` asks for the layer above this
 plan: every open judgment resolved with reasoning and a confidence, and one
 execution-ready spec per phase. The decisions are here because three of them
 overturn something the plan states as settled. The specs are written on

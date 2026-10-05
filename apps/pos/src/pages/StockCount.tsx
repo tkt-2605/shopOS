@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   openCount, loadCount, listCounts, setCounted, submitCount, cancelCount,
-  listShortfalls, Quantity, Permissions,
+  listShortfalls, Quantity, Permissions, periodClosedMessage,
   type CountSheet, type CountSummary, type SubmitCountResult, type Shortfall,
 } from '@shopos/core'
 import { useCore, useDb, useUser } from '../core/CoreProvider'
@@ -112,7 +112,9 @@ export default function StockCount() {
       setError(
         result.code === 'NOTHING_COUNTED'
           ? 'Nothing has been counted yet.'
-          : 'That would take an item below zero. Check the quantities.',
+          : result.code === 'PERIOD_CLOSED'
+            ? periodClosedMessage(result.closedThrough)
+            : 'That would take an item below zero. Check the quantities.',
       )
       return
     }
@@ -123,6 +125,7 @@ export default function StockCount() {
   async function abandon() {
     if (phase.kind !== 'sheet') return
     if (!(await ask('Throw away this count sheet? Nothing will be posted.'))) return
+    // A sheet nobody submitted is always thrown away; the books do not bind it.
     await cancelCount(db, { countId: phase.sheet.id, actorId: user.id })
     setPhase({ kind: 'none' })
     await refresh()
@@ -130,7 +133,12 @@ export default function StockCount() {
 
   async function undo(countId: string) {
     if (!(await ask('Reverse this count? The stock it corrected goes back to what it was.'))) return
-    await cancelCount(db, { countId, reason: 'reversed from the count screen', actorId: user.id })
+    setError(null)
+    const result = await cancelCount(db, { countId, reason: 'reversed from the count screen', actorId: user.id })
+    if (!result.ok) {
+      setError(periodClosedMessage(result.closedThrough))
+      return
+    }
     await refresh()
   }
 

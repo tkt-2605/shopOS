@@ -8,6 +8,7 @@ import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { parseCsvRecords, toCsv } from '../domain/csv.js'
 import { isGstin } from '../domain/gstin.js'
 import type { ImportAction, ImportResult } from './import.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * The supplier list, in and out of a spreadsheet.
@@ -179,6 +180,7 @@ export async function planSupplierImport(db: SqlDriver, text: string): Promise<S
 export async function applySupplierImport(
   db: SqlDriver, ctx: AuditContext, plan: SupplierPlan,
 ): Promise<ImportResult> {
+  await requirePermission(db, ctx.actorId, 'supplier', 'create')
   const usable = plan.rows.filter((r) => r.problem === null && r.action !== null)
   const now = new Date().toISOString()
   let created = 0

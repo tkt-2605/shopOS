@@ -14,6 +14,7 @@ import {
   RECORD, anythingSetAside, keyOf, orphansAmong, parentSetAside, retrySetAside,
 } from './setAside.js'
 import type { ContestedChange } from './types.js'
+import { postMissingGl, LEDGER_SOURCES, type VoucherType } from '../ledger.js'
 
 /*
  * Taking a batch in: one transaction for the whole of it, and a second pass
@@ -129,6 +130,19 @@ export async function applyBatch(
     if (documents === null || documents.length > 0) {
       const found = await reconcileFulfilledQty(db, { repair: true, documentIds: documents })
       outcome.cachesHeld += found.filter((d) => !d.repairable).length
+    }
+    /* And the books for documents that came without them, from a till still
+       on a build that had no ledger. A document from a till that has one
+       brings its entries along, and this finds nothing. */
+    const vouchers = new Map<VoucherType, string[]>()
+    for (const record of arrived) {
+      const type = LEDGER_SOURCES.get(record.table)
+      if (!type || record.op === 'delete') continue
+      vouchers.set(type, [...(vouchers.get(type) ?? []), record.rowId])
+    }
+    if (vouchers.size > 0) {
+      const books = await postMissingGl(db, vouchers)
+      outcome.cachesHeld += books.unbalanced.length
     }
   }
 

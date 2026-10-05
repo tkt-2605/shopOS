@@ -7,6 +7,7 @@ import { type Qty, qty } from '../../quantity.js'
 import { writeAudit, type AuditContext } from '../../integrity/audit.js'
 import { unitExists } from './units.js'
 import { defaultPriceListId } from '../../repos/pricing.js'
+import { requirePermission } from '../../integrity/permissions.js'
 
 /*
  * A product's price on a list, per unit it sells in.
@@ -91,6 +92,7 @@ export async function setItemPrice(
   ctx: AuditContext & { actorId: string },
   input: ItemPriceInput,
 ): Promise<ItemPriceResult> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   if (input.validFrom && input.validTo && input.validFrom > input.validTo) {
     return { ok: false, code: 'BAD_DATES' }
   }
@@ -165,6 +167,7 @@ export async function removeItemPrice(
   ctx: AuditContext & { actorId: string },
   itemPriceId: string,
 ): Promise<void> {
+  await requirePermission(db, ctx.actorId, 'price_list', 'write')
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   await db.transaction(async (tx) => {
     // Soft, because a submitted bill points at this row through price_source_id

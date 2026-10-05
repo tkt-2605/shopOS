@@ -81,9 +81,24 @@ export function TotalsPanel({
             {' '}Only <Rupees value={totals.discountableSubtotal} /> of this bill can be reduced.
           </div>
         )}
-        <div className="total-line" style={{ color: 'var(--ink-3)' }}>
-          <span>Tax included</span><Rupees value={totals.taxTotal} />
-        </div>
+        {/* Two different sentences. Tax inside a shelf price is said in grey,
+            because it does not change what is paid; tax added on top of a rate
+            quoted before tax is said plainly, because it does. */}
+        {totals.taxTotal - totals.taxAdded > 0 && (
+          <div className="total-line" style={{ color: 'var(--ink-3)' }}>
+            <span>Tax included</span><Rupees value={(totals.taxTotal - totals.taxAdded) as Money.Money} />
+          </div>
+        )}
+        {totals.taxAdded > 0 && (
+          <div className="total-line">
+            <span>Tax added</span><Rupees value={totals.taxAdded} />
+          </div>
+        )}
+        {totals.cessTotal > 0 && (
+          <div className="total-line" style={{ color: 'var(--ink-3)' }}>
+            <span>of which cess</span><Rupees value={totals.cessTotal} />
+          </div>
+        )}
         <div className="total-line grand">
           <span>Total</span><Rupees value={totals.grandTotal} className="amount" />
         </div>

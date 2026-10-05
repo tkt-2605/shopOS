@@ -9,6 +9,7 @@ import { parseCsvRecords, toCsv } from '../domain/csv.js'
 import { isHsn } from '../domain/hsn.js'
 import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
+import { requirePermission } from '../integrity/permissions.js'
 
 /**
  * Getting a shop's catalogue in, from the spreadsheet it already has.
@@ -235,6 +236,7 @@ export interface CatalogueImportResult extends ImportResult {
 export async function applyImport(
   db: SqlDriver, ctx: AuditContext, plan: ImportPlan,
 ): Promise<CatalogueImportResult> {
+  await requirePermission(db, ctx.actorId, 'product', 'write')
   const usable = plan.rows.filter((r) => r.problem === null && r.action !== null)
   const now = new Date().toISOString()
   let created = 0

@@ -24,7 +24,7 @@ const PASSWORD = 'counter-9'
 beforeEach(async () => {
   fx = await freshDb()
   const created = await createUser(fx.db, {
-    username: USERNAME, password: PASSWORD, roleId: fx.seed.roleIds['Admin']!,
+    username: USERNAME, password: PASSWORD, roleId: fx.seed.roleIds['Admin']!, actorId: fx.adminId,
   })
   if (!created.ok) throw new Error('could not create the test user')
   userId = created.userId

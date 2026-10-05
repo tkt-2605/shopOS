@@ -6,6 +6,13 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./foundation": "./src/api/foundation.ts",
+    "./sync": "./src/api/sync.ts",
+    "./catalog": "./src/api/catalog.ts",
+    "./sales": "./src/api/sales.ts",
+    "./stock": "./src/api/stock.ts",
+    "./books": "./src/api/books.ts",
+    "./shop": "./src/api/shop.ts",
     "./node": "./src/db/node-driver.ts",
     "./libsql": "./src/db/libsql-driver.ts",
     "./migrations": "./src/db/migrations.ts",

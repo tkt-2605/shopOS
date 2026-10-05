@@ -161,6 +161,8 @@ export const FROZEN: ReadonlySet<string> = new Set([
   // What it came to
   'subtotal', 'discount', 'taxable_total', 'tax_total', 'round_off',
   'grand_total', 'credit_total', 'refund_total', 'tax_reversed', 'amount',
+  // A supplier's bill (065): what they billed, and whether its tax was claimed
+  'invoice_total', 'supplier_invoice_no', 'supplier_invoice_date', 'input_tax_claimed',
   // The 028 snapshot — what the tax on it was worked out from
   'place_of_supply', 'supply_type', 'customer_gstin', 'customer_state_code',
   'customer_address',

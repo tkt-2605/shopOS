@@ -33,6 +33,8 @@ export interface RepeatLine {
    * that was promised; absent on a repeat, which is re-priced at today's.
    */
   rate?: number
+  /** Whether that promised rate has the tax in it, as the order quoted it. */
+  includesTax?: boolean
 }
 
 export interface RepeatRequest {

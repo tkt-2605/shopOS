@@ -146,11 +146,12 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
         <th class="c-name">Item</th>
         ${has.hsn ? '<th class="c-hsn">HSN</th>' : ''}
         <th class="c-num">Qty</th>
-        <th class="c-num">Rate</th>
+        <th class="c-num">${has.allBeforeTax ? 'Rate before tax' : 'Rate'}</th>
         ${has.taxed ? '<th class="c-num">Taxable</th>' : ''}
         ${has.rate ? '<th class="c-num">GST</th>' : ''}
         ${has.halves ? '<th class="c-num">CGST</th><th class="c-num">SGST</th>' : ''}
         ${has.igst ? '<th class="c-num">IGST</th>' : ''}
+        ${has.cess ? '<th class="c-num">Cess</th>' : ''}
         <th class="c-num">Amount</th>
       </tr></thead><tbody>
         ${doc.items.map((item, i) => itemRow(item, i, has)).join('')}
@@ -168,6 +169,7 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
       if (doc.cgst > 0) rows.push(row('CGST', doc.cgst))
       if (doc.sgst > 0) rows.push(row('SGST', doc.sgst))
       if (doc.igst > 0) rows.push(row('IGST', doc.igst))
+      if ((doc.cess ?? 0) > 0) rows.push(row('Cess', doc.cess ?? 0))
       /* Only when there is one. A "Round off 0.00" line on an invoice that was
          never rounded is a line that raises a question and answers nothing. */
       if (doc.roundOff) rows.push(row('Round off', Math.abs(doc.roundOff), doc.roundOff < 0 ? '-' : '+'))
@@ -179,7 +181,7 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
     }
 
     case 'tax_summary': {
-      if (doc.cgst === 0 && doc.sgst === 0 && doc.igst === 0) return ''
+      if (doc.cgst === 0 && doc.sgst === 0 && doc.igst === 0 && (doc.cess ?? 0) === 0) return ''
 
       /* Rate by rate when the document carries its rates, which is the block a
          CA reads first and the shape a GST return is filed in. One row without
@@ -188,7 +190,7 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
       const has = columnsFor(doc)
       const rows = doc.rateSummary && doc.rateSummary.length > 0
         ? doc.rateSummary
-        : [{ rateBp: -1, taxable: doc.taxableTotal, cgst: doc.cgst, sgst: doc.sgst, igst: doc.igst }]
+        : [{ rateBp: -1, taxable: doc.taxableTotal, cgst: doc.cgst, sgst: doc.sgst, igst: doc.igst, cess: doc.cess }]
 
       const body = rows.map((r) => `<tr>
           ${r.rateBp < 0 ? '<td>Total</td>' : `<td>${esc(formatRate(r.rateBp))}</td>`}
@@ -196,7 +198,8 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
           ${has.halves ? `<td class="c-num">${esc(fmtMoney(r.cgst))}</td>` : ''}
           ${has.halves ? `<td class="c-num">${esc(fmtMoney(r.sgst))}</td>` : ''}
           ${has.igst ? `<td class="c-num">${esc(fmtMoney(r.igst))}</td>` : ''}
-          <td class="c-num">${esc(fmtMoney((r.cgst + r.sgst + r.igst) as never))}</td>
+          ${has.cess ? `<td class="c-num">${esc(fmtMoney((r.cess ?? 0) as never))}</td>` : ''}
+          <td class="c-num">${esc(fmtMoney((r.cgst + r.sgst + r.igst + (r.cess ?? 0)) as never))}</td>
         </tr>`).join('')
 
       return `<table class="tax"><thead><tr>
@@ -204,6 +207,7 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
           <th class="c-num">Taxable value</th>
           ${has.halves ? '<th class="c-num">CGST</th><th class="c-num">SGST</th>' : ''}
           ${has.igst ? '<th class="c-num">IGST</th>' : ''}
+          ${has.cess ? '<th class="c-num">Cess</th>' : ''}
           <th class="c-num">Total tax</th>
         </tr></thead><tbody>${body}</tbody></table>`
     }
@@ -274,6 +278,11 @@ interface Columns {
   rate: boolean
   halves: boolean
   igst: boolean
+  cess: boolean
+  /** Every line's rate was quoted before tax: the column says so once. */
+  allBeforeTax: boolean
+  /** Some were and some were not: those that were say so on the line. */
+  someBeforeTax: boolean
 }
 
 /**
@@ -296,11 +305,12 @@ function columnsFor(doc: ReceiptDoc): Columns {
      making the claim Rule 49 exists to stop them making. The taxable column
      goes with it, because with nothing taken out of it the taxable value is the
      amount, printed twice under two headings, one of which is wrong. */
-  const charged = doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0
+  const charged = doc.cgst > 0 || doc.sgst > 0 || doc.igst > 0 || (doc.cess ?? 0) > 0
   const taxed = charged && doc.items.some((i) => i.taxableValue !== undefined)
   const inter = doc.supplyType !== undefined
     ? doc.supplyType === 'inter_state'
     : doc.igst > 0
+  const beforeTax = doc.items.filter((i) => i.rateIncludesTax === false).length
 
   return {
     hsn: doc.items.some((i) => i.hsnCode),
@@ -308,6 +318,9 @@ function columnsFor(doc: ReceiptDoc): Columns {
     rate: taxed && doc.items.some((i) => i.taxRateBp !== undefined),
     halves: taxed && !inter,
     igst: taxed && inter,
+    cess: taxed && doc.items.some((i) => (i.cess ?? 0) > 0),
+    allBeforeTax: beforeTax > 0 && beforeTax === doc.items.length,
+    someBeforeTax: beforeTax > 0 && beforeTax < doc.items.length,
   }
 }
 
@@ -317,12 +330,14 @@ function itemRow(item: ReceiptItem, index: number, has: Columns): string {
     <td class="c-name">${esc(item.name)}${item.batch ? `<div class="c-batch">${esc(item.batch)}</div>` : ''}</td>
     ${has.hsn ? `<td class="c-hsn">${esc(item.hsnCode ?? '')}</td>` : ''}
     <td class="c-num">${esc(`${formatQty(item.qty)} ${item.saleUnit}`)}</td>
-    <td class="c-num">${esc(fmtMoney(item.rate))}</td>
+    <td class="c-num">${esc(fmtMoney(item.rate))}${
+      has.someBeforeTax && item.rateIncludesTax === false ? '<div class="c-batch">before tax</div>' : ''}</td>
     ${has.taxed ? `<td class="c-num">${esc(fmtMoney((item.taxableValue ?? 0) as never))}</td>` : ''}
     ${has.rate ? `<td class="c-num">${esc(item.taxRateBp === undefined ? '' : formatRate(item.taxRateBp))}</td>` : ''}
     ${has.halves ? `<td class="c-num">${esc(fmtMoney((item.cgst ?? 0) as never))}</td>` : ''}
     ${has.halves ? `<td class="c-num">${esc(fmtMoney((item.sgst ?? 0) as never))}</td>` : ''}
     ${has.igst ? `<td class="c-num">${esc(fmtMoney((item.igst ?? 0) as never))}</td>` : ''}
+    ${has.cess ? `<td class="c-num">${esc(fmtMoney((item.cess ?? 0) as never))}</td>` : ''}
     <td class="c-num">${esc(fmtMoney(item.lineTotal))}</td>
   </tr>`
 }
