@@ -1,4 +1,4 @@
-import type { SqlDriver } from '../db/driver.js'
+import { MERGE_BUDGET_MS, type SqlDriver } from '../db/driver.js'
 import { UnbalancedPostingError } from '../domain/ledger.js'
 import { postGl, reverseGl } from './ledger/post.js'
 import { build, reversalStockVoucher, stockValueOf, type VoucherType } from './ledger/vouchers.js'
@@ -118,8 +118,15 @@ async function findMissing(
   return found.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))
 }
 
-/** How many vouchers go into one transaction, so a long backfill does not hold the counter. */
-const BATCH = 200
+/**
+ * How many vouchers go into one transaction, so a long backfill does not hold
+ * the counter. Each voucher is a dozen or so round trips to the Rust side, and
+ * the till's watchdog rolls back a transaction left open past its budget -- at
+ * 200 a batch the first open of a busy shop on a slow machine could run past
+ * it, and then the app would fail to open, every time. Fifty a batch, and each
+ * batch given the budget a merge gets.
+ */
+const BATCH = 50
 
 export interface MissingGlOutcome {
   /** Documents whose entries were written now. */
@@ -170,7 +177,7 @@ export async function postMissingGl(
           unbalanced.push(`${v.type}:${v.id}`)
         }
       }
-    })
+    }, { budgetMs: MERGE_BUDGET_MS })
   }
   return { posted: missing.length - unbalanced.length, unbalanced }
 }
