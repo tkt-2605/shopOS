@@ -50,10 +50,16 @@ export default function Suppliers() {
     if (!paying) return
     const amount = Money.parseMoney(payAmount)
     if (amount === null || amount <= 0) { setError('Enter the amount paid.'); return }
-    const result = await paySupplier(db, {
-      supplierId: paying.id, amount, method: payMethod, reference: payReference,
-      registerId: registerId || null, actorId: user.id,
-    })
+    let result: Awaited<ReturnType<typeof paySupplier>>
+    try {
+      result = await paySupplier(db, {
+        supplierId: paying.id, amount, method: payMethod, reference: payReference,
+        registerId: registerId || null, actorId: user.id,
+      })
+    } catch (err) {
+      setError(`That did not go through: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
     if (!result.ok) {
       setError(result.code === 'NO_SUPPLIER' ? 'That supplier is no longer here.' : 'Enter the amount paid.')
       return

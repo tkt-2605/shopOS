@@ -179,7 +179,13 @@ export default function Reports() {
    */
   async function exportGstr1() {
     setError(null)
-    const sections = R.gstr1Files(await R.gstr1(db, { from: range.from, to: range.to }))
+    let sections: { section: string; csv: string }[]
+    try {
+      sections = R.gstr1Files(await R.gstr1(db, { from: range.from, to: range.to }))
+    } catch (err) {
+      setError(`That did not go through: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
     if (sections.length === 0) { setError('There is nothing to file in this range.'); return }
     let folder = ''
     for (const { section, csv } of sections) {
@@ -198,7 +204,13 @@ export default function Reports() {
    */
   async function exportPurchases() {
     setError(null)
-    const register = await R.purchaseRegister(db, { from: range.from, to: range.to })
+    let register: Awaited<ReturnType<typeof R.purchaseRegister>>
+    try {
+      register = await R.purchaseRegister(db, { from: range.from, to: range.to })
+    } catch (err) {
+      setError(`That did not go through: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
     if (register.rows.length === 0) { setError('No supplier’s bill was posted in this range.'); return }
     const csv = R.toCsv(
       ['Entry', 'Posted', 'Supplier', 'GSTIN', 'Bill no.', 'Bill date', 'Taxable',

@@ -65,7 +65,12 @@ export function PriceLists({ canWrite }: { canWrite: boolean }) {
         ? `Read the rates on ${list.name} as including tax?\n\nFrom the next bill, a rate of 100 is 100 with the tax in it.`
         : `Read the rates on ${list.name} as before tax?\n\nFrom the next bill, a rate of 100 is 100 plus GST and any cess.`,
     ))) return
-    await updatePriceList(db, { actorId: user.id }, { priceListId: list.id, ratesIncludeTax: next })
+    try {
+      await updatePriceList(db, { actorId: user.id }, { priceListId: list.id, ratesIncludeTax: next })
+    } catch (err) {
+      setError(`That did not go through: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
     await refresh()
   }
 

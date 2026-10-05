@@ -22,16 +22,29 @@ export function BooksCard() {
   const [said, setSaid] = useState<string | null>(null)
 
   useEffect(() => {
-    void booksClosedThrough(db).then((value) => {
-      setThrough(value)
-      setTyped(value ?? '')
-    })
+    /* Caught, as every read a screen starts is: a promise nobody handles is an
+       error nobody sees, and it failed the release build of 0.2.0. */
+    booksClosedThrough(db)
+      .then((value) => {
+        setThrough(value)
+        setTyped(value ?? '')
+      })
+      .catch((err: unknown) => {
+        setError(`The closed date could not be read: ${err instanceof Error ? err.message : String(err)}`)
+      })
   }, [db])
 
   async function save(next: string | null) {
     setError(null)
     setSaid(null)
-    const result = await closeBooks(db, { through: next, actorId: user.id })
+    let result: Awaited<ReturnType<typeof closeBooks>>
+    try {
+      result = await closeBooks(db, { through: next, actorId: user.id })
+    } catch (err) {
+      // Refused by the service (a role without the right) or by the database.
+      setError(`That did not go through: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
     if (!result.ok) {
       setError(result.code === 'NOT_BEFORE_TODAY'
         ? `Only days before today (${result.today}) can be closed. Today is still being traded.`
