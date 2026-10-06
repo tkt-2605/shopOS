@@ -147,3 +147,68 @@ Side findings while doing these:
   Update every till in the shop before adding a new one.
 
 `syncLedger.test.ts`.
+
+## The test gaps 0.2.3 exposed, closed
+
+The counter charged one pack's price for a box of fifty while every pricing
+rule was proved in core: the tests priced bills through the service, and the
+screen -- which works the rate out itself and hands it over as decided -- had
+none. The same shape as the sync ledger bug: a well-tested part used in an
+order the tests never produced.
+
+1. **The counter, driven.** `apps/pos/test/counterFlow.test.tsx` renders the
+   billing page over a real database, scans, changes the unit and the
+   quantity, pays, and holds the stored bill to the shop's prices. Fails on
+   the 0.2.2 screen.
+2. **The service checks a resolved rate.** A line that says its rate came from
+   the shop's prices must match them for its unit, quantity and customer
+   (`RATE_NOT_THE_RULE`, `billing/price.ts`). A line the draft already holds
+   unchanged carries over, so a held bill keeps its quote; an amendment says
+   it carries its original's (`carriesRates`). `rateNotTheRule.test.ts`.
+3. **Sync in any order, every document.** `syncInAnyOrder.test.ts` sends a
+   month of trade (`monthOfTrade.ts`: every document the books post) one, three,
+   seven and two hundred records at a time, as it happens and to a till that
+   joins after the feed was pruned, and asks for the same shop on both.
+   **It found a bug:** a bill whose corrected copy arrived a batch ahead of a
+   return's cancellation had its returned quantity raised by the merge for the
+   undone return, and never lowered -- that till refused a return the rest of
+   the shop would take. A line may now come down by the quantity of a return
+   whose cancellation has just arrived, never below its submitted returns
+   (`returns/reconcile.ts`).
+4. **A cashier bench.** `tools/virtual-till/test/cashier-edits-lines.test.ts`
+   walks the counter's own cart code (`billCarts.ts`) through seeded random
+   cashier steps -- scan, rescan, change unit, retype quantity, choose the
+   customer, type a rate, hold across a price change -- and holds every bill to
+   the screen and the screen to the prices. Without the re-pricing, every seed
+   fails, refused by (2).
+
+## Telling the shop what does not add up
+
+Asked by the owner: a customer returns one shirt at two counters while they
+cannot reach each other, both refund it, and they sync. Both refunds stood,
+the stock showed the shirt back twice, the returned quantity was clamped in
+silence, and nothing said so. No counter can refuse what it cannot know about;
+the shop has to be told afterwards -- about this and every other thing of the
+kind.
+
+`findDiscrepancies` (`services/discrepancies.ts`, checks in
+`discrepancies/checks.ts`) reads the shop and lists, in a shopkeeper's words
+with what to do and the money at stake:
+
+- an item taken back more times than it was sold (both credit notes, who took
+  each, what was over-refunded);
+- an order billed for more than was ordered;
+- stock below zero;
+- a customer past their credit limit;
+- figures the merge left out of line with their records;
+- the books: entries that do not balance, the stock account against the stock
+  ledger, submitted documents with no entries;
+- edits dropped and records set aside by sync.
+
+The till asks at start and after every sync round that brought something in
+(`core/discrepancyWatch.ts`). A banner on every screen, for whoever may open the
+dashboard, says how many and the money; the dashboard's "Needs attention" lists
+each with a Seen button. Seen is kept per till (067, `discrepancies_seen`,
+which never travels) and per set of facts: a new refund of the same line, or a
+new document out of the books, is told again. A clean month of trade reports
+nothing. `discrepancies.test.ts`, `needsAttention.test.tsx`.

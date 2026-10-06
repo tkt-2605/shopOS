@@ -8,6 +8,7 @@ import { lookAround, type FoundTill } from './core/syncHost'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
 import { OutOfDateBanner } from './ui/OutOfDateBanner'
 import { RestoreHoldBanner } from './ui/RestoreHoldBanner'
+import { DiscrepancyBanner } from './ui/DiscrepancyBanner'
 import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
 import { ChangePassword } from './ui/ChangePassword'
@@ -372,6 +373,9 @@ function Shell() {
         <DeviceTroubleBanner />
         <OutOfDateBanner />
         <RestoreHoldBanner />
+        {/* For whoever may open the dashboard, where the list is: a refund
+            taken twice on two counters is found by a sync nobody watches. */}
+        <DiscrepancyBanner canReview={pages.includes('dashboard')} />
         {/* Also on every screen, and for the same reason turned around: the
             person who has to say yes is standing at this till looking at the
             counter, while the person adding one is at the other machine. A

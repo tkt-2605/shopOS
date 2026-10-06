@@ -8,6 +8,7 @@ import { Stat, Card, Empty, Alert, Rupees } from '../ui/components'
 import { useShopChanged } from '../core/useShopChanged'
 import { Completeness } from '../ui/Completeness'
 import { SetupChecklist } from '../ui/SetupChecklist'
+import { NeedsAttention } from '../ui/NeedsAttention'
 
 interface Snapshot {
   todaySales: number
@@ -46,6 +47,8 @@ export default function Dashboard() {
           quantity, as of {whenChecked(snap.stock.at)}. Run a stock recompute from Inventory.
         </Alert>
       )}
+
+      <NeedsAttention />
 
       <Card title="Running low">
         {snap.lowStock.length === 0 ? (

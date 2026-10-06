@@ -69,3 +69,6 @@ export type {
 } from '../services/update.js'
 export { shopProgress, setupHidden, hideSetup } from '../services/setup.js'
 export type { ShopStep, ShopProgress } from '../services/setup.js'
+/* Everything in the records that does not add up, for a person to see. */
+export { findDiscrepancies, discrepanciesWithSeen, markDiscrepanciesSeen } from '../services/discrepancies.js'
+export type { Discrepancy, DiscrepancyKind } from '../services/discrepancies.js'

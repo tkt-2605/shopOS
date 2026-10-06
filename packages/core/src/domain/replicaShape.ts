@@ -193,6 +193,7 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   sync_peers: 'who this machine has paired with, and how far each has read',
   sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
   sync_quarantine: 'a record this machine could not apply. The till that sent it applied it fine',
+  discrepancies_seen: 'which discrepancies somebody at this till has been told about. The other till tells its own people',
 }
 
 /** One record as it crosses between two tills. */

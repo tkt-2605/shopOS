@@ -79,6 +79,16 @@ async function findMissing(db: SqlDriver): Promise<{ type: VoucherType; id: stri
 }
 
 /**
+ * Documents that should have entries in the books and have none, as
+ * `type:id`. Read only: once the history is filled in (`fillLedgerOnce`), every
+ * one of these is a document whose own figures did not add up, left for a
+ * person rather than guessed at.
+ */
+export async function documentsWithoutEntries(db: SqlDriver): Promise<string[]> {
+  return (await findMissing(db)).map((m) => `${m.type}:${m.id}`)
+}
+
+/**
  * How many vouchers go into one transaction, so a long backfill does not hold
  * the counter. Each voucher is a dozen or so round trips to the Rust side, and
  * the till's watchdog rolls back a transaction left open past its budget -- at

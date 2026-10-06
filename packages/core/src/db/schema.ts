@@ -953,6 +953,13 @@ export const changeFeed = sqliteTable('change_feed', {
   index('idx_change_feed_origin').on(table.originDevice, table.seq),
 ])
 
+/** Which discrepancies a person on this till has seen. Migration 067. */
+export const discrepanciesSeen = sqliteTable('discrepancies_seen', {
+  key: text().primaryKey(),
+  seenAt: text('seen_at').notNull(),
+  seenBy: text('seen_by'),
+})
+
 export const syncState = sqliteTable('sync_state', {
   id: integer().primaryKey(),
   applying: integer().default(0).notNull(),
