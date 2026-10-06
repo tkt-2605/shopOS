@@ -75,6 +75,7 @@ export async function applyBatch(
     return { applied: 0, contested: [], ignoredColumns: 0, ignoredTables: 0, quarantined: 0, cachesHeld: 0 }
   }
 
+  const cancelledNow = await returnsCancelledBy(db, batch)
   const { recovered, ...outcome } = await mergeBatch(db, batch, changedHereToo)
   /* The caches below are scoped by what arrived, and a record that has just
      come out of quarantine arrived as surely as anything in the batch. */
@@ -117,7 +118,7 @@ export async function applyBatch(
        bill on two tills would otherwise leave one increment short. */
     const bills = idsIn(arrived, RETURN_SOURCES, (r) => (r.table === 'bills' ? r.rowId : r.row?.['bill_id']))
     if (bills === null || bills.length > 0) {
-      const found = await reconcileReturnedQty(db, { repair: true, billIds: bills })
+      const found = await reconcileReturnedQty(db, { repair: true, billIds: bills, cancelledNow })
       outcome.cachesHeld += found.filter((d) => !d.repairable).length
     }
     /* And what each order line has been fulfilled by -- bills against it and
@@ -139,6 +140,24 @@ export async function applyBatch(
   }
 
   return outcome
+}
+
+/**
+ * Returns this batch cancels: cancelled in the batch, and not already
+ * cancelled here. Read before the merge, because after it the two look alike
+ * -- and a cancellation seen twice must not take its quantity off twice.
+ * See `reconcileReturnedQty`.
+ */
+async function returnsCancelledBy(db: SqlDriver, batch: ChangeBatch): Promise<string[]> {
+  const ids = batch.records
+    .filter((r) => r.table === 'sales_returns' && r.op === 'upsert' && r.row?.['docstatus'] === 2)
+    .map((r) => r.rowId)
+  if (ids.length === 0) return []
+  // raw: an IN list as long as the batch's cancellations, which is short.
+  const already = await db.query<{ id: string }>(
+    `SELECT id FROM sales_returns WHERE docstatus = 2 AND id IN (${ids.map(() => '?').join(', ')})`, ids)
+  const held = new Set(already.map((r) => r.id))
+  return ids.filter((id) => !held.has(id))
 }
 
 /**

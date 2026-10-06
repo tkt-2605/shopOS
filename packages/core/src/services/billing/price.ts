@@ -63,6 +63,31 @@ async function overridesNeedingRight(db: SqlDriver, input: CreateBillInput, draf
   return typed.some((l) => !known.has(`${l.productId}:${l.rateOverride}`))
 }
 
+/** Where a rate comes from when nobody decided it for this bill: the shop's own prices. */
+const BY_THE_RULES: ReadonlySet<PriceSource> = new Set<PriceSource>([
+  'base_rate', 'default_list', 'customer_list', 'customer_override',
+])
+
+const lineKey = (productId: string, saleUnit: string, quantity: number, rate: number, includesTax: boolean) =>
+  `${productId}\u0000${saleUnit}\u0000${quantity}\u0000${rate}\u0000${includesTax ? 1 : 0}`
+
+/**
+ * The lines this draft already holds, as they are. A held bill sends its
+ * lines back on every save, and one priced at yesterday's list keeps
+ * yesterday's rate until somebody changes it -- the customer was quoted it.
+ */
+async function heldAsTheyAre(db: SqlDriver, draftId?: string): Promise<Set<string>> {
+  if (!draftId) return new Set()
+  const rows = await q(db)
+    .select({
+      productId: schema.billItems.productId, saleUnit: schema.billItems.saleUnit, qty: schema.billItems.qty,
+      rate: schema.billItems.rate, includesTax: schema.billItems.rateIncludesTax,
+    })
+    .from(schema.billItems)
+    .where(eq(schema.billItems.billId, draftId))
+  return new Set(rows.map((r) => lineKey(r.productId, r.saleUnit, r.qty, r.rate, r.includesTax === 1)))
+}
+
 /**
  * Everything a bill needs worked out, and nothing written. Both the first save and
  * every later one go through here, so a held bill cannot drift away from a fresh
@@ -116,6 +141,7 @@ export async function priceBill(
      export reports a 0% row, and a return reverses nothing. */
   const taxed = chargesTax(await loadTaxScheme(db))
   const pricing = await pricingContextFor(db, input.customerId ?? null)
+  const held = input.carriesRates ? new Set<string>() : await heldAsTheyAre(db, draftId)
 
   const computed: ComputedLine[] = []
   for (const line of input.lines) {
@@ -151,6 +177,24 @@ export async function priceBill(
       : line.resolved
         ? { ...line.resolved, includesTax: line.resolved.includesTax ?? true }
         : await resolveLinePrice(db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now)
+
+    /* A rate the caller says came from the shop's prices is held to them. The
+       counter works rates out itself and sends them as already resolved, so a
+       screen that priced a line for what it no longer was -- one piece's
+       price on a box of fifty, until 0.2.3 -- charged it, and nothing here
+       noticed. A line this draft already holds unchanged carries over (a held
+       bill keeps its quote); an amendment says it carries its original's. */
+    if (line.rateOverride == null && line.resolved && BY_THE_RULES.has(line.resolved.source) && !input.carriesRates
+        && !held.has(lineKey(line.productId, unit.saleUnit, line.qty, priced.rate, priced.includesTax))) {
+      const rule = await resolveLinePrice(
+        db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now)
+      if (rule.rate !== priced.rate || rule.includesTax !== priced.includesTax) {
+        return {
+          ok: false, code: 'RATE_NOT_THE_RULE',
+          productId: product.id, productName: product.name, rate: priced.rate, rule: rule.rate,
+        }
+      }
+    }
 
     const discount = line.discount ?? ZERO
     if (discount < 0) return { ok: false, code: 'NEGATIVE_DISCOUNT' }

@@ -1,10 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { syncUntilDone, collectChanges, applyBatch, changedHere } from '../src/services/sync.js'
-import type { SyncTransport } from '../src/services/sync.js'
-import { setDeviceId, deviceId } from '../src/device.js'
-import { EXPECTED_SCHEMA_VERSION } from '../src/db/schemaVersion.js'
 import { MIGRATION_FILES, MIN_PEER_SCHEMA_VERSION } from '../src/db/migrationKinds.js'
-import { getSetting } from '../src/services/bootstrap.js'
 import { createBill, submitBill } from '../src/services/billing.js'
 import { cancelBill } from '../src/services/billing/cancel.js'
 import { setSetting } from '../src/services/settings.js'
@@ -16,7 +11,8 @@ import { businessDate } from '../src/dates.js'
 import { rupees } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
 import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
-import type { SqlDriver } from '../src/db/driver.js'
+import { TILL_A, TILL_B, as, pull, type Till } from './twoTills.js'
+import { setDeviceId } from '../src/device.js'
 
 /**
  * The general ledger between tills.
@@ -32,10 +28,8 @@ import type { SqlDriver } from '../src/db/driver.js'
  * an edit being dropped, once for every line.
  */
 
-const A = '1111aaaa-1111-4111-8111-111111111111'
-const B = '2222bbbb-2222-4222-8222-222222222222'
-
-interface Till { id: string; db: SqlDriver }
+const A = TILL_A
+const B = TILL_B
 
 let fx: Fixture
 let a: Till
@@ -52,39 +46,6 @@ afterEach(async () => {
   await a.db.close()
   await b.db.close()
 })
-
-async function as<T>(id: string, fn: () => Promise<T>): Promise<T> {
-  const before = deviceId()
-  setDeviceId(id)
-  try { return await fn() } finally { setDeviceId(before) }
-}
-
-/** The far till in process, sending `limit` records a batch. */
-function wire(peer: Till, me: Till, limit: number): SyncTransport {
-  return {
-    async hello() {
-      const cursor = await peer.db.get<{ c: number }>(
-        `SELECT their_cursor AS c FROM sync_peers WHERE device_id = ?`, [me.id])
-      return {
-        deviceId: peer.id, label: peer.id.slice(0, 4), schemaVersion: EXPECTED_SCHEMA_VERSION,
-        shopId: await getSetting(peer.db, 'shop_id'), yourCursorWithThem: cursor?.c ?? 0,
-      }
-    },
-    async fetch(since) { return as(peer.id, () => collectChanges(peer.db, since, limit, me.id)) },
-    async offer(batch) {
-      return as(peer.id, async () => {
-        await applyBatch(peer.db, batch, await changedHere(peer.db, 0, batch.records))
-        await peer.db.execute(
-          `INSERT INTO sync_peers (device_id, their_cursor, created_at) VALUES (?, ?, ?)
-           ON CONFLICT (device_id) DO UPDATE SET their_cursor = excluded.their_cursor`,
-          [batch.fromDevice, batch.upTo, new Date().toISOString()])
-        return { upTo: batch.upTo }
-      })
-    },
-  }
-}
-
-const pull = (me: Till, from: Till, limit = 200) => as(me.id, () => syncUntilDone(me.db, wire(from, me, limit), 5000))
 
 const books = (t: Till) => t.db.query(`SELECT id, account, debit, credit FROM gl_entries ORDER BY id`)
 const setAside = (t: Till) => t.db.query(`SELECT table_name, row_id, reason FROM sync_quarantine`)

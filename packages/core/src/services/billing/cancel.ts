@@ -212,6 +212,8 @@ export async function amendBill(
        it had taken, so an amendment that dropped the link would leave the order
        open for goods the shop is about to send out again. */
     convertedFrom: source.convertedFrom,
+    /* Its rates are the original's, not today's: see `carriesRates`. */
+    carriesRates: true,
     /* Each rate as already decided, with where it came from, rather than as a
        rate typed now. Passing them as typed rates put every line of every
        amendment down as a cashier's override -- against the wrong name -- and,

@@ -78,7 +78,7 @@ describe('returned quantity', () => {
     expect(await reconcileReturnedQty(fx.db)).toEqual([])
   })
 
-  it('is never lowered, because a return may simply not have arrived yet', async () => {
+  it('is not lowered just because a return is missing, which may simply not have arrived yet', async () => {
     const sale = await sold(5)
     await giveBack(sale, 2)
     // As if the return itself were still in a later batch, or quarantined.
@@ -87,6 +87,33 @@ describe('returned quantity', () => {
     const found = await reconcileReturnedQty(fx.db, { repair: true })
     expect(found).toEqual([{ billItemId: sale.itemId, stored: fromUnits(2), derived: 0, repairable: false }])
     expect(await returnedOn(sale.itemId)).toBe(2)
+  })
+
+  /* The bill's corrected copy arrived a batch ahead of the cancellation, so a
+     merge raised the line for a return already undone. */
+  it('comes down by a return whose cancellation just arrived, and no further', async () => {
+    const sale = await sold(5)
+    const undone = await giveBack(sale, 1)
+    await giveBack(sale, 2)
+    await cancelReturn(fx.db, { returnId: undone, actorId: fx.adminId })
+    // Raised for the cancelled return, and the other still on its way.
+    await fx.db.execute('UPDATE bill_items SET returned_qty = ? WHERE id = ?', [fromUnits(3), sale.itemId])
+    await editingSubmitted(fx.db, 'sales_returns', () => fx.db.execute(
+      'UPDATE sales_returns SET docstatus = 0 WHERE id <> ?', [undone]))
+
+    const found = await reconcileReturnedQty(fx.db, { repair: true, cancelledNow: [undone] })
+    expect(found).toEqual([{ billItemId: sale.itemId, stored: fromUnits(3), derived: 0, repairable: false }])
+    expect(await returnedOn(sale.itemId)).toBe(2)
+  })
+
+  it('is not lowered by a cancellation it already held', async () => {
+    const sale = await sold(5)
+    const undone = await giveBack(sale, 1)
+    await cancelReturn(fx.db, { returnId: undone, actorId: fx.adminId })
+    await fx.db.execute('UPDATE bill_items SET returned_qty = ? WHERE id = ?', [fromUnits(1), sale.itemId])
+
+    await reconcileReturnedQty(fx.db, { repair: true })
+    expect(await returnedOn(sale.itemId)).toBe(1)
   })
 
   it('looks only at the bills it is given', async () => {

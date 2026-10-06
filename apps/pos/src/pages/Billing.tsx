@@ -8,7 +8,8 @@ import { useCore, useUser } from '../core/CoreProvider'
 import { printBill } from '../core/print'
 import { SheetPreview } from '../ui/SheetPreview'
 import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBillTabs'
-import { linesToReprice, pricedForOf, repriceCart } from '../core/billCarts'
+import { pricedForOf } from '../core/billCarts'
+import { useRepricing } from '../core/useRepricing'
 import { useShortcuts } from '../core/useShortcuts'
 import { Empty, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
@@ -87,8 +88,8 @@ export default function Billing() {
      billed for nothing. */
   const unfinished = active.lines.some((l) => l.qty <= 0)
   /* A line whose unit, quantity or customer changed and whose rate has not
-     caught up yet. Not paid for until it has: see the effect below. */
-  const repricing = linesToReprice(active).length > 0
+     caught up yet. Not paid for until it has. */
+  const repricing = useRepricing(db, active, tabs.patch)
 
   /* Lines being sold off a shelf that does not have them. See `shortOf`. */
   const short = useMemo(() => shortOf(active.lines), [active.lines])
@@ -233,29 +234,6 @@ export default function Billing() {
     setPickingCustomer(false)
   }, [tabs])
 
-  /* The rate follows the line. A line's unit, quantity and the bill's customer
-     each decide which price applies -- a box of fifty reaches the fifty-or-more
-     rung -- so when any of them changes, the line is priced again, the same way
-     the service would. See `repriceCart`. */
-  useEffect(() => {
-    if (active.hydrating || !repricing) return
-    let cancelled = false
-    repriceCart(db, active)
-      .then((change) => { if (!cancelled) tabs.patch(change) })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        /* Marked as priced, so a failure is said once rather than retried on
-           every render; the cashier can type the rate. */
-        const customer = active.customer?.id ?? null
-        tabs.patch((cart) => (cart.tabId !== active.tabId ? cart : {
-          ...cart,
-          error: `A price could not be worked out: ${err instanceof Error ? err.message : String(err)}`,
-          lines: cart.lines.map((l) => ({ ...l, pricedFor: pricedForOf(l, customer) })),
-        }))
-      })
-    return () => { cancelled = true }
-  }, [db, active, repricing, tabs])
-
   const editLine = (key: string, change: (line: CartLine) => CartLine) =>
     tabs.patch((cart) => ({ ...cart, lines: cart.lines.map((l) => (l.key === key ? change(l) : l)) }))
 
@@ -301,7 +279,10 @@ export default function Billing() {
       await tabs.flush()
       const saved = tabs.savedDraft()
       if (saved.billId === null) {
-        fail('The bill on screen could not be saved, so it cannot be taken yet. Check the lines and try again.')
+        fail(saved.reason === 'RATE_NOT_THE_RULE'
+          ? 'A rate on screen is not the shop’s price for that line’s unit and quantity, so the bill was not '
+            + 'saved. Change the line’s quantity or unit again to reprice it, or type the rate.'
+          : 'The bill on screen could not be saved, so it cannot be taken yet. Check the lines and try again.')
         return
       }
       billId = saved.billId

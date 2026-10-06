@@ -60,6 +60,12 @@ export interface CreateBillInput {
    * Nothing happens to the order until `submitBill`.
    */
   convertedFrom?: string | null
+  /**
+   * The lines' resolved rates are another document's, already decided -- an
+   * amendment carrying its original's. Not checked against today's prices.
+   * See `rateNotTheRule` in `price.ts`.
+   */
+  carriesRates?: boolean
   actorId: string
   now?: Date
 }
@@ -102,6 +108,11 @@ export type CreateBillResult =
   | { ok: false; code: 'DISCOUNT_BLOCKED'; productId: string; productName: string }
   /** A discount below zero is a surcharge nobody authorised. */
   | { ok: false; code: 'NEGATIVE_DISCOUNT' }
+  /**
+   * A line said its rate came from the shop's prices, and the shop's prices
+   * say otherwise for that unit, quantity and customer. See `price.ts`.
+   */
+  | { ok: false; code: 'RATE_NOT_THE_RULE'; productId: string; productName: string; rate: Money; rule: Money }
 
 export type SubmitBillResult =
   | {
