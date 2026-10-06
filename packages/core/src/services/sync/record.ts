@@ -112,7 +112,7 @@ export async function applyRecord(
      parent revision when a line changes on the sending side, so a head that
      matches means the lines match too. */
   if (record.op === 'upsert' && record.row !== null && mine !== undefined
-      && same(known(record.row, columns).row, mine)) {
+      && same(known(record.row, columns).row, mine, shape.incidental)) {
     return NOTHING
   }
 
@@ -276,11 +276,14 @@ function origin(_record: ChangeRecord, batch: ChangeBatch): string | null {
   return batch.fromDevice
 }
 
-/** Whether an incoming row says anything this database does not already hold. */
-function same(theirs: Row, mine: Row): boolean {
+/**
+ * Whether an incoming row says anything this database does not already hold.
+ * `incidental` columns are left out of it: see `RecordShape.incidental`.
+ */
+function same(theirs: Row, mine: Row, incidental: readonly string[] = []): boolean {
   const keys = Object.keys(theirs)
   if (keys.length !== Object.keys(mine).length) return false
-  return keys.every((k) => theirs[k] === mine[k])
+  return keys.every((k) => theirs[k] === mine[k] || incidental.includes(k))
 }
 
 /**

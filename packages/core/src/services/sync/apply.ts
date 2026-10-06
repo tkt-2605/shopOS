@@ -14,7 +14,6 @@ import {
   RECORD, anythingSetAside, keyOf, orphansAmong, parentSetAside, retrySetAside,
 } from './setAside.js'
 import type { ContestedChange } from './types.js'
-import { postMissingGl, LEDGER_SOURCES, type VoucherType } from '../ledger.js'
 
 /*
  * Taking a batch in: one transaction for the whole of it, and a second pass
@@ -131,19 +130,12 @@ export async function applyBatch(
       const found = await reconcileFulfilledQty(db, { repair: true, documentIds: documents })
       outcome.cachesHeld += found.filter((d) => !d.repairable).length
     }
-    /* And the books for documents that came without them, from a till still
-       on a build that had no ledger. A document from a till that has one
-       brings its entries along, and this finds nothing. */
-    const vouchers = new Map<VoucherType, string[]>()
-    for (const record of arrived) {
-      const type = LEDGER_SOURCES.get(record.table)
-      if (!type || record.op === 'delete') continue
-      vouchers.set(type, [...(vouchers.get(type) ?? []), record.rowId])
-    }
-    if (vouchers.size > 0) {
-      const books = await postMissingGl(db, vouchers)
-      outcome.cachesHeld += books.unbalanced.length
-    }
+    /* Not the books. A document's entries travel behind it as rows of their
+       own, and working them out here -- as 0.2.0 did -- races them: a till
+       joining a shop is sent its bills a batch before their stock movements,
+       posts them without a cost, and then refuses the real entries under the
+       same ids. No till able to sync lacks a ledger (the floor is above 064),
+       so there is nothing here for this to fill in. See `fillLedgerOnce`. */
   }
 
   return outcome

@@ -1,0 +1,22 @@
+-- Whether this database has had the books filled in for its history.
+--
+-- `postMissingGl` works out the entries for documents submitted before the
+-- ledger existed (064). It ran on every opening and after every merge, and
+-- both were wrong once a shop had more than one till: a till joining a shop,
+-- or catching up after the feed was pruned, is sent the documents table by
+-- table, so bills arrive a batch or more before their stock movements and
+-- their entries. Filled in at that moment, a bill's cost of goods is nothing
+-- and a purchase's stock is all adjustment -- and when the entries the other
+-- till posted arrive under the same ids, the guard on `gl_entries` refuses
+-- them, they are set aside, and the two tills' books differ for good.
+--
+-- A document that needs filling in is one this database held before it had a
+-- ledger. Every till able to sync now has one (the floor is above 064), and
+-- posts with each document; a document from another till brings its entries
+-- with it. So the history is filled in once, on the first opening with this
+-- column, and never again -- not after a merge, and not on an opening that
+-- happens halfway through a join.
+--
+-- Additive: a column on a table that never travels.
+
+ALTER TABLE sync_state ADD COLUMN ledger_filled INTEGER NOT NULL DEFAULT 0;

@@ -1,4 +1,5 @@
 import { MERGE_BUDGET_MS, type SqlDriver } from '../db/driver.js'
+import { q, schema } from '../db/q.js'
 import { UnbalancedPostingError } from '../domain/ledger.js'
 import { postGl, reverseGl } from './ledger/post.js'
 import { build, reversalStockVoucher, stockValueOf, type VoucherType } from './ledger/vouchers.js'
@@ -43,77 +44,36 @@ const POSTED_OR_CANCELLED = (alias: string, type: string) => `
 
 /*
  * raw: one select per kind of document, each joined against the ledger by its
- * own key, so that it can be asked about the whole shop (on opening) or about
- * just the documents a merge brought in (after one). The table each reads is
- * named here; the voucher types are `VoucherType`.
+ * own key. The voucher types are `VoucherType`.
  */
-const MISSING: Record<VoucherType, { table: string; select: string }> = {
-  bill: {
-    table: 'bills',
-    select: `SELECT 'bill' AS type, b.id, b.docstatus, b.posting_date AS at FROM bills b
+const MISSING: Record<VoucherType, string> = {
+  bill: `SELECT 'bill' AS type, b.id, b.docstatus, b.posting_date AS at FROM bills b
               WHERE ${POSTED_OR_CANCELLED('b', 'bill')}`,
-  },
-  sales_return: {
-    table: 'sales_returns',
-    select: `SELECT 'sales_return' AS type, r.id, r.docstatus, r.posting_date AS at FROM sales_returns r
+  sales_return: `SELECT 'sales_return' AS type, r.id, r.docstatus, r.posting_date AS at FROM sales_returns r
               WHERE ${POSTED_OR_CANCELLED('r', 'sales_return')}`,
-  },
-  payment: {
-    table: 'payment_entries',
-    select: `SELECT 'payment' AS type, p.id, p.docstatus, p.posting_date AS at FROM payment_entries p
+  payment: `SELECT 'payment' AS type, p.id, p.docstatus, p.posting_date AS at FROM payment_entries p
               WHERE NOT EXISTS (SELECT 1 FROM sales_returns r WHERE r.credit_note_id = p.id)
                 AND ${POSTED_OR_CANCELLED('p', 'payment')}`,
-  },
-  stock_entry: {
-    table: 'stock_entries',
-    select: `SELECT 'stock_entry' AS type, e.id, e.docstatus, e.posting_date AS at FROM stock_entries e
+  stock_entry: `SELECT 'stock_entry' AS type, e.id, e.docstatus, e.posting_date AS at FROM stock_entries e
               WHERE ${POSTED_OR_CANCELLED('e', 'stock_entry')}`,
-  },
-  cash_session: {
-    table: 'cash_sessions',
-    select: `SELECT 'cash_session' AS type, s.id, 1 AS docstatus, s.closed_at AS at FROM cash_sessions s
+  cash_session: `SELECT 'cash_session' AS type, s.id, 1 AS docstatus, s.closed_at AS at FROM cash_sessions s
               WHERE s.closed_at IS NOT NULL AND COALESCE(s.variance, 0) <> 0
                 AND NOT EXISTS (SELECT 1 FROM gl_entries g WHERE g.voucher_type = 'cash_session' AND g.voucher_id = s.id)`,
-  },
-  supplier_opening: {
-    table: 'suppliers',
-    select: `SELECT 'supplier_opening' AS type, s.id, 1 AS docstatus, COALESCE(s.opening_as_of, s.created_at) AS at
+  supplier_opening: `SELECT 'supplier_opening' AS type, s.id, 1 AS docstatus, COALESCE(s.opening_as_of, s.created_at) AS at
                FROM suppliers s
               WHERE (CASE WHEN s.opening_as_of IS NULL THEN 0 ELSE s.opening_balance END)
                  <> COALESCE((SELECT SUM(g.credit) - SUM(g.debit) FROM gl_entries g
                                WHERE g.voucher_type = 'supplier_opening' AND g.account = 'creditors'
                                  AND g.party_id = s.id), 0)`,
-  },
-  cash_payout: {
-    table: 'cash_movements',
-    select: `SELECT 'cash_payout' AS type, m.id, 1 AS docstatus, m.created_at AS at FROM cash_movements m
+  cash_payout: `SELECT 'cash_payout' AS type, m.id, 1 AS docstatus, m.created_at AS at FROM cash_movements m
               WHERE m.source_type = 'expense'
                 AND NOT EXISTS (SELECT 1 FROM gl_entries g WHERE g.voucher_type = 'cash_payout' AND g.voucher_id = m.id)`,
-  },
 }
 
-/** The tables a merge can bring documents in through, and the voucher each one is. */
-export const LEDGER_SOURCES: ReadonlyMap<string, VoucherType> = new Map(
-  (Object.entries(MISSING) as [VoucherType, { table: string }][]).map(([type, m]) => [m.table, type]),
-)
-
-async function findMissing(
-  db: SqlDriver,
-  only?: ReadonlyMap<VoucherType, readonly string[]>,
-): Promise<{ type: VoucherType; id: string; docstatus: number }[]> {
+async function findMissing(db: SqlDriver): Promise<{ type: VoucherType; id: string; docstatus: number }[]> {
   const found: { type: VoucherType; id: string; docstatus: number; at: string }[] = []
-  for (const [type, m] of Object.entries(MISSING) as [VoucherType, { select: string }][]) {
-    const ids = only?.get(type)
-    if (only && (!ids || ids.length === 0)) continue
-    const alias = m.select.match(/FROM \w+ (\w)\b/)![1]
-    /* Chunked: SQLite allows a few hundred bound values, and a merge can bring
-       more documents than that. */
-    for (let i = 0; i < (ids?.length ?? 1); i += 400) {
-      const chunk = ids?.slice(i, i + 400)
-      const where = chunk ? ` AND ${alias}.id IN (${chunk.map(() => '?').join(', ')})` : ''
-      found.push(...await db.query<{ type: VoucherType; id: string; docstatus: number; at: string }>(
-        m.select + where, chunk ?? []))
-    }
+  for (const select of Object.values(MISSING)) {
+    found.push(...await db.query<{ type: VoucherType; id: string; docstatus: number; at: string }>(select))
   }
   return found.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))
 }
@@ -142,25 +102,14 @@ export interface MissingGlOutcome {
 /**
  * Posts every document that should have entries and has none.
  *
- * Run when the app opens and after every merge. Normally it finds nothing: a
- * document posts its own entries as it is submitted, and they travel with it.
- * It finds something on a shop's first open after updating to the ledger --
- * everything before it -- and after a merge that brought documents from a
- * till still on an older build. Idempotent, and safe on two tills at once:
- * the entries' ids come from the document, so two tills posting the same one
- * write the same rows.
+ * Idempotent, and safe on two tills at once: the entries' ids come from the
+ * document, so two tills posting the same one write the same rows. Right only
+ * while this database holds the whole of each document it finds -- its stock
+ * movements as well as its lines -- which is why it no longer runs after a
+ * merge or on every opening. See `fillLedgerOnce`.
  */
-export async function postMissingGl(
-  db: SqlDriver,
-  /**
-   * Only these documents, by voucher type -- what a merge brought in. Left out,
-   * the whole shop, which is what opening the app asks for. A merge must not
-   * walk every document the shop has ever raised to look at the three it was
-   * sent (`atScale.test.ts`).
-   */
-  only?: ReadonlyMap<VoucherType, readonly string[]>,
-): Promise<MissingGlOutcome> {
-  const missing = await findMissing(db, only)
+export async function postMissingGl(db: SqlDriver): Promise<MissingGlOutcome> {
+  const missing = await findMissing(db)
   const unbalanced: string[] = []
   for (let i = 0; i < missing.length; i += BATCH) {
     const slice = missing.slice(i, i + BATCH)
@@ -180,4 +129,25 @@ export async function postMissingGl(
     }, { budgetMs: MERGE_BUDGET_MS })
   }
   return { posted: missing.length - unbalanced.length, unbalanced }
+}
+
+/**
+ * Fills in the books for this database's history, once (066).
+ *
+ * The documents that need it are the ones held here before this database had
+ * a ledger. Every till able to sync now posts with each document, and a
+ * document from another till arrives with its entries behind it. Filling in
+ * again later -- after a merge, or on an opening halfway through a till
+ * joining a shop -- finds documents whose stock movements and entries are
+ * still on the way, posts them without their cost, and the entries the other
+ * till posted are then refused under the same ids (`syncLedger.test.ts`).
+ *
+ * Null when it had already been done.
+ */
+export async function fillLedgerOnce(db: SqlDriver): Promise<MissingGlOutcome | null> {
+  const [state] = await q(db).select({ filled: schema.syncState.ledgerFilled }).from(schema.syncState)
+  if (state?.filled === 1) return null
+  const outcome = await postMissingGl(db)
+  await q(db).update(schema.syncState).set({ ledgerFilled: 1 })
+  return outcome
 }

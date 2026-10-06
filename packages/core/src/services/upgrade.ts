@@ -4,7 +4,7 @@ import { q, schema } from '../db/q.js'
 import { ROLE_TEMPLATES, PAGES, RESOURCES, type Resource, type ResourcePermissions } from '../integrity/permissions.js'
 import { backfillCustomerCodes } from './customers.js'
 import { newId } from '../ids.js'
-import { postMissingGl } from './ledger.js'
+import { fillLedgerOnce } from './ledger.js'
 
 /**
  * What a new version of ShopOS has to do to a shop that is already running.
@@ -27,9 +27,9 @@ export async function applyUpgrades(db: SqlDriver): Promise<{ pagesGranted: stri
      leave the shop unable to open its own till. */
   const codesGiven = await backfillCustomerCodes(db)
 
-  /* The books for everything submitted before the ledger existed, or that
-     arrived from a till still on an older build. Nothing, on an ordinary day. */
-  await postMissingGl(db)
+  /* The books for everything this database held before it had a ledger, on
+     the first opening after 066 and never again. */
+  await fillLedgerOnce(db)
 
   await db.transaction(async (tx) => {
     const newPages = await pagesNotYetKnown(tx)

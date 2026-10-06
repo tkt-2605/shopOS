@@ -50,6 +50,12 @@ export interface RecordShape {
    * written down once instead of three times.
    */
   travels?: string
+  /**
+   * Columns that say when a machine wrote the row rather than what the row
+   * says. Two copies that differ only in these are one row, and arriving is
+   * not an edit. Only `gl_entries`, whose ids two tills can derive alike.
+   */
+  incidental?: readonly string[]
 }
 
 /**
@@ -158,8 +164,9 @@ export const REPLICATED: readonly RecordShape[] = [
   { table: 'batch_movements', key: 'id', lines: [] },
   /* The general ledger (064), append-only for the same reasons. Its ids are
      derived from the document, so two tills that both post one document write
-     the same rows and the union is still a union. */
-  { table: 'gl_entries', key: 'id', lines: [] },
+     the same rows and the union is still a union -- the same but for when
+     each was written, which is not a disagreement. */
+  { table: 'gl_entries', key: 'id', lines: [], incidental: ['created_at'] },
   { table: 'loyalty_entries', key: 'id', lines: [] },
   /* Its own row, like the ledger: written once when a line is converted,
      and never lost to a merge of the document it marks (054). */
@@ -182,7 +189,7 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   doc_sequences: 'a number series. Taking either side would hand two tills the same invoice number',
   audit_log: 'this machine\'s own history. Worth showing one day, but it has no conflict to resolve',
   change_feed: 'what this machine still has to send',
-  sync_state: 'whether a merge is running right now',
+  sync_state: 'whether a merge is running right now, and how far this machine has pruned its feed and filled in its books',
   sync_peers: 'who this machine has paired with, and how far each has read',
   sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
   sync_quarantine: 'a record this machine could not apply. The till that sent it applied it fine',

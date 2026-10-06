@@ -122,3 +122,28 @@ Side findings while doing these:
   bill up. The seeded Cashier role may not take returns; the bench now takes
   them as the owner, which is what the services enforce.
 - The Stock In page never checked `stock_entry.submit`. Its button now does.
+
+## Found on the sync rerun after 0.2.1
+
+- **A till joining a shop posted its own books, and the shop refused them.**
+  After the feed is pruned, a joining till (or one back from past the feed
+  lease, or one restored from a backup) is sent the shop table by table: bills
+  and purchases, then the stock ledger, then `gl_entries`. The merge worked out
+  the entries for each document as it arrived, before its stock movements, so a
+  purchase posted all its value as adjustment and a sale no cost. When the real
+  entries arrived under the same ids, the append-only guard refused them on
+  both tills; they were set aside and the two sets of books differed for good.
+  Reproduced at batch sizes 2, 3, 4 and 6; a real shop's 200 against thousands
+  of bills hits it every time. **Fixed:** the merge no longer works the books
+  out. No till that can sync lacks a ledger (the floor is 065, above 064, and a
+  test holds it there), so entries always travel with their document.
+- **Filling in the history ran on every opening**, so a till closed halfway
+  through joining would do the same on its next start. It now runs once per
+  database (066, additive: `sync_state.ledger_filled`, which never travels).
+- **Two tills filling in the same history were told an edit was dropped**, once
+  for every line: the rows were identical but for `created_at`. A shape may now
+  name such columns (`incidental`); `gl_entries` names `created_at`.
+- A till still on 0.2.0 or 0.2.1 keeps the old merge until it is updated.
+  Update every till in the shop before adding a new one.
+
+`syncLedger.test.ts`.

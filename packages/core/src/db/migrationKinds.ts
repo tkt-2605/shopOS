@@ -139,6 +139,8 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* Defaulted columns that would be a lie about a purchase an older till
      relayed -- no tax and owing nothing -- and a guard rebuilt. */
   [65, '065_what_a_supplier_billed.sql', 'breaking'],
+  /* A column on `sync_state`, which never travels. */
+  [66, '066_the_books_filled_once.sql', 'additive'],
 ]
 
 /**

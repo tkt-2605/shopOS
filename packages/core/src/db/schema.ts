@@ -958,6 +958,8 @@ export const syncState = sqliteTable('sync_state', {
   applying: integer().default(0).notNull(),
   /** How far this till's own feed has been pruned. Migration 061. */
   prunedThrough: integer('pruned_through').default(0).notNull(),
+  /** Whether the books have been filled in for this database's history. Migration 066. */
+  ledgerFilled: integer('ledger_filled').default(0).notNull(),
 })
 
 export const syncPeers = sqliteTable('sync_peers', {

@@ -23,7 +23,7 @@ export * as Reports from '../repos/reports.js'
 export type { DateRange } from '../repos/reports.js'
 /* The general ledger (064): the chart, posting, and the statements. */
 export * as Ledger from '../domain/ledger.js'
-export { postVoucherGl, reverseVoucherGl, postMissingGl } from '../services/ledger.js'
+export { postVoucherGl, reverseVoucherGl, postMissingGl, fillLedgerOnce } from '../services/ledger.js'
 export type { VoucherType, MissingGlOutcome } from '../services/ledger.js'
 export { trialBalance, profitAndLoss, balanceSheet, ledgerChecks, partyBalance } from '../repos/ledger.js'
 export type {

@@ -777,19 +777,7 @@ describe('the books on a second till', () => {
     expect(there).toEqual(await entriesOf(a, billId))
   })
 
-  it('are worked out on arrival for a bill from a till that has no ledger yet', async () => {
-    const billId = await paidBill()
-    /* A as an older build: the bill, and no entries for it -- nor any in the
-       feed to send. */
-    await a.db.execute(`DROP TRIGGER gl_entries_is_append_only_del`)
-    await a.db.execute(`DELETE FROM gl_entries`)
-    await a.db.execute(`DELETE FROM change_feed WHERE table_name = 'gl_entries'`)
-
-    await bothWays()
-    const there = await entriesOf(b, billId)
-    expect(there.length).toBeGreaterThan(0)
-    expect(there.reduce((s, e) => s + e.debit, 0)).toBe(there.reduce((s, e) => s + e.credit, 0))
-  })
+  /* A merge no longer works the books out itself: see `syncLedger.test.ts`. */
 })
 
 describe('points spent on one till', () => {
