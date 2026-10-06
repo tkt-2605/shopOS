@@ -8,6 +8,7 @@ import { useCore, useUser } from '../core/CoreProvider'
 import { printBill } from '../core/print'
 import { SheetPreview } from '../ui/SheetPreview'
 import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBillTabs'
+import { linesToReprice, pricedForOf, repriceCart } from '../core/billCarts'
 import { useShortcuts } from '../core/useShortcuts'
 import { Empty, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
@@ -85,6 +86,9 @@ export default function Billing() {
   /* A line left at zero is half-typed, not a sale. Said rather than silently
      billed for nothing. */
   const unfinished = active.lines.some((l) => l.qty <= 0)
+  /* A line whose unit, quantity or customer changed and whose rate has not
+     caught up yet. Not paid for until it has: see the effect below. */
+  const repricing = linesToReprice(active).length > 0
 
   /* Lines being sold off a shelf that does not have them. See `shortOf`. */
   const short = useMemo(() => shortOf(active.lines), [active.lines])
@@ -178,6 +182,7 @@ export default function Billing() {
         sourceId: resolved.sourceId,
         manual: false,
         includesTax: resolved.includesTax,
+        pricedFor: pricedForOf({ saleUnit: unit.saleUnit, qty: 1 }, active.customer?.id ?? null),
       }
       return { ...cart, lines: [...cart.lines, line], error: null }
     })
@@ -228,6 +233,29 @@ export default function Billing() {
     setPickingCustomer(false)
   }, [tabs])
 
+  /* The rate follows the line. A line's unit, quantity and the bill's customer
+     each decide which price applies -- a box of fifty reaches the fifty-or-more
+     rung -- so when any of them changes, the line is priced again, the same way
+     the service would. See `repriceCart`. */
+  useEffect(() => {
+    if (active.hydrating || !repricing) return
+    let cancelled = false
+    repriceCart(db, active)
+      .then((change) => { if (!cancelled) tabs.patch(change) })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        /* Marked as priced, so a failure is said once rather than retried on
+           every render; the cashier can type the rate. */
+        const customer = active.customer?.id ?? null
+        tabs.patch((cart) => (cart.tabId !== active.tabId ? cart : {
+          ...cart,
+          error: `A price could not be worked out: ${err instanceof Error ? err.message : String(err)}`,
+          lines: cart.lines.map((l) => ({ ...l, pricedFor: pricedForOf(l, customer) })),
+        }))
+      })
+    return () => { cancelled = true }
+  }, [db, active, repricing, tabs])
+
   const editLine = (key: string, change: (line: CartLine) => CartLine) =>
     tabs.patch((cart) => ({ ...cart, lines: cart.lines.map((l) => (l.key === key ? change(l) : l)) }))
 
@@ -248,6 +276,7 @@ export default function Billing() {
 
   const pay = useCallback(async (method: Tender) => {
     if (active.lines.length === 0 || submitting.current) return
+    if (repricing) return
     submitting.current = true
     setBusy(true)
     const fail = (error: string) => tabs.patch((cart) => ({ ...cart, error }))
@@ -306,7 +335,7 @@ export default function Billing() {
     tabs.released()
     setTerm('')
     focusScan()
-  }, [db, user.id, active.lines, tabs, totals.grandTotal, due, redeemPoints, focusScan])
+  }, [db, user.id, active.lines, tabs, totals.grandTotal, due, redeemPoints, focusScan, repricing])
 
   /* The counter should not need the mouse. Only bound keys are advertised.
      Every one of these now stands down while a dialog is open — the payment
@@ -315,7 +344,7 @@ export default function Billing() {
   useShortcuts([
     // Allowed while typing: the cashier is often in the quantity box when the
     // customer is ready to pay.
-    { key: 'F12', whileTyping: true, run: () => { if (!empty && !unfinished && !done) setPaying(true) } },
+    { key: 'F12', whileTyping: true, run: () => { if (!empty && !unfinished && !repricing && !done) setPaying(true) } },
     { key: 't', ctrl: true, whileTyping: true, run: () => tabs.open() },
     { key: 'w', ctrl: true, whileTyping: true, run: () => void closeTab(active) },
     ...Array.from({ length: MAX_TABS }, (_, i) => ({
@@ -403,6 +432,7 @@ export default function Billing() {
         loyaltyMonth={loyaltyMonth}
         empty={empty}
         unfinished={unfinished}
+        repricing={repricing}
         onPickCustomer={() => {
           setCustomerTerm('')
           void searchCustomers(db).then(setCustomers)

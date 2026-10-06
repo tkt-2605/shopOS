@@ -7,7 +7,7 @@ import { Field, Alert, Rupees } from '../../ui/components'
  * and the button that takes the money.
  */
 export function TotalsPanel({
-  cart, totals, blocked, needsRecipient, loyaltyMonth, empty, unfinished, onPickCustomer, onDiscount, onPay,
+  cart, totals, blocked, needsRecipient, loyaltyMonth, empty, unfinished, repricing = false, onPickCustomer, onDiscount, onPay,
 }: {
   cart: Cart
   totals: Totals.ComputedTotals
@@ -18,6 +18,8 @@ export function TotalsPanel({
   loyaltyMonth: { spent: Money.Money; target: Money.Money; thisBill: Money.Money } | null
   empty: boolean
   unfinished: boolean
+  /** A line's rate is being worked out again for its new unit or quantity. */
+  repricing?: boolean
   onPickCustomer: () => void
   onDiscount: (typed: string) => void
   onPay: () => void
@@ -104,9 +106,9 @@ export function TotalsPanel({
         </div>
       </div>
 
-      <button className="pay-btn" disabled={empty || unfinished} onClick={onPay}>
+      <button className="pay-btn" disabled={empty || unfinished || repricing} onClick={onPay}>
         <span className="k">F12</span>
-        <span>{unfinished ? 'A line has no quantity' : 'Take payment'}</span>
+        <span>{unfinished ? 'A line has no quantity' : repricing ? 'Pricing…' : 'Take payment'}</span>
       </button>
     </div>
   )

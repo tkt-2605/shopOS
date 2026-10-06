@@ -38,6 +38,12 @@ export interface CartLine {
    * then comes out soonest expiry first, which is what it would have shown.
    */
   batchPick?: string | null
+  /**
+   * The unit, quantity and customer `rate` was worked out for (`pricedForOf`).
+   * A line whose rate the shop's rules set is priced again when any of the
+   * three changes -- see `repriceCart`. Kept on screen only.
+   */
+  pricedFor?: string
 }
 
 export interface Cart {
@@ -73,6 +79,72 @@ export function emptyCart(): Cart {
     error: null,
     fromOrder: null,
     hydrating: false,
+  }
+}
+
+/**
+ * Whether the shop's rules set this line's rate. A rate the cashier typed and
+ * a rate an order promised stay as they are, whatever is done to the line.
+ */
+export function followsPriceRules(line: CartLine): boolean {
+  return !line.manual && line.source !== 'order_rate'
+}
+
+/** What a line's rate depends on besides the item, as one comparable thing. */
+export function pricedForOf(line: Pick<CartLine, 'saleUnit' | 'qty'>, customerId: string | null): string {
+  return `${line.saleUnit}\u0000${line.qty}\u0000${customerId ?? ''}`
+}
+
+/** Lines whose rate was worked out for a unit, quantity or customer they no longer have. */
+export function linesToReprice(cart: Cart): CartLine[] {
+  const customer = cart.customer?.id ?? null
+  return cart.lines.filter((l) => followsPriceRules(l) && l.pricedFor !== pricedForOf(l, customer))
+}
+
+/**
+ * Prices again every line that has changed under its rate, and returns the
+ * change to make to the cart.
+ *
+ * A line was priced once, as it went in -- one of its default unit -- and kept
+ * that rate whatever was done to it after. Switched to a box of fifty, it was
+ * charged one piece's price for fifty; typed up to ten, it never reached the
+ * ten-or-more rate; and a customer chosen after the items kept the shop's
+ * prices rather than theirs. `submitBill` takes the rate on screen as already
+ * resolved, so the bill charged what the screen said.
+ *
+ * The change applies a rate only to a line still as it was when priced, so a
+ * cashier who goes on typing while this runs is never handed a rate for a
+ * quantity the line no longer has; that line is priced again on the next pass.
+ */
+export async function repriceCart(db: SqlDriver, cart: Cart): Promise<(cart: Cart) => Cart> {
+  const stale = linesToReprice(cart)
+  if (stale.length === 0) return (c) => c
+  const customer = cart.customer?.id ?? null
+  const context = await pricingContextFor(db, customer)
+
+  const priced = new Map<string, { as: string } & Awaited<ReturnType<typeof resolveLinePrice>>>()
+  for (const line of stale) {
+    const resolved = await resolveLinePrice(db, context, {
+      productId: line.product.id,
+      saleUnit: line.saleUnit,
+      qty: Quantity.fromUnits(line.qty),
+    })
+    priced.set(line.key, { ...resolved, as: pricedForOf(line, customer) })
+  }
+
+  return (c) => {
+    if (c.tabId !== cart.tabId) return c
+    const now = c.customer?.id ?? null
+    let changed = false
+    const lines = c.lines.map((l) => {
+      const p = priced.get(l.key)
+      if (!p || !followsPriceRules(l) || pricedForOf(l, now) !== p.as) return l
+      changed = true
+      return {
+        ...l, rate: p.rate, source: p.source, sourceId: p.sourceId, includesTax: p.includesTax, pricedFor: p.as,
+      }
+    })
+    return changed ? { ...c, lines } : c
   }
 }
 
@@ -155,7 +227,9 @@ export async function cartFromDraft(db: SqlDriver, detail: DraftDetail): Promise
   const cart: Cart = {
     tabId: nextTabId(),
     billId: detail.billId,
-    lines,
+    /* Priced for what each line is now, so a held bill keeps the rates it was
+       held at until somebody changes a line. */
+    lines: lines.map((l) => ({ ...l, pricedFor: pricedForOf(l, customer?.id ?? null) })),
     customer,
     discount: detail.billDiscount > 0 ? Money.format(detail.billDiscount) : '',
     error: null,
@@ -228,6 +302,7 @@ export async function cartFromRepeat(
       sourceId: priced.sourceId,
       manual: false,
       includesTax: priced.includesTax,
+      pricedFor: pricedForOf({ saleUnit: unit, qty: wanted.qty }, customer?.id ?? null),
     })
   }
 
