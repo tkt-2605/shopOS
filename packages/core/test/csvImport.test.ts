@@ -325,13 +325,48 @@ describe('brand, category and cost', () => {
     expect(found?.name).toBe('Rice')
   })
 
-  it('adds a new barcode to an item it updates, keeping the ones it had', async () => {
-    const id = await makeProduct(fx.db, { name: 'Rice', barcode: '111' })
+  it('gives a barcode to a same-named item that had none', async () => {
+    const id = await makeProduct(fx.db, { name: 'Rice' })
     await applyImport(fx.db, ctx, await planImport(fx.db, 'name,barcode\r\nRice,222\r\n'))
     expect((await findByBarcode(fx.db, '222'))?.id).toBe(id)
+  })
+
+  it('makes a second item, not a second label, when the name is on one with another code', async () => {
+    /* Merging them put two shelves' stock and sales on one item. A second
+       label for the same thing is added on the item form. */
+    const id = await makeProduct(fx.db, { name: 'Rice', barcode: '111' })
+    const plan = await planImport(fx.db, 'name,barcode,rate\r\nRice,222,60\r\n')
+    expect(plan.rows[0]).toMatchObject({ action: 'create', productId: null })
+    await applyImport(fx.db, ctx, plan)
     expect((await findByBarcode(fx.db, '111'))?.id).toBe(id)
-    const row = await fx.db.get<{ barcode: string }>('SELECT barcode FROM products WHERE id = ?', [id])
-    expect(row?.barcode).toBe('222')
+    expect((await findByBarcode(fx.db, '222'))?.id).not.toBe(id)
+  })
+
+  it('lets a name and brand repeat when barcodes tell the items apart', async () => {
+    const file = 'name,brand,barcode,rate\r\nExam Pad,,101,60\r\nExam Pad,,102,70\r\n'
+      + 'Exam Pad,Youva,201,90\r\nExam Pad,Youva,202,90\r\n'
+    const plan = await planImport(fx.db, file)
+    expect(plan).toMatchObject({ create: 4, skip: 0 })
+    await applyImport(fx.db, ctx, plan)
+    expect(await fx.db.query(`SELECT id FROM products WHERE name = 'Exam Pad'`)).toHaveLength(4)
+
+    // The same file again finds every one by its code, rather than doubling them.
+    expect(await planImport(fx.db, file)).toMatchObject({ create: 0, update: 4, skip: 0 })
+  })
+
+  it('still refuses a repeat that would have to guess', async () => {
+    // A row with no barcode has only its name, and that name is two rows here.
+    const after = await planImport(fx.db, 'name,barcode,rate\r\nExam Pad,101,60\r\nExam Pad,,70\r\n')
+    expect(after.rows.map((r) => r.problem)).toEqual([null, 'NAME_TWICE'])
+    const before = await planImport(fx.db, 'name,barcode,rate\r\nExam Pad,,70\r\nExam Pad,101,60\r\n')
+    expect(before.rows.map((r) => r.problem)).toEqual([null, 'NAME_TWICE'])
+  })
+
+  it('refuses a price update by name alone when the name is two coded items', async () => {
+    await makeProduct(fx.db, { name: 'Exam Pad', barcode: '101' })
+    await makeProduct(fx.db, { name: 'Exam Pad', barcode: '102' })
+    const plan = await planImport(fx.db, 'name,rate\r\nExam Pad,75\r\n')
+    expect(plan.rows[0]?.problem).toBe('NAME_AMBIGUOUS')
   })
 
   it('matches on a barcode the item answers to besides its primary', async () => {
@@ -345,7 +380,7 @@ describe('brand, category and cost', () => {
 
   it('lets one name come from several brands', async () => {
     const plan = await planImport(fx.db,
-      'name,brand,barcode,rate\r\nOil Pastels 12S,Doms,1,50\r\nOil Pastels 12S,Camel,2,40\r\nOil Pastels 12S,doms,3,45\r\n')
+      'name,brand,barcode,rate\r\nOil Pastels 12S,Doms,1,50\r\nOil Pastels 12S,Camel,2,40\r\nOil Pastels 12S,doms,,45\r\n')
     expect(plan.rows.map((r) => r.problem)).toEqual([null, null, 'NAME_TWICE'])
 
     await applyImport(fx.db, ctx, plan)

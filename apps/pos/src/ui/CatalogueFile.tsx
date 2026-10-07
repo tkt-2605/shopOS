@@ -33,7 +33,7 @@ const WHY: Record<RowProblem, string> = {
   BAD_QTY: 'The quantity is not a number',
   BAD_HSN: 'The HSN is not 4, 6 or 8 digits',
   BARCODE_TWICE: 'That barcode is on another row of this file',
-  NAME_TWICE: 'That name and brand are on another row of this file',
+  NAME_TWICE: 'That name and brand are on another row, and without a barcode there is no telling them apart',
   BARCODE_TAKEN: 'That barcode already belongs to a different item here',
   NAME_AMBIGUOUS: 'More than one item here has that name — add its brand or barcode',
 }

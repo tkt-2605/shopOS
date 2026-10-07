@@ -49,6 +49,16 @@ import { requirePermission } from '../integrity/permissions.js'
  * matches on the name alone -- a file of names and rates is a price update --
  * and when that name is more than one item here it is refused rather than
  * given to whichever was found first.
+ *
+ * A name and brand may repeat when barcodes tell the items apart. Six exam pads
+ * of no brand at six prices are six things on the shelf, and the shop's old
+ * system held them under one name; refusing them made the import rename them,
+ * which the shop then had to undo by hand. What stays refused is a repeat that
+ * would have to *guess*: a row with no barcode, whose only handle is the name.
+ * And a row whose barcode is new does not land on a same-named item that
+ * already answers to a different code -- that is a second product, not a
+ * second label for the first, and merging them would put two shelves' stock
+ * and sales on one item. A second label is added on the item itself.
  */
 
 /** The columns a file may carry. Only `name` is required. */
@@ -141,17 +151,24 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     .where(isNull(schema.productBarcodes.deletedAt))
 
   const byBarcode = new Map<string, string>()
-  const byName = new Map<string, { id: string; brand: string }[]>()
+  const byName = new Map<string, { id: string; brand: string; coded: boolean }[]>()
   for (const p of existing) {
     if (p.barcode !== null && p.barcode !== '') byBarcode.set(p.barcode, p.id)
-    const key = p.name.trim().toLowerCase()
-    byName.set(key, [...(byName.get(key) ?? []), { id: p.id, brand: (p.brand ?? '').trim().toLowerCase() }])
   }
   const live = new Set(existing.map((p) => p.id))
   for (const b of scanned) if (live.has(b.productId)) byBarcode.set(b.barcode, b.productId)
+  const coded = new Set(byBarcode.values())
+  for (const p of existing) {
+    const key = p.name.trim().toLowerCase()
+    byName.set(key, [...(byName.get(key) ?? []), {
+      id: p.id, brand: (p.brand ?? '').trim().toLowerCase(), coded: coded.has(p.id),
+    }])
+  }
 
   const seenBarcodes = new Set<string>()
-  const seenNames = new Set<string>()
+  /* Each name and brand seen so far, and whether every row carrying it had a
+     barcode: a repeat is only told apart from the first by its code. */
+  const seenNames = new Map<string, { allCoded: boolean }>()
   const planned: PlannedRow[] = []
 
   rows.forEach(({ line, values: row }) => {
@@ -189,7 +206,8 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     const lowerBrand = brand?.toLowerCase() ?? null
     const nameKey = `${lowerName}\u0000${lowerBrand ?? ''}`
     if (barcode !== null && seenBarcodes.has(barcode)) { refuse('BARCODE_TWICE'); return }
-    if (seenNames.has(nameKey)) { refuse('NAME_TWICE'); return }
+    const before = seenNames.get(nameKey)
+    if (before !== undefined && (barcode === null || !before.allCoded)) { refuse('NAME_TWICE'); return }
 
     /* The items this name could mean. With a brand, the item of that brand --
        or, when there is none, one with no brand yet, which the file is now
@@ -213,12 +231,16 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
       refuse('BARCODE_TAKEN')
       return
     }
-    if (matchedByBarcode === undefined && candidates.length > 1) { refuse('NAME_AMBIGUOUS'); return }
+    /* By name only what the code cannot contradict: a row with a barcode the
+       shop has not seen matches an item with no barcode yet, never one that
+       already answers to another. */
+    const byNameOnly = barcode === null ? candidates : candidates.filter((p) => !p.coded)
+    if (matchedByBarcode === undefined && byNameOnly.length > 1) { refuse('NAME_AMBIGUOUS'); return }
 
-    const productId = matchedByBarcode ?? candidates[0]?.id ?? null
+    const productId = matchedByBarcode ?? byNameOnly[0]?.id ?? null
 
     if (barcode !== null) seenBarcodes.add(barcode)
-    seenNames.add(nameKey)
+    seenNames.set(nameKey, { allCoded: (before?.allCoded ?? true) && barcode !== null })
 
     planned.push({
       line,

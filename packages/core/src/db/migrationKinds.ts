@@ -25,7 +25,14 @@
  *
  * `breaking` is anything else -- a rename, a drop, a CHECK made stricter, a
  * table rebuilt into a new shape, a defaulted column whose default would be a
- * lie about a row an older till passed on. Across one of those, two tills cannot
+ * lie about a row an older till passed on -- and a column that carries a rule
+ * an older till would not follow: one that changes what a till bills, prices,
+ * taxes or allows. The rows cross safely and the old till then sells by the
+ * old rule. 068 is the example: the loose item reached a 0.2.5 till intact, and
+ * that till billed it at nothing, because it had never heard of an amount
+ * typed at the counter. The owner's answer to a till that cannot keep up is
+ * that it stops syncing until it is updated (`update-rollout.md`, section 10),
+ * and that answer only reaches it through this word. Across one of those, two tills cannot
  * exchange rows safely in either direction: the newer one writes columns the
  * older has no place for, and the older sends rows missing columns the newer
  * has made NOT NULL.
@@ -143,9 +150,10 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [66, '066_the_books_filled_once.sql', 'additive'],
   /* A table that never travels. */
   [67, '067_discrepancies_seen.sql', 'additive'],
-  /* A defaulted column whose default is what every item already is. See
-     `REVIEWED_DEFAULTS` for a copy an older till relays. */
-  [68, '068_an_item_priced_at_the_counter.sql', 'additive'],
+  /* A column that carries a rule: an older till holds the loose item without
+     it and bills it at nothing. Shipped as additive in 0.2.6 and corrected in
+     0.2.7 -- a 0.2.6 till still talks to a 0.2.5 one, every later build does not. */
+  [68, '068_an_item_priced_at_the_counter.sql', 'breaking'],
 ]
 
 /**
@@ -159,10 +167,6 @@ export const REVIEWED_DEFAULTS: Readonly<Record<string, string>> = {
   '051_points_that_move.sql:loyalty_entries.rev':
     'A revision, not a figure: 1 is what every row starts at, and no till below 051 '
     + 'is above the floor 050 set, so none can relay an entry without it.',
-  '068_an_item_priced_at_the_counter.sql:products.open_price':
-    'A setting, not a figure: 0 is true of every item that existed before it. A copy '
-    + 'relayed by an older till loses the flag and bills at the rate of the item like any '
-    + 'other, and no bill, stock movement or ledger line reads differently for it.',
 }
 
 /**

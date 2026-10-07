@@ -13,10 +13,9 @@
 -- it, and a bill refuses the line at nothing rather than letting a forgotten
 -- amount go through as a free sale.
 --
--- Additive. A setting and not a figure: 0 is what every item already is, and
--- a copy relayed by an older till that loses the flag bills at the item's own
--- rate like any other, with nothing on a bill or in the books reading
--- differently. See `REVIEWED_DEFAULTS`.
+-- Breaking, though the rows would cross: a till without this column holds the
+-- loose item as an ordinary item at nothing, and bills it at nothing. Shipped
+-- as additive in 0.2.6 and corrected in 0.2.7. See `migrationKinds.ts`.
 
 ALTER TABLE products ADD COLUMN open_price INTEGER NOT NULL DEFAULT 0
   CHECK (open_price IN (0, 1));
