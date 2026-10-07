@@ -188,6 +188,8 @@ export interface BillDetailItem {
   saleUnit: string
   qty: Qty
   rate: Money
+  /** The shelf price it was sold against, as it stood at the counter. */
+  mrp: Money | null
   lineTotal: Money
   taxableValue: Money
   cgst: Money
@@ -242,6 +244,7 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
       saleUnit: schema.billItems.saleUnit,
       qty: schema.billItems.qty,
       rate: schema.billItems.rate,
+      mrp: schema.billItems.mrp,
       lineTotal: schema.billItems.lineTotal,
       taxableValue: schema.billItems.taxableValue,
       cgst: schema.billItems.cgstAmount,

@@ -300,6 +300,7 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     qty: i.qty,
     saleUnit: i.saleUnit,
     rate: i.rate,
+    mrp: i.mrp,
     lineTotal: i.lineTotal,
     batch: batches.get(i.id) ?? null,
     hsnCode: i.hsnCode,

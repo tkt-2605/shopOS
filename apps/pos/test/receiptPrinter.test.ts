@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  migrate, bootstrap, newId, recordOpeningBalance, Money, Receipt,
+  migrate, bootstrap, newId, recordOpeningBalance, createBill, submitBill, Money, Receipt,
   type SqlDriver, type BootstrapResult,
 } from '@shopos/core'
 /* Around `@shopos/core` for the reason `invoiceFromBill.test.tsx` gives: the
@@ -9,7 +9,7 @@ import {
 import { openMemoryDatabase } from '../../../packages/core/src/db/node-driver'
 import { MIGRATIONS } from '../../../packages/core/src/db/migrations'
 import {
-  printStatement, listPrinters, defaultPrinter, setReceiptPrinter, type ReceiptPrinter,
+  printBill, printStatement, listPrinters, defaultPrinter, setReceiptPrinter, type ReceiptPrinter,
 } from '../src/core/print'
 
 /**
@@ -73,7 +73,43 @@ async function customerOwing(name: string, rupees: number): Promise<string> {
   return id
 }
 
+/** A bill rung up and submitted through the real services, one line of it. */
+async function billFor(rate: number, mrp: number | null): Promise<string> {
+  const productId = newId()
+  const now = new Date().toISOString()
+  await db.execute(
+    `INSERT INTO products (id, name, base_rate, mrp, tax_rate_bp, created_at, updated_at)
+     VALUES (?, 'Ball Pen Blue', ?, ?, 0, ?, ?)`,
+    [productId, rate, mrp, now, now],
+  )
+  const draft = await createBill(db, {
+    registerId: seed.registerId, lines: [{ productId, qty: 30_000 as never }], actorId: adminId,
+  })
+  if (!draft.ok) throw new Error('draft failed')
+  const done = await submitBill(db, {
+    billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: adminId,
+  })
+  if (!done.ok) throw new Error(`submit failed: ${done.code}`)
+  return draft.billId
+}
+
 describe('the roll printer', () => {
+  /* The designer's preview has always shown this line, because its sample bill
+     is built by hand with an MRP on it. The paper did not: the bill was read
+     back without the MRP its lines were saved with, so the line had nothing to
+     print from. This goes through the real read. */
+  it('prints the MRP and the saving a real bill was sold against', async () => {
+    expect(await printBill(db, await billFor(1_000, 1_200))).toEqual({ ok: true })
+
+    const lines = Receipt.visibleLines(sent[0]!.text)
+    expect(lines.some((l) => l.includes('MRP 12.00') && l.includes('Save 6.00'))).toBe(true)
+  })
+
+  it('prints no MRP line for an item that carries none', async () => {
+    expect(await printBill(db, await billFor(1_000, null))).toEqual({ ok: true })
+    expect(Receipt.visibleLines(sent[0]!.text).some((l) => l.includes('MRP'))).toBe(false)
+  })
+
   it("prints a customer's statement through whatever printer it is given", async () => {
     const id = await customerOwing('Meena Stores', 450)
 

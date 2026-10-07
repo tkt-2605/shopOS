@@ -87,6 +87,7 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
     qty: i.qty,
     saleUnit: i.saleUnit,
     rate: i.rate,
+    mrp: i.mrp,
     lineTotal: i.lineTotal,
     batch: batches.get(i.id) ?? null,
     // Not printed per line on 42 columns; they are what the rate summary is
