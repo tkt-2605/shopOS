@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
 import {
-  migrate, bootstrap, newId, setSetting, setFeature, setUnits, setLadder, Ladder, Quantity,
+  migrate, bootstrap, newId, setSetting, setFeature, setUnits, setLadder, setBarcodes, Ladder, Quantity,
   loadFeatures, loadRounding, loadTaxScheme, pricingContextFor, resolveLinePrice,
   type SqlDriver, type BootstrapResult,
 } from '@shopos/core'
@@ -70,6 +70,17 @@ beforeEach(async () => {
   })
   if (!ladder.ok) throw new Error(ladder.code)
 
+  /* A second item, so that taking the wrong row shows. Sorted after the paper,
+     which is what the empty box lists first. */
+  const pen = newId()
+  await db.execute(
+    `INSERT INTO products (id, name, base_rate, tax_rate_bp, hsn_code, created_at, updated_at)
+     VALUES (?, 'Ball Pen Blue', 1000, 1800, '9608', ?, ?)`,
+    [pen, now, now],
+  )
+  const coded = await setBarcodes(db, ctx, pen, [{ barcode: PEN_BARCODE }])
+  if (!coded.ok) throw new Error(coded.code)
+
   core = {
     db,
     registerId: seed.registerId,
@@ -88,6 +99,8 @@ afterEach(async () => {
   cleanup()
   await db.close()
 })
+
+const PEN_BARCODE = '8901234567893'
 
 /** Types into the scan box and takes the first match, as Enter does. */
 async function scan(term: string) {
@@ -154,5 +167,42 @@ describe('the counter charges what the shop’s prices say', () => {
 
     const lines = await heldToThePrices(await payCash())
     expect(lines).toEqual([{ unit: 'piece', charged: 34_000, rule: 34_000 }])
+  })
+})
+
+/**
+ * A scanner, not a person: thirteen digits and Enter faster than the search
+ * waits. The helper above waits for the list before pressing Enter, which is
+ * how this went unseen -- Enter took row 0 of the list for the empty box, and
+ * an unknown barcode, 4001234567891, put A4 Copier Paper on the bill.
+ */
+describe('a scanner, which presses Enter before the search has run', () => {
+  async function scanFast(code: string) {
+    // The empty box's list has loaded: that is the list a fast Enter used to read.
+    await act(() => new Promise((r) => setTimeout(r, 30)))
+    const box = screen.getByPlaceholderText(/Scan a barcode/)
+    fireEvent.change(box, { target: { value: code } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+  }
+
+  it('puts the scanned item on the bill', async () => {
+    render(<Billing />)
+    await scanFast(PEN_BARCODE)
+    await waitFor(() => expect(document.querySelector('.cart tbody')?.textContent).toContain('Ball Pen Blue'))
+    expect(document.querySelector('.cart tbody')?.textContent).not.toContain('A4 Copier Paper')
+  })
+
+  it('puts nothing on the bill for a barcode the shop does not have, and says so', async () => {
+    render(<Billing />)
+    await scanFast('4001234567891')
+    await waitFor(() => expect(document.body.textContent).toContain('Nothing in the catalog matches 4001234567891.'))
+    expect(document.querySelector('.cart input.qty-input')).toBeNull()
+  })
+
+  it('puts nothing on the bill for Enter on an empty box', async () => {
+    render(<Billing />)
+    await scanFast('')
+    await act(() => new Promise((r) => setTimeout(r, 30)))
+    expect(document.querySelector('.cart input.qty-input')).toBeNull()
   })
 })

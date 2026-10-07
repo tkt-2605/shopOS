@@ -54,27 +54,44 @@ export interface PickList {
   }
   /** Moves the keyboard into the list. For a search box's ↓. */
   focusList: () => void
-  /** Put on a search input: ↓ enters the list, Enter takes the first row. */
+}
+
+/**
+ * A list with a search box above it. Only a list given `enter` has one, so a
+ * search box cannot be wired up without saying what Enter does.
+ */
+export interface SearchPickList extends PickList {
+  /** Put on a search input: ↓ enters the list, Enter calls `enter`. */
   searchKeyDown: (e: KeyboardEvent<HTMLElement>) => void
+}
+
+interface PickOptions {
+  count: number
+  onPick: (index: number) => void
+  /**
+   * Enter in the search box. Not "row 0": the rows on screen were found for
+   * an older term (see `useSearch`), and a scanner presses Enter before the
+   * new ones arrive.
+   */
+  enter?: () => unknown
+  /** Whatever makes the rows mean something else — usually the search term. */
+  resetKey?: unknown
+  as?: PickShape
 }
 
 /** How far PageUp and PageDown move. A screenful, near enough. */
 const PAGE = 10
 
-export function usePickList({
-  count, onPick, resetKey, as = 'listbox',
-}: {
-  count: number
-  onPick: (index: number) => void
-  /** Whatever makes the rows mean something else — usually the search term. */
-  resetKey?: unknown
-  as?: PickShape
-}): PickList {
+export function usePickList(options: PickOptions & { enter: () => unknown }): SearchPickList
+export function usePickList(options: Omit<PickOptions, 'enter'>): PickList
+export function usePickList({ count, onPick, enter, resetKey, as = 'listbox' }: PickOptions): SearchPickList {
   const base = useId()
   const [index, setIndex] = useState(0)
   const list = useRef<HTMLElement | null>(null)
   const pick = useRef(onPick)
   pick.current = onPick
+  const enterRef = useRef(enter)
+  enterRef.current = enter
 
   // A new search is a new list. Holding position would leave the highlight on
   // whichever row happened to land in that slot, which is how a cashier picks
@@ -123,7 +140,7 @@ export function usePickList({
      closes; a list that swallowed it would leave the cashier pressing it twice. */
   function searchKeyDown(e: KeyboardEvent<HTMLElement>) {
     if (e.key === 'ArrowDown') { e.preventDefault(); move(0); focusList(); return }
-    if (e.key === 'Enter' && count > 0) { e.preventDefault(); pick.current(0) }
+    if (e.key === 'Enter' && enterRef.current) { e.preventDefault(); void enterRef.current() }
   }
 
   return {

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Money, searchCustomers, recordOpeningBalance, periodClosedMessage, type CustomerListItem } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { Modal, Field, Alert } from '../../ui/components'
 import { usePickList, Results } from '../../ui/PickList'
+import { useSearch } from '../../ui/useSearch'
 
 /*
  * What a customer already owed, or had paid ahead, when the shop's book moved
@@ -20,16 +21,13 @@ export function OpeningBalance({
 }) {
   const { db } = useCore()
   const [term, setTerm] = useState('')
-  const [found, setFound] = useState<CustomerListItem[]>([])
   const [chosen, setChosen] = useState<CustomerListItem | null>(null)
   const [amount, setAmount] = useState('')
   const [asOf, setAsOf] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    const id = setTimeout(() => { void searchCustomers(db, term, 20).then(setFound) }, 140)
-    return () => clearTimeout(id)
-  }, [db, term])
+  const search = useSearch(term, (t) => searchCustomers(db, t, 20), { browse: true })
+  const found = search.rows
 
   const box = useRef<HTMLInputElement>(null)
 
@@ -37,6 +35,7 @@ export function OpeningBalance({
     count: found.length,
     resetKey: term,
     onPick: (i) => { const c = found[i]; if (c) { setChosen(c); setError(null) } },
+    enter: async () => { const [c] = await search.latest(); if (c) { setChosen(c); setError(null) } },
   })
 
   async function save() {

@@ -6,6 +6,7 @@ import {
 import { useCore } from '../../core/CoreProvider'
 import { Field, Modal, Empty, Rupees } from '../components'
 import { usePickList } from '../PickList'
+import { useSearch } from '../useSearch'
 import type { DeskConfig, Line } from './types'
 
 export function Draft({ config, kind, onClose, onDone, onError, registerId, userId }: {
@@ -24,16 +25,13 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
   const [validUntil, setValidUntil] = useState('')
   const [notes, setNotes] = useState('')
   const [term, setTerm] = useState('')
-  const [results, setResults] = useState<ProductListItem[]>([])
   const [lines, setLines] = useState<Line[]>([])
   const [busy, setBusy] = useState(false)
 
   const label = config.labels[kind]!
 
-  useEffect(() => {
-    const id = setTimeout(() => { void searchProducts(db, { term, limit: 25 }).then(setResults) }, 140)
-    return () => clearTimeout(id)
-  }, [db, term])
+  const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 25 }))
+  const results = search.rows
 
   useEffect(() => {
     if (config.party === 'supplier') void listSuppliers(db).then(setSuppliers)
@@ -51,6 +49,13 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
     count: results.length,
     resetKey: term,
     onPick: (i) => { const hit = results[i]; if (hit) add(hit) },
+    enter: async () => {
+      const typed = term.trim()
+      const [hit] = await search.latest()
+      if (hit) return add(hit)
+      setTerm('')
+      onError(`Nothing in the catalog matches ${typed}.`)
+    },
   })
 
   /* A rough figure, before tax and before the price list has been consulted.

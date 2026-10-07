@@ -9,6 +9,7 @@ import { useCore, useDb, useUser } from '../../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../../ui/LadderEditor'
 import { usePickList, Results } from '../../ui/PickList'
+import { useSearch } from '../../ui/useSearch'
 
 /* The third tab: a customer's list, and the rates only they get. */
 
@@ -17,13 +18,11 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
   const breaks = useCore().features.tieredPricing
   const user = useUser()
   const [term, setTerm] = useState('')
-  const [results, setResults] = useState<CustomerListItem[]>([])
   const [chosen, setChosen] = useState<CustomerListItem | null>(null)
   const [lists, setLists] = useState<PriceList[]>([])
   const [onList, setOnList] = useState('')
   const [rates, setRates] = useState<CustomerPrice[]>([])
   const [productTerm, setProductTerm] = useState('')
-  const [productResults, setProductResults] = useState<ProductListItem[]>([])
   const [picked, setPicked] = useState<{ product: ProductListItem; units: SaleUnit[] } | null>(null)
   const [saleUnit, setSaleUnit] = useState('')
   const [ladder, setLadder] = useState<LadderRow[]>([])
@@ -46,19 +45,11 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
   useEffect(() => { void listPriceLists(db).then(setLists) }, [db])
   useEffect(() => { void loadEveryone() }, [loadEveryone])
 
-  useEffect(() => {
-    const id = setTimeout(async () => {
-      setResults(term.trim() === '' ? [] : await searchCustomers(db, term, 20))
-    }, 140)
-    return () => clearTimeout(id)
-  }, [db, term])
+  const customerSearch = useSearch(term, (t) => searchCustomers(db, t, 20))
+  const results = customerSearch.rows
 
-  useEffect(() => {
-    const id = setTimeout(async () => {
-      setProductResults(productTerm.trim() === '' ? [] : await searchProducts(db, { term: productTerm, limit: 15 }))
-    }, 140)
-    return () => clearTimeout(id)
-  }, [db, productTerm])
+  const productSearch = useSearch(productTerm, (t) => searchProducts(db, { term: t, limit: 15 }))
+  const productResults = productSearch.rows
 
   async function choose(customer: CustomerListItem) {
     await chooseById(customer.id, customer.name)
@@ -70,7 +61,6 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
    */
   async function chooseById(id: string, name: string) {
     setChosen({ id, name } as CustomerListItem)
-    setResults([])
     setTerm('')
     setRates(await listCustomerPrices(db, { customerId: id }))
     setOnList(await customerPriceListId(db, id) ?? '')
@@ -85,7 +75,6 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
     setLadder(Ladder.rungsToRows(await customerLadderFor(db, {
       customerId: chosen.id, productId: product.id, saleUnit: product.baseUnit,
     })))
-    setProductResults([])
     setProductTerm('')
   }
 
@@ -153,12 +142,14 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
     count: results.length,
     resetKey: term,
     onPick: (i) => { const hit = results[i]; if (hit) void choose(hit) },
+    enter: async () => { const [hit] = await customerSearch.latest(); if (hit) await choose(hit) },
   })
 
   const productPick = usePickList({
     count: productResults.length,
     resetKey: productTerm,
     onPick: (i) => { const hit = productResults[i]; if (hit) void pickProduct(hit) },
+    enter: async () => { const [hit] = await productSearch.latest(); if (hit) await pickProduct(hit) },
   })
 
   return (

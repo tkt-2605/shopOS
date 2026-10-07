@@ -10,6 +10,7 @@ import { useAction } from '../core/useAction'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
+import { useSearch } from '../ui/useSearch'
 
 interface Line {
   key: string
@@ -55,7 +56,6 @@ export default function StockIn() {
   const [invoiceDate, setInvoiceDate] = useState('')
   const [roundOff, setRoundOff] = useState('')
   const [term, setTerm] = useState('')
-  const [results, setResults] = useState<ProductListItem[]>([])
   const [lines, setLines] = useState<Line[]>([])
   const [error, setError] = useState<string | null>(null)
   // A second press while the first is posting would receive the goods twice.
@@ -69,10 +69,8 @@ export default function StockIn() {
      not whether to warn. */
   const [unpriced, setUnpriced] = useState<Set<string>>(new Set())
 
-  useEffect(() => {
-    const id = setTimeout(() => { void searchProducts(db, { term, limit: 25 }).then(setResults) }, 140)
-    return () => clearTimeout(id)
-  }, [db, term])
+  const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 25 }))
+  const results = search.rows
 
   const loadSuppliers = useCallback(async () => {
     setSuppliers(await listSuppliers(db))
@@ -220,6 +218,13 @@ export default function StockIn() {
     count: results.length,
     resetKey: term,
     onPick: (i) => { const hit = results[i]; if (hit) void add(hit) },
+    enter: async () => {
+      const typed = term.trim()
+      const [hit] = await search.latest()
+      if (hit) return add(hit)
+      setTerm('')
+      setError(`Nothing in the catalog matches ${typed}.`)
+    },
   })
 
   return (

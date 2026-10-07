@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Money, Quantity, Totals, Loyalty, Permissions, searchProducts, saleUnitsFor, searchCustomers,
+  Money, Quantity, Totals, Loyalty, Permissions, searchProducts, saleUnitsFor,
   loadLoyaltyProgram, monthToDateSpend, businessDate, submitBill, pricingContextFor, resolveLinePrice, chargesTax,
   RULE_46F_THRESHOLD, type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
@@ -13,6 +13,7 @@ import { useRepricing } from '../core/useRepricing'
 import { useShortcuts } from '../core/useShortcuts'
 import { Empty, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
+import { useSearch } from '../ui/useSearch'
 import { useConfirm } from '../ui/useConfirm'
 import { totalsLinesOf, shortOf } from './billing/cart'
 import { submitMessage, unsavedMessage } from './billing/submitMessage'
@@ -34,9 +35,6 @@ export default function Billing() {
   const canOverridePrice = Permissions.can(user.permissions, 'price_list', 'write')
 
   const [term, setTerm] = useState('')
-  const [results, setResults] = useState<ProductListItem[]>([])
-  const [customers, setCustomers] = useState<CustomerListItem[]>([])
-  const [customerTerm, setCustomerTerm] = useState('')
   const [pickingCustomer, setPickingCustomer] = useState(false)
   /** The loose item, waiting for its amount. See `OpenPriceDialog`. */
   const [askingAmount, setAskingAmount] = useState<ProductListItem | null>(null)
@@ -59,13 +57,8 @@ export default function Billing() {
   const focusScan = useCallback(() => scanRef.current?.focus(), [])
   useEffect(() => { focusScan() }, [focusScan, active.tabId])
 
-  useEffect(() => {
-    let cancelled = false
-    const id = setTimeout(() => {
-      void searchProducts(db, { term, limit: 40 }).then((r) => { if (!cancelled) setResults(r) })
-    }, term === '' ? 0 : 140)
-    return () => { cancelled = true; clearTimeout(id) }
-  }, [db, term])
+  const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 40 }), { browse: true })
+  const results = search.rows
 
   /* The shop's rounding rule, applied here as well as in the service. The
      cashier is looking at this number while the customer hands over the money,
@@ -213,9 +206,12 @@ export default function Billing() {
     }
     if (e.key !== 'Enter') return
     e.preventDefault()
-    const exact = results.find((r) => r.barcode === term.trim())
-    const pick = exact ?? results[0]
-    if (pick) await addProduct(pick)
+    const typed = term.trim()
+    // `latest`, not `results`: a scanner beats the search, and `results` would be the empty box's.
+    const [pick] = await search.latest()
+    if (pick) return addProduct(pick)
+    if (typed) tabs.patch((cart) => ({ ...cart, error: `Nothing in the catalog matches ${typed}.` }))
+    setTerm('')
   }
 
   /* The two lists a cashier chooses from. Enter on the scan box is deliberately
@@ -421,11 +417,7 @@ export default function Billing() {
         empty={empty}
         unfinished={unfinished}
         repricing={repricing}
-        onPickCustomer={() => {
-          setCustomerTerm('')
-          void searchCustomers(db).then(setCustomers)
-          setPickingCustomer(true)
-        }}
+        onPickCustomer={() => setPickingCustomer(true)}
         onDiscount={(discount) => tabs.patch((cart) => ({ ...cart, discount }))}
         onPay={() => setPaying(true)}
       />
@@ -440,12 +432,6 @@ export default function Billing() {
 
       {pickingCustomer && (
         <CustomerPicker
-          customers={customers}
-          term={customerTerm}
-          onTerm={(typed) => {
-            setCustomerTerm(typed)
-            void searchCustomers(db, typed).then(setCustomers)
-          }}
           onChoose={chooseCustomer}
           onClose={() => setPickingCustomer(false)}
         />

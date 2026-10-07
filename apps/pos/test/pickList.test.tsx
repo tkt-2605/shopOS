@@ -22,6 +22,7 @@ function List({ onPick, items = CUSTOMERS }: { onPick: (i: number) => void; item
     count: shown.length,
     resetKey: term,
     onPick: (i) => onPick(items.indexOf(shown[i]!)),
+    enter: () => { if (shown[0]) onPick(items.indexOf(shown[0])) },
   })
   return (
     <div>
@@ -112,6 +113,22 @@ describe('the search box above the list', () => {
     fireEvent.change(box, { target: { value: 'bala' } })
     fireEvent.keyDown(box, { key: 'Enter' })
     expect(picked).toHaveBeenCalledWith(2)
+  })
+
+  /* Row 0 on screen can belong to an older search than the box shows: a
+     scanner presses Enter before the new rows arrive. So the box asks the
+     screen, which asks `useSearch` for the rows of the term as typed. */
+  it('says nothing about row 0 itself: Enter is whatever the screen says it is', () => {
+    const picked = vi.fn()
+    const entered = vi.fn()
+    function Stale() {
+      const pick = usePickList({ count: 3, onPick: picked, enter: entered })
+      return <input placeholder="Scan" onKeyDown={pick.searchKeyDown} />
+    }
+    render(<Stale />)
+    fireEvent.keyDown(screen.getByPlaceholderText('Scan'), { key: 'Enter' })
+    expect(entered).toHaveBeenCalledOnce()
+    expect(picked).not.toHaveBeenCalled()
   })
 
   /* The row highlighted a moment ago is not the same row now, and a cashier who

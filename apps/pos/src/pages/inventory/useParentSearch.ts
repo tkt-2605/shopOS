@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { searchProducts, type ProductListItem, type SqlDriver } from '@shopos/core'
 import { usePickList } from '../../ui/PickList'
+import { useSearch } from '../../ui/useSearch'
 import type { Draft } from './draft'
 
 /**
@@ -11,29 +12,25 @@ import type { Draft } from './draft'
  */
 export function useParentSearch(db: SqlDriver, draft: Draft | null, setDraft: (draft: Draft) => void) {
   const [parentSearch, setParentSearch] = useState('')
-  const [parentResults, setParentResults] = useState<ProductListItem[]>([])
+  const search = useSearch(parentSearch, (t) => searchProducts(db, { term: t, limit: 8 }))
   /* An item cannot be its own main item, so the row is dropped before the list
      is numbered — otherwise ↓ would land on a gap. */
-  const parentOptions = parentResults.filter((r) => r.id !== draft?.id)
+  const notSelf = (rows: ProductListItem[]) => rows.filter((r) => r.id !== draft?.id)
+  const parentOptions = notSelf(search.rows)
   const parentBox = useRef<HTMLInputElement>(null)
+
+  const choose = (hit: ProductListItem | undefined) => {
+    if (!hit || !draft) return
+    setDraft({ ...draft, parentProductId: hit.id })
+    setParentSearch('')
+  }
 
   const parentPick = usePickList({
     count: parentOptions.length,
     resetKey: parentSearch,
-    onPick: (i) => {
-      const hit = parentOptions[i]
-      if (!hit || !draft) return
-      setDraft({ ...draft, parentProductId: hit.id })
-      setParentSearch('')
-    },
+    onPick: (i) => choose(parentOptions[i]),
+    enter: async () => choose(notSelf(await search.latest())[0]),
   })
-
-  useEffect(() => {
-    const id = setTimeout(async () => {
-      setParentResults(parentSearch.trim() === '' ? [] : await searchProducts(db, { term: parentSearch, limit: 8 }))
-    }, 140)
-    return () => clearTimeout(id)
-  }, [db, parentSearch])
 
   return { search: parentSearch, setSearch: setParentSearch, options: parentOptions, pick: parentPick, box: parentBox }
 }

@@ -7,6 +7,7 @@ import {
 import { useCore, useDb, useUser } from '../../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../../ui/components'
 import { usePickList, Results } from '../../ui/PickList'
+import { useSearch } from '../../ui/useSearch'
 
 /* The first tab: pick an item, and say what it costs on each list and from what quantity. */
 
@@ -15,7 +16,6 @@ export function ItemPrices({ canWrite }: { canWrite: boolean }) {
   const breaks = useCore().features.tieredPricing
   const user = useUser()
   const [term, setTerm] = useState('')
-  const [results, setResults] = useState<ProductListItem[]>([])
   const [chosen, setChosen] = useState<ProductListItem | null>(null)
   const [units, setUnits] = useState<SaleUnit[]>([])
   const [lists, setLists] = useState<PriceList[]>([])
@@ -38,16 +38,11 @@ export function ItemPrices({ canWrite }: { canWrite: boolean }) {
 
   useEffect(() => { void listPriceLists(db).then(setLists) }, [db])
 
-  useEffect(() => {
-    const id = setTimeout(async () => {
-      setResults(term.trim() === '' ? [] : await searchProducts(db, { term, limit: 20 }))
-    }, 140)
-    return () => clearTimeout(id)
-  }, [db, term])
+  const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 20 }))
+  const results = search.rows
 
   const load = useCallback(async (product: ProductListItem) => {
     setChosen(product)
-    setResults([])
     setTerm('')
     setError(null)
     const [u, p] = await Promise.all([listUnits(db, product.id), listItemPrices(db, { productId: product.id })])
@@ -131,6 +126,7 @@ export function ItemPrices({ canWrite }: { canWrite: boolean }) {
     count: results.length,
     resetKey: term,
     onPick: (i) => { const hit = results[i]; if (hit) void load(hit) },
+    enter: async () => { const [hit] = await search.latest(); if (hit) await load(hit) },
   })
 
   return (

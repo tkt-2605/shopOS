@@ -72,6 +72,9 @@ const DRIVER_CALL = /\b(db|tx|driver|sql|core\.db)\s*\.\s*(query|queryValues|get
 
 const TAURI = /(from\s*|import\s*\(\s*|import\s+)['"]@tauri-apps\//
 
+/** A timer that runs a product or customer search itself. */
+const OWN_SEARCH = /setTimeout\([^;]{0,300}?\bsearch(Products|Customers)\(/
+
 export function lineCount(source: string): number {
   return source.replace(/\r?\n$/, '').split('\n').length
 }
@@ -132,6 +135,17 @@ describe('the app', () => {
     expect(files.flatMap((f) => componentsInside(name(f), readFileSync(f, 'utf8')))).toEqual([])
   })
 
+  it('times no search of its own: a search box goes through useSearch', () => {
+    /* A screen that waits and then searches keeps a list with no idea which
+       term it was found for, and Enter read row 0 of it -- the empty box's
+       list -- for a scanned barcode the shop did not have. `useSearch` keeps
+       the term with the rows; `usePickList` will not give a search box an
+       Enter without being told what it does. */
+    const own = files.filter((f) => name(f) !== 'ui/useSearch.ts').filter((f) =>
+      OWN_SEARCH.test(withoutComments(readFileSync(f, 'utf8'))))
+    expect(own.map(name)).toEqual([])
+  })
+
   it(`has no file over ${MAX_COMPONENT_LINES} lines`, () => {
     const long = files
       .map((f) => ({ file: name(f), lines: lineCount(readFileSync(f, 'utf8')) }))
@@ -165,6 +179,18 @@ describe('the scanner itself', () => {
       expect(SQL.test(text)).toBe(false)
       expect(DRIVER_CALL.test(text)).toBe(false)
     }
+  })
+
+  it('catches a screen timing its own search, as seven files did', () => {
+    expect(OWN_SEARCH.test(
+      'const id = setTimeout(() => { void searchProducts(db, { term, limit: 25 }).then(setResults) }, 140)',
+    )).toBe(true)
+    expect(OWN_SEARCH.test([
+      'const id = setTimeout(async () => {',
+      "  setResults(term.trim() === '' ? [] : await searchCustomers(db, term, 20))",
+      '}, 140)',
+    ].join('\n'))).toBe(true)
+    expect(OWN_SEARCH.test('const id = setTimeout(() => void refresh(), 140)')).toBe(false)
   })
 
   it('catches a Tauri import and ignores one named in a comment', () => {
