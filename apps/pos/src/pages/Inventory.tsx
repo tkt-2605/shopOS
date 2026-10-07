@@ -100,6 +100,7 @@ export default function Inventory() {
       loyaltyBlocked: draft.loyaltyBlocked,
       returnBlocked: draft.returnBlocked,
       isStockTracked: draft.stockTracked,
+      openPrice: draft.openPrice,
       reorderLevel: levelOf(draft.reorderLevel),
       reorderQty: levelOf(draft.reorderQty),
     })
@@ -252,7 +253,7 @@ export default function Inventory() {
       baseRate: Money.format(p.baseRate), mrp: p.mrp === null ? '' : Money.format(p.mrp),
       baseUnit: p.baseUnit,
       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
-      returnBlocked: p.returnBlocked, stockTracked: p.isStockTracked,
+      returnBlocked: p.returnBlocked, stockTracked: p.isStockTracked, openPrice: p.openPrice,
       reorderLevel: p.reorderLevel === null ? '' : Quantity.formatQty(p.reorderLevel),
       reorderQty: p.reorderQty === null ? '' : Quantity.formatQty(p.reorderQty),
     })

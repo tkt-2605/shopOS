@@ -143,6 +143,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [66, '066_the_books_filled_once.sql', 'additive'],
   /* A table that never travels. */
   [67, '067_discrepancies_seen.sql', 'additive'],
+  /* A defaulted column whose default is what every item already is. See
+     `REVIEWED_DEFAULTS` for a copy an older till relays. */
+  [68, '068_an_item_priced_at_the_counter.sql', 'additive'],
 ]
 
 /**
@@ -156,6 +159,10 @@ export const REVIEWED_DEFAULTS: Readonly<Record<string, string>> = {
   '051_points_that_move.sql:loyalty_entries.rev':
     'A revision, not a figure: 1 is what every row starts at, and no till below 051 '
     + 'is above the floor 050 set, so none can relay an entry without it.',
+  '068_an_item_priced_at_the_counter.sql:products.open_price':
+    'A setting, not a figure: 0 is true of every item that existed before it. A copy '
+    + 'relayed by an older till loses the flag and bills at the rate of the item like any '
+    + 'other, and no bill, stock movement or ledger line reads differently for it.',
 }
 
 /**

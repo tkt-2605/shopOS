@@ -1,4 +1,4 @@
-import { eq, and, isNull } from 'drizzle-orm'
+import { eq, and, inArray, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { businessDate } from '../../dates.js'
@@ -50,9 +50,19 @@ export interface ComputedLine {
  * priced would be refused for a decision they did not make. An override already
  * saved on this draft, for the same item at the same rate, is the manager's and
  * goes through; only a new or changed one asks.
+ *
+ * An item priced at the counter (068) asks nobody: typing its amount is how it
+ * is sold, not a decision about what something else costs.
  */
 async function overridesNeedingRight(db: SqlDriver, input: CreateBillInput, draftId?: string): Promise<boolean> {
-  const typed = input.lines.filter((l) => l.rateOverride != null)
+  const overridden = input.lines.filter((l) => l.rateOverride != null)
+  if (overridden.length === 0) return false
+  const open = new Set((await q(db)
+    .select({ id: schema.products.id })
+    .from(schema.products)
+    .where(and(inArray(schema.products.id, overridden.map((l) => l.productId)), eq(schema.products.openPrice, 1))))
+    .map((p) => p.id))
+  const typed = overridden.filter((l) => !open.has(l.productId))
   if (typed.length === 0) return false
   if (!draftId) return true
   const saved = await q(db)
@@ -157,6 +167,7 @@ export async function priceBill(
         mrp: schema.products.mrp,
         discountBlocked: schema.products.discountBlocked,
         loyaltyBlocked: schema.products.loyaltyBlocked,
+        openPrice: schema.products.openPrice,
       })
       .from(schema.products)
       .where(and(eq(schema.products.id, line.productId), isNull(schema.products.deletedAt)))
@@ -194,6 +205,13 @@ export async function priceBill(
           productId: product.id, productName: product.name, rate: priced.rate, rule: rule.rate,
         }
       }
+    }
+
+    /* The loose item's own rate is nothing, and it is the amount typed that
+       prices it. A line that reaches here at nothing is one somebody forgot to
+       type, and a forgotten amount going through is a free sale. */
+    if (product.openPrice === 1 && priced.rate <= 0) {
+      return { ok: false, code: 'OPEN_PRICE_NEEDS_AMOUNT', productId: product.id, productName: product.name }
     }
 
     const discount = line.discount ?? ZERO

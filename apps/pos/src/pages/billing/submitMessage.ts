@@ -41,3 +41,16 @@ export function submitMessage(result: Extract<SubmitBillResult, { ok: false }>):
       return 'The bill could not be completed.'
   }
 }
+
+/** Why the bill on screen never became a draft, by the code its save came back with. */
+export function unsavedMessage(reason: string): string {
+  switch (reason) {
+    case 'RATE_NOT_THE_RULE':
+      return 'A rate on screen is not the shop’s price for that line’s unit and quantity, so the bill was not '
+        + 'saved. Change the line’s quantity or unit again to reprice it, or type the rate.'
+    case 'OPEN_PRICE_NEEDS_AMOUNT':
+      return 'A loose item on the bill has no amount. Type what the customer pays for it in its rate box.'
+    default:
+      return 'The bill on screen could not be saved, so it cannot be taken yet. Check the lines and try again.'
+  }
+}

@@ -179,6 +179,8 @@ export const products = sqliteTable('products', {
   variantLabel: text('variant_label'),
   /** GST compensation cess, ad valorem, in basis points (063). */
   cessRateBp: integer('cess_rate_bp').default(0).notNull(),
+  /** Priced at the counter every time it is sold: the loose item (068). */
+  openPrice: integer('open_price').default(0).notNull(),
 }, (table) => [
   index('idx_products_parent').on(table.parentProductId),
   index('idx_products_reorder').on(table.reorderLevel),

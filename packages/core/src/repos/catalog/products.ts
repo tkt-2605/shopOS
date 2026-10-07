@@ -39,6 +39,7 @@ const productShape = {
   discountBlocked: schema.products.discountBlocked,
   loyaltyBlocked: schema.products.loyaltyBlocked,
   returnBlocked: schema.products.returnBlocked,
+  openPrice: schema.products.openPrice,
   reorderLevel: schema.products.reorderLevel,
   reorderQty: schema.products.reorderQty,
   categoryId: schema.products.categoryId,
@@ -78,6 +79,11 @@ export interface ProductListItem {
   loyaltyBlocked: boolean
   /** A recharge, a cut length, anything perishable. The return screen refuses it. */
   returnBlocked: boolean
+  /**
+   * The amount is typed at the counter every time, by anyone billing: a loose
+   * item standing in for whatever was bundled together (068).
+   */
+  openPrice: boolean
   /** Null means the owner has not set one, which is not the same as zero. */
   reorderLevel: Qty | null
   reorderQty: Qty | null
@@ -222,14 +228,14 @@ export async function saleUnitsFor(db: SqlDriver, productId: string): Promise<Sa
  * A row exactly as the three product queries return it.
  *
  * Derived from what a screen is given rather than written out a second time:
- * the columns are the same, and the five SQLite keeps as 0 and 1 because it has
+ * the columns are the same, and the six SQLite keeps as 0 and 1 because it has
  * no boolean are the only ones that differ.
  */
-type Ticked = 'isStockTracked' | 'isActive' | 'discountBlocked' | 'loyaltyBlocked' | 'returnBlocked'
+type Ticked = 'isStockTracked' | 'isActive' | 'discountBlocked' | 'loyaltyBlocked' | 'returnBlocked' | 'openPrice'
 type ProductRow = Omit<ProductListItem, Ticked> & Record<Ticked, number>
 
 /**
- * The five columns SQLite keeps as 0 and 1 because it has no boolean.
+ * The six columns SQLite keeps as 0 and 1 because it has no boolean.
  *
  * Everything else arrives in the shape the screen wants, brands included, so
  * this is all that is left of what used to be a twenty-three line hand
@@ -243,5 +249,6 @@ function toProduct(r: ProductRow): ProductListItem {
     discountBlocked: r.discountBlocked === 1,
     loyaltyBlocked: r.loyaltyBlocked === 1,
     returnBlocked: r.returnBlocked === 1,
+    openPrice: r.openPrice === 1,
   }
 }

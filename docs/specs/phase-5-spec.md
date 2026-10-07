@@ -55,8 +55,10 @@ done last and is the proof of Phase 2c.
 - Tamil on receipt and PDF — as decided; `pdf.rs` gains a shaper module and a
   font table; the receipt gains a raster path. `[delegate: Opus]`
 - WhatsApp share — as decided. `[delegate: Sonnet/Haiku]`
-- Open-price item, quick keys, weight-embedded barcodes — a `barcode_layout`
-  setting and a parser in `domain/barcodes.ts`. `[delegate: Sonnet/Haiku]`
+- Open-price item — done in 0.2.6 (068, `products.open_price`): the counter
+  asks for the amount, any cashier may give it, a bill refuses it at nothing.
+- Quick keys, weight-embedded barcodes — a `barcode_layout` setting and a
+  parser in `domain/barcodes.ts`. `[delegate: Sonnet/Haiku]`
 - GSTR-1 working file — `repos/gstr1.ts`: B2B (by GSTIN, invoice-wise), B2CL
   (inter-state above ₹1 lakh, invoice-wise), B2CS (rate × place of supply
   totals), CDNR/CDNUR (credit notes with the original invoice), HSN summary

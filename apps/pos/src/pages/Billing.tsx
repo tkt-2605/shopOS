@@ -15,7 +15,7 @@ import { Empty, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
 import { useConfirm } from '../ui/useConfirm'
 import { totalsLinesOf, shortOf } from './billing/cart'
-import { submitMessage } from './billing/submitMessage'
+import { submitMessage, unsavedMessage } from './billing/submitMessage'
 import { restoreHold, restoreHoldMessage } from '../core/restoreHold'
 import { TabStrip } from './billing/TabStrip'
 import { CartTable } from './billing/CartTable'
@@ -23,6 +23,7 @@ import { TotalsPanel } from './billing/TotalsPanel'
 import { CustomerPicker } from './billing/CustomerPicker'
 import { PaymentDialog, type Tender } from './billing/PaymentDialog'
 import { DoneDialog, type CompletedBill } from './billing/DoneDialog'
+import { OpenPriceDialog } from './billing/OpenPriceDialog'
 
 export default function Billing() {
   const { db, registerId, stockPolicy, rounding, taxScheme } = useCore()
@@ -37,6 +38,8 @@ export default function Billing() {
   const [customers, setCustomers] = useState<CustomerListItem[]>([])
   const [customerTerm, setCustomerTerm] = useState('')
   const [pickingCustomer, setPickingCustomer] = useState(false)
+  /** The loose item, waiting for its amount. See `OpenPriceDialog`. */
+  const [askingAmount, setAskingAmount] = useState<ProductListItem | null>(null)
   const [paying, setPaying] = useState(false)
   /* A second click on a tender while the first is still in flight would submit
      the same draft twice. The ref is the guard, because state set in one click
@@ -153,15 +156,19 @@ export default function Billing() {
 
   /* Resolved through the same core call the service uses, so the rate on screen
      is the rate that gets saved. */
-  const addProduct = useCallback(async (product: ProductListItem) => {
+  const addProduct = useCallback(async (product: ProductListItem, amount?: Money.Money) => {
+    // Priced at the counter: nothing goes on the bill until somebody says how much.
+    if (product.openPrice && amount === undefined) {
+      setTerm('')
+      setAskingAmount(product)
+      return
+    }
     const units = await saleUnitsFor(db, product.id)
     const unit = units.find((u) => u.isDefault) ?? units[0]!
     const context = await pricingContextFor(db, active.customer?.id ?? null)
-    const resolved = await resolveLinePrice(db, context, {
-      productId: product.id,
-      saleUnit: unit.saleUnit,
-      qty: Quantity.fromUnits(1),
-    })
+    const resolved = amount !== undefined
+      ? { rate: amount, source: 'manual_override' as const, sourceId: null, includesTax: true }
+      : await resolveLinePrice(db, context, { productId: product.id, saleUnit: unit.saleUnit, qty: Quantity.fromUnits(1) })
 
     tabs.patch((cart) => {
       const at = cart.lines.findIndex(
@@ -181,7 +188,8 @@ export default function Billing() {
         rate: resolved.rate,
         source: resolved.source,
         sourceId: resolved.sourceId,
-        manual: false,
+        // A typed amount is manual, so each loose sale is its own line: manual lines are not merged above.
+        manual: amount !== undefined,
         includesTax: resolved.includesTax,
         pricedFor: pricedForOf({ saleUnit: unit.saleUnit, qty: 1 }, active.customer?.id ?? null),
       }
@@ -243,12 +251,14 @@ export default function Billing() {
    * A shop that has gone to the trouble of setting tiers and customer rates does
    * not want a cashier quietly undoing them one bill at a time — and one that
    * bargains over every sale wants exactly this. It is the same capability that
-   * lets someone set prices in the first place.
+   * lets someone set prices in the first place. Except on a loose item, where
+   * typing the amount is the sale -- and nothing is not an amount.
    */
   function setRate(key: string, value: string) {
-    if (!canOverridePrice) return
+    const open = active.lines.find((l) => l.key === key)?.product.openPrice === true
+    if (!canOverridePrice && !open) return
     const rate = Money.parseMoney(value)
-    if (rate === null || rate < 0) return
+    if (rate === null || rate < 0 || (open && rate === 0)) return
     editLine(key, (l) => ({ ...l, rate, manual: true, source: 'manual_override', sourceId: null }))
   }
 
@@ -279,10 +289,7 @@ export default function Billing() {
       await tabs.flush()
       const saved = tabs.savedDraft()
       if (saved.billId === null) {
-        fail(saved.reason === 'RATE_NOT_THE_RULE'
-          ? 'A rate on screen is not the shop’s price for that line’s unit and quantity, so the bill was not '
-            + 'saved. Change the line’s quantity or unit again to reprice it, or type the rate.'
-          : 'The bill on screen could not be saved, so it cannot be taken yet. Check the lines and try again.')
+        fail(unsavedMessage(saved.reason))
         return
       }
       billId = saved.billId
@@ -422,6 +429,14 @@ export default function Billing() {
         onDiscount={(discount) => tabs.patch((cart) => ({ ...cart, discount }))}
         onPay={() => setPaying(true)}
       />
+
+      {askingAmount !== null && (
+        <OpenPriceDialog
+          product={askingAmount}
+          onAdd={(amount) => { setAskingAmount(null); void addProduct(askingAmount, amount) }}
+          onClose={() => { setAskingAmount(null); focusScan() }}
+        />
+      )}
 
       {pickingCustomer && (
         <CustomerPicker

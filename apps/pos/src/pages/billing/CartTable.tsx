@@ -85,7 +85,7 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
                   />
                 </td>
                 <td className="r">
-                  {canOverridePrice ? (
+                  {canOverridePrice || line.product.openPrice ? (
                     <input
                       key={`${line.key}-${line.rate}`}
                       className="qty-input num"

@@ -95,6 +95,11 @@ export interface ProductDetails {
   loyaltyBlocked: boolean
   returnBlocked: boolean
   isStockTracked: boolean
+  /**
+   * The amount is typed at the counter on every sale (068). Absent leaves an
+   * item's setting as it is, and a new item's off, as cess does.
+   */
+  openPrice?: boolean
   reorderLevel: Qty | null
   reorderQty: Qty | null
 }
@@ -146,6 +151,7 @@ export async function saveProductDetails(
     loyaltyBlocked: input.loyaltyBlocked ? 1 : 0,
     returnBlocked: input.returnBlocked ? 1 : 0,
     isStockTracked: input.isStockTracked ? 1 : 0,
+    ...(input.openPrice !== undefined ? { openPrice: input.openPrice ? 1 : 0 } : {}),
     reorderLevel: input.reorderLevel,
     reorderQty: input.reorderQty,
   }
@@ -158,7 +164,10 @@ export async function saveProductDetails(
       })
       await writeAudit(tx, ctx, {
         entity: 'products', entityId: productId, action: 'create',
-        after: { name, base_rate: fields.baseRate, tax_rate_bp: fields.taxRateBp },
+        after: {
+          name, base_rate: fields.baseRate, tax_rate_bp: fields.taxRateBp,
+          ...(fields.openPrice === 1 ? { open_price: 1 } : {}),
+        },
       })
       return { ok: true, productId, created: true }
     }
@@ -167,7 +176,7 @@ export async function saveProductDetails(
       .select({
         name: schema.products.name, baseRate: schema.products.baseRate, mrp: schema.products.mrp,
         taxRateBp: schema.products.taxRateBp, hsnCode: schema.products.hsnCode,
-        cessRateBp: schema.products.cessRateBp,
+        cessRateBp: schema.products.cessRateBp, openPrice: schema.products.openPrice,
       })
       .from(schema.products)
       .where(eq(schema.products.id, input.id))
@@ -187,6 +196,8 @@ export async function saveProductDetails(
       ['tax_rate_bp', before.taxRateBp, fields.taxRateBp],
       ['cess_rate_bp', before.cessRateBp, fields.cessRateBp ?? before.cessRateBp],
       ['hsn_code', before.hsnCode, fields.hsnCode],
+      // Who let any cashier price an item is as much a price change as a new rate.
+      ['open_price', before.openPrice, fields.openPrice ?? before.openPrice],
     ]
     for (const [column, old, next] of compare) {
       if (old !== next) { was[column] = old; is[column] = next }

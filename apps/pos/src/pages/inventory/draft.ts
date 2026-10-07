@@ -57,6 +57,8 @@ export interface Draft {
    * to buy more of.
    */
   stockTracked: boolean
+  /** The amount is typed at the counter on every sale: the loose item (068). */
+  openPrice: boolean
   reorderLevel: string
   reorderQty: string
 }
@@ -65,7 +67,7 @@ export const BLANK: Draft = {
   id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
   categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', taxPercent: '12', cessPercent: '',
   baseRate: '', mrp: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
-  returnBlocked: false, stockTracked: true,
+  returnBlocked: false, stockTracked: true, openPrice: false,
   reorderLevel: '', reorderQty: '',
 }
 
