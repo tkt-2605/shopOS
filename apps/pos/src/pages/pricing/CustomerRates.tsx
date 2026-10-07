@@ -10,6 +10,7 @@ import { Card, Field, Empty, Alert, Rupees } from '../../ui/components'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../../ui/LadderEditor'
 import { usePickList, Results } from '../../ui/PickList'
 import { useSearch } from '../../ui/useSearch'
+import { useScanChoice } from '../../ui/ScanChoice'
 
 /* The third tab: a customer's list, and the rates only they get. */
 
@@ -145,15 +146,21 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
     enter: async () => { const [hit] = await customerSearch.latest(); if (hit) await choose(hit) },
   })
 
+  const scanChoice = useScanChoice((p) => void pickProduct(p))
   const productPick = usePickList({
     count: productResults.length,
     resetKey: productTerm,
     onPick: (i) => { const hit = productResults[i]; if (hit) void pickProduct(hit) },
-    enter: async () => { const [hit] = await productSearch.latest(); if (hit) await pickProduct(hit) },
+    enter: async () => {
+      const rows = await productSearch.latest()
+      if (scanChoice.ask(rows, productTerm.trim())) return
+      if (rows[0]) await pickProduct(rows[0])
+    },
   })
 
   return (
     <>
+      {scanChoice.dialog}
       <Card title="Which customer">
         <input className="input" ref={box} placeholder="Search a customer by name or phone"
           value={term} onChange={(e) => setTerm(e.target.value)}

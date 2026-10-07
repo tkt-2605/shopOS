@@ -6,7 +6,7 @@
  * them.
  */
 
-export { findByBarcode, productsByIds, saleUnitsFor, searchProducts } from './catalog/products.js'
+export { findByBarcode, findAllByBarcode, scanChoices, productsByIds, saleUnitsFor, searchProducts } from './catalog/products.js'
 export type { ProductListItem, SaleUnitOption, SearchOptions } from './catalog/products.js'
 export { countCustomers, loadCustomer, searchCustomers } from './catalog/customers.js'
 export type { CustomerDetail, CustomerListItem, CustomerOrder } from './catalog/customers.js'

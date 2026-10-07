@@ -808,7 +808,8 @@ export const productBarcodes = sqliteTable('product_barcodes', {
   deletedAt: text('deleted_at'),
 }, (table) => [
   index('idx_product_barcodes_product').on(table.productId),
-  uniqueIndex('idx_product_barcodes_code').on(table.barcode),
+  // Not unique since 069: one code may sit on several items, and the scan asks which.
+  index('idx_product_barcodes_code').on(table.barcode),
 ])
 
 export const customerItemPrices = sqliteTable('customer_item_prices', {

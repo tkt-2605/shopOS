@@ -80,7 +80,7 @@ export type RowProblem =
   | 'BAD_QTY'
   /** Not 4, 6 or 8 digits. A warning everywhere else; here it is a refusal. */
   | 'BAD_HSN'
-  /** The same barcode twice in one file, which cannot both be right. */
+  /** The same barcode on the same name and brand twice in one file: one row repeated. */
   | 'BARCODE_TWICE'
   /** The same name and brand twice in one file. */
   | 'NAME_TWICE'
@@ -88,6 +88,8 @@ export type RowProblem =
   | 'BARCODE_TAKEN'
   /** No brand and no barcode, and the name is more than one item here. */
   | 'NAME_AMBIGUOUS'
+  /** The barcode is on several items here (069), and the row names none of them. */
+  | 'BARCODE_SHARED'
 
 export interface PlannedRow {
   /** 1-based, counting the header, so it matches what Excel shows. */
@@ -150,14 +152,16 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     .from(schema.productBarcodes)
     .where(isNull(schema.productBarcodes.deletedAt))
 
-  const byBarcode = new Map<string, string>()
+  /* A code may be on several items since 069, so each code holds a set. */
+  const byBarcode = new Map<string, Set<string>>()
+  const hold = (code: string, id: string) => byBarcode.set(code, (byBarcode.get(code) ?? new Set()).add(id))
   const byName = new Map<string, { id: string; brand: string; coded: boolean }[]>()
   for (const p of existing) {
-    if (p.barcode !== null && p.barcode !== '') byBarcode.set(p.barcode, p.id)
+    if (p.barcode !== null && p.barcode !== '') hold(p.barcode, p.id)
   }
   const live = new Set(existing.map((p) => p.id))
-  for (const b of scanned) if (live.has(b.productId)) byBarcode.set(b.barcode, b.productId)
-  const coded = new Set(byBarcode.values())
+  for (const b of scanned) if (live.has(b.productId)) hold(b.barcode, b.productId)
+  const coded = new Set([...byBarcode.values()].flatMap((ids) => [...ids]))
   for (const p of existing) {
     const key = p.name.trim().toLowerCase()
     byName.set(key, [...(byName.get(key) ?? []), {
@@ -165,7 +169,19 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     }])
   }
 
-  const seenBarcodes = new Set<string>()
+  /* Which names each code carries across the whole file. A code the file puts
+     on two names is one code on two items, so a new name with it is a new item
+     rather than the one the shop already has under that code, renamed. */
+  const namesInFile = new Map<string, Set<string>>()
+  for (const { values } of rows) {
+    const code = (values['barcode'] ?? '').trim()
+    if (code === '') continue
+    const key = `${(values['name'] ?? '').trim().toLowerCase()}\u0000${(values['brand'] ?? '').trim().toLowerCase()}`
+    namesInFile.set(code, (namesInFile.get(code) ?? new Set()).add(key))
+  }
+
+  /** Each code seen so far, with the names and brands it was seen on. */
+  const seenBarcodes = new Map<string, Set<string>>()
   /* Each name and brand seen so far, and whether every row carrying it had a
      barcode: a repeat is only told apart from the first by its code. */
   const seenNames = new Map<string, { allCoded: boolean }>()
@@ -205,7 +221,7 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     const lowerName = name.toLowerCase()
     const lowerBrand = brand?.toLowerCase() ?? null
     const nameKey = `${lowerName}\u0000${lowerBrand ?? ''}`
-    if (barcode !== null && seenBarcodes.has(barcode)) { refuse('BARCODE_TWICE'); return }
+    if (barcode !== null && seenBarcodes.get(barcode)?.has(nameKey)) { refuse('BARCODE_TWICE'); return }
     const before = seenNames.get(nameKey)
     if (before !== undefined && (barcode === null || !before.allCoded)) { refuse('NAME_TWICE'); return }
 
@@ -220,16 +236,23 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
           return branded.length > 0 ? branded : sameName.filter((p) => p.brand === '')
         })()
 
-    /* Barcode first, then exact name. A row with a barcode that belongs to a
-       *differently named* product is refused rather than matched: the file
-       and the shop disagree about what that code is, and guessing either way
-       silently renames something or duplicates it. */
-    const matchedByBarcode = barcode === null ? undefined : byBarcode.get(barcode)
-    if (matchedByBarcode !== undefined
-        && candidates.length > 0
-        && !candidates.some((p) => p.id === matchedByBarcode)) {
-      refuse('BARCODE_TAKEN')
-      return
+    /* Barcode first, then exact name -- and since 069 a code may be several
+       items', so the name says which of them. A row with a barcode that
+       belongs to a *differently named* product is refused rather than
+       matched: the file and the shop disagree about what that code is, and
+       guessing either way silently renames something or duplicates it. */
+    const holders = barcode === null ? [] : [...(byBarcode.get(barcode) ?? [])]
+    let matchedByBarcode: string | undefined
+    if (holders.length > 0) {
+      const named = holders.filter((id) => candidates.some((p) => p.id === id))
+      const sharedInFile = (namesInFile.get(barcode!)?.size ?? 0) > 1
+      if (named.length > 1) { refuse('NAME_AMBIGUOUS'); return }
+      if (named.length === 1) matchedByBarcode = named[0]
+      // The one item with this code, under a name the shop has since changed.
+      else if (holders.length === 1 && candidates.length === 0 && !sharedInFile) matchedByBarcode = holders[0]
+      else if (holders.length === 1 && candidates.length > 0) { refuse('BARCODE_TAKEN'); return }
+      else if (!sharedInFile) { refuse('BARCODE_SHARED'); return }
+      // Otherwise a new item, sharing a code the file gives to other names too.
     }
     /* By name only what the code cannot contradict: a row with a barcode the
        shop has not seen matches an item with no barcode yet, never one that
@@ -239,7 +262,7 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
 
     const productId = matchedByBarcode ?? byNameOnly[0]?.id ?? null
 
-    if (barcode !== null) seenBarcodes.add(barcode)
+    if (barcode !== null) seenBarcodes.set(barcode, (seenBarcodes.get(barcode) ?? new Set()).add(nameKey))
     seenNames.set(nameKey, { allCoded: (before?.allCoded ?? true) && barcode !== null })
 
     planned.push({
@@ -543,8 +566,8 @@ function quantity(raw: string | undefined): Qty | null | 'bad' {
 /**
  * The id an imported product is created under.
  *
- * Derived from what the row is -- its barcode, or its name where it has none --
- * so two tills importing the same file while apart create the same product
+ * Derived from what the row is -- its barcode and name, or its name where it
+ * has no barcode (the name too since 069, when one code may be two items) -- so two tills importing the same file while apart create the same product
  * rather than two, which the merge then joins into one. A random id would give
  * the shop every item twice, and nothing would refuse it: `code` is empty on
  * an import, so no UNIQUE is there to notice.
@@ -554,7 +577,10 @@ function quantity(raw: string | undefined): Qty | null | 'bad' {
  * fresh one instead of failing the whole import on a primary key.
  */
 async function importedProductId(tx: SqlDriver, barcode: string | null, name: string): Promise<string> {
-  const id = await derivedId('products', 'import', barcode?.trim() || name.trim().toLowerCase())
+  const named = name.trim().toLowerCase()
+  const id = barcode?.trim()
+    ? await derivedId('products', 'import', barcode.trim(), named)
+    : await derivedId('products', 'import', named)
   const [taken] = await q(tx).select({ id: schema.products.id }).from(schema.products).where(eq(schema.products.id, id))
   return taken ? newId() : id
 }

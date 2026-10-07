@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react'
 import {
   migrate, bootstrap, newId, setBarcodes, loadFeatures, type SqlDriver, type BootstrapResult,
 } from '@shopos/core'
@@ -19,6 +19,8 @@ import { loadPermissions } from '../../../packages/core/src/integrity/permission
 
 let db: SqlDriver
 let seed: BootstrapResult
+let paper: string
+let adminId: string
 let core: Record<string, unknown>
 
 vi.mock('../src/core/CoreProvider', () => ({
@@ -39,7 +41,7 @@ beforeEach(async () => {
   await migrate(db, MIGRATIONS)
   seed = await bootstrap(db, { shopName: 'TRT Stationery' })
 
-  const adminId = newId()
+  adminId = newId()
   const now = new Date().toISOString()
   const roleId = seed.roleIds['Admin']!
   await db.execute(
@@ -48,15 +50,15 @@ beforeEach(async () => {
     [adminId, roleId, now, now],
   )
   const pen = newId()
-  for (const [id, name] of [[newId(), 'A4 Copier Paper 500 sheets'], [pen, 'Ball Pen Blue']] as const) {
+  paper = newId()
+  for (const [id, name] of [[paper, 'A4 Copier Paper 500 sheets'], [pen, 'Ball Pen Blue']] as const) {
     await db.execute(
       `INSERT INTO products (id, name, base_rate, tax_rate_bp, hsn_code, created_at, updated_at)
        VALUES (?, ?, 1000, 1200, '4802', ?, ?)`,
       [id, name, now, now],
     )
   }
-  const coded = await setBarcodes(db, { actorId: adminId }, pen, [{ barcode: PEN_BARCODE }])
-  if (!coded.ok) throw new Error(coded.code)
+  await setBarcodes(db, { actorId: adminId }, pen, [{ barcode: PEN_BARCODE }])
 
   core = {
     db,
@@ -97,5 +99,24 @@ describe('a scanner at stock in', () => {
     await scanFast('4001234567891')
     await waitFor(() => expect(document.body.textContent).toContain('Nothing in the catalog matches 4001234567891.'))
     expect(linesText()).not.toMatch(/A4 Copier Paper|Ball Pen Blue/)
+  })
+})
+
+describe('one code on two items (069)', () => {
+  it('asks which, adds nothing until somebody picks, then adds the one picked', async () => {
+    await setBarcodes(db, { actorId: adminId }, paper, [{ barcode: PEN_BARCODE }])
+    render(<StockIn />)
+    await scanFast(PEN_BARCODE)
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain(`${PEN_BARCODE} is on 2 items`)
+    expect(dialog.textContent).toMatch(/A4 Copier Paper/)
+    expect(dialog.textContent).toMatch(/Ball Pen Blue/)
+    // The order a search returns is not a choice: nothing went in on its own.
+    expect(linesText()).not.toMatch(/A4 Copier Paper|Ball Pen Blue/)
+
+    fireEvent.click(within(dialog).getByRole('option', { name: /A4 Copier Paper/ }))
+    await waitFor(() => expect(linesText()).toContain('A4 Copier Paper'))
+    expect(linesText()).not.toContain('Ball Pen Blue')
   })
 })

@@ -119,8 +119,7 @@ describe('two tills that have never met', () => {
   it('agree on a barcode', async () => {
     const { product } = await onBoth()
     for (const fx of [one, two]) {
-      const set = await setBarcodes(fx.db, ctx(fx), product, [{ barcode: '8901234567890' }])
-      if (!set.ok) throw new Error(set.code)
+      await setBarcodes(fx.db, ctx(fx), product, [{ barcode: '8901234567890' }])
     }
 
     expect(await idsIn(one, 'product_barcodes')).toEqual(await idsIn(two, 'product_barcodes'))

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { listBarcodes, setBarcodes, productIdForBarcode } from '../src/services/barcodes.js'
-import { searchProducts, findByBarcode } from '../src/repos/catalog.js'
+import { listBarcodes, setBarcodes, productIdForBarcode, productIdsForBarcode } from '../src/services/barcodes.js'
+import { searchProducts, findByBarcode, findAllByBarcode, scanChoices } from '../src/repos/catalog.js'
 import { freshDb, makeProduct, type Fixture } from './helpers.js'
 
 let fx: Fixture
@@ -56,21 +56,69 @@ describe('an item with several barcodes', () => {
   })
 })
 
-describe('keeping the scan unambiguous', () => {
-  /* A scan that could mean two things is worse than a scan that means nothing. */
-  it('refuses a barcode another item already answers to', async () => {
-    const mine = await makeProduct(fx.db, { name: 'Mine' })
-    const theirs = await makeProduct(fx.db, { name: 'Sakthi pen' })
-    await setBarcodes(fx.db, ctx(), theirs, [{ barcode: '8901234567890' }])
+describe('one barcode on several items (069)', () => {
+  /* A manufacturer puts one EAN on two pack sizes, and the shop keeps them as
+     two items. Refusing the second its code left it findable only by name. */
+  it('is saved on both, and says which other item has it', async () => {
+    const small = await makeProduct(fx.db, { name: 'Glue 50ml' })
+    const large = await makeProduct(fx.db, { name: 'Glue 100ml' })
+    await setBarcodes(fx.db, ctx(), small, [{ barcode: '8901234567890' }])
 
-    const result = await setBarcodes(fx.db, ctx(), mine, [{ barcode: '8901234567890' }])
-    if (result.ok) throw new Error('expected a refusal')
-    expect(result.code).toBe('TAKEN')
-    expect(result.productName).toBe('Sakthi pen')
-
-    // And nothing was written: the refusal happens before the rewrite.
-    expect(await listBarcodes(fx.db, mine)).toHaveLength(0)
+    const result = await setBarcodes(fx.db, ctx(), large, [{ barcode: '8901234567890' }])
+    expect(result.shared).toEqual([{ barcode: '8901234567890', productId: small, productName: 'Glue 50ml' }])
+    expect((await listBarcodes(fx.db, large)).map((b) => b.barcode)).toEqual(['8901234567890'])
+    // And the first item still has it: the second did not take it away.
+    expect((await listBarcodes(fx.db, small)).map((b) => b.barcode)).toEqual(['8901234567890'])
   })
+
+  it('makes a scan find both, and refuses to pick one when asked for one', async () => {
+    const small = await makeProduct(fx.db, { name: 'Glue 50ml', baseRate: 2500 })
+    const large = await makeProduct(fx.db, { name: 'Glue 100ml', baseRate: 4500 })
+    await setBarcodes(fx.db, ctx(), small, [{ barcode: 'SHARED' }])
+    await setBarcodes(fx.db, ctx(), large, [{ barcode: 'SHARED' }])
+
+    expect((await findAllByBarcode(fx.db, 'SHARED')).map((p) => p.id).sort()).toEqual([small, large].sort())
+    expect((await productIdsForBarcode(fx.db, 'SHARED')).sort()).toEqual([small, large].sort())
+    // Handing back the first of two would be choosing for the cashier.
+    expect(await findByBarcode(fx.db, 'SHARED')).toBeNull()
+    expect(await productIdForBarcode(fx.db, 'SHARED')).toBeNull()
+  })
+
+  it('marks both in a search, so the screen asks which', async () => {
+    const small = await makeProduct(fx.db, { name: 'Glue 50ml' })
+    const large = await makeProduct(fx.db, { name: 'Glue 100ml' })
+    const other = await makeProduct(fx.db, { name: 'SHARED glue, by name only' })
+    await setBarcodes(fx.db, ctx(), small, [{ barcode: 'SHARED' }])
+    await setBarcodes(fx.db, ctx(), large, [{ barcode: 'SHARED' }])
+
+    const rows = await searchProducts(fx.db, { term: 'SHARED' })
+    expect(rows.slice(0, 2).map((r) => r.scanned)).toEqual([true, true])
+    expect(rows.find((r) => r.id === other)?.scanned).toBe(false)
+    expect(scanChoices(rows)?.map((r) => r.id).sort()).toEqual([small, large].sort())
+  })
+
+  it('asks nothing of a code only one item has', async () => {
+    const p = await makeProduct(fx.db, { name: 'Glue 50ml' })
+    await setBarcodes(fx.db, ctx(), p, [{ barcode: 'ONLY' }])
+    expect(scanChoices(await searchProducts(fx.db, { term: 'ONLY' }))).toBeNull()
+    expect((await setBarcodes(fx.db, ctx(), p, [{ barcode: 'ONLY' }])).shared).toEqual([])
+  })
+
+  it('takes the code off one item without taking it off the other', async () => {
+    const small = await makeProduct(fx.db, { name: 'Glue 50ml' })
+    const large = await makeProduct(fx.db, { name: 'Glue 100ml' })
+    await setBarcodes(fx.db, ctx(), small, [{ barcode: 'SHARED' }])
+    await setBarcodes(fx.db, ctx(), large, [{ barcode: 'SHARED' }])
+    await setBarcodes(fx.db, ctx(), small, [])
+
+    expect(await productIdForBarcode(fx.db, 'SHARED')).toBe(large)
+    // Put back on, it is its own row again rather than the other item's moved.
+    await setBarcodes(fx.db, ctx(), small, [{ barcode: 'SHARED' }])
+    expect((await productIdsForBarcode(fx.db, 'SHARED')).sort()).toEqual([small, large].sort())
+  })
+})
+
+describe('keeping the scan unambiguous', () => {
 
   it('lets an item keep its own barcode when it is edited again', async () => {
     const p = await makeProduct(fx.db)
@@ -84,7 +132,6 @@ describe('keeping the scan unambiguous', () => {
     const result = await setBarcodes(fx.db, ctx(), p, [
       { barcode: '  ' }, { barcode: 'ONE' }, { barcode: 'ONE' }, { barcode: '' },
     ])
-    if (!result.ok) throw new Error(result.code)
     expect(result.barcodes.map((b) => b.barcode)).toEqual(['ONE'])
   })
 

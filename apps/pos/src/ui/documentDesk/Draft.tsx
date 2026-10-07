@@ -7,6 +7,7 @@ import { useCore } from '../../core/CoreProvider'
 import { Field, Modal, Empty, Rupees } from '../components'
 import { usePickList } from '../PickList'
 import { useSearch } from '../useSearch'
+import { useScanChoice } from '../ScanChoice'
 import type { DeskConfig, Line } from './types'
 
 export function Draft({ config, kind, onClose, onDone, onError, registerId, userId }: {
@@ -45,13 +46,16 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
     setTerm('')
   }
 
+  const scanChoice = useScanChoice(add)
   const pick = usePickList({
     count: results.length,
     resetKey: term,
     onPick: (i) => { const hit = results[i]; if (hit) add(hit) },
     enter: async () => {
       const typed = term.trim()
-      const [hit] = await search.latest()
+      const rows = await search.latest()
+      if (scanChoice.ask(rows, typed)) return
+      const [hit] = rows
       if (hit) return add(hit)
       setTerm('')
       onError(`Nothing in the catalog matches ${typed}.`)
@@ -128,7 +132,8 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
     onDone(`${label.name} ${made.docNo} issued.`)
   }
 
-  return (
+  return (<>
+    {scanChoice.dialog}
     <Modal
       title={`New ${label.name.toLowerCase()}`}
       wide
@@ -222,5 +227,5 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         </span>
       </div>
     </Modal>
-  )
+  </>)
 }

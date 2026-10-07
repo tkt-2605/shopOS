@@ -11,6 +11,7 @@ import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
 import { useSearch } from '../ui/useSearch'
+import { useScanChoice } from '../ui/ScanChoice'
 
 interface Line {
   key: string
@@ -214,13 +215,17 @@ export default function StockIn() {
     setRoundOff('')
   }
 
+  const scanChoice = useScanChoice((p) => void add(p))
   const pick = usePickList({
     count: results.length,
     resetKey: term,
     onPick: (i) => { const hit = results[i]; if (hit) void add(hit) },
     enter: async () => {
       const typed = term.trim()
-      const [hit] = await search.latest()
+      const rows = await search.latest()
+      // One code on several items (069): received into the one somebody picks, never the first.
+      if (scanChoice.ask(rows, typed)) return
+      const [hit] = rows
       if (hit) return add(hit)
       setTerm('')
       setError(`Nothing in the catalog matches ${typed}.`)
@@ -229,6 +234,7 @@ export default function StockIn() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 900 }}>
+      {scanChoice.dialog}
       {error && <Alert>{error}</Alert>}
       {done && (
         <div>

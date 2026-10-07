@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react'
 import {
   migrate, bootstrap, newId, setSetting, setFeature, setUnits, setLadder, setBarcodes, Ladder, Quantity,
   loadFeatures, loadRounding, loadTaxScheme, pricingContextFor, resolveLinePrice,
@@ -78,8 +78,7 @@ beforeEach(async () => {
      VALUES (?, 'Ball Pen Blue', 1000, 1800, '9608', ?, ?)`,
     [pen, now, now],
   )
-  const coded = await setBarcodes(db, ctx, pen, [{ barcode: PEN_BARCODE }])
-  if (!coded.ok) throw new Error(coded.code)
+  await setBarcodes(db, ctx, pen, [{ barcode: PEN_BARCODE }])
 
   core = {
     db,
@@ -204,5 +203,23 @@ describe('a scanner, which presses Enter before the search has run', () => {
     await scanFast('')
     await act(() => new Promise((r) => setTimeout(r, 30)))
     expect(document.querySelector('.cart input.qty-input')).toBeNull()
+  })
+
+  it('asks which item a code on two of them meant, and bills the one picked (069)', async () => {
+    const paper = await db.get<{ id: string }>(`SELECT id FROM products WHERE name LIKE 'A4%'`)
+    const admin = core['user'] as { id: string }
+    await setBarcodes(db, { actorId: admin.id }, paper!.id, [{ barcode: PEN_BARCODE }])
+    render(<Billing />)
+    await scanFast(PEN_BARCODE)
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain(`${PEN_BARCODE} is on 2 items`)
+    // The price leads each row: it is what is printed on the pack.
+    expect(within(dialog).getByRole('option', { name: /Ball Pen Blue/ }).textContent).toMatch(/^₹\s?10\.00/)
+    expect(document.querySelector('.cart input.qty-input')).toBeNull()
+
+    fireEvent.click(within(dialog).getByRole('option', { name: /Ball Pen Blue/ }))
+    await waitFor(() => expect(document.querySelector('.cart tbody')?.textContent).toContain('Ball Pen Blue'))
+    expect(document.querySelector('.cart tbody')?.textContent).not.toContain('A4 Copier Paper')
   })
 })

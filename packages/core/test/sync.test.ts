@@ -935,6 +935,30 @@ describe('a barcode taken off an item', () => {
   })
 })
 
+describe('one barcode put on two items on two tills apart (069)', () => {
+  it('reaches both tills on both items, and the sync finishes', async () => {
+    /* Until 069 the code was UNIQUE, and the second till's row would have
+       stopped the merge partway through a batch. */
+    const { setBarcodes, productIdsForBarcode } = await import('../src/services/barcodes.js')
+    const small = await as(a, () => makeProduct(a.db, { name: 'Glue 50ml' }))
+    const large = await as(a, () => makeProduct(a.db, { name: 'Glue 100ml' }))
+    await bothWays()
+
+    const userB = await b.db.get<{ id: string }>(
+      "SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name = 'Admin' LIMIT 1")
+    await as(a, () => setBarcodes(a.db, { actorId: a.fx!.adminId }, small, [{ barcode: '8901111122222' }]))
+    await as(b, () => setBarcodes(b.db, { actorId: userB!.id }, large, [{ barcode: '8901111122222' }]))
+    await bothWays()
+
+    for (const till of [a, b]) {
+      expect((await as(till, () => productIdsForBarcode(till.db, '8901111122222'))).sort())
+        .toEqual([small, large].sort())
+    }
+    expect(await a.db.query('SELECT reason FROM sync_quarantine')).toEqual([])
+    expect(await b.db.query('SELECT reason FROM sync_quarantine')).toEqual([])
+  })
+})
+
 /**
  * The same database, except that a transaction which wrote to `table` fails
  * at the end instead of committing -- a merge whose COMMIT did not happen.

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { searchProducts, type ProductListItem, type SqlDriver } from '@shopos/core'
+import { searchProducts, scanChoices, type ProductListItem, type SqlDriver } from '@shopos/core'
 import { usePickList } from '../../ui/PickList'
 import { useSearch } from '../../ui/useSearch'
 import type { Draft } from './draft'
@@ -29,7 +29,11 @@ export function useParentSearch(db: SqlDriver, draft: Draft | null, setDraft: (d
     count: parentOptions.length,
     resetKey: parentSearch,
     onPick: (i) => choose(parentOptions[i]),
-    enter: async () => choose(notSelf(await search.latest())[0]),
+    // A code on several items (069) is not a parent anybody chose: the list stays up to pick from.
+    enter: async () => {
+      const rows = notSelf(await search.latest())
+      if (scanChoices(rows) === null) choose(rows[0])
+    },
   })
 
   return { search: parentSearch, setSearch: setParentSearch, options: parentOptions, pick: parentPick, box: parentBox }

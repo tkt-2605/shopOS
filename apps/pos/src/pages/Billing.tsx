@@ -25,6 +25,7 @@ import { CustomerPicker } from './billing/CustomerPicker'
 import { PaymentDialog, type Tender } from './billing/PaymentDialog'
 import { DoneDialog, type CompletedBill } from './billing/DoneDialog'
 import { OpenPriceDialog } from './billing/OpenPriceDialog'
+import { useScanChoice } from '../ui/ScanChoice'
 
 export default function Billing() {
   const { db, registerId, stockPolicy, rounding, taxScheme } = useCore()
@@ -192,6 +193,7 @@ export default function Billing() {
     setTerm('')
     focusScan()
   }, [db, active.customer, tabs, focusScan])
+  const scanChoice = useScanChoice((p) => void addProduct(p))
 
   // A barcode scanner types fast and finishes with Enter. An exact match on the
   // typed value goes straight into the cart without a selection step.
@@ -208,7 +210,10 @@ export default function Billing() {
     e.preventDefault()
     const typed = term.trim()
     // `latest`, not `results`: a scanner beats the search, and `results` would be the empty box's.
-    const [pick] = await search.latest()
+    const rows = await search.latest()
+    // One code on several items (069): the cashier picks, by the price on the pack.
+    if (scanChoice.ask(rows, typed)) return
+    const [pick] = rows
     if (pick) return addProduct(pick)
     if (typed) tabs.patch((cart) => ({ ...cart, error: `Nothing in the catalog matches ${typed}.` }))
     setTerm('')
@@ -422,6 +427,7 @@ export default function Billing() {
         onPay={() => setPaying(true)}
       />
 
+      {scanChoice.dialog}
       {askingAmount !== null && (
         <OpenPriceDialog
           product={askingAmount}

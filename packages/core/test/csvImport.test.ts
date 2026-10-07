@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { parseCsv, parseCsvRecords, toCsv } from '../src/domain/csv.js'
 import { planImport, applyImport, exportCatalogue, IMPORT_COLUMNS } from '../src/services/import.js'
 import { rupees } from '../src/money.js'
-import { findByBarcode } from '../src/repos/catalog/products.js'
+import { findByBarcode, findAllByBarcode } from '../src/repos/catalog/products.js'
 import { freshDb, makeProduct, type Fixture } from './helpers.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
@@ -123,12 +123,41 @@ describe('planning an import', () => {
       .toEqual(['BAD_HSN', 'BAD_RATE', 'BAD_TAX'])
   })
 
-  it('refuses the same barcode or name twice in one file', async () => {
+  it('refuses the same row twice in one file', async () => {
+    // Same name and same code is one row repeated; a name with no code cannot be told apart.
     const plan = await planImport(fx.db, file(
-      'Rice,111,,,,10\r\nDal,111,,,,20\r\nRice,,,,,30\r\n',
+      'Rice,111,,,,10\r\nRice,111,,,,20\r\nRice,,,,,30\r\n',
     ))
     expect(plan.rows.map((r) => r.problem))
       .toEqual([null, 'BARCODE_TWICE', 'NAME_TWICE'])
+  })
+
+  it('lets two names share one code, as a manufacturer\'s two pack sizes do (069)', async () => {
+    const plan = await planImport(fx.db, file('Glue 50ml,111,,,,25\r\nGlue 100ml,111,,,,45\r\n'))
+    expect(plan).toMatchObject({ create: 2, skip: 0 })
+    await applyImport(fx.db, ctx, plan)
+    expect((await findAllByBarcode(fx.db, '111')).map((p) => p.name).sort()).toEqual(['Glue 100ml', 'Glue 50ml'])
+
+    // The same file again finds each by its code and its name.
+    expect(await planImport(fx.db, file('Glue 50ml,111,,,,25\r\nGlue 100ml,111,,,,45\r\n')))
+      .toMatchObject({ create: 0, update: 2, skip: 0 })
+  })
+
+  it('refuses a row whose code is on several items and whose name is none of them', async () => {
+    await applyImport(fx.db, ctx, await planImport(fx.db, file('Glue 50ml,111,,,,25\r\nGlue 100ml,111,,,,45\r\n')))
+    const plan = await planImport(fx.db, file('Glue,111,,,,30\r\n'))
+    expect(plan.rows[0]?.problem).toBe('BARCODE_SHARED')
+  })
+
+  it('reads a lone row under a code one item has as that item, renamed', async () => {
+    /* To add a second item under a code the shop already gives one, the file
+       carries both: alone, a new name with a known code is the item the shop
+       has, renamed since -- which is what it always meant. */
+    const id = await makeProduct(fx.db, { name: 'Glue 50ml', barcode: '111' })
+    expect((await planImport(fx.db, file('Glue small,111,,,,25\r\n'))).rows[0])
+      .toMatchObject({ action: 'update', productId: id })
+    expect((await planImport(fx.db, file('Glue 50ml,111,,,,25\r\nGlue 100ml,111,,,,45\r\n'))).rows.map((r) => r.action))
+      .toEqual(['update', 'create'])
   })
 
   it('says which columns it did not understand rather than guessing', async () => {

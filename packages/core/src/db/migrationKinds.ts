@@ -154,6 +154,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
      it and bills it at nothing. Shipped as additive in 0.2.6 and corrected in
      0.2.7 -- a 0.2.6 till still talks to a 0.2.5 one, every later build does not. */
   [68, '068_an_item_priced_at_the_counter.sql', 'breaking'],
+  /* A UNIQUE dropped: a till below this would refuse the second item's row
+     for a code and stop its sync partway through a batch. */
+  [69, '069_one_barcode_several_items.sql', 'breaking'],
 ]
 
 /**

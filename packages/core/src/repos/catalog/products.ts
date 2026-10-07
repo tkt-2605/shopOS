@@ -93,6 +93,11 @@ export interface ProductListItem {
   parentProductId: string | null
   parentName: string | null
   variantLabel: string | null
+  /**
+   * Found because the search term is one of its barcodes. Only a search sets
+   * it; two such rows are one code on two items, and the screen asks which.
+   */
+  scanned?: boolean
 }
 
 export interface SearchOptions {
@@ -131,7 +136,7 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
   )!]
 
   const rows = await q(db)
-    .select(productShape)
+    .selectDistinct({ ...productShape, scanned: sql<number>`CASE WHEN ${scanned.id} IS NOT NULL THEN 1 ELSE 0 END` })
     .from(schema.products)
     .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
     .leftJoin(schema.categories, eq(schema.categories.id, schema.products.categoryId))
@@ -159,7 +164,20 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
     .limit(opts.limit ?? 50)
     .offset(opts.offset ?? 0)
 
-  return rows.map(toProduct)
+  return rows.map(({ scanned: hit, ...r }) => ({ ...toProduct(r), scanned: hit === 1 }))
+}
+
+/**
+ * The items a scan found, when there is more than one to choose between.
+ *
+ * Null when the rows hold one barcode match or none, which is every scan of a
+ * code only one item has: the caller goes on as before. Two or more is one code
+ * on several items (069), and the caller shows these and lets the person pick
+ * -- the order a search returns is not a choice anybody made.
+ */
+export function scanChoices(rows: ProductListItem[]): ProductListItem[] | null {
+  const hits = rows.filter((r) => r.scanned === true)
+  return hits.length > 1 ? hits : null
 }
 
 /** Products by id, for rebuilding a held bill's cart from what was saved. */
@@ -177,9 +195,22 @@ export async function productsByIds(db: SqlDriver, ids: string[]): Promise<Produ
   return rows.map(toProduct)
 }
 
+/**
+ * The item a scan means, when it means exactly one.
+ *
+ * Null for a code nobody has and for one several items share (069): handing
+ * back the first of two would be choosing for the cashier. `findAllByBarcode`
+ * is for a caller that can ask.
+ */
 export async function findByBarcode(db: SqlDriver, barcode: string): Promise<ProductListItem | null> {
-  const [row] = await q(db)
-    .select(productShape)
+  const all = await findAllByBarcode(db, barcode)
+  return all.length === 1 ? all[0]! : null
+}
+
+/** Every active item a scan could mean, by name. */
+export async function findAllByBarcode(db: SqlDriver, barcode: string): Promise<ProductListItem[]> {
+  const rows = await q(db)
+    .selectDistinct(productShape)
     .from(schema.products)
     .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
     .leftJoin(schema.categories, eq(schema.categories.id, schema.products.categoryId))
@@ -191,8 +222,9 @@ export async function findByBarcode(db: SqlDriver, barcode: string): Promise<Pro
       isNull(scanned.deletedAt),
     ))
     .where(and(isNull(schema.products.deletedAt), eq(schema.products.isActive, 1)))
+    .orderBy(schema.products.name, schema.products.baseRate)
 
-  return row ? toProduct(row) : null
+  return rows.map(toProduct)
 }
 
 export interface SaleUnitOption {

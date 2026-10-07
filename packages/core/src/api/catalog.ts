@@ -10,7 +10,7 @@
 export * as Pricing from '../domain/pricing.js'
 export { loadPriceCandidates, defaultPriceListId, resolveSaleUnit } from '../repos/pricing.js'
 export {
-  searchProducts, findByBarcode, productsByIds, saleUnitsFor, searchCustomers,
+  searchProducts, findByBarcode, findAllByBarcode, scanChoices, productsByIds, saleUnitsFor, searchCustomers,
   countCustomers, listBills, countBills, loadBillDetail, loadCustomer,
 } from '../repos/catalog.js'
 export type {
@@ -40,8 +40,8 @@ export {
   setVariantOf, variantFamily,
 } from '../services/grouping.js'
 export type { Category, CategoryResult, VariantMember, VariantResult } from '../services/grouping.js'
-export { listBarcodes, setBarcodes, productIdForBarcode } from '../services/barcodes.js'
-export type { Barcode, BarcodeInput, SetBarcodesResult } from '../services/barcodes.js'
+export { listBarcodes, setBarcodes, productIdForBarcode, productIdsForBarcode } from '../services/barcodes.js'
+export type { Barcode, BarcodeInput, SetBarcodesResult, SharedBarcode } from '../services/barcodes.js'
 export { pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
 export type { BillPricingContext, ResolvedLinePrice } from '../repos/pricing.js'
 export {

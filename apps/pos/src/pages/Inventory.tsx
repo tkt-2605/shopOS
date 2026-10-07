@@ -114,13 +114,8 @@ export default function Inventory() {
       return
     }
     const productId = saved.productId
-    const codes = await setBarcodes(db, { actorId: user.id }, productId, draft.barcodes)
-    if (!codes.ok) {
-      setNotice(`${codes.barcode} is already ${codes.productName}'s barcode. The rest was saved.`)
-      setDraft(null)
-      await refresh()
-      return
-    }
+    // A code another item has is saved too (069); the scan will ask which, and the owner is told so.
+    const { shared } = await setBarcodes(db, { actorId: user.id }, productId, draft.barcodes)
 
     const units = await setUnits(db, { actorId: user.id }, productId, draft.units
       .filter((u) => u.saleUnit.trim() !== '')
@@ -151,6 +146,10 @@ export default function Inventory() {
     }
 
     await setProductCategory(db, { actorId: user.id }, productId, draft.categoryId || null)
+    if (shared.length > 0) {
+      const also = shared.map((s) => `${s.barcode} is also on ${s.productName}`).join('; ')
+      setNotice(`Saved. ${also} — scanning it will ask which item.`)
+    }
 
     const variant = await setVariantOf(db, { actorId: user.id }, {
       productId,

@@ -8,6 +8,7 @@ import { useCore, useDb, useUser } from '../../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../../ui/components'
 import { usePickList, Results } from '../../ui/PickList'
 import { useSearch } from '../../ui/useSearch'
+import { useScanChoice } from '../../ui/ScanChoice'
 
 /* The first tab: pick an item, and say what it costs on each list and from what quantity. */
 
@@ -122,15 +123,21 @@ export function ItemPrices({ canWrite }: { canWrite: boolean }) {
     if (found) await load(found)
   }, [db, load])
 
+  const scanChoice = useScanChoice((p) => void load(p))
   const pick = usePickList({
     count: results.length,
     resetKey: term,
     onPick: (i) => { const hit = results[i]; if (hit) void load(hit) },
-    enter: async () => { const [hit] = await search.latest(); if (hit) await load(hit) },
+    enter: async () => {
+      const rows = await search.latest()
+      if (scanChoice.ask(rows, term.trim())) return
+      if (rows[0]) await load(rows[0])
+    },
   })
 
   return (
     <>
+      {scanChoice.dialog}
       <Card title="Which item">
         <input className="input" id="price-search" autoFocus ref={box}
           placeholder="Search an item by name, code or barcode"

@@ -1,4 +1,4 @@
-import { eq, ne, and, desc, isNull, notInArray, sql } from 'drizzle-orm'
+import { eq, ne, and, desc, isNull, notInArray, inArray, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { derivedId } from '../ids.js'
@@ -11,6 +11,10 @@ import { requirePermission } from '../integrity/permissions.js'
  * One product, several labels: the manufacturer's EAN on the packet, the shop's
  * own printed tag, and the one from the old packaging that is still on the
  * shelves at the back. All three have to find the same item.
+ *
+ * And since 069, one label on several products: a manufacturer that puts the
+ * same EAN on two pack sizes, which the shop keeps as two items. A scan of that
+ * code finds both, and the screen asks which -- nothing here picks one for it.
  *
  * `products.barcode` stays as the primary — it is what lists show and what a
  * shelf tag is printed from — and this module is the only place that writes the
@@ -29,9 +33,19 @@ export interface BarcodeInput {
   label?: string | null
 }
 
-export type SetBarcodesResult =
-  | { ok: true; barcodes: Barcode[] }
-  | { ok: false; code: 'TAKEN'; barcode: string; productId: string; productName: string }
+/** Another item a code is also on, so the screen can say a scan will ask. */
+export interface SharedBarcode {
+  barcode: string
+  productId: string
+  productName: string
+}
+
+export interface SetBarcodesResult {
+  ok: true
+  barcodes: Barcode[]
+  /** Codes this item now shares, with each other item that has them. Empty for most. */
+  shared: SharedBarcode[]
+}
 
 export async function listBarcodes(db: SqlDriver, productId: string): Promise<Barcode[]> {
   const rows = await q(db)
@@ -54,6 +68,11 @@ export async function listBarcodes(db: SqlDriver, productId: string): Promise<Ba
  * Rewritten wholesale rather than patched line by line, because the editor hands
  * over a list and a diff of that against the database is a lot of machinery to
  * get an answer the rewrite gives for free.
+ *
+ * A code another item already has is saved, and named in `shared`. It used to
+ * be refused -- a scan that could mean two things was judged worse than one
+ * that means nothing -- and a shop with one EAN on two pack sizes could then
+ * give only one of them its code. The scan asks instead.
  */
 export async function setBarcodes(
   db: SqlDriver,
@@ -69,23 +88,6 @@ export async function setBarcodes(
     if (code === '' || seen.has(code)) continue
     seen.add(code)
     cleaned.push({ barcode: code, label: input.label?.trim() || null })
-  }
-
-  // Somebody else's barcode is the one error worth refusing over: a scan that
-  // could mean two things is worse than a scan that means nothing.
-  for (const input of cleaned) {
-    const [owner] = await q(db)
-      .select({ productId: schema.productBarcodes.productId, name: schema.products.name })
-      .from(schema.productBarcodes)
-      .innerJoin(schema.products, eq(schema.products.id, schema.productBarcodes.productId))
-      .where(and(
-        eq(schema.productBarcodes.barcode, input.barcode),
-        ne(schema.productBarcodes.productId, productId),
-        isNull(schema.productBarcodes.deletedAt),
-      ))
-    if (owner) {
-      return { ok: false, code: 'TAKEN', barcode: input.barcode, productId: owner.productId, productName: owner.name }
-    }
   }
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
@@ -105,34 +107,7 @@ export async function setBarcodes(
       ))
 
     for (const [index, input] of cleaned.entries()) {
-      /* Derived from the code itself, which is the one thing about a barcode
-         that cannot be edited into something else — a different code is a
-         different barcode. The set is deleted and rewritten on every save, so
-         with a minted id a barcode nobody touched came back under a new one,
-         and two tills saving the same product wrote two rows for one code.
-         Same id, and the feed folds the delete and the insert into one upsert. */
-      /* The same code, back on this item or moved to it from one it was taken
-         off: the row it always was, alive again. Found by the code rather than
-         by the derived id, because rows written before ids were derived carry
-         a minted one and the code is what is unique. */
-      const [held] = await q(tx)
-        .select({ id: schema.productBarcodes.id })
-        .from(schema.productBarcodes)
-        .where(eq(schema.productBarcodes.barcode, input.barcode))
-      if (held) {
-        await q(tx).update(schema.productBarcodes)
-          .set({ productId, label: input.label ?? null, isPrimary: index === 0 ? 1 : 0, deletedAt: null })
-          .where(eq(schema.productBarcodes.id, held.id))
-        continue
-      }
-      await q(tx).insert(schema.productBarcodes).values({
-        id: await derivedId('product_barcodes', input.barcode),
-        productId,
-        barcode: input.barcode,
-        label: input.label ?? null,
-        isPrimary: index === 0 ? 1 : 0,
-        createdAt: now,
-      })
+      await putBarcode(tx, productId, input.barcode, input.label ?? null, index === 0, now)
     }
 
     // The pair, written in the one place that owns it.
@@ -153,16 +128,20 @@ export async function setBarcodes(
     })
   })
 
-  return { ok: true, barcodes: await listBarcodes(db, productId) }
+  return {
+    ok: true,
+    barcodes: await listBarcodes(db, productId),
+    shared: await alsoOn(db, productId, cleaned.map((b) => b.barcode)),
+  }
 }
 
 /**
  * Puts one barcode on an item as its primary, keeping the others it answers to.
  *
- * For a caller already inside a transaction that has checked the code is not
- * another item's -- the catalogue import, which plans that before it writes.
- * `setBarcodes` replaces the whole set, which from a file that carries one
- * barcode a row would take the old packaging's code off every item in it.
+ * For a caller already inside a transaction -- the catalogue import, which
+ * plans before it writes. `setBarcodes` replaces the whole set, which from a
+ * file that carries one barcode a row would take the old packaging's code off
+ * every item in it.
  */
 export async function addPrimaryBarcode(
   tx: SqlDriver, productId: string, barcode: string, now: string,
@@ -172,21 +151,7 @@ export async function addPrimaryBarcode(
     .set({ isPrimary: 0 })
     .where(and(eq(schema.productBarcodes.productId, productId), ne(schema.productBarcodes.barcode, code)))
 
-  // The same code, taken off this item or another earlier: its row, alive again. See `setBarcodes`.
-  const [held] = await q(tx)
-    .select({ id: schema.productBarcodes.id })
-    .from(schema.productBarcodes)
-    .where(eq(schema.productBarcodes.barcode, code))
-  if (held) {
-    await q(tx).update(schema.productBarcodes)
-      .set({ productId, isPrimary: 1, deletedAt: null })
-      .where(eq(schema.productBarcodes.id, held.id))
-  } else {
-    await q(tx).insert(schema.productBarcodes).values({
-      id: await derivedId('product_barcodes', code),
-      productId, barcode: code, isPrimary: 1, createdAt: now,
-    })
-  }
+  await putBarcode(tx, productId, code, undefined, true, now)
 
   await q(tx).update(schema.products)
     .set({ barcode: code, updatedAt: now, rev: sql`${schema.products.rev} + 1` })
@@ -194,15 +159,87 @@ export async function addPrimaryBarcode(
 }
 
 /**
- * Which product a scan means, if any.
+ * One code on one item: its row alive again if it had one, else a new one.
  *
- * Kept beside `findByBarcode` in the catalog repo rather than replacing it: this
- * answers the id, that answers the whole product row the counter needs.
+ * Found by the item and the code together. Until 069 it was found by the code
+ * alone, and a code taken off one item and put on another moved the row --
+ * right while a code could only be one item's, and with sharing it would take
+ * the code off the item that still has it.
+ *
+ * A new row's id is derived from the item and the code, so two tills putting
+ * one code on one item while apart write one row. Rows from before carry an id
+ * derived from the code alone; they are found by what they hold and keep it.
+ */
+async function putBarcode(
+  tx: SqlDriver, productId: string, code: string, label: string | null | undefined,
+  primary: boolean, now: string,
+): Promise<void> {
+  const [held] = await q(tx)
+    .select({ id: schema.productBarcodes.id })
+    .from(schema.productBarcodes)
+    .where(and(eq(schema.productBarcodes.productId, productId), eq(schema.productBarcodes.barcode, code)))
+  if (held) {
+    await q(tx).update(schema.productBarcodes)
+      .set({
+        isPrimary: primary ? 1 : 0, deletedAt: null,
+        ...(label !== undefined ? { label } : {}),
+      })
+      .where(eq(schema.productBarcodes.id, held.id))
+    return
+  }
+  await q(tx).insert(schema.productBarcodes).values({
+    id: await derivedId('product_barcodes', productId, code),
+    productId,
+    barcode: code,
+    label: label ?? null,
+    isPrimary: primary ? 1 : 0,
+    createdAt: now,
+  })
+}
+
+/** The other items each of these codes is on. */
+async function alsoOn(db: SqlDriver, productId: string, codes: string[]): Promise<SharedBarcode[]> {
+  if (codes.length === 0) return []
+  return q(db)
+    .select({
+      barcode: schema.productBarcodes.barcode,
+      productId: schema.productBarcodes.productId,
+      productName: schema.products.name,
+    })
+    .from(schema.productBarcodes)
+    .innerJoin(schema.products, eq(schema.products.id, schema.productBarcodes.productId))
+    .where(and(
+      inArray(schema.productBarcodes.barcode, codes),
+      ne(schema.productBarcodes.productId, productId),
+      isNull(schema.productBarcodes.deletedAt),
+      isNull(schema.products.deletedAt),
+    ))
+    .orderBy(schema.productBarcodes.barcode, schema.products.name)
+}
+
+/** Every item a scan could mean. Empty for a code the shop does not have. */
+export async function productIdsForBarcode(db: SqlDriver, barcode: string): Promise<string[]> {
+  const rows = await q(db)
+    .selectDistinct({ productId: schema.productBarcodes.productId })
+    .from(schema.productBarcodes)
+    .innerJoin(schema.products, eq(schema.products.id, schema.productBarcodes.productId))
+    .where(and(
+      eq(schema.productBarcodes.barcode, barcode.trim()),
+      isNull(schema.productBarcodes.deletedAt),
+      isNull(schema.products.deletedAt),
+    ))
+  return rows.map((r) => r.productId)
+}
+
+/**
+ * The product a scan means, when it means exactly one.
+ *
+ * Null for a code nobody has and for a code several items share: a caller that
+ * needs an id cannot be handed one of two, and one that can ask the person
+ * asks `productIdsForBarcode`. Kept beside `findByBarcode` in the catalog repo:
+ * this answers the id, that the whole row the counter needs.
  */
 export async function productIdForBarcode(db: SqlDriver, barcode: string): Promise<string | null> {
-  const [row] = await q(db)
-    .select({ productId: schema.productBarcodes.productId })
-    .from(schema.productBarcodes)
-    .where(and(eq(schema.productBarcodes.barcode, barcode.trim()), isNull(schema.productBarcodes.deletedAt)))
-  return row?.productId ?? null
+  const ids = await productIdsForBarcode(db, barcode)
+  return ids.length === 1 ? ids[0]! : null
 }
