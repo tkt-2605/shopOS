@@ -2,13 +2,14 @@ import { eq, and, isNull, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId, derivedId } from '../ids.js'
-import { parseMoney, type Money } from '../money.js'
-import { parseQty, type Qty } from '../quantity.js'
+import { parseMoney, ZERO, type Money } from '../money.js'
+import { parseQty, QTY_SCALE, type Qty } from '../quantity.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { parseCsvRecords, toCsv } from '../domain/csv.js'
 import { isHsn } from '../domain/hsn.js'
 import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
+import { addPrimaryBarcode } from './barcodes.js'
 import { requirePermission } from '../integrity/permissions.js'
 
 /**
@@ -41,11 +42,18 @@ import { requirePermission } from '../integrity/permissions.js'
  * Names are matched case-insensitively and trimmed -- `Rice 5kg ` and
  * `rice 5kg` are one item, and a shop that has both in a spreadsheet meant
  * one.
+ *
+ * A name is an item *with its brand*. A stationery shop has Oil Pastels 12S
+ * from Camel, Doms and Youva, and the counter tells them apart by the brand
+ * beside the name, so a file may carry all three. A row that names no brand
+ * matches on the name alone -- a file of names and rates is a price update --
+ * and when that name is more than one item here it is refused rather than
+ * given to whichever was found first.
  */
 
 /** The columns a file may carry. Only `name` is required. */
 export const IMPORT_COLUMNS = [
-  'name', 'barcode', 'hsn', 'tax', 'unit', 'rate', 'mrp', 'openingqty',
+  'name', 'brand', 'category', 'barcode', 'hsn', 'tax', 'unit', 'rate', 'mrp', 'cost', 'openingqty',
 ] as const
 
 export type ImportAction = 'create' | 'update'
@@ -56,6 +64,7 @@ export type RowProblem =
   /** A rate that is not a number. Blank is fine; `12.3.4` is not. */
   | 'BAD_RATE'
   | 'BAD_MRP'
+  | 'BAD_COST'
   /** A tax rate that is not a number, or is not a percentage. */
   | 'BAD_TAX'
   | 'BAD_QTY'
@@ -63,10 +72,12 @@ export type RowProblem =
   | 'BAD_HSN'
   /** The same barcode twice in one file, which cannot both be right. */
   | 'BARCODE_TWICE'
-  /** The same name twice in one file. */
+  /** The same name and brand twice in one file. */
   | 'NAME_TWICE'
   /** This barcode already belongs to a different product in the shop. */
   | 'BARCODE_TAKEN'
+  /** No brand and no barcode, and the name is more than one item here. */
+  | 'NAME_AMBIGUOUS'
 
 export interface PlannedRow {
   /** 1-based, counting the header, so it matches what Excel shows. */
@@ -76,12 +87,17 @@ export interface PlannedRow {
   problem: RowProblem | null
   /** The product this row would change, when the action is `update`. */
   productId: string | null
+  brand: string | null
+  /** A category by name; one the shop does not have yet is made. */
+  category: string | null
   barcode: string | null
   hsn: string | null
   taxRateBp: number | null
   rate: Money | null
   mrp: Money | null
   unit: string | null
+  /** What one unit of the opening stock cost. Only read with `openingQty`, on a new item. */
+  cost: Money | null
   openingQty: Qty | null
 }
 
@@ -111,17 +127,28 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     .select({
       id: schema.products.id,
       name: schema.products.name,
+      brand: schema.products.brand,
       barcode: schema.products.barcode,
     })
     .from(schema.products)
     .where(isNull(schema.products.deletedAt))
 
+  /* Every code an item answers to, not only its primary: a file row carrying
+     the old packaging's barcode is that item, and the scanner agrees. */
+  const scanned = await q(db)
+    .select({ productId: schema.productBarcodes.productId, barcode: schema.productBarcodes.barcode })
+    .from(schema.productBarcodes)
+    .where(isNull(schema.productBarcodes.deletedAt))
+
   const byBarcode = new Map<string, string>()
-  const byName = new Map<string, string>()
+  const byName = new Map<string, { id: string; brand: string }[]>()
   for (const p of existing) {
     if (p.barcode !== null && p.barcode !== '') byBarcode.set(p.barcode, p.id)
-    byName.set(p.name.trim().toLowerCase(), p.id)
+    const key = p.name.trim().toLowerCase()
+    byName.set(key, [...(byName.get(key) ?? []), { id: p.id, brand: (p.brand ?? '').trim().toLowerCase() }])
   }
+  const live = new Set(existing.map((p) => p.id))
+  for (const b of scanned) if (live.has(b.productId)) byBarcode.set(b.barcode, b.productId)
 
   const seenBarcodes = new Set<string>()
   const seenNames = new Set<string>()
@@ -129,14 +156,16 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
 
   rows.forEach(({ line, values: row }) => {
     const name = (row['name'] ?? '').trim()
+    const brand = (row['brand'] ?? '').trim() || null
+    const category = (row['category'] ?? '').trim() || null
     const barcode = (row['barcode'] ?? '').trim() || null
     const hsn = (row['hsn'] ?? '').trim() || null
     const unit = (row['unit'] ?? '').trim() || null
 
     const refuse = (problem: RowProblem): void => {
       planned.push({
-        line, name, action: null, problem, productId: null,
-        barcode, hsn, taxRateBp: null, rate: null, mrp: null, unit, openingQty: null,
+        line, name, action: null, problem, productId: null, brand, category,
+        barcode, hsn, taxRateBp: null, rate: null, mrp: null, unit, cost: null, openingQty: null,
       })
     }
 
@@ -147,6 +176,8 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     if (rate === 'bad') { refuse('BAD_RATE'); return }
     const mrp = money(row['mrp'])
     if (mrp === 'bad') { refuse('BAD_MRP'); return }
+    const cost = money(row['cost'])
+    if (cost === 'bad') { refuse('BAD_COST'); return }
 
     const taxRateBp = tax(row['tax'])
     if (taxRateBp === 'bad') { refuse('BAD_TAX'); return }
@@ -155,26 +186,39 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     if (openingQty === 'bad') { refuse('BAD_QTY'); return }
 
     const lowerName = name.toLowerCase()
+    const lowerBrand = brand?.toLowerCase() ?? null
+    const nameKey = `${lowerName}\u0000${lowerBrand ?? ''}`
     if (barcode !== null && seenBarcodes.has(barcode)) { refuse('BARCODE_TWICE'); return }
-    if (seenNames.has(lowerName)) { refuse('NAME_TWICE'); return }
+    if (seenNames.has(nameKey)) { refuse('NAME_TWICE'); return }
+
+    /* The items this name could mean. With a brand, the item of that brand --
+       or, when there is none, one with no brand yet, which the file is now
+       giving one. Without a brand, every item of that name. */
+    const sameName = byName.get(lowerName) ?? []
+    const candidates = lowerBrand === null
+      ? sameName
+      : (() => {
+          const branded = sameName.filter((p) => p.brand === lowerBrand)
+          return branded.length > 0 ? branded : sameName.filter((p) => p.brand === '')
+        })()
 
     /* Barcode first, then exact name. A row with a barcode that belongs to a
        *differently named* product is refused rather than matched: the file
        and the shop disagree about what that code is, and guessing either way
        silently renames something or duplicates it. */
     const matchedByBarcode = barcode === null ? undefined : byBarcode.get(barcode)
-    const matchedByName = byName.get(lowerName)
     if (matchedByBarcode !== undefined
-        && matchedByName !== undefined
-        && matchedByBarcode !== matchedByName) {
+        && candidates.length > 0
+        && !candidates.some((p) => p.id === matchedByBarcode)) {
       refuse('BARCODE_TAKEN')
       return
     }
+    if (matchedByBarcode === undefined && candidates.length > 1) { refuse('NAME_AMBIGUOUS'); return }
 
-    const productId = matchedByBarcode ?? matchedByName ?? null
+    const productId = matchedByBarcode ?? candidates[0]?.id ?? null
 
     if (barcode !== null) seenBarcodes.add(barcode)
-    seenNames.add(lowerName)
+    seenNames.add(nameKey)
 
     planned.push({
       line,
@@ -182,12 +226,15 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
       action: productId === null ? 'create' : 'update',
       problem: null,
       productId,
+      brand,
+      category,
       barcode,
       hsn,
       taxRateBp: taxRateBp === null ? null : taxRateBp,
       rate: rate === null ? null : rate,
       mrp: mrp === null ? null : mrp,
       unit,
+      cost: cost === null ? null : cost,
       openingQty: openingQty === null ? null : openingQty,
     })
   })
@@ -241,16 +288,19 @@ export async function applyImport(
   const now = new Date().toISOString()
   let created = 0
   let updated = 0
-  const opening: { productId: string; qty: Qty }[] = []
+  const opening: { productId: string; qty: Qty; unitCost: Money }[] = []
   let stockIgnored = 0
   await db.transaction(async (tx) => {
+    const categoryId = await categoriesFor(tx, ctx, usable, now)
+
     for (const row of usable) {
       if (row.action === 'create') {
         const id = await importedProductId(tx, row.barcode, row.name)
         await q(tx).insert(schema.products).values({
           id,
           name: row.name,
-          barcode: row.barcode,
+          brand: row.brand,
+          categoryId: row.category === null ? null : categoryId(row.category),
           hsnCode: row.hsn,
           baseUnit: row.unit ?? 'piece',
           taxRateBp: row.taxRateBp ?? 0,
@@ -259,12 +309,19 @@ export async function applyImport(
           createdAt: now,
           updatedAt: now,
         })
+        /* The scanner reads `product_barcodes`, not the column on the item. An
+           import that wrote only the column made items that showed a barcode
+           in every list and did not come up when it was scanned. */
+        if (row.barcode !== null) await addPrimaryBarcode(tx, id, row.barcode, now)
         await writeAudit(tx, ctx, {
           entity: 'products', entityId: id, action: 'create',
           after: { name: row.name, base_rate: row.rate ?? 0, source: 'csv import' },
         })
         created += 1
-        if (row.openingQty !== null && row.openingQty > 0) opening.push({ productId: id, qty: row.openingQty })
+        if (row.openingQty !== null && row.openingQty > 0) {
+          // A first count with no cost is stock valued at nothing, and every sale of it all margin.
+          opening.push({ productId: id, qty: row.openingQty, unitCost: row.cost ?? ZERO })
+        }
         continue
       }
       if (row.openingQty !== null && row.openingQty > 0) stockIgnored += 1
@@ -272,7 +329,8 @@ export async function applyImport(
          silent"; a blank cell parses to null above and lands here as
          undefined, so it is never written. */
       const change: Record<string, unknown> = { updatedAt: now }
-      if (row.barcode !== null) change['barcode'] = row.barcode
+      if (row.brand !== null) change['brand'] = row.brand
+      if (row.category !== null) change['categoryId'] = categoryId(row.category)
       if (row.hsn !== null) change['hsnCode'] = row.hsn
       if (row.unit !== null) change['baseUnit'] = row.unit
       if (row.taxRateBp !== null) change['taxRateBp'] = row.taxRateBp
@@ -282,10 +340,26 @@ export async function applyImport(
       await q(tx).update(schema.products)
         .set(change)
         .where(eq(schema.products.id, row.productId as string))
+      if (row.barcode !== null) {
+        const [has] = await q(tx)
+          .select({ id: schema.productBarcodes.id })
+          .from(schema.productBarcodes)
+          .where(and(
+            eq(schema.productBarcodes.productId, row.productId as string),
+            eq(schema.productBarcodes.barcode, row.barcode),
+            isNull(schema.productBarcodes.deletedAt),
+          ))
+        // A code the item already answers to is left as it is -- primary or not.
+        if (!has) await addPrimaryBarcode(tx, row.productId as string, row.barcode, now)
+      }
 
       await writeAudit(tx, ctx, {
         entity: 'products', entityId: row.productId as string, action: 'update',
-        after: { ...(change as Record<string, never>), source: 'csv import' },
+        after: {
+          ...(change as Record<string, never>),
+          ...(row.barcode !== null ? { barcode: row.barcode } : {}),
+          source: 'csv import',
+        },
       })
       updated += 1
     }
@@ -327,25 +401,34 @@ export async function exportCatalogue(db: SqlDriver): Promise<string> {
   const rows = await q(db)
     .select({
       name: schema.products.name,
+      brand: schema.products.brand,
+      category: schema.categories.name,
       barcode: schema.products.barcode,
       hsn: schema.products.hsnCode,
       taxRateBp: schema.products.taxRateBp,
       unit: schema.products.baseUnit,
       rate: schema.products.baseRate,
       mrp: schema.products.mrp,
-      // raw: the materialised count, left joined so an item never counted
-      // still gets a row rather than vanishing from its own catalogue.
-      onHand: sql<number>`COALESCE((SELECT ps.qty_on_hand FROM product_stock ps
-                                     WHERE ps.product_id = products.id), 0)`,
+      onHand: sql<number>`COALESCE(${schema.productStock.qtyOnHand}, 0)`,
+      value: sql<number>`COALESCE(${schema.productStock.stockValue}, 0)`,
     })
     .from(schema.products)
+    // Left joined, so an item never counted or never grouped still gets a row
+    // rather than vanishing from its own catalogue.
+    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
+    .leftJoin(schema.categories, and(
+      eq(schema.categories.id, schema.products.categoryId),
+      isNull(schema.categories.deletedAt),
+    ))
     .where(and(isNull(schema.products.deletedAt), eq(schema.products.isActive, 1)))
     .orderBy(schema.products.name)
 
   return toCsv(
-    ['name', 'barcode', 'hsn', 'tax', 'unit', 'rate', 'mrp', 'openingqty'],
+    ['name', 'brand', 'category', 'barcode', 'hsn', 'tax', 'unit', 'rate', 'mrp', 'cost', 'openingqty'],
     rows.map((r) => [
       r.name,
+      r.brand ?? '',
+      r.category ?? '',
       r.barcode ?? '',
       r.hsn ?? '',
       // Basis points back to the percentage a person typed.
@@ -353,9 +436,46 @@ export async function exportCatalogue(db: SqlDriver): Promise<string> {
       r.unit,
       money2(r.rate),
       r.mrp === null ? '' : money2(r.mrp),
-      String(r.onHand / 10_000),
+      // What one on the shelf is valued at: derived from the value, which is what is kept.
+      r.onHand > 0 ? money2(Math.round(r.value * QTY_SCALE / r.onHand) as Money) : '',
+      String(r.onHand / QTY_SCALE),
     ]),
   )
+}
+
+/**
+ * The category each name in the file means, making the ones the shop lacks.
+ *
+ * By name, ignoring case, as `createCategory` holds them unique. Made here in
+ * the import's own transaction rather than through `createCategory`, which
+ * opens one of its own, so a failed import does not leave its categories behind.
+ */
+async function categoriesFor(
+  tx: SqlDriver, ctx: AuditContext, rows: PlannedRow[], now: string,
+): Promise<(name: string) => string> {
+  const ids = new Map<string, string>()
+  const known = await q(tx)
+    .select({ id: schema.categories.id, name: schema.categories.name })
+    .from(schema.categories)
+    .where(isNull(schema.categories.deletedAt))
+  for (const c of known) ids.set(c.name.trim().toLowerCase(), c.id)
+
+  for (const row of rows) {
+    if (row.category === null || ids.has(row.category.toLowerCase())) continue
+    // Derived, as an imported product is, so two tills importing one file make one category.
+    const derived = await derivedId('categories', 'import', row.category.toLowerCase())
+    const [taken] = await q(tx).select({ id: schema.categories.id }).from(schema.categories)
+      .where(eq(schema.categories.id, derived))
+    const id = taken ? newId() : derived
+    await q(tx).insert(schema.categories).values({ id, name: row.category, createdAt: now, updatedAt: now })
+    await writeAudit(tx, ctx, {
+      entity: 'categories', entityId: id, action: 'create',
+      after: { name: row.category, source: 'csv import' },
+    })
+    ids.set(row.category.toLowerCase(), id)
+  }
+
+  return (name) => ids.get(name.toLowerCase()) as string
 }
 
 /* ── reading one cell ──────────────────────────────────────────────────── */

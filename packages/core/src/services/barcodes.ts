@@ -157,6 +157,43 @@ export async function setBarcodes(
 }
 
 /**
+ * Puts one barcode on an item as its primary, keeping the others it answers to.
+ *
+ * For a caller already inside a transaction that has checked the code is not
+ * another item's -- the catalogue import, which plans that before it writes.
+ * `setBarcodes` replaces the whole set, which from a file that carries one
+ * barcode a row would take the old packaging's code off every item in it.
+ */
+export async function addPrimaryBarcode(
+  tx: SqlDriver, productId: string, barcode: string, now: string,
+): Promise<void> {
+  const code = barcode.trim()
+  await q(tx).update(schema.productBarcodes)
+    .set({ isPrimary: 0 })
+    .where(and(eq(schema.productBarcodes.productId, productId), ne(schema.productBarcodes.barcode, code)))
+
+  // The same code, taken off this item or another earlier: its row, alive again. See `setBarcodes`.
+  const [held] = await q(tx)
+    .select({ id: schema.productBarcodes.id })
+    .from(schema.productBarcodes)
+    .where(eq(schema.productBarcodes.barcode, code))
+  if (held) {
+    await q(tx).update(schema.productBarcodes)
+      .set({ productId, isPrimary: 1, deletedAt: null })
+      .where(eq(schema.productBarcodes.id, held.id))
+  } else {
+    await q(tx).insert(schema.productBarcodes).values({
+      id: await derivedId('product_barcodes', code),
+      productId, barcode: code, isPrimary: 1, createdAt: now,
+    })
+  }
+
+  await q(tx).update(schema.products)
+    .set({ barcode: code, updatedAt: now, rev: sql`${schema.products.rev} + 1` })
+    .where(eq(schema.products.id, productId))
+}
+
+/**
  * Which product a scan means, if any.
  *
  * Kept beside `findByBarcode` in the catalog repo rather than replacing it: this

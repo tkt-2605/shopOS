@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import {
-  planImport, applyImport, exportCatalogue, businessDate, type ImportPlan, type RowProblem,
+  planImport, applyImport, exportCatalogue, businessDate, IMPORT_COLUMNS, type ImportPlan, type RowProblem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { saveFile } from '../core/exportFile'
@@ -28,12 +28,14 @@ const WHY: Record<RowProblem, string> = {
   NO_NAME: 'No name',
   BAD_RATE: 'The rate is not a number',
   BAD_MRP: 'The MRP is not a number',
+  BAD_COST: 'The cost is not a number',
   BAD_TAX: 'The tax is not a percentage between 0 and 100',
   BAD_QTY: 'The quantity is not a number',
   BAD_HSN: 'The HSN is not 4, 6 or 8 digits',
   BARCODE_TWICE: 'That barcode is on another row of this file',
-  NAME_TWICE: 'That name is on another row of this file',
+  NAME_TWICE: 'That name and brand are on another row of this file',
   BARCODE_TAKEN: 'That barcode already belongs to a different item here',
+  NAME_AMBIGUOUS: 'More than one item here has that name — add its brand or barcode',
 }
 
 export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }) {
@@ -142,14 +144,15 @@ export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }
 
           <div style={{ fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.55, marginTop: 10 }}>
             Nothing has been changed yet. Items are matched on barcode first, then on an
-            exact name. <strong>A blank cell leaves what is already there alone</strong> — a
+            exact name and brand. <strong>A blank cell leaves what is already there alone</strong> — a
             file with only name and rate is a price update, and will not wipe your HSN codes.
+            Opening stock and its cost are recorded for new items only.
           </div>
 
           {plan.unknownColumns.length > 0 && (
             <Alert kind="warn">
               These columns will be ignored: {plan.unknownColumns.join(', ')}.
-              Understood columns are name, barcode, hsn, tax, unit, rate, mrp, openingqty.
+              Understood columns are {IMPORT_COLUMNS.join(', ')}.
             </Alert>
           )}
 

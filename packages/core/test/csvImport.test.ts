@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { parseCsv, parseCsvRecords, toCsv } from '../src/domain/csv.js'
 import { planImport, applyImport, exportCatalogue, IMPORT_COLUMNS } from '../src/services/import.js'
 import { rupees } from '../src/money.js'
+import { findByBarcode } from '../src/repos/catalog/products.js'
 import { freshDb, makeProduct, type Fixture } from './helpers.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
@@ -312,6 +313,106 @@ describe('opening stock on the way in', () => {
     } finally {
       await fx.db.close()
     }
+  })
+})
+
+describe('brand, category and cost', () => {
+  it('makes an imported barcode one the scanner finds', async () => {
+    /* The import wrote `products.barcode` and nothing else, and the scanner reads
+       `product_barcodes`: every item it made showed a barcode and did not scan. */
+    await applyImport(fx.db, ctx, await planImport(fx.db, 'name,barcode,rate\r\nRice,8901234567890,120\r\n'))
+    const found = await findByBarcode(fx.db, '8901234567890')
+    expect(found?.name).toBe('Rice')
+  })
+
+  it('adds a new barcode to an item it updates, keeping the ones it had', async () => {
+    const id = await makeProduct(fx.db, { name: 'Rice', barcode: '111' })
+    await applyImport(fx.db, ctx, await planImport(fx.db, 'name,barcode\r\nRice,222\r\n'))
+    expect((await findByBarcode(fx.db, '222'))?.id).toBe(id)
+    expect((await findByBarcode(fx.db, '111'))?.id).toBe(id)
+    const row = await fx.db.get<{ barcode: string }>('SELECT barcode FROM products WHERE id = ?', [id])
+    expect(row?.barcode).toBe('222')
+  })
+
+  it('matches on a barcode the item answers to besides its primary', async () => {
+    const id = await makeProduct(fx.db, { name: 'Rice', barcode: '111' })
+    await fx.db.execute(
+      `INSERT INTO product_barcodes (id, product_id, barcode, is_primary, created_at) VALUES ('x', ?, '999', 0, '2026-01-01')`, [id])
+    const plan = await planImport(fx.db, 'name,barcode,rate\r\nSugar,999,50\r\n')
+    // No item is called Sugar, so the code decides: the item it is on, not a duplicate of it.
+    expect(plan.rows[0]).toMatchObject({ problem: null, action: 'update', productId: id })
+  })
+
+  it('lets one name come from several brands', async () => {
+    const plan = await planImport(fx.db,
+      'name,brand,barcode,rate\r\nOil Pastels 12S,Doms,1,50\r\nOil Pastels 12S,Camel,2,40\r\nOil Pastels 12S,doms,3,45\r\n')
+    expect(plan.rows.map((r) => r.problem)).toEqual([null, null, 'NAME_TWICE'])
+
+    await applyImport(fx.db, ctx, plan)
+    const rows = await fx.db.query<{ brand: string }>(`SELECT brand FROM products ORDER BY brand`)
+    expect(rows.map((r) => r.brand)).toEqual(['Camel', 'Doms'])
+  })
+
+  it('matches the item of that brand, and refuses a bare name that is two items', async () => {
+    const doms = await makeProduct(fx.db, { name: 'Clay 8S' })
+    const apsara = await makeProduct(fx.db, { name: 'Clay 8S' })
+    await fx.db.execute(`UPDATE products SET brand = 'Doms' WHERE id = ?`, [doms])
+    await fx.db.execute(`UPDATE products SET brand = 'Apsara' WHERE id = ?`, [apsara])
+
+    const branded = await planImport(fx.db, 'name,brand,rate\r\nClay 8S,APSARA,60\r\n')
+    expect(branded.rows[0]).toMatchObject({ action: 'update', productId: apsara })
+
+    // Without a brand there is no telling which, and guessing reprices the wrong one.
+    const bare = await planImport(fx.db, 'name,rate\r\nClay 8S,60\r\n')
+    expect(bare.rows[0]?.problem).toBe('NAME_AMBIGUOUS')
+  })
+
+  it('gives a brand to an item that had none, rather than making a second', async () => {
+    const id = await makeProduct(fx.db, { name: 'Fevibond' })
+    const plan = await planImport(fx.db, 'name,brand\r\nFevibond,Pidilite\r\n')
+    expect(plan.rows[0]).toMatchObject({ action: 'update', productId: id })
+    await applyImport(fx.db, ctx, plan)
+    expect((await fx.db.get<{ brand: string }>('SELECT brand FROM products WHERE id = ?', [id]))?.brand).toBe('Pidilite')
+  })
+
+  it('files items under a category by name, making the ones the shop lacks once', async () => {
+    const now = new Date().toISOString()
+    await fx.db.execute(`INSERT INTO categories (id, name, created_at, updated_at) VALUES ('c1', 'Glue', ?, ?)`, [now, now])
+
+    await applyImport(fx.db, ctx, await planImport(fx.db,
+      'name,category\r\nFevicol 50g,glue\r\nClay 6S,Clay\r\nClay Jar,CLAY\r\n'))
+
+    const rows = await fx.db.query<{ name: string; category: string }>(
+      `SELECT p.name, c.name AS category FROM products p JOIN categories c ON c.id = p.category_id ORDER BY p.name`)
+    expect(rows).toEqual([
+      { name: 'Clay 6S', category: 'Clay' },
+      { name: 'Clay Jar', category: 'Clay' },
+      { name: 'Fevicol 50g', category: 'Glue' },
+    ])
+    expect(await fx.db.query('SELECT id FROM categories')).toHaveLength(2)
+  })
+
+  it('values opening stock at the cost the file gives', async () => {
+    await applyImport(fx.db, ctx, await planImport(fx.db, 'name,rate,cost,openingqty\r\nEraser,5,3.50,40\r\n'))
+    const stock = await fx.db.get<{ stock_value: number }>('SELECT stock_value FROM product_stock')
+    expect(stock?.stock_value).toBe(rupees(140))
+  })
+
+  it('refuses a cost that is not a number', async () => {
+    const plan = await planImport(fx.db, 'name,cost\r\nEraser,abc\r\n')
+    expect(plan.rows[0]?.problem).toBe('BAD_COST')
+  })
+
+  it('exports brand, category and cost, and they come back unchanged', async () => {
+    await applyImport(fx.db, ctx, await planImport(fx.db,
+      'name,brand,category,barcode,rate,cost,openingqty\r\nEraser,Apsara,Stationery,555,5,3.50,40\r\n'))
+    const file = await exportCatalogue(fx.db)
+    expect(file).toContain('Eraser,Apsara,Stationery,555,,,piece,5.00,,3.50,40')
+
+    const plan = await planImport(fx.db, file)
+    expect(plan).toMatchObject({ create: 0, update: 1, skip: 0 })
+    await applyImport(fx.db, ctx, plan)
+    expect(await exportCatalogue(fx.db)).toBe(file)
   })
 })
 
