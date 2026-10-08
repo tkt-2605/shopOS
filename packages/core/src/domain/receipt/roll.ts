@@ -2,8 +2,9 @@ import { type Money, format as fmtMoney, inWords } from '../../money.js'
 import { QTY_SCALE, formatQty } from '../../quantity.js'
 import type { Block, DocFormat } from '../docFormat.js'
 import { rollColumns, STANDARD_RECEIPT, fillTokens } from '../docFormat.js'
-import { formatRate, type ReceiptDoc, type ReceiptItem } from './doc.js'
+import { formatRate, savingsOf, type ReceiptDoc, type ReceiptItem } from './doc.js'
 import { factsFor } from '../docText.js'
+import { rasterCommand } from './raster.js'
 import {
   INIT, LF, ALIGN_LEFT, ALIGN_CENTER, BOLD_ON, BOLD_OFF, MODE_NORMAL, MODE_BANNER, MODE_TALL,
   MODE_SMALL, CUT, WIDTH, feed, forThermal, rule, kv, smallColumns, cut, wrap, formatDate,
@@ -12,6 +13,10 @@ import {
 
 const SNO = 2
 const INDENT = SNO + 1
+
+/* Where the logo goes, until the text around it has been folded to ASCII.
+   The raster is bytes up to 0xFF, which `forThermal` would turn into `?`. */
+const LOGO_MARK = '\x00LOGO\x00'
 
 /** Three equal number columns under the item name, whatever the paper. */
 function itemColumn(width: number): number {
@@ -39,8 +44,11 @@ export function buildReceipt(doc: ReceiptDoc, format: DocFormat = STANDARD_RECEI
   }
 
   out.push(feed(3), CUT)
-  return forThermal(out.join(''))
+  const roll = forThermal(out.join(''))
+  // split/join, not replace: a raster byte that happens to be `$` would be read as a pattern.
+  return roll.split(LOGO_MARK).join(doc.logoRaster ? rasterCommand(doc.logoRaster) : '')
 }
+
 
 const DEFAULT_FOOTER = 'Thank you. Goods once sold are not returnable without this bill.'
 
@@ -103,7 +111,8 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
         `${' '.repeat(INDENT)}${'Qty'.padStart(col)}${'Rate'.padStart(col)}${'Amount'.padStart(col)}${LF}`,
         rule('-', width),
       ]
-      doc.items.forEach((item, i) => out.push(itemRows(i, item, width)))
+      const mrpSaving = block.opts?.mrpSaving !== false
+      doc.items.forEach((item, i) => out.push(itemRows(i, item, width, mrpSaving)))
       out.push(rule('-', width))
       return out.join('')
     }
@@ -160,7 +169,22 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     }
 
     case 'payments':
-      return doc.payments.map((p) => kv(p.method === 'upi' ? 'UPI' : titleCase(p.method), fmtMoney(p.amount), width)).join('')
+      return doc.payments.map((p) => {
+        const line = kv(p.method === 'upi' ? 'UPI' : titleCase(p.method), fmtMoney(p.amount), width)
+        /* What was handed over and what went back, when the counter asked:
+           the customer checks their change against the paper. */
+        if (p.method !== 'cash' || p.tendered == null || p.tendered <= p.amount) return line
+        return line
+          + kv('  Cash received', fmtMoney(p.tendered), width)
+          + kv('  Change', fmtMoney((p.tendered - p.amount) as Money), width)
+      }).join('')
+
+    case 'savings': {
+      const saved = savingsOf(doc)
+      if (saved <= 0) return ''
+      const label = block.opts?.label?.trim() || 'You saved'
+      return [ALIGN_CENTER, BOLD_ON, cut(`${label} Rs.${fmtMoney(saved)}`, width), BOLD_OFF, LF, ALIGN_LEFT].join('')
+    }
 
     case 'loyalty': {
       if (!doc.pointsEarned) return ''
@@ -198,15 +222,15 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     case 'amount_in_words':
       return wrap(inWords(doc.grandTotal), width)
 
-    /* The roll has no pictures: a thermal printer burns dots and an image has
-       to be rasterised into them first. `checkFormat` refuses to save a roll
-       format with this on, so reaching here means one written by hand. */
+    /* The dots, reduced by the app before the document got here. No raster
+       is no logo -- none uploaded, or one that could not be read -- and the
+       bill prints without it rather than not at all. */
     case 'logo':
-      return ''
+      return doc.logoRaster ? [ALIGN_CENTER, LOGO_MARK, ALIGN_LEFT].join('') : ''
   }
 }
 
-function itemRows(index: number, item: ReceiptItem, width = WIDTH): string {
+function itemRows(index: number, item: ReceiptItem, width = WIDTH, mrpSaving = true): string {
   const sno = String(index + 1).padStart(SNO)
   const col = itemColumn(width)
   const name = cut(item.name, width - INDENT)
@@ -223,7 +247,7 @@ function itemRows(index: number, item: ReceiptItem, width = WIDTH): string {
 
   /* Only against a shelf price. A rate quoted before tax is not comparable with
      an MRP that has the tax in it, and the "saving" would be the tax. */
-  if (item.mrp && item.mrp > item.rate && item.rateIncludesTax !== false) {
+  if (mrpSaving && item.mrp && item.mrp > item.rate && item.rateIncludesTax !== false) {
     /* The quantity is on the line. It used to be recovered by dividing the line
        total by the rate, which is a different number whenever the line carries a
        discount -- the saving was then understated by the discount, which is the

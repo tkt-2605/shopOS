@@ -30,7 +30,7 @@ export function sampleDoc(shop: ReceiptDoc['shop']): ReceiptDoc {
     sgst: money(61.01),
     igst: money(0),
     grandTotal: money(800),
-    payments: [{ method: 'cash', amount: money(800) }],
+    payments: [{ method: 'cash', amount: money(800), tendered: money(1000) }],
     pointsEarned: 8,
     pointsBalance: 120,
   }

@@ -1,5 +1,6 @@
 import { type Money, format as fmtMoney } from '../../money.js'
 import { rollColumns } from '../docFormat.js'
+import { readRaster, type Raster } from './raster.js'
 export { formatDate, titleCase } from '../docText.js'
 
 /*
@@ -122,6 +123,8 @@ export interface PreviewLine {
   tall: boolean
   /** Font B, condensed. */
   small: boolean
+  /** A picture -- the logo -- as the dots the printer was sent. `text` is empty. */
+  raster?: Raster
 }
 
 /**
@@ -194,6 +197,14 @@ export function previewLines(receipt: string): PreviewLine[] {
     }
 
     if (ch === GS) {
+      // GS v 0, a picture: a line of its own, with the very dots it will print.
+      const image = readRaster(receipt, i)
+      if (image) {
+        if (text !== '') endLine()
+        lines.push({ text: '', align, bold: false, banner: false, tall: false, small: false, raster: image.raster })
+        i += image.length - 1
+        continue
+      }
       // GS V, the cut. Nothing a person sees.
       i += 2
       continue
@@ -211,7 +222,7 @@ export function previewLines(receipt: string): PreviewLine[] {
 
 /** Strips ESC/POS control sequences, so a test can measure printed width. */
 export function visibleLines(receipt: string): string[] {
-  return receipt
+  return withoutRasters(receipt)
     .replace(/\x1B@/g, '')
     .replace(/\x1B![\s\S]/g, '')
     .replace(/\x1Ba[\s\S]/g, '')
@@ -224,4 +235,15 @@ export function visibleLines(receipt: string): string[] {
 /** An amount that means something different when it is negative. */
 export function signed(amount: Money): string {
   return amount < 0 ? `-${fmtMoney(Math.abs(amount) as Money)}` : `+${fmtMoney(amount)}`
+}
+
+/** The roll with every picture taken out, so what is left is text and its codes. */
+function withoutRasters(receipt: string): string {
+  let out = ''
+  for (let i = 0; i < receipt.length; i++) {
+    const image = receipt.charCodeAt(i) === 0x1D ? readRaster(receipt, i) : null
+    if (image) { i += image.length - 1; continue }
+    out += receipt[i]
+  }
+  return out
 }

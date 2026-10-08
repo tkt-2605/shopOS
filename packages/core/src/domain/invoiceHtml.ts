@@ -6,6 +6,7 @@ import {
 } from './receipt.js'
 import { fillTokens, PAPER, usesTemplate, type Block, type DocFormat } from './docFormat.js'
 import { renderTemplate, templateData } from './htmlTemplate.js'
+import { savingsOf } from './receipt/doc.js'
 import { factsFor, escapeHtml as esc, titleCase, formatDate } from './docText.js'
 
 /**
@@ -246,6 +247,12 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
 
     case 'space':
       return `<div class="space" style="height:${Math.min(Math.max(block.opts?.lines ?? 1, 1), 6) * 1.4}em"></div>`
+
+    case 'savings': {
+      const saved = savingsOf(doc)
+      if (saved <= 0) return ''
+      return `<p class="note"><strong>${esc(block.opts?.label?.trim() || 'You saved')} ${esc(fmtMoney(saved))}</strong></p>`
+    }
 
     case 'amount_in_words':
       return `<p class="words"><span class="k">Amount in words</span>${esc(inWords(doc.grandTotal))}</p>`

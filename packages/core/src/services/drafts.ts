@@ -65,6 +65,8 @@ export interface DraftLine {
   priceSourceId: string | null
   /** Whether `rate` was quoted with the tax in it (063). */
   rateIncludesTax: boolean
+  /** The batch the line was priced from (070). */
+  batchId: string | null
 }
 
 export interface DraftDetail {
@@ -110,6 +112,7 @@ export async function loadDraft(db: SqlDriver, billId: string): Promise<DraftDet
       priceSource: schema.billItems.priceSource,
       priceSourceId: schema.billItems.priceSourceId,
       rateIncludesTax: schema.billItems.rateIncludesTax,
+      batchId: schema.billItems.batchId,
     })
     .from(schema.billItems)
     .where(eq(schema.billItems.billId, billId))

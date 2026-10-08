@@ -35,9 +35,9 @@ describe('what a format is allowed to be', () => {
     expect(checkFormat(format({ blocks }))).toContainEqual({ code: 'NO_ITEMS_BLOCK' })
   })
 
-  it('refuses a logo on the roll, which burns dots and cannot draw a picture', () => {
+  it('allows a logo on the roll, which prints it as dots (070)', () => {
     const blocks: Block[] = [ITEMS, { kind: 'logo', on: true }]
-    expect(checkFormat(format({ blocks }))).toContainEqual({ code: 'NOT_IMPLEMENTED', kind: 'logo' })
+    expect(checkFormat(format({ blocks }))).toEqual([])
   })
 
   it('allows the same logo on the sheet, which is where it prints', () => {
@@ -50,8 +50,8 @@ describe('what a format is allowed to be', () => {
     expect(checkFormat(format({ blocks }))).toEqual([])
   })
 
-  it('gives a reason for the paper it cannot print on, and none for the paper it can', () => {
-    expect(notYet('logo', 'thermal_58')).toMatch(/burns dots/)
+  it('has nothing left that a roll cannot print', () => {
+    expect(notYet('logo', 'thermal_58')).toBeUndefined()
     expect(notYet('logo', 'a4')).toBeUndefined()
   })
 })

@@ -20,7 +20,7 @@ export type {
 } from '../services/stockEntry.js'
 export * as Batches from '../domain/batches.js'
 export {
-  batchesOf, planSale, expiringBatches, batchesOnVoucher, productsWithBatches, batchTextFor,
+  batchesOf, planSale, expiringBatches, batchesOnVoucher, productsWithBatches, batchTextFor, priceChoicesFor,
 } from '../services/batches.js'
 export type { BatchRow, SalePlan, ExpiringBatch, LineBatch } from '../services/batches.js'
 export { productValuation } from '../services/stock.js'

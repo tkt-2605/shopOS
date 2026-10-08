@@ -16,7 +16,7 @@ import { checkTemplate, type TemplateProblem } from './htmlTemplate.js'
 export type BlockKind =
   | 'logo' | 'shop' | 'title' | 'meta' | 'party'
   | 'items' | 'totals' | 'tax_summary' | 'payments' | 'loyalty'
-  | 'amount_in_words' | 'terms' | 'signature' | 'text' | 'space'
+  | 'amount_in_words' | 'terms' | 'signature' | 'text' | 'space' | 'savings'
 
 /** Per-kind settings. Narrow on purpose — every option here has a renderer. */
 export interface BlockOpts {
@@ -28,6 +28,11 @@ export interface BlockOpts {
   lines?: number
   /** `logo`: how tall to print it, in millimetres. Width follows the image. */
   height?: number
+  /**
+   * `items`: the "MRP 12.00      Save 24.00" line under an item sold below its
+   * MRP. Absent is on, which is what every receipt printed before the switch.
+   */
+  mrpSaving?: boolean
 }
 
 export interface Block {
@@ -125,9 +130,7 @@ export const NOT_YET: Partial<Record<BlockKind, string>> = {}
  * photograph reduced to black and white at 203dpi looks like a smudge even
  * once it is built.
  */
-export const NOT_YET_ON_ROLL: Partial<Record<BlockKind, string>> = {
-  logo: 'A thermal printer burns dots, not pictures. It prints on the A4 sheet.',
-}
+export const NOT_YET_ON_ROLL: Partial<Record<BlockKind, string>> = {}
 
 /** What stops this block, on this paper — or nothing, when it is ready. */
 export function notYet(kind: BlockKind, paper: PaperSize): string | undefined {
@@ -150,12 +153,16 @@ export const BLOCK_LABEL: Record<BlockKind, string> = {
   signature: 'Signature line',
   text: 'Your own line',
   space: 'Blank space',
+  savings: 'Total savings',
 }
 
 /** One line each, shown under the switch, saying what turning it off costs. */
 export const BLOCK_NOTE: Partial<Record<BlockKind, string>> = {
   logo: 'The shop’s own mark, above the address. Uploaded on the Settings screen, '
-    + 'and what makes a bill look like the shop’s rather than like software.',
+    + 'and what makes a bill look like the shop’s rather than like software. On a roll it prints '
+    + 'in black and white: a flat logo prints well, a photograph does not.',
+  savings: 'One line under the total: what the customer saved against the MRP, discounts included. '
+    + 'Printed only on a bill that saved them something.',
   amount_in_words: 'The total spelled out — “Rupees One Thousand Only”. What a customer and a shop '
     + 'fall back on when the digits are argued about.',
   meta: 'The bill number. A receipt without one cannot be looked up again.',
@@ -201,6 +208,9 @@ export const STANDARD_RECEIPT: DocFormat = {
     { kind: 'party', on: false },
     { kind: 'items', on: true },
     { kind: 'totals', on: true },
+    /* On: "You saved 24.00" is what a customer at an Indian counter looks for,
+       and it prints nothing on a bill with no MRP to save against. */
+    { kind: 'savings', on: true },
     { kind: 'tax_summary', on: false },
     { kind: 'payments', on: true },
     { kind: 'loyalty', on: true },
@@ -237,6 +247,8 @@ export const STANDARD_INVOICE: DocFormat = {
     { kind: 'items', on: true },
     { kind: 'tax_summary', on: true },
     { kind: 'totals', on: true },
+    // Off: a business filing the sheet is not shopping against an MRP.
+    { kind: 'savings', on: false },
     { kind: 'payments', on: true },
     { kind: 'loyalty', on: false },
     { kind: 'amount_in_words', on: false },

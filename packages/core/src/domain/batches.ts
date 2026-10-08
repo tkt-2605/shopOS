@@ -1,5 +1,6 @@
 import { type Qty, QTY_ZERO, addQty, subQty } from '../quantity.js'
 import { addDays } from '../dates.js'
+import type { Money } from '../money.js'
 
 /**
  * Batches and the days they expire. Pure: no database, no clock.
@@ -14,6 +15,16 @@ import { addDays } from '../dates.js'
 
 /** The longest batch number a pack plausibly prints. The column refuses more. */
 export const BATCH_NO_MAX = 40
+
+/**
+ * The pick that means "the stock without a batch", as against no pick at all.
+ *
+ * Once an item's new delivery comes in as a batch with its own price, the
+ * packs already on the shelf -- received before, with no batch -- are the old
+ * price. A cashier who sells one of those must have it come out of that stock,
+ * not out of the new batch that soonest-expiry-first would reach for.
+ */
+export const UNBATCHED_PICK = 'unbatched'
 
 /** How far ahead "expiring soon" looks. Three months is what a chemist returns to a distributor against. */
 export const EXPIRY_SOON_DAYS = 90
@@ -159,7 +170,17 @@ export function allocate(
   pool: readonly BatchStock[],
   unbatchedOnHand: Qty,
   required: Qty,
-  opts: { today: string; pick?: string | null },
+  opts: {
+    today: string
+    pick?: string | null
+    /**
+     * Batches the line would rather come out of. Those not preferred wait
+     * until the stock without a batch has gone, as well as the preferred
+     * batches. A line priced from the item prefers batches at the item's own
+     * price (070), so an old-price pack is not booked out of the new batch.
+     */
+    prefer?: (batch: BatchStock) => boolean
+  },
 ): Allocation {
   const takes: BatchTake[] = []
   let left = required
@@ -176,18 +197,29 @@ export function allocate(
     if (expiryState(batch.expiryDate, opts.today) === 'expired') expired = true
   }
 
+  const takeUnbatched = (): void => {
+    if (left > 0 && unbatchedOnHand > 0) {
+      const qty = (unbatchedOnHand < left ? unbatchedOnHand : left) as Qty
+      unbatched = addQty(unbatched, qty)
+      left = subQty(left, qty)
+      unbatchedOnHand = subQty(unbatchedOnHand, qty)
+    }
+  }
+
+  if (opts.pick === UNBATCHED_PICK) takeUnbatched()
   const picked = opts.pick ? pool.find((b) => b.batchId === opts.pick) : undefined
   if (picked) take(picked)
 
   const ordered = [...pool].sort(fefo)
+  const preferred = opts.prefer ?? (() => true)
   for (const batch of ordered) {
-    if (expiryState(batch.expiryDate, opts.today) !== 'expired') take(batch)
+    if (preferred(batch) && expiryState(batch.expiryDate, opts.today) !== 'expired') take(batch)
   }
 
-  if (left > 0 && unbatchedOnHand > 0) {
-    const qty = (unbatchedOnHand < left ? unbatchedOnHand : left) as Qty
-    unbatched = addQty(unbatched, qty)
-    left = subQty(left, qty)
+  takeUnbatched()
+
+  for (const batch of ordered) {
+    if (expiryState(batch.expiryDate, opts.today) !== 'expired') take(batch)
   }
 
   for (const batch of ordered) take(batch)
@@ -215,4 +247,79 @@ export function unbatchedOf(onHand: Qty, pool: readonly BatchStock[]): Qty {
   const held = addQty(...pool.filter((b) => b.balance > 0).map((b) => b.balance))
   const rest = subQty(onHand, held)
   return rest > 0 ? rest : QTY_ZERO
+}
+
+/** A batch with the price its packs carry (070). Null is the item's own. */
+export interface PricedBatch extends BatchStock {
+  mrp: Money | null
+  rate: Money | null
+}
+
+/**
+ * One price the shelf holds an item at, for the cashier to choose between.
+ *
+ * Batches that print the same MRP and sell at the same rate are one choice,
+ * not several: the customer and the cashier care which price, not which
+ * delivery. The choice sells out of the batch that expires soonest among them.
+ */
+export interface PriceChoice {
+  /** The batch to sell out of, or `UNBATCHED_PICK` for the stock without one. */
+  pick: string
+  /** The batch numbers this price covers. Empty for the stock without a batch. */
+  batchNos: string[]
+  /** The soonest expiry among them. */
+  expiryDate: string | null
+  mrp: Money | null
+  /** Per base unit, tax inside. */
+  rate: Money
+  balance: Qty
+}
+
+/**
+ * The prices an item is on the shelf at, cheapest MRP first.
+ *
+ * Only stock that is there counts: a batch sold out is not a choice. When this
+ * answers fewer than two, nothing needs asking and the scan adds the line as it
+ * always has -- which is every item whose batches never had a price of their
+ * own, and every shop that never turned batches on.
+ */
+export function priceChoices(
+  pool: readonly PricedBatch[],
+  unbatchedOnHand: Qty,
+  item: { mrp: Money | null; rate: Money },
+): PriceChoice[] {
+  const byPrice = new Map<string, PriceChoice>()
+  const add = (pick: string, batch: PricedBatch | null, balance: Qty): void => {
+    const mrp = batch?.mrp ?? item.mrp
+    const rate = batch?.rate ?? item.rate
+    const key = `${mrp ?? ''}:${rate}`
+    const at = byPrice.get(key)
+    if (!at) {
+      byPrice.set(key, {
+        pick, batchNos: batch ? [batch.batchNo] : [], expiryDate: batch?.expiryDate ?? null, mrp, rate, balance,
+      })
+      return
+    }
+    at.balance = addQty(at.balance, balance)
+    if (batch) at.batchNos.push(batch.batchNo)
+  }
+
+  // Soonest expiry first, so the first batch at a price is the one it sells out of.
+  for (const batch of [...pool].sort(fefo)) {
+    if (batch.balance > 0) add(batch.batchId, batch, batch.balance)
+  }
+  if (unbatchedOnHand > 0) add(UNBATCHED_PICK, null, unbatchedOnHand)
+
+  return [...byPrice.values()].sort((a, b) =>
+    (a.mrp ?? a.rate) - (b.mrp ?? b.rate) || a.rate - b.rate)
+}
+
+/**
+ * The batch number new stock is received under when it was given a price and
+ * no number -- most shops never type one. Derived from the price, so the same
+ * MRP received twice, or on two tills apart, lands in one batch.
+ */
+export function priceBatchNo(mrp: Money | null, rate: Money | null): string {
+  const rupees = (m: Money) => (m / 100).toFixed(2)
+  return mrp !== null ? `MRP ${rupees(mrp)}` : `RATE ${rupees(rate ?? (0 as Money))}`
 }

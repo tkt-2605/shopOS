@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Money, Quantity, Totals, Loyalty, Permissions, searchProducts, saleUnitsFor,
+  Batches, Money, Quantity, Totals, Loyalty, Permissions, searchProducts, saleUnitsFor,
   loadLoyaltyProgram, monthToDateSpend, businessDate, submitBill, pricingContextFor, resolveLinePrice, chargesTax,
   RULE_46F_THRESHOLD, type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
@@ -8,14 +8,14 @@ import { useCore, useUser } from '../core/CoreProvider'
 import { printBill } from '../core/print'
 import { SheetPreview } from '../ui/SheetPreview'
 import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBillTabs'
-import { pricedForOf } from '../core/billCarts'
+import { pricedForOf, pricingBatch } from '../core/billCarts'
 import { useRepricing } from '../core/useRepricing'
 import { useShortcuts } from '../core/useShortcuts'
 import { Empty, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
 import { useSearch } from '../ui/useSearch'
 import { useConfirm } from '../ui/useConfirm'
-import { totalsLinesOf, shortOf } from './billing/cart'
+import { totalsLinesOf, shortOf, picksOf } from './billing/cart'
 import { submitMessage, unsavedMessage } from './billing/submitMessage'
 import { restoreHold, restoreHoldMessage } from '../core/restoreHold'
 import { TabStrip } from './billing/TabStrip'
@@ -26,6 +26,8 @@ import { PaymentDialog, type Tender } from './billing/PaymentDialog'
 import { DoneDialog, type CompletedBill } from './billing/DoneDialog'
 import { OpenPriceDialog } from './billing/OpenPriceDialog'
 import { useScanChoice } from '../ui/ScanChoice'
+import { usePriceChoice } from '../ui/PriceChoice'
+import { useDrawer } from './billing/useDrawer'
 
 export default function Billing() {
   const { db, registerId, stockPolicy, rounding, taxScheme } = useCore()
@@ -40,6 +42,7 @@ export default function Billing() {
   /** The loose item, waiting for its amount. See `OpenPriceDialog`. */
   const [askingAmount, setAskingAmount] = useState<ProductListItem | null>(null)
   const [paying, setPaying] = useState(false)
+  const drawer = useDrawer(db, registerId, user, paying)
   /* A second click on a tender while the first is still in flight would submit
      the same draft twice. The ref is the guard, because state set in one click
      handler is not yet visible to the next; the state is what greys the buttons. */
@@ -150,23 +153,30 @@ export default function Billing() {
 
   /* Resolved through the same core call the service uses, so the rate on screen
      is the rate that gets saved. */
-  const addProduct = useCallback(async (product: ProductListItem, amount?: Money.Money) => {
+  const addProduct = useCallback(async (product: ProductListItem, amount?: Money.Money, choice?: Batches.PriceChoice) => {
     // Priced at the counter: nothing goes on the bill until somebody says how much.
     if (product.openPrice && amount === undefined) {
       setTerm('')
       setAskingAmount(product)
       return
     }
+    // The same item at two MRPs on the shelf: the cashier reads the pack. One price asks nothing.
+    if (amount === undefined && choice === undefined && await priceChoice.asks(product)) { setTerm(''); return }
+    const batchPick = choice?.pick ?? null
     const units = await saleUnitsFor(db, product.id)
     const unit = units.find((u) => u.isDefault) ?? units[0]!
     const context = await pricingContextFor(db, active.customer?.id ?? null)
     const resolved = amount !== undefined
       ? { rate: amount, source: 'manual_override' as const, sourceId: null, includesTax: true }
-      : await resolveLinePrice(db, context, { productId: product.id, saleUnit: unit.saleUnit, qty: Quantity.fromUnits(1) })
+      : await resolveLinePrice(db, context, {
+          productId: product.id, saleUnit: unit.saleUnit, qty: Quantity.fromUnits(1), batchId: pricingBatch({ batchPick }),
+        })
 
     tabs.patch((cart) => {
+      // A second scan at the same price adds to the line; at another price it is a line of its own.
       const at = cart.lines.findIndex(
-        (l) => l.product.id === product.id && l.saleUnit === unit.saleUnit && !l.manual,
+        (l) => l.product.id === product.id && l.saleUnit === unit.saleUnit && !l.manual
+          && (l.batchPick ?? null) === batchPick,
       )
       if (at >= 0) {
         const lines = [...cart.lines]
@@ -185,7 +195,9 @@ export default function Billing() {
         // A typed amount is manual, so each loose sale is its own line: manual lines are not merged above.
         manual: amount !== undefined,
         includesTax: resolved.includesTax,
-        pricedFor: pricedForOf({ saleUnit: unit.saleUnit, qty: 1 }, active.customer?.id ?? null),
+        batchPick,
+        batchMrp: choice?.mrp ?? null,
+        pricedFor: pricedForOf({ saleUnit: unit.saleUnit, qty: 1, batchPick }, active.customer?.id ?? null),
       }
       return { ...cart, lines: [...cart.lines, line], error: null }
     })
@@ -194,6 +206,7 @@ export default function Billing() {
     focusScan()
   }, [db, active.customer, tabs, focusScan])
   const scanChoice = useScanChoice((p) => void addProduct(p))
+  const priceChoice = usePriceChoice(db, (p, choice) => void addProduct(p, undefined, choice), focusScan)
 
   // A barcode scanner types fast and finishes with Enter. An exact match on the
   // typed value goes straight into the cart without a selection step.
@@ -263,7 +276,7 @@ export default function Billing() {
     editLine(key, (l) => ({ ...l, rate, manual: true, source: 'manual_override', sourceId: null }))
   }
 
-  const pay = useCallback(async (method: Tender) => {
+  const pay = useCallback(async (method: Tender, tendered?: Money.Money) => {
     if (active.lines.length === 0 || submitting.current) return
     if (repricing) return
     submitting.current = true
@@ -297,7 +310,7 @@ export default function Billing() {
 
       result = await submitBill(db, {
         billId,
-        payments: due > 0 ? [{ method, amount: due }] : [],
+        payments: due > 0 ? [{ method, amount: due, ...(method === 'cash' && tendered ? { tendered } : {}) }] : [],
         ...(redeemPoints > 0 ? { redeemPoints } : {}),
         batchPicks: picksOf(active.lines),
         actorId: user.id,
@@ -315,7 +328,8 @@ export default function Billing() {
       return
     }
 
-    setDone({ billId, docNo: result.docNo, total: totals.grandTotal, points: result.pointsEarned })
+    const change = method === 'cash' && tendered && tendered > due ? { change: tendered - due } : {}
+    setDone({ billId, docNo: result.docNo, total: totals.grandTotal, points: result.pointsEarned, ...change })
     setPrintMsg(null)
     // Print straight away; the dialog stays up so a failed print can be retried.
     void printBill(db, billId).then((r) => { if (!r.ok) setPrintMsg(r.message) })
@@ -428,6 +442,7 @@ export default function Billing() {
       />
 
       {scanChoice.dialog}
+      {priceChoice.dialog}
       {askingAmount !== null && (
         <OpenPriceDialog
           product={askingAmount}
@@ -458,7 +473,10 @@ export default function Billing() {
           onAcknowledge={() => setAcknowledged(shortKey)}
           blockedOnShort={blockedOnShort}
           busy={busy}
-          onPay={(method) => void pay(method)}
+          onPay={(method, tendered) => void pay(method, tendered)}
+          drawerClosed={drawer.closed}
+          canOpenDrawer={drawer.canOpen}
+          onOpenDrawer={drawer.open}
           onClose={() => { setPaying(false); setRedeemPoints(0) }}
         />
       )}
@@ -477,11 +495,4 @@ export default function Billing() {
       {sheet && <SheetPreview html={sheet.html} docNo={sheet.docNo} onClose={() => setSheet(null)} />}
     </div>
   )
-}
-
-/** Each line's picked batch, by position as the bill stores it: the first line is 1. */
-function picksOf(lines: CartLine[]): Record<number, string> {
-  const picks: Record<number, string> = {}
-  lines.forEach((l, i) => { if (l.batchPick) picks[i + 1] = l.batchPick })
-  return picks
 }

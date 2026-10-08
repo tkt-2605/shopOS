@@ -5,9 +5,10 @@ import { newId } from '../ids.js'
 import { type Qty, qty, negQty, subQty, formatQty } from '../quantity.js'
 import { addDays } from '../dates.js'
 import {
-  allocate, batchIdFor, fefo, formatExpiry, normalizeBatchNo, unbatchedOf, BATCH_NO_MAX, EXPIRY_SOON_DAYS,
-  type Allocation, type BatchStock,
+  allocate, batchIdFor, fefo, formatExpiry, normalizeBatchNo, priceBatchNo, priceChoices, unbatchedOf, BATCH_NO_MAX,
+  EXPIRY_SOON_DAYS, type Allocation, type BatchStock, type PriceChoice,
 } from '../domain/batches.js'
+import type { Money } from '../money.js'
 import { currentStock } from './stock.js'
 
 /**
@@ -35,6 +36,9 @@ export interface BatchRow {
   batchNo: string
   expiryDate: string | null
   balance: Qty
+  /** The MRP and selling rate this batch carries of its own (070). Null is the item's. */
+  mrp: Money | null
+  rate: Money | null
 }
 
 const BALANCE = sql<number>`coalesce(sum(${schema.batchMovements.qtyChange}), 0)`
@@ -51,6 +55,8 @@ export async function batchesOf(
       productId: schema.batches.productId,
       batchNo: schema.batches.batchNo,
       expiryDate: schema.batches.expiryDate,
+      mrp: schema.batches.mrp,
+      rate: schema.batches.rate,
       balance: BALANCE,
     })
     .from(schema.batches)
@@ -92,7 +98,27 @@ export async function planSale(
 ): Promise<SalePlan> {
   const pool = await batchesOf(db, productId)
   const unbatched = unbatchedOf(await currentStock(db, productId), pool)
-  return { ...allocate(pool, unbatched, required, opts), pool }
+  // The same preference `issueForSale` applies, so the line shows what the bill will do.
+  const priced = pool.some((b) => b.mrp !== null || b.rate !== null)
+  const prefer = priced && !opts.pick ? { prefer: (b: BatchStock) => !hasOwnPrice(pool, b.batchId) } : {}
+  return { ...allocate(pool, unbatched, required, { ...opts, ...prefer }), pool }
+}
+
+/**
+ * The prices this item is on the shelf at, when there is more than one to
+ * choose between -- and an empty list when there is not, which is what the
+ * counter checks before it asks anybody anything. See `priceChoices`.
+ */
+export async function priceChoicesFor(db: SqlDriver, productId: string): Promise<PriceChoice[]> {
+  const pool = await batchesOf(db, productId)
+  if (!pool.some((b) => b.balance > 0 && (b.mrp !== null || b.rate !== null))) return []
+  const [item] = await q(db)
+    .select({ mrp: schema.products.mrp, rate: schema.products.baseRate })
+    .from(schema.products)
+    .where(eq(schema.products.id, productId))
+  if (!item) return []
+  const choices = priceChoices(pool, unbatchedOf(await currentStock(db, productId), pool), item)
+  return choices.length > 1 ? choices : []
 }
 
 export type EnsureBatchResult =
@@ -131,15 +157,24 @@ export async function checkBatch(
   return { ok: true, batchId, batchNo }
 }
 
-/** Writes the batch if it is new, or gives it the expiry it was missing. Call `checkBatch` first. */
+/**
+ * Writes the batch if it is new, or gives it the expiry it was missing. Call `checkBatch` first.
+ *
+ * A price given (070) is the batch's from then on: the delivery that names one
+ * is the latest word on what those packs say and sell at. A price not given
+ * leaves whatever the batch already carries.
+ */
 export async function ensureBatch(
   tx: SqlDriver,
-  input: { productId: string; batchNo: string; expiryDate: string | null; now: Date },
+  input: {
+    productId: string; batchNo: string; expiryDate: string | null; now: Date
+    mrp?: Money | null; rate?: Money | null
+  },
 ): Promise<string> {
   const batchId = batchIdFor(input.productId, input.batchNo)
   const nowIso = input.now.toISOString()
   const [existing] = await q(tx)
-    .select({ expiryDate: schema.batches.expiryDate })
+    .select({ expiryDate: schema.batches.expiryDate, mrp: schema.batches.mrp, rate: schema.batches.rate })
     .from(schema.batches)
     .where(eq(schema.batches.id, batchId))
 
@@ -149,12 +184,21 @@ export async function ensureBatch(
       productId: input.productId,
       batchNo: input.batchNo,
       expiryDate: input.expiryDate,
+      mrp: input.mrp ?? null,
+      rate: input.rate ?? null,
       createdAt: nowIso,
       updatedAt: nowIso,
     })
-  } else if (existing.expiryDate === null && input.expiryDate !== null) {
+    return batchId
+  }
+
+  const change: { expiryDate?: string; mrp?: Money; rate?: Money } = {}
+  if (existing.expiryDate === null && input.expiryDate !== null) change.expiryDate = input.expiryDate
+  if (input.mrp != null && input.mrp !== existing.mrp) change.mrp = input.mrp
+  if (input.rate != null && input.rate !== existing.rate) change.rate = input.rate
+  if (Object.keys(change).length > 0) {
     await q(tx).update(schema.batches)
-      .set({ expiryDate: input.expiryDate, updatedAt: nowIso })
+      .set({ ...change, updatedAt: nowIso })
       .where(eq(schema.batches.id, batchId))
   }
   return batchId
@@ -230,7 +274,7 @@ export async function issueForSale(
   if (batched.size === 0) return
 
   // Held in memory across lines, so two lines of one product do not both take the same pack.
-  const pools = new Map<string, { pool: BatchStock[]; unbatched: Qty }>()
+  const pools = new Map<string, { pool: BatchRow[]; unbatched: Qty }>()
 
   for (const line of input.lines) {
     if (!batched.has(line.productId)) continue
@@ -241,7 +285,14 @@ export async function issueForSale(
       pools.set(line.productId, held)
     }
 
-    const plan = allocate(held.pool, held.unbatched, line.qty, { today: input.postingDate, pick: line.pick ?? null })
+    /* A line with no batch of its own was priced from the item, so it sells
+       stock at the item's price first -- not a newer batch at another MRP. */
+    const priced = held.pool.some((b) => b.mrp !== null || b.rate !== null)
+    const plan = allocate(held.pool, held.unbatched, line.qty, {
+      today: input.postingDate,
+      pick: line.pick ?? null,
+      ...(priced && !line.pick ? { prefer: (b: BatchStock) => !hasOwnPrice(held!.pool, b.batchId) } : {}),
+    })
     for (const take of plan.takes) {
       await post(tx, {
         batchId: take.batchId,
@@ -439,6 +490,8 @@ export async function expiringBatches(
       expiryDate: schema.batches.expiryDate,
       productName: schema.products.name,
       baseUnit: schema.products.baseUnit,
+      mrp: schema.batches.mrp,
+      rate: schema.batches.rate,
       balance: BALANCE,
     })
     .from(schema.batches)
@@ -450,4 +503,36 @@ export async function expiringBatches(
     .orderBy(asc(schema.batches.expiryDate), asc(schema.products.name))
 
   return rows.map((r) => ({ ...r, balance: qty(Number(r.balance)) }))
+}
+
+/**
+ * The price a line of incoming goods gives its batch (070), when it gives one
+ * that is not the item's own -- or null, when the packs are the item's
+ * ordinary stock. A price left blank follows the item, except a rate that
+ * would sell the packs above the MRP printed on them, which is held at it.
+ *
+ * `batchNo` is what the goods are received under when nobody typed a number,
+ * which is most shops: named by the price, so the same MRP received twice, or
+ * on two tills apart, lands in one batch.
+ */
+export async function incomingPrice(
+  db: SqlDriver,
+  productId: string,
+  mrp: Money | null,
+  saleRate: Money | null,
+): Promise<{ mrp: Money | null; rate: Money | null; batchNo: string } | null> {
+  if (mrp === null && saleRate === null) return null
+  const [item] = await q(db)
+    .select({ mrp: schema.products.mrp, rate: schema.products.baseRate })
+    .from(schema.products)
+    .where(eq(schema.products.id, productId))
+  if (!item) return null
+  const rate = saleRate ?? (mrp !== null && item.rate > mrp ? mrp : null)
+  const differs = (mrp !== null && mrp !== item.mrp) || (rate !== null && rate !== item.rate)
+  return differs ? { mrp, rate, batchNo: priceBatchNo(mrp, rate) } : null
+}
+
+function hasOwnPrice(pool: readonly BatchRow[], batchId: string): boolean {
+  const batch = pool.find((b) => b.batchId === batchId)
+  return batch !== undefined && (batch.mrp !== null || batch.rate !== null)
 }

@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Permissions,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
-  directionOf, signedQty, noCostBasis, batchesOf, businessDate, Batches, periodClosedMessage,
-  type ProductListItem, type StockEntryType, type Supplier, type BatchRow, Tax,
+  directionOf, signedQty, noCostBasis, batchesOf, Batches, periodClosedMessage,
+  type ProductListItem, type StockEntryType, type Supplier, Tax,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { useAction } from '../core/useAction'
@@ -12,21 +12,7 @@ import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
 import { useSearch } from '../ui/useSearch'
 import { useScanChoice } from '../ui/ScanChoice'
-
-interface Line {
-  key: string
-  product: ProductListItem
-  qty: string
-  cost: string
-  /** Typed for goods coming in, chosen from `held` for goods going out. */
-  batchNo: string
-  expiry: string
-  /** The item's batches with stock, soonest expiry first, read when the line was added. */
-  held: BatchRow[]
-  /** On a purchase: the GST and cess percentages the supplier billed, filled in from the item. */
-  gst: string
-  cess: string
-}
+import { BatchCells, PriceCells, ownPrice, type Line } from './stockIn/cells'
 
 /* Each note says which way the shelf moves, because that is what the list is
    choosing between. It used to ask for the direction back: “Wastage.
@@ -107,6 +93,8 @@ export default function StockIn() {
         : [...prev, {
             key: `${product.id}-${Date.now()}`, product, qty: '1', cost: '', held,
             batchNo: '', expiry: '',
+            mrp: product.mrp !== null ? Money.format(product.mrp) : '',
+            sellAt: Money.format(product.baseRate),
             gst: String(Tax.bpToPercent(product.taxRateBp)),
             cess: product.cessRateBp ? String(Tax.bpToPercent(product.cessRateBp)) : '',
           }])
@@ -122,6 +110,8 @@ export default function StockIn() {
   }, 0)
 
   const purchase = entryType === 'purchase'
+  /* Only where goods certainly come in: a price is a fact about packs arriving. */
+  const incoming = directionOf(entryType) === 'in'
   const pct = (typed: string) => Math.round((Number(typed) || 0) * 100)
   /** The tax on a line as the bill will carry it -- the same arithmetic as the service, CGST and SGST each rounded. */
   const taxOf = (l: Line) => Tax.addTax(
@@ -176,6 +166,7 @@ export default function StockIn() {
            and any other way in agree without each having to remember it. */
         qty: Quantity.fromUnits(Number(l.qty) || 0),
         unitCost: (Money.parseMoney(l.cost) ?? 0) as never,
+        ...ownPrice(l),
         ...(purchase ? { taxRateBp: pct(l.gst), cessRateBp: pct(l.cess) } : {}),
       })),
       actorId: user.id,
@@ -335,6 +326,7 @@ export default function StockIn() {
               <th>Item</th>
               <th className="r">{directionOf(entryType) === 'out' ? 'Quantity lost' : 'Quantity'}</th>
               {batched && <><th>Batch</th><th>Expiry</th></>}
+              {incoming && <><th className="r">MRP</th><th className="r">Sell at</th></>}
               <th className="r">{purchase ? 'Unit cost before tax' : 'Unit cost'}</th><th className="r">Value</th>
               {purchase && <th className="r">GST %</th>}
               {showCess && <th className="r">Cess %</th>}
@@ -360,6 +352,8 @@ export default function StockIn() {
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} />
                   </td>
                   {batched && <BatchCells line={l} outgoing={outgoing(l)}
+                    onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
+                  {incoming && <PriceCells line={l}
                     onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
                   <td className="r">
                     <input className="qty-input num" placeholder="0.00" value={l.cost}
@@ -404,7 +398,7 @@ export default function StockIn() {
               )
             })}
             {lines.length === 0 && (
-              <tr><td colSpan={(batched ? 8 : 6) + (purchase ? 2 : 0) + (showCess ? 1 : 0)}><Empty>Nothing added yet</Empty></td></tr>
+              <tr><td colSpan={(batched ? 8 : 6) + (incoming ? 2 : 0) + (purchase ? 2 : 0) + (showCess ? 1 : 0)}><Empty>Nothing added yet</Empty></td></tr>
             )}
           </tbody>
         </table>
@@ -439,58 +433,5 @@ export default function StockIn() {
         </button>
       </div>
     </div>
-  )
-}
-
-/**
- * A line's batch and expiry. Coming in, both are typed off the pack; going
- * out, the batch is chosen from what is held, soonest expiry first, because
- * what is written off is nearly always what has gone past its date.
- */
-function BatchCells({ line, outgoing, onChange }: {
-  line: Line
-  outgoing: boolean
-  onChange: (change: Partial<Line>) => void
-}) {
-  if (outgoing) {
-    const chosen = line.held.find((b) => b.batchNo === line.batchNo)
-    return (
-      <>
-        <td>
-          {line.held.length === 0 ? <span className="src">no batches</span> : (
-            <select className="select unit-select" aria-label="Batch" value={line.batchNo}
-              onChange={(e) => onChange({ batchNo: e.target.value })}>
-              <option value="">No batch</option>
-              {line.held.map((b) => (
-                <option key={b.batchId} value={b.batchNo}>{b.batchNo} · {Quantity.formatQty(b.balance)} left</option>
-              ))}
-            </select>
-          )}
-        </td>
-        <td className="num">
-          {chosen?.expiryDate ? Batches.formatExpiry(chosen.expiryDate) : ''}
-          {chosen && Batches.expiryState(chosen.expiryDate, businessDate()) === 'expired' && (
-            <div className="src warn-note">expired</div>
-          )}
-        </td>
-      </>
-    )
-  }
-  const parsed = Batches.parseExpiry(line.expiry)
-  return (
-    <>
-      <td>
-        <input className="input" style={{ width: 110 }} aria-label="Batch number" placeholder="B1234"
-          value={line.batchNo} onChange={(e) => onChange({ batchNo: e.target.value })} />
-      </td>
-      <td>
-        <input className="input num" style={{ width: 90 }} aria-label="Expiry" placeholder="MM/YYYY"
-          value={line.expiry} onChange={(e) => onChange({ expiry: e.target.value })} />
-        {!parsed.ok && <div className="src warn-note">not a date</div>}
-        {parsed.ok && line.expiry !== '' && line.batchNo.trim() === '' && (
-          <div className="src warn-note">needs a batch number</div>
-        )}
-      </td>
-    </>
   )
 }

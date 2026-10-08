@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting } from './device'
+import { logoRaster, logoBlockOf } from './logoRaster'
 import {
   Receipt, loadShopProfile, loadBillDetail, loadCustomer, customerAccount, businessDate, formatFor,
   loadTaxScheme, billWording, schemeStatement, rateSummaryOf, batchTextFor,
@@ -120,7 +121,7 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
     cess: bill.items.reduce((s, i) => s + i.cess, 0) as never,
     roundOff: bill.roundOff,
     grandTotal: bill.grandTotal,
-    payments: bill.payments.map((p) => ({ method: p.method, amount: p.amount })),
+    payments: bill.payments.map((p) => ({ method: p.method, amount: p.amount, tendered: p.tendered })),
     footer: shop.receiptFooter,
   }
 
@@ -128,6 +129,10 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
      receipt gets it here; one that never opened the designer gets the format the
      product has always printed, which is what `formatFor` falls back to. */
   const format = await formatFor(db, { kind: 'bill', channel: 'roll' })
+
+  // Reduced to dots only when the format prints it: most bills never pay for the decode.
+  const logo = logoBlockOf(format)
+  if (logo && shop.logo) doc.logoRaster = await logoRaster(shop.logo, format.paper, logo.opts?.height)
 
   return send(Receipt.buildReceipt(doc, format), printerName())
 }
@@ -194,7 +199,8 @@ function printerName(): string | null {
 /** The one place bytes go to a printer, so both documents fail the same way. */
 async function send(text: string, name: string | null): Promise<PrintResult> {
   try {
-    await printer.print(name, Array.from(new TextEncoder().encode(text)))
+    // Byte for character: the logo is raw bytes, and the text is ASCII already. See `toBytes`.
+    await printer.print(name, Receipt.toBytes(text))
     return { ok: true }
   } catch (err) {
     return { ok: false, message: typeof err === 'string' ? err : 'The printer did not respond.' }

@@ -9,6 +9,8 @@ export interface CompletedBill {
   docNo: string
   total: number
   points: number
+  /** The change to hand back, when the cashier typed what was handed over. */
+  change?: number
 }
 
 /** The bill is saved; this is where it is printed again or seen on A4. */
@@ -44,6 +46,9 @@ export function DoneDialog({ done, printMsg, onPrintMsg, onSheet, onNewBill, onC
         <strong className="num">{done.docNo}</strong>
       </div>
       <div style={{ fontSize: 26, fontWeight: 700 }}><Rupees value={done.total} /></div>
+      {done.change !== undefined && done.change > 0 && (
+        <div className="done-change">Give back <Rupees value={done.change} /></div>
+      )}
       {done.points > 0 && <Alert kind="ok">{done.points} loyalty points earned</Alert>}
       {printMsg && <Alert kind="warn">{printMsg} The bill is saved — you can print it again.</Alert>}
     </Modal>

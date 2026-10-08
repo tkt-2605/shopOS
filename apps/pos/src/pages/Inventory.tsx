@@ -343,8 +343,12 @@ export default function Inventory() {
         <table>
           <thead>
             <tr>
+              {/* One heading per cell below, in the same order: the rows carried an
+                  HSN cell the heading row did not, which pushed every heading after
+                  it one column left of its figures. */}
               <th>Item</th><th>Barcode</th><th>{features.tieredPricing ? 'Quantity ladder' : 'Price list'}</th>
-              <th className="r">GST</th><th className="r">Rate</th><th className="r">On hand</th><th />
+              <th>HSN</th><th className="r">GST</th><th className="r">MRP</th><th className="r">Rate</th>
+              <th className="r">On hand</th><th />
             </tr>
           </thead>
           <tbody>
@@ -364,14 +368,15 @@ export default function Inventory() {
                       .filter(Boolean).join(' · ')}
                   </div>
                 </td>
-                <td className="num">{p.barcode ?? '—'}</td>
+                <td className="num">{p.barcode ?? <Missing />}</td>
                 <td className="num" style={{ fontSize: 12 }}>
                   {ladders.has(p.id)
                     ? Ladder.describeLadder(ladders.get(p.id)!)
-                    : <span style={{ color: 'var(--ink-3)' }}>—</span>}
+                    : <Missing />}
                 </td>
-                <td className="num">{p.hsnCode ?? '—'}</td>
+                <td className="num">{p.hsnCode ?? <Missing />}</td>
                 <td className="r num">{Tax.bpToPercent(p.taxRateBp)}%</td>
+                <td className="r">{p.mrp !== null ? <Rupees value={p.mrp} /> : <Missing />}</td>
                 <td className="r"><Rupees value={p.baseRate} /></td>
                 <td className="r num" style={{ color: p.qtyOnHand <= 0 ? 'var(--danger)' : undefined }}>
                   {Quantity.formatQty(p.qtyOnHand)} {p.baseUnit}
@@ -395,7 +400,7 @@ export default function Inventory() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={7}><Empty>No products match</Empty></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={9}><Empty>No products match</Empty></td></tr>}
           </tbody>
         </table>
       </div>
@@ -442,4 +447,9 @@ export default function Inventory() {
       )}
     </div>
   )
+}
+
+/** A cell with nothing in it, said the same quiet way in every column. */
+function Missing() {
+  return <span style={{ color: 'var(--ink-3)' }}>—</span>
 }

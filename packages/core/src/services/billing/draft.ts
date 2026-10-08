@@ -52,6 +52,7 @@ async function writeLines(
       rateIncludesTax: line.rateIncludesTax ? 1 : 0,
       priceSource: line.priceSource,
       priceSourceId: line.priceSourceId,
+      batchId: line.batchId,
       discountBlocked: line.discountBlocked ? 1 : 0,
       loyaltyBlocked: line.loyaltyBlocked ? 1 : 0,
     })

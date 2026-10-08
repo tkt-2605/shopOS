@@ -16,6 +16,12 @@ export interface PricingContext {
   defaultPriceListId: string | null
   /** Defaults to true. See `PriceCandidates.quantityBreaks`. */
   quantityBreaks?: boolean | undefined
+  /**
+   * The batch the line sells out of (070). A batch with a rate of its own
+   * stands in for the item's base rate; the lists and the customer's own rates
+   * still outrank it, as they outrank the base rate.
+   */
+  batchId?: string | null | undefined
 }
 
 /**
@@ -39,6 +45,15 @@ export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): P
     .where(eq(schema.products.id, ctx.productId))
   if (!product) throw new Error(`unknown product: ${ctx.productId}`)
 
+  let baseRate = product.baseRate
+  if (ctx.batchId) {
+    const [batch] = await q(db)
+      .select({ rate: schema.batches.rate })
+      .from(schema.batches)
+      .where(and(eq(schema.batches.id, ctx.batchId), eq(schema.batches.productId, ctx.productId)))
+    if (batch?.rate != null) baseRate = batch.rate
+  }
+
   // How many base units one of the line's units is. One, when the line is in
   // the base unit itself.
   const factor = await baseUnitsPer(db, ctx.productId, ctx.saleUnit, product.baseUnit)
@@ -48,7 +63,7 @@ export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): P
   // Without this a shop selling by the box collects one piece's worth of money
   // and gives away twelve pieces of stock.
   const candidates: PriceCandidates = {
-    baseRate: inSaleUnit(product.baseRate),
+    baseRate: inSaleUnit(baseRate),
     quantityBreaks: ctx.quantityBreaks !== false,
   }
   const ladderUnit = product.baseUnit === ctx.saleUnit ? null : product.baseUnit
@@ -290,12 +305,13 @@ export async function pricingContextFor(
 export async function resolveLinePrice(
   db: SqlDriver,
   ctx: BillPricingContext,
-  line: { productId: string; saleUnit: string; qty: Qty },
+  line: { productId: string; saleUnit: string; qty: Qty; batchId?: string | null },
   on: Date = new Date(),
 ): Promise<ResolvedLinePrice> {
   const candidates = await loadPriceCandidates(db, {
     productId: line.productId,
     saleUnit: line.saleUnit,
+    batchId: line.batchId ?? null,
     customerId: ctx.customerId,
     customerPriceListId: ctx.customerPriceListId,
     defaultPriceListId: ctx.defaultPriceListId,

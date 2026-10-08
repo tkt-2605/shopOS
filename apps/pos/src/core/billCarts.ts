@@ -1,5 +1,5 @@
 import {
-  Money, Quantity, Pricing, Totals,
+  Batches, Money, Quantity, Pricing, Totals,
   productsByIds, saleUnitsFor, searchCustomers,
   pricingContextFor, resolveLinePrice,
   type SqlDriver, type DraftDetail, type BillLineInput,
@@ -33,11 +33,15 @@ export interface CartLine {
    */
   includesTax?: boolean
   /**
-   * The batch the cashier picked for this line, when batches are on. Kept on
-   * screen only: a draft brought back after a restart has none, and the line
-   * then comes out soonest expiry first, which is what it would have shown.
+   * The batch the cashier picked for this line -- from the line when batches
+   * are on, or by choosing a price when the shelf holds the item at more than
+   * one (070). Saved with the draft and priced from: a batch with a price of
+   * its own sets the line's rate and MRP. `Batches.UNBATCHED_PICK` is the
+   * stock received before the new price, at the item's own.
    */
   batchPick?: string | null
+  /** The MRP of the price the cashier chose, shown on the line. */
+  batchMrp?: number | null
   /**
    * The unit, quantity and customer `rate` was worked out for (`pricedForOf`).
    * A line whose rate the shop's rules set is priced again when any of the
@@ -91,8 +95,15 @@ export function followsPriceRules(line: CartLine): boolean {
 }
 
 /** What a line's rate depends on besides the item, as one comparable thing. */
-export function pricedForOf(line: Pick<CartLine, 'saleUnit' | 'qty'>, customerId: string | null): string {
-  return `${line.saleUnit}\u0000${line.qty}\u0000${customerId ?? ''}`
+export function pricedForOf(
+  line: Pick<CartLine, 'saleUnit' | 'qty' | 'batchPick'>, customerId: string | null,
+): string {
+  return `${line.saleUnit}\u0000${line.qty}\u0000${customerId ?? ''}\u0000${line.batchPick ?? ''}`
+}
+
+/** The batch a line is priced from, as the pricing wants it: none for the stock without one. */
+export function pricingBatch(line: Pick<CartLine, 'batchPick'>): string | null {
+  return line.batchPick && line.batchPick !== Batches.UNBATCHED_PICK ? line.batchPick : null
 }
 
 /** Lines whose rate was worked out for a unit, quantity or customer they no longer have. */
@@ -128,6 +139,7 @@ export async function repriceCart(db: SqlDriver, cart: Cart): Promise<(cart: Car
       productId: line.product.id,
       saleUnit: line.saleUnit,
       qty: Quantity.fromUnits(line.qty),
+      batchId: pricingBatch(line),
     })
     priced.set(line.key, { ...resolved, as: pricedForOf(line, customer) })
   }
@@ -155,6 +167,7 @@ export function snapshotOf(
     productId: line.product.id,
     saleUnit: line.saleUnit,
     qty: Quantity.fromUnits(line.qty),
+    ...(pricingBatch(line) ? { batchId: pricingBatch(line) } : {}),
     // A typed rate is the cashier's; anything else is passed back as already
     // resolved so a held bill is not re-priced behind the customer.
     ...(line.manual
@@ -215,6 +228,7 @@ export async function cartFromDraft(db: SqlDriver, detail: DraftDetail): Promise
       sourceId: saved.priceSourceId,
       manual: saved.priceSource === 'manual_override',
       includesTax: saved.rateIncludesTax,
+      batchPick: saved.batchId,
     })
   }
 

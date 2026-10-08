@@ -437,6 +437,8 @@ export const billItems = sqliteTable('bill_items', {
   cessAmount: money('cess_amount').default(ZERO).notNull(),
   /** Whether `rate` was quoted with GST in it (063). `line_total` always is. */
   rateIncludesTax: integer('rate_includes_tax').default(1).notNull(),
+  /** The batch the line was priced from (070). Null is priced from the item. */
+  batchId: text('batch_id').references(() => batches.id),
 }, (table) => [
   index('idx_bill_items_product').on(table.productId),
   index('idx_bill_items_bill').on(table.billId),
@@ -448,6 +450,8 @@ export const billPayments = sqliteTable('bill_payments', {
   method: text().notNull(),
   amount: money().notNull(),
   reference: text(),
+  /** What the customer handed over for a cash tender (070). Null is not asked. */
+  tendered: money(),
 }, (table) => [
   index('idx_bill_payments_bill').on(table.billId),
 ])
@@ -623,6 +627,10 @@ export const batches = sqliteTable('batches', {
   originId: text('origin_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+  /** The MRP printed on this batch's packs (070). Null sells at the item's. */
+  mrp: money(),
+  /** The selling price per base unit, tax inside (070). Null sells at the item's. */
+  rate: money(),
 }, (table) => [
   index('idx_batches_product').on(table.productId),
   index('idx_batches_expiry').on(table.expiryDate),

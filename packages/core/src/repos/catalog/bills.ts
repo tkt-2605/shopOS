@@ -156,7 +156,8 @@ export interface BillDetail extends BillListItem {
   roundOff: Money
   cancelReason: string | null
   items: BillDetailItem[]
-  payments: { method: string; amount: Money; reference: string | null }[]
+  /** `tendered` is what the customer handed over for cash, when it was asked (070). */
+  payments: { method: string; amount: Money; reference: string | null; tendered: Money | null }[]
 
   /**
    * What the paper said, as the bill recorded it at submit — migration 028.
@@ -268,6 +269,7 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
       method: schema.billPayments.method,
       amount: schema.billPayments.amount,
       reference: schema.billPayments.reference,
+      tendered: schema.billPayments.tendered,
     })
     .from(schema.billPayments)
     .where(eq(schema.billPayments.billId, billId))

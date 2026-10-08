@@ -16,7 +16,7 @@
 export type {
   ReceiptShop, ReceiptItem, PlaceOfSupply, RateSummaryRow, ReceiptDoc,
 } from './receipt/doc.js'
-export { formatRate, rateSummaryOf } from './receipt/doc.js'
+export { formatRate, rateSummaryOf, savingsOf } from './receipt/doc.js'
 
 /**
  * The handful of words that differ between one kind of document and another.
@@ -33,6 +33,10 @@ export type { DocWording } from './wording.js'
 export { BILL_WORDING } from './wording.js'
 
 export { buildReceipt } from './receipt/roll.js'
+export {
+  rasterize, rasterCommand, readRaster, rollDots, logoDots, isBlank, toBytes, DOTS_PER_MM, LOGO_DEFAULT_MM, LOGO_MAX_MM,
+} from './receipt/raster.js'
+export type { Raster } from './receipt/raster.js'
 export { WIDTH, forThermal, smallColumns, previewLines, visibleLines, signed } from './receipt/escpos.js'
 export type { PreviewAlign, PreviewLine } from './receipt/escpos.js'
 export { buildStatement } from './receipt/statement.js'

@@ -157,6 +157,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* A UNIQUE dropped: a till below this would refuse the second item's row
      for a code and stop its sync partway through a batch. */
   [69, '069_one_barcode_several_items.sql', 'breaking'],
+  /* A batch's own price: a till below this bills the new pack at the item's
+     old price. The other two columns only record. */
+  [70, '070_a_batch_has_its_own_price.sql', 'breaking'],
 ]
 
 /**

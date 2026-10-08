@@ -77,6 +77,7 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
         productId: schema.billItems.productId,
         productName: schema.billItems.productName,
         baseQty: schema.billItems.baseQty,
+        batchId: schema.billItems.batchId,
         lineTotal: schema.billItems.lineTotal,
         loyaltyBlocked: schema.billItems.loyaltyBlocked,
       })
@@ -99,7 +100,8 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
       redemptionPlan = plan.allocations
     }
 
-    if (input.payments.some((p) => p.amount <= 0 || p.method === 'loyalty')) {
+    if (input.payments.some((p) => p.amount <= 0 || p.method === 'loyalty'
+      || (p.tendered !== undefined && (p.method !== 'cash' || p.tendered < p.amount)))) {
       return { ok: false, code: 'INVALID_PAYMENT' }
     }
 

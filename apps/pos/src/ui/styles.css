@@ -661,6 +661,18 @@ tbody tr:hover { background: var(--accent-soft); }
 .block-move { display: flex; gap: 4px; }
 .block-note { grid-column: 1 / -1; margin: 0; font-size: 11.5px; color: var(--ink-3); }
 .block-opts { grid-column: 1 / -1; }
+/* Taking cash: what was handed over, the change, and the counter not yet opened. */
+.cash-tender { display: grid; gap: 8px; padding: 11px 13px; background: var(--surface-2); }
+.cash-tender-row { display: grid; grid-template-columns: auto 160px 1fr; align-items: center; gap: 10px; font-size: 13px; }
+.cash-received { font-size: 18px; text-align: right; }
+.cash-change { font-size: 15px; font-weight: 600; }
+.cash-notes { display: flex; gap: 6px; flex-wrap: wrap; }
+.drawer-gate { display: grid; gap: 6px; padding: 11px 13px; border: 1px solid var(--warn); background: var(--warn-soft); }
+.drawer-gate-head { font-weight: 600; font-size: 13px; }
+.drawer-gate-note { font-size: 12.5px; color: var(--ink-2); }
+.drawer-gate-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.done-change { font-size: 20px; font-weight: 700; }
+.block-check { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
 
 .format-danger {
   display: flex;
@@ -697,6 +709,8 @@ tbody tr:hover { background: var(--accent-soft); }
 .receipt-line { white-space: pre; min-height: 1.45em; }
 .receipt-line.align-centre { text-align: center; }
 .receipt-line.align-right { text-align: right; }
+/* The logo at the printer's resolution: pixelated, because the paper will be. */
+.receipt-raster { display: inline-block; image-rendering: pixelated; vertical-align: top; }
 .receipt-line.bold { font-weight: 700; }
 /* Font B is 9 dots wide against font A's 12 — exactly three quarters, not the
    0.85 that was here. A preview that sets the small print wider than the

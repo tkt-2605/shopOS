@@ -41,6 +41,13 @@ export interface BillLineInput {
    * answer in `resolved.includesTax`.
    */
   rateIncludesTax?: boolean
+  /**
+   * The batch this line sells out of (070), when the cashier chose one -- by
+   * scanning an item whose batches carry different prices, or from the line.
+   * A batch with a price of its own prices the line and puts its MRP on it,
+   * and the bill sells out of it first. Absent is the item's own price.
+   */
+  batchId?: string | null
 }
 
 export interface CreateBillInput {
@@ -74,6 +81,13 @@ export interface PaymentInput {
   method: PaymentMethod
   amount: Money
   reference?: string
+  /**
+   * What the customer handed over, on a cash tender (070) -- 500 against a bill
+   * of 360. Recorded so the receipt can say what change was given. Only the
+   * amount reaches the drawer: the change went straight back out of it. At
+   * least the amount, and only on cash; absent is not asked.
+   */
+  tendered?: Money
 }
 
 export interface SubmitBillInput {

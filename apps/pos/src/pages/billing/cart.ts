@@ -62,3 +62,10 @@ export function shortOf(lines: CartLine[]): Map<string, ShortLine> {
   for (const [id, w] of wanted) if (w.want <= w.have) wanted.delete(id)
   return wanted
 }
+
+/** Each line's picked batch, by position as the bill stores it: the first line is 1. */
+export function picksOf(lines: CartLine[]): Record<number, string> {
+  const picks: Record<number, string> = {}
+  lines.forEach((l, i) => { if (l.batchPick) picks[i + 1] = l.batchPick })
+  return picks
+}

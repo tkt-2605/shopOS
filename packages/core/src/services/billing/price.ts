@@ -36,6 +36,8 @@ export interface ComputedLine {
   rateIncludesTax: boolean
   priceSource: PriceSource
   priceSourceId: string | null
+  /** The batch the line was priced from (070), or null for the item's own price. */
+  batchId: string | null
   /** Copied onto the line as it stood at the time of sale, so a bill stays explainable. */
   discountBlocked: boolean
   loyaltyBlocked: boolean
@@ -178,6 +180,17 @@ export async function priceBill(
 
     const unit = await resolveSaleUnit(db, line.productId, line.saleUnit ?? null)
 
+    /* The batch's own MRP, when it has one: the pack in the customer's hand
+       says it, and the line has to print what the pack says. A batch of some
+       other item is ignored rather than refused -- it cannot be this line's. */
+    const batch = line.batchId
+      ? (await q(db)
+          .select({ id: schema.batches.id, mrp: schema.batches.mrp })
+          .from(schema.batches)
+          .where(and(eq(schema.batches.id, line.batchId), eq(schema.batches.productId, line.productId))))[0] ?? null
+      : null
+    const priceLine = { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty, batchId: batch?.id ?? null }
+
     // A typed rate wins, then a rate already resolved for this line, and only a
     // line with neither is priced from scratch.
     const priced = line.rateOverride != null
@@ -187,7 +200,7 @@ export async function priceBill(
         }
       : line.resolved
         ? { ...line.resolved, includesTax: line.resolved.includesTax ?? true }
-        : await resolveLinePrice(db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now)
+        : await resolveLinePrice(db, pricing, priceLine, now)
 
     /* A rate the caller says came from the shop's prices is held to them. The
        counter works rates out itself and sends them as already resolved, so a
@@ -197,8 +210,7 @@ export async function priceBill(
        bill keeps its quote); an amendment says it carries its original's. */
     if (line.rateOverride == null && line.resolved && BY_THE_RULES.has(line.resolved.source) && !input.carriesRates
         && !held.has(lineKey(line.productId, unit.saleUnit, line.qty, priced.rate, priced.includesTax))) {
-      const rule = await resolveLinePrice(
-        db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now)
+      const rule = await resolveLinePrice(db, pricing, priceLine, now)
       if (rule.rate !== priced.rate || rule.includesTax !== priced.includesTax) {
         return {
           ok: false, code: 'RATE_NOT_THE_RULE',
@@ -234,7 +246,7 @@ export async function priceBill(
       qty: line.qty,
       baseQty: qty(Math.round((line.qty * unit.baseUnits) / QTY_SCALE)),
       rate: priced.rate,
-      mrp: product.mrp ?? null,
+      mrp: batch?.mrp ?? product.mrp ?? null,
       discount,
       taxRateBp: taxed ? product.taxRateBp : 0,
       // Cess is a tax like GST: a shop that may not collect one collects neither.
@@ -242,6 +254,7 @@ export async function priceBill(
       rateIncludesTax: priced.includesTax,
       priceSource: priced.source,
       priceSourceId: priced.sourceId,
+      batchId: batch?.id ?? null,
       discountBlocked,
       loyaltyBlocked,
     })

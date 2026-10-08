@@ -40,6 +40,7 @@ export async function postTenders(tx: SqlDriver, t: Tenders): Promise<string | n
       method: payment.method,
       amount: payment.amount,
       reference: payment.reference ?? null,
+      tendered: payment.tendered ?? null,
     })
     // Credit moves no money today and loyalty never does.
     if (sessionId && payment.method !== 'credit') {

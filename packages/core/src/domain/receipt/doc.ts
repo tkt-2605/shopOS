@@ -1,6 +1,7 @@
 import type { Money } from '../../money.js'
-import type { Qty } from '../../quantity.js'
+import { type Qty, QTY_SCALE } from '../../quantity.js'
 import type { DocWording } from '../wording.js'
+import type { Raster } from './raster.js'
 
 /*
  * What a printed document says, before anything decides how it looks.
@@ -28,6 +29,9 @@ export interface ReceiptShop {
    */
   logo?: string | null
 }
+
+/** The shop's logo as the roll's dots, already reduced -- see `raster.ts`. */
+export type { Raster }
 
 export interface ReceiptItem {
   name: string
@@ -120,7 +124,8 @@ export interface ReceiptDoc {
    */
   roundOff?: Money
   grandTotal: Money
-  payments: { method: string; amount: Money }[]
+  /** `tendered` is the cash handed over, when the counter asked; the roll prints the change. */
+  payments: { method: string; amount: Money; tendered?: Money | null }[]
   pointsEarned?: number
   pointsBalance?: number
   footer?: string | null
@@ -190,6 +195,13 @@ export interface ReceiptDoc {
   notes?: string | null
 
   /**
+   * The logo as the thermal printer's dots (070). The roll cannot read the
+   * `data:` URI the sheet uses -- a printer burns dots -- so the app reduces
+   * the image once and hands it here. Absent prints no logo on the roll.
+   */
+  logoRaster?: Raster | null
+
+  /**
    * What this document calls itself. Left out, it calls itself a bill, which is
    * what every caller before documents existed meant.
    */
@@ -237,4 +249,22 @@ export function rateSummaryOf(items: ReceiptItem[]): RateSummaryRow[] {
   }
 
   return [...byRate.values()].sort((a, b) => a.rateBp - b.rateBp)
+}
+
+/**
+ * What the customer saved against the MRP on this bill, discounts included:
+ * the MRP of every line that carries one, less what the line came to.
+ *
+ * Only shelf-priced lines, as with the per-line saving: an MRP has the tax
+ * inside it, and a rate quoted before tax is not comparable with it. A line
+ * sold above its MRP saves nothing rather than taking from the others.
+ */
+export function savingsOf(doc: Pick<ReceiptDoc, 'items'>): Money {
+  let saved = 0
+  for (const item of doc.items) {
+    if (!item.mrp || item.rateIncludesTax === false) continue
+    const atMrp = Math.round((item.mrp * item.qty) / QTY_SCALE)
+    saved += Math.max(0, atMrp - item.lineTotal)
+  }
+  return saved as Money
 }

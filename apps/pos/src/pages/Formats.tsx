@@ -7,6 +7,8 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Alert, Field, Empty } from '../ui/components'
 import { useShopChanged } from '../core/useShopChanged'
+import { logoRaster } from '../core/logoRaster'
+import { RasterLine } from './formats/RasterLine'
 import { BlockOptions } from './formats/BlockOptions'
 import { TemplateEditor } from './formats/TemplateEditor'
 import { type Draft, KIND_LABELS, PRINTABLE, draftOf, problemText, sampleDoc, templateProblemText } from './formats/draft'
@@ -77,6 +79,17 @@ export function Formats() {
     [draft, saved],
   )
 
+  /* The logo as the roll will print it, reduced once per image, size and paper.
+     Asked for whenever the logo block is on, so the switch is seen to work. */
+  const logoBlock = draft?.blocks.find((b) => b.kind === 'logo' && b.on)
+  const [raster, setRaster] = useState<Receipt.Raster | null>(null)
+  useEffect(() => {
+    if (!draft || !Fmt.isRoll(draft.paper) || !logoBlock || !shop.logo) { setRaster(null); return }
+    let live = true
+    void logoRaster(shop.logo, draft.paper, logoBlock.opts?.height).then((r) => { if (live) setRaster(r) })
+    return () => { live = false }
+  }, [draft?.paper, logoBlock?.opts?.height, Boolean(logoBlock), shop.logo])
+
   /* Recomputed on every keystroke, which is free: no IO, no printer, and either
      document is a few kilobytes. A roll previews as the printer's own bytes; a
      sheet previews as the very page that would be printed, in a frame. */
@@ -94,14 +107,15 @@ export function Formats() {
     /* The real logo, not a placeholder. A preview that leaves it out makes the
        logo switch look like a switch that does nothing, which is the one thing
        this screen must never do. */
-    const doc = sampleDoc({
-      name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo,
-    })
+    const doc = {
+      ...sampleDoc({ name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo }),
+      logoRaster: raster,
+    }
 
     return Fmt.isRoll(draft.paper)
       ? { kind: 'roll' as const, lines: Receipt.previewLines(Receipt.buildReceipt(doc, format)) }
       : { kind: 'sheet' as const, html: buildInvoiceHtml(doc, format, { preview: true }) }
-  }, [draft, shop])
+  }, [draft, shop, raster])
 
   function patch(change: Partial<Draft>) {
     setDraft((d) => (d ? { ...d, ...change } : d))
@@ -354,8 +368,7 @@ export function Formats() {
 
           <div className="block-list" hidden={usingTemplate}>
             {draft.blocks.map((block, i) => {
-              /* Per paper: the sheet carries a logo and the roll cannot, and
-                 the switch should say which of the two this format is. */
+              /* Per paper, for a block one paper can carry and the other cannot. */
               const unfinished = Fmt.notYet(block.kind, draft.paper)
               /* A logo block switched on with no logo uploaded prints nothing,
                  and a switch that appears to do nothing is how a shopkeeper
@@ -436,7 +449,7 @@ export function Formats() {
                     line.bold ? 'bold' : '',
                   ].filter(Boolean).join(' ')}
                 >
-                  {line.text || ' '}
+                  {line.raster ? <RasterLine raster={line.raster} paper={draft.paper} /> : (line.text || ' ')}
                 </div>
               ))}
             </div>
@@ -474,3 +487,4 @@ export function Formats() {
     </div>
   )
 }
+

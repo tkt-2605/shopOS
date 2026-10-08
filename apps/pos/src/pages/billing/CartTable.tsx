@@ -44,13 +44,16 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
                       </span>
                     )}
                   </div>
-                  <div className="src">{Pricing.describeSource(line.source)}</div>
+                  <div className="src">
+                    {Pricing.describeSource(line.source)}
+                    {line.batchMrp != null && <> · MRP {Money.formatWithSymbol(line.batchMrp as Money.Money)}</>}
+                  </div>
                   {features.batchExpiry && line.qty > 0 && (
                     <LineBatch
                       productId={line.product.id}
                       baseQty={baseQtyOf(line)}
                       pick={line.batchPick ?? null}
-                      onPick={(batchPick) => onEdit(line.key, (l) => ({ ...l, batchPick }))}
+                      onPick={(batchPick) => onEdit(line.key, (l) => ({ ...l, batchPick, batchMrp: null }))}
                     />
                   )}
                   {/* Said where the mistake is being made, not at the end. A

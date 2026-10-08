@@ -9,7 +9,7 @@ import { writeAudit } from '../integrity/audit.js'
 import { recheckDocStatus } from '../integrity/transition.js'
 import { businessDate } from '../dates.js'
 import { postMovement, reverseVoucher, currentStock } from './stock.js'
-import { checkBatch, ensureBatch, findBatch, moveBatch, reverseBatches } from './batches.js'
+import { checkBatch, ensureBatch, findBatch, moveBatch, reverseBatches, incomingPrice } from './batches.js'
 import { nextDocNo, seriesPrefix } from './numbering.js'
 import { closedFor, type PeriodClosed } from './books.js'
 import { purchaseTaxes, inputTaxClaimable } from './purchases.js'
@@ -38,6 +38,15 @@ export interface StockEntryLineInput {
   batchNo?: string | null
   /** YYYY-MM-DD. Only read for goods coming in; see `parseExpiry` for what a person may type. */
   expiryDate?: string | null
+  /**
+   * The MRP printed on these packs and the price they sell at, per base unit
+   * (070). Only read for goods coming in. A price that differs from the item's
+   * puts the goods in a batch of their own, so the counter can tell the new
+   * packs from the old -- named by the price when no batch number was typed.
+   * A price the same as the item's, with no number, is ordinary stock.
+   */
+  mrp?: Money | null
+  saleRate?: Money | null
   /**
    * The GST and cess the supplier billed this line at, on a purchase. Absent is
    * none -- what every purchase recorded before 065 says. See `purchases.ts`.
@@ -147,11 +156,17 @@ export async function createStockEntry(
   /* Batches are checked before anything is written, so a refusal leaves no
      half-made entry behind. Two lines of one delivery giving one batch two
      dates are caught here too, by comparing them with each other. */
-  const batchOf: ({ batchNo: string; expiryDate: string | null } | null)[] = []
+  const batchOf: ({ batchNo: string; expiryDate: string | null; mrp?: Money | null; rate?: Money | null } | null)[] = []
   const datesGiven = new Map<string, string>()
   for (const line of input.lines) {
+    const incoming = signedQty(input.entryType, line.qty) > 0
+    const priced = incoming ? await incomingPrice(db, line.productId, line.mrp ?? null, line.saleRate ?? null) : null
+    if ((!line.batchNo || line.batchNo.trim() === '') && priced) {
+      batchOf.push({ batchNo: priced.batchNo, expiryDate: line.expiryDate ?? null, mrp: priced.mrp, rate: priced.rate })
+      continue
+    }
     if (!line.batchNo || line.batchNo.trim() === '') { batchOf.push(null); continue }
-    if (signedQty(input.entryType, line.qty) > 0) {
+    if (incoming) {
       const expiry = line.expiryDate ?? null
       const checked = await checkBatch(db, line.productId, line.batchNo, expiry)
       if (!checked.ok) return { ...checked, productId: line.productId }
@@ -160,7 +175,7 @@ export async function createStockEntry(
         return { ok: false, code: 'EXPIRY_MISMATCH', productId: line.productId, batchNo: checked.batchNo, recorded: earlier }
       }
       if (expiry !== null) datesGiven.set(checked.batchId, expiry)
-      batchOf.push({ batchNo: checked.batchNo, expiryDate: expiry })
+      batchOf.push({ batchNo: checked.batchNo, expiryDate: expiry, mrp: priced?.mrp ?? null, rate: priced?.rate ?? null })
     } else {
       const held = await findBatch(db, line.productId, line.batchNo)
       if (!held) return { ok: false, code: 'UNKNOWN_BATCH', productId: line.productId, batchNo: line.batchNo.trim() }
@@ -417,3 +432,4 @@ async function loadEntry(db: SqlDriver, entryId: string): Promise<EntryRow> {
     postingDate: row.posting_date,
   }
 }
+

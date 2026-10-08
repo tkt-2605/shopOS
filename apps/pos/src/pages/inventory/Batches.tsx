@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Batches, Quantity, batchesOf, businessDate, expiringBatches,
+  Batches, Money, Quantity, batchesOf, businessDate, expiringBatches,
   type BatchRow, type ExpiringBatch,
 } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
@@ -142,18 +142,24 @@ export function ProductBatches({ productId, name, baseUnit, onHand, onClose }: {
       ) : (
         <table>
           <thead>
-            <tr><th>Batch</th><th>Expiry</th><th className="r">On hand</th></tr>
+            <tr>
+              <th>Batch</th><th>Expiry</th><th className="r">MRP</th><th className="r">Rate</th>
+              <th className="r">On hand</th>
+            </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.batchId} style={{ opacity: r.balance > 0 ? 1 : 0.55 }}>
                 <td className="num">{r.batchNo}</td>
                 <ExpiryCell expiry={r.expiryDate} today={today} />
+                {/* A batch's own price (070); blank is the item's. */}
+                <td className="r num">{r.mrp !== null ? Money.formatWithSymbol(r.mrp) : ''}</td>
+                <td className="r num">{r.rate !== null ? Money.formatWithSymbol(r.rate) : ''}</td>
                 <td className="r num">{Quantity.formatQty(r.balance)} {baseUnit}</td>
               </tr>
             ))}
             <tr>
-              <td colSpan={2} className="src">
+              <td colSpan={4} className="src">
                 {rest >= 0
                   ? 'Without a batch — received before batches were on, or with none typed'
                   : 'Batches hold more than the shelf — a count or write-off was not put against a batch'}

@@ -14,6 +14,8 @@ export interface BillStockLine {
   productId: string
   productName: string
   baseQty: Qty
+  /** The batch the line was priced from (070), sold out of first. */
+  batchId?: string | null
 }
 
 /** The lines the shelf cannot cover. Asked before the money is taken. */
@@ -45,7 +47,7 @@ export async function takeOffShelf(
     postingDate: input.postingDate,
     userId: input.actorId,
     lines: input.lines.map((l) => ({
-      lineId: l.id, productId: l.productId, qty: l.baseQty, pick: input.batchPicks?.[l.idx] ?? null,
+      lineId: l.id, productId: l.productId, qty: l.baseQty, pick: input.batchPicks?.[l.idx] ?? l.batchId ?? null,
     })),
   })
 
