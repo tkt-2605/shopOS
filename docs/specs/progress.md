@@ -1324,6 +1324,28 @@ backup zip (`archive.rs`), and a restore that is billed against end to end
 Sandbox, because what that proves is the installer and the file paths, not the
 code.
 
+## A recovery code for a forgotten password (9 October)
+
+`resetPassword` needs somebody signed in who may reset passwords, and a shop
+with one owner has nobody else, so an owner who forgot was locked out with no
+way back except a developer editing the database. Now `services/recovery.ts`
+does it:
+
+- The shop gets a code when it is set up (`firstRun`), shown once and kept only
+  as a bcrypt hash in `settings`, so no migration and it travels to every till.
+  Twenty Crockford base32 characters, a hundred bits.
+- "Forgot password?" on the sign-in screen takes the code, a username and a new
+  password, offline. Using the code makes a new one, which is shown at once.
+- Staff has a Recovery code card: a warning for a shop that has none (every
+  shop set up before today), and "Make a new code", which needs `user.write`.
+- A wrong code locks nothing, for the same reason sign-in does not; it is
+  written to `audit_log` as `login_failed` on `settings`.
+
+Open: two tills making a new code offline at the same moment keep whichever
+setting wins the merge, and the other code silently stops working. The card
+shows when the code in force was made, which is how an owner would notice.
+The owner's phone and email login through the portal is the planned second way in.
+
 ## Not committed
 
 `docs/specs.zip` — a redundant archive of `docs/specs/`. Left untracked

@@ -7,6 +7,7 @@ import {
 import { useCore, useUser } from '../core/CoreProvider'
 import { Card, Modal, Field, Empty, Alert } from '../ui/components'
 import { useShopChanged } from '../core/useShopChanged'
+import { RecoveryCodeCard } from '../ui/RecoveryCode'
 
 interface NewStaff {
   username: string
@@ -191,6 +192,8 @@ export default function Staff() {
           </table>
         </div>
       </Card>
+
+      <RecoveryCodeCard />
 
       {adding && (
         <Modal

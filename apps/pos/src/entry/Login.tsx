@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { login } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { Field, Alert } from '../ui/components'
+import { Recover } from './Recover'
 
 /* Staff sign in here with a username and a password, offline. */
 
@@ -11,6 +12,7 @@ export function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [recovering, setRecovering] = useState(false)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -30,6 +32,8 @@ export function Login() {
     )
   }
 
+  if (recovering) return <Recover onBack={() => { setRecovering(false); setPassword(''); setError(null) }} />
+
   return (
     <div className="centre">
       <form className="panel" onSubmit={(e) => void submit(e)}>
@@ -46,6 +50,9 @@ export function Login() {
             <input className="input" id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </Field>
           <button className="btn primary lg" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+          <button type="button" className="link-btn" id="forgot-password" onClick={() => setRecovering(true)}>
+            Forgot password?
+          </button>
         </div>
       </form>
     </div>

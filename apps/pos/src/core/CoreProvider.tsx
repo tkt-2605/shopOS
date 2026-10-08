@@ -424,7 +424,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   }
 
   async function completeSetup(input: { shopName: string; password: string; withDemo: boolean }) {
-    const { adminId } = await firstRun(db, { shopName: input.shopName, adminPassword: input.password })
+    const { adminId, recoveryCode } = await firstRun(db, { shopName: input.shopName, adminPassword: input.password })
     if (input.withDemo) await seedDemoData(db, adminId)
     await loadRegister()
     await applyAppearance()
@@ -432,6 +432,12 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     setPolicy(await loadStockPolicy(db))
     setRound(await loadRounding(db))
     await refreshScheme()
+    /* Not `ready` yet: the setup screen shows the recovery code first, once,
+       and `enterShop` is what it calls when the owner has written it down. */
+    return { recoveryCode }
+  }
+
+  function enterShop() {
     setStatus({ phase: 'ready' })
   }
 
@@ -442,7 +448,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       features, stockPolicy, rounding, backup,
       taxScheme, taxSchemeAsked, setTaxSchemeTo,
       setFeatureFlag, setStockPolicyTo, setRoundingTo,
-      reloadRegister: loadRegister, setUser, completeSetup,
+      reloadRegister: loadRegister, setUser, completeSetup, enterShop,
       joinShop, askToJoinShop, waitToJoinShop,
     }}>
       {children}

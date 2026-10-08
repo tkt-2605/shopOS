@@ -37,6 +37,11 @@ export type { RoleSummary, RoleMatrix, RoleResult, DeleteRoleResult } from '../s
 export { listStaff, updateUser, resetPassword, unlockUser } from '../services/auth.js'
 export type { StaffMember } from '../services/auth.js'
 export {
+  recoveryCodeState, firstRecoveryCode, makeRecoveryCode, recoverWithCode,
+  formatRecoveryCode, normaliseRecoveryCode,
+} from '../services/recovery.js'
+export type { RecoveryCodeState, RecoverResult } from '../services/recovery.js'
+export {
   listAttachments, countAttachments, recordAttachment, removeAttachment,
   attachmentsToCarry, ATTACHMENT_ENTITIES, ACCEPTED_MIME, MAX_BYTES, CARRY_WINDOW_DAYS,
 } from '../services/attachments.js'

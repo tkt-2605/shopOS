@@ -106,7 +106,10 @@ export interface CoreValue {
   backup: DailyResult | null
   reloadRegister: () => Promise<void>
   setUser: (user: SessionUser | null) => void
-  completeSetup: (input: { shopName: string; password: string; withDemo: boolean }) => Promise<void>
+  /** Creates the shop and returns its recovery code, which the setup screen shows before `enterShop`. */
+  completeSetup: (input: { shopName: string; password: string; withDemo: boolean }) => Promise<{ recoveryCode: string }>
+  /** Leaves the setup screen for the sign-in one, once the recovery code has been seen. */
+  enterShop: () => void
   /**
    * Joins a shop that already exists on another till.
    *

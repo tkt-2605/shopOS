@@ -4,6 +4,7 @@ import { useCore } from './core/CoreProvider'
 import { Field, Alert, Empty } from './ui/components'
 import { RestorePanel } from './ui/RestorePanel'
 import { JoinShop } from './ui/JoinShop'
+import { RecoveryCodeShown, RecoveryCodeBanner } from './ui/RecoveryCode'
 import { lookAround, type FoundTill } from './core/syncHost'
 import { DeviceTroubleBanner } from './ui/DeviceTrouble'
 import { OutOfDateBanner } from './ui/OutOfDateBanner'
@@ -222,23 +223,43 @@ function RestoreDoor({ onCancel }: { onCancel: () => void }) {
 }
 
 function NewShop({ onCancel }: { onCancel: () => void }) {
-  const { completeSetup } = useCore()
+  const { completeSetup, enterShop } = useCore()
   const [shopName, setShopName] = useState('')
   const [password, setPassword] = useState('')
   const [withDemo, setWithDemo] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [recoveryCode, setRecoveryCode] = useState<string | null>(null)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      await completeSetup({ shopName: shopName.trim() || 'My Shop', password, withDemo })
+      const made = await completeSetup({ shopName: shopName.trim() || 'My Shop', password, withDemo })
+      setRecoveryCode(made.recoveryCode)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)
     }
+  }
+
+  /* The shop exists by now. What is left is the one moment its recovery code
+     can be shown, because only its hash is kept. */
+  if (recoveryCode) {
+    return (
+      <div className="centre">
+        <div className="panel">
+          <div className="panel-head">
+            <h1>Your recovery code</h1>
+            <p>The way back in if the password is forgotten.</p>
+          </div>
+          <div className="panel-body">
+            <RecoveryCodeShown code={recoveryCode} doneLabel="Continue to sign in" onDone={enterShop} />
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -376,6 +397,9 @@ function Shell() {
         {/* For whoever may open the dashboard, where the list is: a refund
             taken twice on two counters is found by a sync nobody watches. */}
         <DiscrepancyBanner canReview={pages.includes('dashboard')} />
+        {/* Until the shop has a recovery code: an owner who forgets the
+            password with none has no way back in. */}
+        <RecoveryCodeBanner />
         {/* Also on every screen, and for the same reason turned around: the
             person who has to say yes is standing at this till looking at the
             counter, while the person adding one is at the other machine. A

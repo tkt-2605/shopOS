@@ -7,6 +7,7 @@ import { fromUnits } from '../quantity.js'
 import { bootstrap, setSetting, getSetting } from './bootstrap.js'
 import { resolveCustomerState } from '../domain/gstin.js'
 import { createUser } from './auth.js'
+import { firstRecoveryCode } from './recovery.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
 
 export interface FirstRunInput {
@@ -22,7 +23,9 @@ export async function isFirstRun(db: SqlDriver): Promise<boolean> {
   return (row?.n ?? 0) === 0
 }
 
-export async function firstRun(db: SqlDriver, input: FirstRunInput): Promise<{ adminId: string }> {
+export async function firstRun(
+  db: SqlDriver, input: FirstRunInput,
+): Promise<{ adminId: string; recoveryCode: string }> {
   const seed = await bootstrap(db, { shopName: input.shopName })
 
   const admin = await createUser(db, {
@@ -37,7 +40,11 @@ export async function firstRun(db: SqlDriver, input: FirstRunInput): Promise<{ a
   if (input.gstin) await setSetting(db, 'shop_gstin', input.gstin)
   if (input.address) await setSetting(db, 'shop_address', input.address)
 
-  return { adminId: admin.userId }
+  /* Made with the shop and shown once, because the day the owner needs it is
+     the day there is nobody signed in to make one. `recovery.ts`. */
+  const recoveryCode = await firstRecoveryCode(db)
+
+  return { adminId: admin.userId, recoveryCode }
 }
 
 interface DemoProduct {
