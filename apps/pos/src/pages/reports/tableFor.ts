@@ -1,6 +1,6 @@
 import {
   Reports as R, Quantity, type DateRange, type ClosedSession,
-  type ProfitAndLoss, type BalanceSheet, type LedgerChecks,
+  type ProfitAndLoss, type BalanceSheet, type LedgerChecks, type GeneralLedger,
 } from '@shopos/core'
 
 /*
@@ -8,7 +8,7 @@ import {
  * the CSV and the PDF are both built from.
  */
 
-export type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer' | 'books'
+export type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer' | 'books' | 'ledger'
 
 export interface Data {
   summary: R.SalesSummary
@@ -24,6 +24,8 @@ export interface Data {
   pl: ProfitAndLoss
   bs: BalanceSheet
   checks: LedgerChecks
+  /** Every entry in the books for the range, narrowed as the ledger tab says. */
+  ledger: GeneralLedger
 }
 
 /**
@@ -166,6 +168,31 @@ export function tableFor(tab: Tab, data: Data | null): Table | null {
           r.notes ?? '',
         ]),
       }
+    case 'ledger':
+      return {
+        name: 'ledger',
+        title: 'Ledger',
+        columns: [
+          { label: 'Date', width: 1.1 },
+          { label: 'Document', width: 1.8 },
+          { label: 'Account', width: 1.6 },
+          { label: 'Customer or supplier', width: 1.6 },
+          { label: 'Debit', width: 1, right: true },
+          { label: 'Credit', width: 1, right: true },
+          { label: 'Balance', width: 1.1, right: true },
+        ],
+        rows: [
+          ['', 'Brought forward', '', '', '', '', signedCell(data.ledger.opening)],
+          ...data.ledger.rows.map((r) => [
+            r.postingDate,
+            `${r.voucherLabel}${r.docNo ? ` ${r.docNo}` : ''}${r.isReversal ? ' (cancelled)' : ''}`,
+            r.accountName, r.partyName ?? '',
+            r.debit > 0 ? rupeeCell(r.debit) : '', r.credit > 0 ? rupeeCell(r.credit) : '',
+            signedCell(r.balance),
+          ]),
+          ['', 'Total', '', '', rupeeCell(data.ledger.debit), rupeeCell(data.ledger.credit), signedCell(data.ledger.closing)],
+        ],
+      }
     case 'books': {
       const line = (section: string) => (a: { name: string; balance: number }) => [section, a.name, rupeeCell(a.balance)]
       return {
@@ -193,6 +220,11 @@ export function tableFor(tab: Tab, data: Data | null): Table | null {
 /** Plain rupees, no symbol and no grouping — a spreadsheet must read it as a number. */
 export function rupeeCell(paise: number): string {
   return (paise / 100).toFixed(2)
+}
+
+/** A running balance for a file: Dr when debits lead, Cr when credits do. */
+function signedCell(paise: number): string {
+  return paise === 0 ? '0.00' : `${rupeeCell(Math.abs(paise))} ${paise > 0 ? 'Dr' : 'Cr'}`
 }
 
 export function describe(range: DateRange): string {

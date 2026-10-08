@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Reports as R, Money, listRegisters, chargesTax, listSessions, profitAndLoss, balanceSheet, ledgerChecks,
+  generalLedger,
   type DateRange, type Register,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
@@ -13,6 +14,7 @@ import { type Data, type Tab, describe, rupeeCell, tableFor } from './reports/ta
 import {
   BooksTable, DaysTable, DrawerTable, MarginTable, ProductsTable, StaffTable, TaxTable, TendersTable,
 } from './reports/tables'
+import { EVERYTHING, LedgerFilters, LedgerTable, ledgerFilter, type LedgerView } from './reports/LedgerTable'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'days', label: 'By day' },
@@ -23,6 +25,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'staff', label: 'Staff' },
   { id: 'drawer', label: 'Drawer' },
   { id: 'books', label: 'Books' },
+  { id: 'ledger', label: 'Ledger' },
 ]
 
 export default function Reports() {
@@ -34,6 +37,7 @@ export default function Reports() {
   const [range, setRange] = useState<DateRange>(() => rangePreset('month'))
   const [registers, setRegisters] = useState<Register[]>([])
   const [tab, setTab] = useState<Tab>('days')
+  const [ledgerView, setLedgerView] = useState<LedgerView>(EVERYTHING)
   const [data, setData] = useState<Data | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -53,7 +57,7 @@ export default function Reports() {
     setBusy(true)
     setError(null)
     try {
-      const [summary, days, products, margin, marginRows, tax, tenders, staff, sessions, pl, bs, checks] = await Promise.all([
+      const [summary, days, products, margin, marginRows, tax, tenders, staff, sessions, pl, bs, checks, ledger] = await Promise.all([
         R.salesSummary(db, range),
         R.salesByDay(db, range),
         R.topProducts(db, range, 25),
@@ -66,15 +70,17 @@ export default function Reports() {
         profitAndLoss(db, range),
         balanceSheet(db, range.to),
         ledgerChecks(db),
+        // The whole shop's books whatever counter is chosen, as on the books tab.
+        generalLedger(db, { from: range.from, to: range.to, ...ledgerFilter(ledgerView) }),
       ])
-      setData({ summary, days, products, margin, marginRows, tax, tenders, staff, sessions, pl, bs, checks })
+      setData({ summary, days, products, margin, marginRows, tax, tenders, staff, sessions, pl, bs, checks, ledger })
     } catch (err) {
       setData(null)
       setError(`The reports could not be built: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setBusy(false)
     }
-  }, [db, range])
+  }, [db, range, ledgerView])
 
   useEffect(() => { void load() }, [load])
   // A report of yesterday's takings is wrong the moment the other till syncs one.
@@ -339,6 +345,10 @@ export default function Reports() {
             {tab === 'staff' && <StaffTable rows={data.staff} />}
             {tab === 'drawer' && <DrawerTable rows={data.sessions} />}
             {tab === 'books' && <BooksTable pl={data.pl} bs={data.bs} checks={data.checks} asOf={range.to} />}
+            {tab === 'ledger' && <>
+              <LedgerFilters db={db} view={ledgerView} onChange={setLedgerView} />
+              <LedgerTable ledger={data.ledger} />
+            </>}
           </Card>
 
           {s.discount > 0 && (

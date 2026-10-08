@@ -320,7 +320,7 @@ export default function StockIn() {
       )}
 
       <div className="card card-scroll">
-        <table>
+        <table className="entry-lines">
           <thead>
             <tr>
               <th>Item</th>

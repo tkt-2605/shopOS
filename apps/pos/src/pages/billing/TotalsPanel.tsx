@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Money, RULE_46F_THRESHOLD, type Totals } from '@shopos/core'
 import type { Cart, CartLine } from '../../core/useBillTabs'
 import { Field, Alert, Rupees } from '../../ui/components'
@@ -7,7 +8,7 @@ import { Field, Alert, Rupees } from '../../ui/components'
  * and the button that takes the money.
  */
 export function TotalsPanel({
-  cart, totals, blocked, needsRecipient, loyaltyMonth, empty, unfinished, repricing = false, onPickCustomer, onDiscount, onPay,
+  cart, totals, blocked, needsRecipient, loyaltyMonth, empty, unfinished, repricing = false, onPickCustomer, onDiscount, onPay, quote,
 }: {
   cart: Cart
   totals: Totals.ComputedTotals
@@ -23,6 +24,8 @@ export function TotalsPanel({
   onPickCustomer: () => void
   onDiscount: (typed: string) => void
   onPay: () => void
+  /** Saving the bill as a quotation instead. Absent for someone who may not make one. */
+  quote?: { open: () => void; dialog: ReactNode }
 }) {
   return (
     <div className="bill-right">
@@ -106,6 +109,12 @@ export function TotalsPanel({
         </div>
       </div>
 
+      {quote && (
+        <button className="btn quote-btn" disabled={empty || unfinished || repricing} onClick={quote.open}>
+          Save as quotation
+        </button>
+      )}
+      {quote?.dialog}
       <button className="pay-btn" disabled={empty || unfinished || repricing} onClick={onPay}>
         <span className="k">F12</span>
         <span>{unfinished ? 'A line has no quantity' : repricing ? 'Pricing…' : 'Take payment'}</span>

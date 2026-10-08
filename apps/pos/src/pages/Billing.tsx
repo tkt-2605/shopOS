@@ -28,6 +28,7 @@ import { OpenPriceDialog } from './billing/OpenPriceDialog'
 import { useScanChoice } from '../ui/ScanChoice'
 import { usePriceChoice } from '../ui/PriceChoice'
 import { useDrawer } from './billing/useDrawer'
+import { useQuote } from './billing/QuoteDialog'
 
 export default function Billing() {
   const { db, registerId, stockPolicy, rounding, taxScheme } = useCore()
@@ -77,6 +78,7 @@ export default function Billing() {
     ),
     [active.lines, active.discount, rounding, taxScheme],
   )
+  const quote = useQuote(active, totals.grandTotal, () => setPickingCustomer(true), () => tabs.close(active.tabId))
 
   /* Lines the shop sells at a few rupees a unit. The discount box has to say so,
      because a cashier typing ₹50 off a bill that is mostly recharge will
@@ -439,8 +441,8 @@ export default function Billing() {
         onPickCustomer={() => setPickingCustomer(true)}
         onDiscount={(discount) => tabs.patch((cart) => ({ ...cart, discount }))}
         onPay={() => setPaying(true)}
+        {...(Permissions.can(user.permissions, 'document', 'create') ? { quote } : {})}
       />
-
       {scanChoice.dialog}
       {priceChoice.dialog}
       {askingAmount !== null && (

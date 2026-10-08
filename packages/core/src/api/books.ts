@@ -25,7 +25,8 @@ export type { DateRange } from '../repos/reports.js'
 export * as Ledger from '../domain/ledger.js'
 export { postVoucherGl, reverseVoucherGl, postMissingGl, fillLedgerOnce } from '../services/ledger.js'
 export type { VoucherType, MissingGlOutcome } from '../services/ledger.js'
-export { trialBalance, profitAndLoss, balanceSheet, ledgerChecks, partyBalance } from '../repos/ledger.js'
+export { trialBalance, profitAndLoss, balanceSheet, ledgerChecks, partyBalance, generalLedger, VOUCHER_LABEL } from '../repos/ledger.js'
+export type { GeneralLedger, LedgerRow, LedgerFilter } from '../repos/ledger.js'
 export type {
   AccountBalance, TrialBalance, ProfitAndLoss, BalanceSheet, LedgerChecks,
 } from '../repos/ledger.js'

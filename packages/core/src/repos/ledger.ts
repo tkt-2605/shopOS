@@ -149,3 +149,149 @@ export async function partyBalance(
   const kind = ACCOUNTS[account].kind
   return naturalBalance(kind, row?.debit ?? 0, row?.credit ?? 0) as Money
 }
+
+/** What each kind of document is called on the ledger page. */
+export const VOUCHER_LABEL: Readonly<Record<string, string>> = {
+  bill: 'Bill',
+  sales_return: 'Return',
+  payment: 'Payment',
+  stock_entry: 'Stock entry',
+  cash_session: 'Drawer close',
+  cash_payout: 'Paid out',
+  supplier_opening: 'Opening balance',
+}
+
+export interface LedgerFilter {
+  from: string
+  to: string
+  /** One account, such as `debtors` for every customer's khata. Absent is every account. */
+  account?: AccountKey | null
+  /** One customer or supplier. Absent is everybody. */
+  party?: { type: 'customer' | 'supplier'; id: string } | null
+  /** The most rows to answer, newest dropped first. Defaults to 2,000. */
+  limit?: number
+}
+
+export interface LedgerRow {
+  id: string
+  postingDate: string
+  account: AccountKey
+  accountName: string
+  partyType: 'customer' | 'supplier' | null
+  partyId: string | null
+  partyName: string | null
+  voucherType: string
+  voucherLabel: string
+  voucherId: string
+  /** The document's own number, where it has one. */
+  docNo: string | null
+  debit: Money
+  credit: Money
+  /** Undoes an earlier entry: the document was cancelled. */
+  isReversal: boolean
+  /** Debit less credit, running, from the opening balance. */
+  balance: Money
+}
+
+export interface GeneralLedger {
+  /** Debit less credit before `from`, under the same filter. */
+  opening: Money
+  rows: LedgerRow[]
+  debit: Money
+  credit: Money
+  /** Debit less credit at the end of the range. */
+  closing: Money
+  /** True when there were more rows than `limit`; the totals still count all of them. */
+  truncated: boolean
+}
+
+/**
+ * Every entry the books hold for a period, in the order they happened: each
+ * bill, payment, return, delivery and drawer close, line by line, with the
+ * document it came from and the customer or supplier it concerns.
+ *
+ * Narrowed to one account it is that account's ledger -- `debtors` is every
+ * customer's credit and every payment against it in one list -- and to one
+ * party it is their khata. The running balance is debit less credit, from the
+ * balance brought forward, which is how a ledger is read: positive on a
+ * customer is what they owe.
+ *
+ * raw: the document number and the party's name come from a different table
+ * for each kind of entry, which is a run of LEFT JOINs the builder says no
+ * more clearly.
+ */
+export async function generalLedger(db: SqlDriver, filter: LedgerFilter): Promise<GeneralLedger> {
+  const where: string[] = []
+  const args: (string | number)[] = []
+  if (filter.account) { where.push('g.account = ?'); args.push(filter.account) }
+  if (filter.party) { where.push('g.party_type = ? AND g.party_id = ?'); args.push(filter.party.type, filter.party.id) }
+  const narrowed = where.length > 0 ? `AND ${where.join(' AND ')}` : ''
+  const limit = filter.limit ?? 2000
+
+  const before = await db.get<{ net: number }>(
+    `SELECT COALESCE(SUM(g.debit - g.credit), 0) AS net FROM gl_entries g WHERE g.posting_date < ? ${narrowed}`,
+    [filter.from, ...args],
+  )
+  const totals = await db.get<{ debit: number; credit: number; n: number }>(
+    `SELECT COALESCE(SUM(g.debit), 0) AS debit, COALESCE(SUM(g.credit), 0) AS credit, COUNT(*) AS n
+       FROM gl_entries g WHERE g.posting_date >= ? AND g.posting_date <= ? ${narrowed}`,
+    [filter.from, filter.to, ...args],
+  )
+  const rows = await db.query<{
+    id: string; posting_date: string; account: string; party_type: string | null; party_id: string | null
+    party_name: string | null; voucher_type: string; voucher_id: string; doc_no: string | null
+    debit: number; credit: number; is_reversal: number
+  }>(
+    `SELECT g.id, g.posting_date, g.account, g.party_type, g.party_id, g.voucher_type, g.voucher_id,
+            g.debit, g.credit, g.is_reversal,
+            COALESCE(c.name, s.name) AS party_name,
+            CASE g.voucher_type
+              WHEN 'bill' THEN b.doc_no
+              WHEN 'sales_return' THEN r.doc_no
+              WHEN 'payment' THEN p.doc_no
+              WHEN 'stock_entry' THEN e.doc_no
+            END AS doc_no
+       FROM gl_entries g
+       LEFT JOIN customers c ON g.party_type = 'customer' AND c.id = g.party_id
+       LEFT JOIN suppliers s ON g.party_type = 'supplier' AND s.id = g.party_id
+       LEFT JOIN bills b ON g.voucher_type = 'bill' AND b.id = g.voucher_id
+       LEFT JOIN sales_returns r ON g.voucher_type = 'sales_return' AND r.id = g.voucher_id
+       LEFT JOIN payment_entries p ON g.voucher_type = 'payment' AND p.id = g.voucher_id
+       LEFT JOIN stock_entries e ON g.voucher_type = 'stock_entry' AND e.id = g.voucher_id
+      WHERE g.posting_date >= ? AND g.posting_date <= ? ${narrowed}
+      ORDER BY g.posting_date, g.created_at, g.id
+      LIMIT ?`,
+    [filter.from, filter.to, ...args, limit],
+  )
+
+  let running = before?.net ?? 0
+  const out = rows.map((r): LedgerRow => {
+    running += r.debit - r.credit
+    return {
+      id: r.id,
+      postingDate: r.posting_date,
+      account: r.account as AccountKey,
+      accountName: isAccount(r.account) ? ACCOUNTS[r.account].name : r.account,
+      partyType: r.party_type === 'customer' || r.party_type === 'supplier' ? r.party_type : null,
+      partyId: r.party_id,
+      partyName: r.party_name,
+      voucherType: r.voucher_type,
+      voucherLabel: VOUCHER_LABEL[r.voucher_type] ?? r.voucher_type,
+      voucherId: r.voucher_id,
+      docNo: r.doc_no,
+      debit: r.debit as Money,
+      credit: r.credit as Money,
+      isReversal: r.is_reversal === 1,
+      balance: running as Money,
+    }
+  })
+
+  const opening = (before?.net ?? 0) as Money
+  const debit = (totals?.debit ?? 0) as Money
+  const credit = (totals?.credit ?? 0) as Money
+  return {
+    opening, rows: out, debit, credit,
+    closing: (opening + debit - credit) as Money,
+    truncated: (totals?.n ?? 0) > out.length,
+  }
+}

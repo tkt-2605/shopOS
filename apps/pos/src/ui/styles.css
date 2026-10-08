@@ -369,6 +369,13 @@ tbody tr:hover { background: var(--accent-soft); }
 /* A line the shop does not have enough of. Said on the row, where the quantity
    that caused it can still be changed. */
 .src.warn-note { color: var(--warn); font-weight: 500; }
+/* Lines of a stock entry: every box at the top of its row, so a note under one
+   box -- "no cost recorded" -- grows the row downward instead of lifting that
+   box above its neighbours. Text cells drop by the box's border and padding so
+   their figures sit on the same line as the figures typed in the boxes. */
+.entry-lines td { vertical-align: top; }
+.entry-lines td:not(:has(input, select)) { padding-top: calc(var(--row-py) + 5px); }
+.entry-lines td.r .src { max-width: 160px; margin-left: auto; margin-top: 3px; line-height: 1.3; }
 
 .fkeys { display: flex; gap: 7px; flex-shrink: 0; flex-wrap: wrap; }
 .fkey {
@@ -392,6 +399,7 @@ tbody tr:hover { background: var(--accent-soft); }
   font-size: 15.5px; font-weight: 600;
 }
 .pay-btn:hover:not(:disabled) { background: var(--accent-hover); }
+.quote-btn { width: 100%; justify-content: center; margin-bottom: 8px; }
 .pay-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .pay-btn .k { font-size: 10.5px; opacity: 0.75; }
 
