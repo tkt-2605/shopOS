@@ -126,7 +126,7 @@ export async function runStockCheck(
  * Runs the check at the next 02:00 and every 02:00 after. Returns the stop.
  *
  * Re-armed with a fresh timeout each round rather than a 24 h interval, for the
- * reason `startDailyBackupTimer` gives: the two disagree the moment somebody
+ * reason the backup timer used to give: the two disagree the moment somebody
  * corrects the machine's clock, and a till whose clock was wrong is exactly the
  * till somebody has just been fixing.
  *

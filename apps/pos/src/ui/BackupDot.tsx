@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react'
 import { useCore } from '../core/CoreProvider'
 import { goTo } from '../core/nav'
+import { deviceSetting } from '../core/device'
 import { upgradeCopyFailure } from '../core/backup'
+import { lastCopyRun, onCopyResult, FOLDER_SETTING, type CopyRun } from '../core/backupFolder'
 
 /**
  * A red mark in the top bar for as long as the last automatic backup failed.
@@ -17,8 +20,15 @@ import { upgradeCopyFailure } from '../core/backup'
  */
 export function BackupDot() {
   const { backup } = useCore()
-  // The daily backup, or the copy taken before this start's upgrade.
-  const problem = backup?.error ?? upgradeCopyFailure()
+  const [copy, setCopy] = useState<CopyRun | null>(lastCopyRun)
+  useEffect(() => onCopyResult(setCopy), [])
+
+  // The scheduled backup, the copy taken before this start's upgrade, or the
+  // copy into the chosen folder -- the one that survives this machine.
+  const copyFailed = copy && !copy.ok && deviceSetting(FOLDER_SETTING)
+    ? `The backup was not copied to the chosen folder: ${copy.output}`
+    : null
+  const problem = backup?.error ?? upgradeCopyFailure() ?? copyFailed
   if (!problem) return null
 
   return (
@@ -34,7 +44,7 @@ export function BackupDot() {
       <span aria-hidden style={{
         width: 7, height: 7, background: 'var(--danger)', display: 'inline-block',
       }} />
-      Backup failed
+      {problem === copyFailed ? 'Backup not copied' : 'Backup failed'}
     </button>
   )
 }

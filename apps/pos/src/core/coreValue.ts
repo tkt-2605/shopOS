@@ -3,7 +3,7 @@ import type {
   JoinProgress,
 } from '@shopos/core'
 import type { StartupFailureKind } from './startup'
-import type { DailyResult } from './backup'
+import type { BackupResult } from './backup'
 
 /*
  * What every screen is handed by `CoreProvider`: the database, where startup
@@ -103,7 +103,7 @@ export interface CoreValue {
    * and its failure used to be returned to a `void` call and dropped. A shop
    * whose backup folder had gone read-only found out when it needed the backup.
    */
-  backup: DailyResult | null
+  backup: BackupResult | null
   reloadRegister: () => Promise<void>
   setUser: (user: SessionUser | null) => void
   /** Creates the shop and returns its recovery code, which the setup screen shows before `enterShop`. */

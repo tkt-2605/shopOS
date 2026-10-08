@@ -28,9 +28,11 @@ vi.mock('../src/core/device', () => ({
 
 const {
   listBackups, describeBackups, backupFolderProblem,
-  runDailyBackup, recordHookRun, lastHookRun, onHookResult,
-  msUntilHour, startDailyBackupTimer, LAST_HOOK_SETTING, HOOK_SETTING,
+  runScheduledBackup, recordHookRun, lastHookRun, onHookResult,
+  takeBackupNow, msUntilHour, startBackupTimer, EVERY_SETTING, AT_SETTING,
+  LAST_HOOK_SETTING, HOOK_SETTING, TICK_MS, RETRY_MS,
 } = await import('../src/core/backup')
+const { recordCopyRun, lastCopyRun, FOLDER_SETTING } = await import('../src/core/backupFolder')
 
 const db = {} as never
 
@@ -60,7 +62,7 @@ describe('an unreadable backup folder', () => {
   it('does not let the daily run write into a folder it cannot list', async () => {
     invoke.mockRejectedValue('os error 3')
 
-    const result = await runDailyBackup(db, new Date('2026-03-04T09:00:00'))
+    const result = await runScheduledBackup(db, new Date('2026-03-04T09:00:00'))
 
     // The dangerous reading of an empty list is "no backup today, take one" —
     // which would write into a folder nobody can read and then prune from a
@@ -159,7 +161,6 @@ describe('the carry-off command', () => {
       return undefined
     })
 
-    const { takeBackupNow } = await import('../src/core/backup')
     await takeBackupNow(db, '2026-03-04.zip', new Date('2026-03-04T09:00:00'))
 
     // Not awaited by `takeBackupNow`, so the record lands on a later tick.
@@ -167,7 +168,7 @@ describe('the carry-off command', () => {
   })
 })
 
-describe('the daily timer', () => {
+describe('the 02:00 count the stock replay keeps', () => {
   it('counts to the next 02:00 in local time, not UTC', () => {
     // 02:00 IST is 20:30 the previous day in UTC. A schedule computed on the
     // UTC hour would fire in the middle of the evening rush.
@@ -176,29 +177,159 @@ describe('the daily timer', () => {
     expect(msUntilHour(2, new Date('2026-03-04T02:01:00'))).toBe(24 * 3_600_000 - 60_000)
     expect(msUntilHour(2, new Date('2026-03-04T21:30:00'))).toBe(4.5 * 3_600_000)
   })
+})
 
-  it('fires for a machine that is never switched off, and re-arms', async () => {
+/** A backups folder in memory: `backup_write_zip` adds to it, `backup_list` reads it. */
+function folder(fail?: (call: number) => string | null) {
+  const written: string[] = []
+  let writes = 0
+  invoke.mockImplementation(async (cmd: string, args?: { name?: string }) => {
+    if (cmd === 'backup_list') return written.map((name) => ({ name, size: 1 }))
+    if (cmd === 'backup_write_zip') {
+      const said = fail?.(++writes) ?? null
+      if (said) throw said
+      written.push(args!.name!)
+    }
+    return undefined
+  })
+  return written
+}
+
+describe('the backup timer', () => {
+  it('backs up at once, and again each time the schedule comes round', async () => {
     vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-03-04T01:59:00'))
-    invoke.mockImplementation(async (name: string) => {
-      if (name === 'backup_list') return []
+    vi.setSystemTime(new Date('2026-03-04T01:58:00'))
+    const written = folder()
+
+    const results: unknown[] = []
+    const stop = startBackupTimer(db, (r) => results.push(r))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(written).toEqual(['shop-2026-03-04-0158.zip'])
+
+    // 02:00 is a new slot, and 01:58 is before it.
+    await vi.advanceTimersByTimeAsync(2 * TICK_MS)
+    expect(written).toEqual(['shop-2026-03-04-0158.zip', 'shop-2026-03-04-0200.zip'])
+
+    // And the next night -- the bug being guarded against is a timer that
+    // fires once and is never re-armed, which looks identical for 24 hours.
+    await vi.advanceTimersByTimeAsync(24 * 3_600_000)
+    expect(written).toHaveLength(3)
+
+    stop()
+    await vi.advanceTimersByTimeAsync(48 * 3_600_000)
+    expect(written).toHaveLength(3)
+  })
+
+  it('follows a schedule changed while it runs, without being told', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-04T09:30:00'))
+    const written = folder()
+
+    const stop = startBackupTimer(db, () => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(written).toEqual(['shop-2026-03-04-0930.zip'])
+
+    deviceSettings.set(EVERY_SETTING, '3')
+    deviceSettings.set(AT_SETTING, '00:00')
+    // 09:00 is the slot now, and the 09:30 backup already covers it.
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(written).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(150 * 60_000)
+    expect(written).toEqual(['shop-2026-03-04-0930.zip', 'shop-2026-03-04-1200.zip'])
+    stop()
+  })
+
+  it('tries again the next minute, and says nothing, when a bill was being saved', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-04T09:30:00'))
+    const written = folder((n) => (n === 1 ? 'cannot back up while a transaction is open' : null))
+
+    const results: Array<{ error: string | null }> = []
+    const stop = startBackupTimer(db, (r) => results.push(r))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(written).toEqual([])
+    expect(results).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(written).toEqual(['shop-2026-03-04-0931.zip'])
+    expect(results.map((r) => r.error)).toEqual([null])
+    stop()
+  })
+
+  it('reports a real failure, and tries again after a while rather than every minute', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-04T09:30:00'))
+    const written = folder((n) => (n === 1 ? 'disk full' : null))
+
+    const results: Array<{ error: string | null }> = []
+    const stop = startBackupTimer(db, (r) => results.push(r))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(results.map((r) => r.error)).toEqual(['disk full'])
+
+    await vi.advanceTimersByTimeAsync(RETRY_MS - TICK_MS)
+    expect(written).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(TICK_MS)
+    expect(written).toHaveLength(1)
+    expect(results.at(-1)?.error).toBeNull()
+    stop()
+  })
+})
+
+describe('the folder every backup is copied into', () => {
+  it('gets each backup as soon as it is written, and says where it went', async () => {
+    deviceSettings.set(FOLDER_SETTING, 'G:\\My Drive\\ShopOS backups')
+    invoke.mockImplementation(async (cmd: string, args?: { name?: string }) => {
+      if (cmd === 'backup_copy_out') return `G:\\My Drive\\ShopOS backups\\${args!.name}`
+      if (cmd === 'backup_folder_list') return []
       return undefined
     })
 
-    const results: unknown[] = []
-    const stop = startDailyBackupTimer(db, (r) => results.push(r))
+    await takeBackupNow(db, 'shop-2026-03-04-0200.zip', new Date('2026-03-04T02:00:00'))
 
-    await vi.advanceTimersByTimeAsync(60_000 + 10)
-    expect(results).toHaveLength(1)
+    expect(invoke).toHaveBeenCalledWith('backup_copy_out', { name: 'shop-2026-03-04-0200.zip' })
+    await vi.waitFor(() => expect(lastCopyRun()?.ok).toBe(true))
+    expect(lastCopyRun()?.output).toContain('shop-2026-03-04-0200.zip')
+  })
 
-    // And again the next night — the bug being guarded against is a timer that
-    // fires once and is never re-armed, which looks identical for 24 hours.
-    await vi.advanceTimersByTimeAsync(24 * 3_600_000)
-    expect(results.length).toBeGreaterThanOrEqual(2)
+  it('is not copied to when no folder is chosen', async () => {
+    invoke.mockResolvedValue(undefined)
+    await takeBackupNow(db, 'shop-2026-03-04-0200.zip', new Date('2026-03-04T02:00:00'))
+    expect(invoke).not.toHaveBeenCalledWith('backup_copy_out', expect.anything())
+  })
 
-    stop()
-    const after = results.length
-    await vi.advanceTimersByTimeAsync(48 * 3_600_000)
-    expect(results).toHaveLength(after)
+  /* The stick that is not plugged in, the Drive app that is not running. */
+  it('records a copy that failed where the Backups card can read it', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'backup_copy_out') throw 'G:\\My Drive is not there.'
+      return undefined
+    })
+
+    const run = await recordCopyRun('shop-2026-03-04-0200.zip')
+
+    expect(run.ok).toBe(false)
+    expect(lastCopyRun()).toMatchObject({ ok: false, output: 'G:\\My Drive is not there.' })
+  })
+
+  it('keeps the copies there for as long as the ones here, and no longer', async () => {
+    const there = [
+      ...Array.from({ length: 15 }, (_, i) => `shop-2026-02-${String(i + 1).padStart(2, '0')}-0200.zip`),
+      'shop-2026-03-04-0200.zip',
+      'my-own-notes.zip',
+    ]
+    const deleted: string[] = []
+    invoke.mockImplementation(async (cmd: string, args?: { name?: string }) => {
+      if (cmd === 'backup_copy_out') return 'ok'
+      if (cmd === 'backup_folder_list') return there.map((name) => ({ name, size: 1 }))
+      if (cmd === 'backup_folder_delete') deleted.push(args!.name!)
+      return undefined
+    })
+
+    await recordCopyRun('shop-2026-03-04-0200.zip', new Date('2026-03-04T02:00:00'))
+
+    // Sixteen days there, fourteen kept: the two oldest go, and a file it did
+    // not write is not its to touch.
+    expect(deleted).toEqual(['shop-2026-02-01-0200.zip', 'shop-2026-02-02-0200.zip'])
   })
 })

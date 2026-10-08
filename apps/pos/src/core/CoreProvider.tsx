@@ -11,7 +11,7 @@ import {
 } from './device'
 import { MIGRATIONS, staleBuild } from './migrations'
 import { settleRestore } from './restoreHold'
-import { runDailyBackup, startDailyBackupTimer, takeUpgradeCopy, type DailyResult } from './backup'
+import { startBackupTimer, takeUpgradeCopy, type BackupResult } from './backup'
 import { runStockCheck, startMaintenanceTimer } from './maintenance'
 import { serveIfPaired, servingOn } from './syncHost'
 import { syncFetch } from './syncFetch'
@@ -184,7 +184,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   const [rounding, setRound] = useState<Rounding>(ROUNDING_DEFAULT)
   const [taxScheme, setScheme] = useState<TaxScheme>('regular')
   const [taxSchemeAsked, setSchemeAsked] = useState(true)
-  const [backup, setBackup] = useState<DailyResult | null>(null)
+  const [backup, setBackup] = useState<BackupResult | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -239,14 +239,9 @@ export function CoreProvider({ children }: { children: ReactNode }) {
         // After the counter is usable, never in front of it. A shop opening for
         // the day waits for nothing, and a backup that fails is reported on the
         // Settings screen and by a dot in the top bar rather than blocking the
-        // till.
-        void runDailyBackup(db).then((result) => {
-          if (!cancelled) setBackup(result)
-        })
-
-        // And again at 02:00, for the machines that are never switched off.
-        // `backup.ts` carries why once-per-opening was not enough on its own.
-        stopBackupTimer = startDailyBackupTimer(db, (result) => {
+        // till. The timer's first look is now; after that it follows the
+        // schedule chosen on this machine, 02:00 once a day unless changed.
+        stopBackupTimer = startBackupTimer(db, (result) => {
           if (!cancelled) setBackup(result)
         })
 

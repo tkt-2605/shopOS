@@ -220,8 +220,17 @@ pub fn backup_kind(name: &str) -> Option<Kind> {
         if let Some(date) = rest.strip_suffix(".db") {
             return is_date(date).then_some(Kind::Daily);
         }
-        if let Some(date) = rest.strip_suffix(".zip") {
-            return is_date(date).then_some(Kind::DailyZip);
+        if let Some(stem) = rest.strip_suffix(".zip") {
+            // `yyyy-mm-dd`, or `yyyy-mm-dd-hhmm` since the schedule could ask
+            // for more than one a day. ASCII-checked before any byte slicing.
+            if !stem.is_ascii() {
+                return None;
+            }
+            let timed = stem.len() == 15
+                && is_date(&stem[..10])
+                && stem.as_bytes()[10] == b'-'
+                && stem[11..].bytes().all(|b| b.is_ascii_digit());
+            return (is_date(stem) || timed).then_some(Kind::DailyZip);
         }
         return None;
     }
@@ -342,7 +351,22 @@ mod tests {
     fn accepts_only_the_three_shapes() {
         assert!(backup_kind("shop-2026-09-13.db").is_some());
         assert!(backup_kind("shop-2026-09-13.zip").is_some());
+        assert!(backup_kind("shop-2026-09-13-0905.zip").is_some());
         assert!(backup_kind("before-restore-2026-09-13-0905.db").is_some());
+    }
+
+    #[test]
+    fn a_backup_named_by_the_minute_is_an_archive_and_nothing_looser() {
+        for name in [
+            "shop-2026-09-13-0905.db",
+            "shop-2026-09-13-905.zip",
+            "shop-2026-09-13-09055.zip",
+            "shop-2026-09-13_0905.zip",
+            "shop-2026-09-13-09é.zip",
+            "shop-2026-09-13-../a.zip",
+        ] {
+            assert!(backup_kind(name).is_none(), "{name} should be refused");
+        }
     }
 
     #[test]

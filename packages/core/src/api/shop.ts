@@ -49,7 +49,7 @@ export type {
   Attachment, AttachmentEntity, StoredFile, AttachInput, CarriedFile, RemovalResult,
 } from '../services/attachments.js'
 export * as Backup from '../services/backup.js'
-export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind } from '../services/backup.js'
+export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind, BackupSchedule, BackupEvery } from '../services/backup.js'
 export { applyUpgrades } from '../services/upgrade.js'
 export {
   TIERS, isTier, GRACE_DAYS, GATED, verifyToken, readTokenUnverified, stateOf,

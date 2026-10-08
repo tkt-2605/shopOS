@@ -2,22 +2,30 @@ import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting, setDeviceSetting } from './device'
 import { logEvent } from './log'
 import { appVersion } from './version'
+import { FOLDER_SETTING, recordCopyRun } from './backupFolder'
 import {
   Backup, attachmentsToCarry, CARRY_WINDOW_DAYS,
-  type BackupFile, type BackupEntry, type SqlDriver,
+  type BackupFile, type BackupEntry, type BackupSchedule, type SqlDriver,
 } from '@shopos/core'
 
 export type { BackupFile, BackupEntry }
 
 /**
- * Archives, not bare database files.
- *
- * A `.zip` holds the database and — once they exist — the photographs attached to
- * bills and stock entries, so there is one file to carry off the machine and no
- * way to take the ledger without its evidence. Shops upgrading from v1 keep a
- * folder of `.db` files, which stay listable, prunable and restorable.
+ * How often this machine backs up, and from when. Held on this machine and not
+ * in the shop's database: a till that is switched off at night and one that
+ * never is want different answers, and they are the same shop.
  */
-const FORMAT = 'zip' as const
+export const EVERY_SETTING = 'backup_every'
+export const AT_SETTING = 'backup_at'
+
+export function backupSchedule(): BackupSchedule {
+  return Backup.parseSchedule(deviceSetting(EVERY_SETTING), deviceSetting(AT_SETTING))
+}
+
+/** When the timer will next look, for the screen to say. */
+export function nextBackupAt(now = new Date()): Date {
+  return Backup.nextSlot(backupSchedule(), now)
+}
 
 /**
  * An unreadable backup folder is not an empty one.
@@ -214,27 +222,28 @@ async function carryList(db: SqlDriver, now: Date): Promise<string[]> {
 }
 
 /**
- * Takes one backup and, if the shop has configured one, hands it to the command
- * that carries it off the machine.
+ * Takes one backup and, if this machine has them, hands it to the folder it is
+ * copied into and to the command that carries it off.
  *
- * The hook is fired and not waited for: an upload takes as long as the shop's
- * connection takes, and neither the counter nor this screen may wait on it.
+ * Neither is waited for: a stick can be slow and an upload takes as long as the
+ * shop's connection takes, and neither the counter nor this screen may wait.
  */
 export async function takeBackupNow(
   db: SqlDriver,
-  name: string,
+  name: string = Backup.backupStampName(),
   now = new Date(),
 ): Promise<{ attachments: number }> {
   const carry = await carryList(db, now)
   await takeBackup(name, now, carry)
 
+  if (deviceSetting(FOLDER_SETTING)) void recordCopyRun(name, now)
   const command = deviceSetting(HOOK_SETTING)?.trim()
   if (command) void recordHookRun(command, name)
 
   return { attachments: carry.length }
 }
 
-export interface DailyResult {
+export interface BackupResult {
   created: string | null
   pruned: string[]
   /** How many photographs the archive carries, for saying so on the screen. */
@@ -243,22 +252,16 @@ export interface DailyResult {
 }
 
 /**
- * Runs at startup **and** on a timer.
+ * Takes a backup if one is due by this machine's schedule, and prunes.
  *
- * Once-per-opening was right, and was right for the reason `backup.ts` gave: a
- * shop machine is switched on in the morning and off at night, so "once a day"
- * and "once per opening" are the same thing. What it missed is the shops where
- * they are not — the counter PC that is never switched off, the till left
- * running across a weekend, the machine that only gets restarted when Windows
- * insists. Those took one backup on whatever morning they were last started
- * and then none, for as long as they stayed up, with the Backup card showing a
- * perfectly healthy list that simply stopped growing.
- *
- * So both: this on open, and `startDailyBackupTimer` at 02:00 — an hour when
- * the shutters are down everywhere, and the one moment a VACUUM INTO over the
- * whole database cannot land in the middle of a queue at the counter.
+ * Once-per-opening was right for a machine switched on in the morning and off
+ * at night, and wrong for the counter PC that is never switched off: it took
+ * one backup on whatever morning it was last started and then none, with the
+ * Backup card showing a healthy list that simply stopped growing. So the timer
+ * calls this too, and "due" is decided by the schedule rather than by whether
+ * the app was opened.
  */
-export async function runDailyBackup(db: SqlDriver, now = new Date()): Promise<DailyResult> {
+export async function runScheduledBackup(db: SqlDriver, now = new Date()): Promise<BackupResult> {
   let existing: BackupFile[]
   try {
     existing = await listBackups()
@@ -270,7 +273,7 @@ export async function runDailyBackup(db: SqlDriver, now = new Date()): Promise<D
     return { created: null, pruned: [], attachments: 0, error: backupFolderProblem(err) }
   }
 
-  const plan = Backup.planBackup(existing, now, Backup.KEEP_DAILY, FORMAT)
+  const plan = Backup.planBackup(existing, now, backupSchedule())
   if (!plan.create) return { created: null, pruned: [], attachments: 0, error: null }
 
   let carried = 0
@@ -352,18 +355,14 @@ export async function beforeUpdateCopy(): Promise<string | null> {
   return takeUpgradeCopy(Backup.beforeUpdateName(running?.version ?? '0.0.0'))
 }
 
-export function todaysBackupName(now = new Date()): string {
-  return Backup.backupFileName(now, FORMAT)
-}
-
-/** 02:00 local. The shutters are down and nobody is mid-bill. */
+/** 02:00 local. The shutters are down and nobody is mid-bill. The stock replay keeps it. */
 export const DAILY_BACKUP_HOUR = 2
 
 /**
  * Milliseconds from `now` to the next `hour:00` local time.
  *
  * Local, via `setHours`, and never UTC arithmetic: 02:00 IST is 20:30 the
- * previous day in UTC, and a backup scheduled by UTC hour would fire in the
+ * previous day in UTC, and a job scheduled by UTC hour would fire in the
  * middle of the evening rush.
  */
 export function msUntilHour(hour: number, now = new Date()): number {
@@ -373,43 +372,69 @@ export function msUntilHour(hour: number, now = new Date()): number {
   return next.getTime() - now.getTime()
 }
 
+/** How often the timer looks at the clock. */
+export const TICK_MS = 60_000
+
+/** How long after a failed backup the timer tries again. */
+export const RETRY_MS = 10 * 60_000
+
 /**
- * Fires `runDailyBackup` at the next 02:00 and every 02:00 after, for as long
- * as the app is running. Returns the stop.
- *
- * Re-armed with a fresh `setTimeout` after each run rather than a 24 h
- * `setInterval`, because the two disagree the moment the machine's clock is
- * corrected — and a till whose clock was wrong is exactly the till somebody has
- * just been fixing. Recomputing from the current time each round means the next
- * backup is at the next real 02:00, not 24 h after a timestamp that has since
- * been moved.
+ * The one failure that is not a failure: a bill was being saved at that
+ * second. `vacuum_into` refuses rather than copy half a transaction, and the
+ * right answer is the next minute, not a red dot in the top bar.
  */
-export function startDailyBackupTimer(
+const MID_BILL = /transaction is open/
+
+/**
+ * Looks at the clock now and every minute after, and backs up whenever the
+ * schedule's latest slot has changed since it last looked. Returns the stop.
+ *
+ * A tick rather than a timeout aimed at the next slot. The schedule can be
+ * changed from Settings at any minute, a laptop till sleeps through the slot
+ * it was aimed at, and a clock that is corrected moves every slot at once;
+ * a tick that asks "which slot is it now" gets all three right without being
+ * told about any of them. "Changed" rather than "later" for the clock: a
+ * clock wound back a day must look again, not wait until it catches up.
+ *
+ * The first look is immediate, and is the backup taken when the shop opens.
+ * After the counter is usable, never in front of it -- the caller starts this
+ * once the till is ready.
+ */
+export function startBackupTimer(
   db: SqlDriver,
-  report: (result: DailyResult) => void,
-  hour = DAILY_BACKUP_HOUR,
+  report: (result: BackupResult) => void,
 ): () => void {
-  let timer: ReturnType<typeof setTimeout> | null = null
+  let handled: number | null = null
+  let retryAt = 0
+  let running = false
   let stopped = false
 
-  function arm() {
-    if (stopped) return
-    timer = setTimeout(() => {
-      void runDailyBackup(db)
-        .then(report)
-        .catch((err: unknown) => {
-          report({
-            created: null, pruned: [], attachments: 0,
-            error: typeof err === 'string' ? err : 'Backup failed.',
-          })
-        })
-        .finally(arm)
-    }, msUntilHour(hour))
+  function look() {
+    if (running || stopped) return
+    const now = new Date()
+    const slot = Backup.lastSlot(backupSchedule(), now).getTime()
+    if (slot === handled || now.getTime() < retryAt) return
+
+    running = true
+    void runScheduledBackup(db, now)
+      .catch((err: unknown): BackupResult => ({
+        created: null, pruned: [], attachments: 0,
+        error: typeof err === 'string' ? err : 'Backup failed.',
+      }))
+      .then((result) => {
+        if (stopped) return
+        if (result.error && MID_BILL.test(result.error)) return
+        report(result)
+        if (result.error) retryAt = now.getTime() + RETRY_MS
+        else handled = slot
+      })
+      .finally(() => { running = false })
   }
 
-  arm()
+  look()
+  const timer = setInterval(look, TICK_MS)
   return () => {
     stopped = true
-    if (timer) clearTimeout(timer)
+    clearInterval(timer)
   }
 }

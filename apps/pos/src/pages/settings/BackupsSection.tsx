@@ -4,9 +4,14 @@ import { deviceSetting, setDeviceSetting } from '../../core/device'
 import { useCore } from '../../core/CoreProvider'
 import {
   describeBackups, takeBackupNow, deleteBackup, copyBackup, chooseFolder,
-  todaysBackupName, recordHookRun, lastHookRun, onHookResult,
+  recordHookRun, lastHookRun, onHookResult,
   backupFolderProblem, upgradeCopyFailure, HOOK_SETTING, type BackupEntry, type HookRun,
+  backupSchedule, nextBackupAt, EVERY_SETTING, AT_SETTING,
 } from '../../core/backup'
+import {
+  FOLDER_SETTING, recordCopyRun, lastCopyRun, onCopyResult, forgetCopyRun, cloudFolders, makeCloudFolder,
+  type CopyRun, type CloudFolder,
+} from '../../core/backupFolder'
 import { lastRestore, inspectBackup, type RestoreReport, type RestoreCheck } from '../../core/restore'
 import { Card, Field, Alert } from '../../ui/components'
 import { FreeGhostClaims } from '../../ui/FreeGhostClaims'
@@ -22,7 +27,10 @@ export function BackupsSection() {
   const [checking, setChecking] = useState<string | null>(null)
   const [checked, setChecked] = useState<Record<string, CheckResult>>({})
   const [restore, setRestore] = useState<RestoreReport>({ restored: null, error: null })
-  const [copyTo, setCopyTo] = useState(() => deviceSetting('backup_folder') ?? '')
+  const [copyTo, setCopyTo] = useState(() => deviceSetting(FOLDER_SETTING) ?? '')
+  const [copyRun, setCopyRun] = useState<CopyRun | null>(lastCopyRun)
+  const [clouds, setClouds] = useState<CloudFolder[]>([])
+  const [schedule, setSchedule] = useState(backupSchedule)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -36,6 +44,8 @@ export function BackupsSection() {
   // The automatic run finishes long after this screen was opened -- or long
   // before it. Both: read what is stored on mount, and listen for the next one.
   useEffect(() => onHookResult(setHookRun), [])
+  useEffect(() => onCopyResult(setCopyRun), [])
+  useEffect(() => { void cloudFolders().then(setClouds) }, [])
   useEffect(() => { void lastRestore().then(setRestore) }, [])
 
   const refresh = useCallback(async () => {
@@ -70,11 +80,11 @@ export function BackupsSection() {
   }
 
   const backupNow = () => working('The backup could not be written', async () => {
-    const { attachments } = await takeBackupNow(db, todaysBackupName())
+    const { attachments } = await takeBackupNow(db)
     await refresh()
     say(attachments === 0
-      ? 'Saved today’s backup.'
-      : `Saved today’s backup, with ${attachments} ${attachments === 1 ? 'photo' : 'photos'}.`)
+      ? 'Saved a backup.'
+      : `Saved a backup, with ${attachments} ${attachments === 1 ? 'photo' : 'photos'}.`)
   })
 
   const copyOut = (name: string) => working('That backup could not be copied', async () => {
@@ -103,16 +113,37 @@ export function BackupsSection() {
     }
   }
 
-  async function pickFolder(clear = false) {
-    if (clear) {
-      setCopyTo('')
-      await setDeviceSetting('backup_folder', null)
+  /**
+   * Saves the folder and, when there is one, copies the newest backup into it
+   * straight away -- so the shopkeeper sees the copy land, or sees why it did
+   * not, while they are still on this screen rather than at 02:00.
+   */
+  async function useFolder(folder: string | null) {
+    setCopyTo(folder ?? '')
+    if (!(await setDeviceSetting(FOLDER_SETTING, folder))) {
+      setCopyTo(deviceSetting(FOLDER_SETTING) ?? '')
       return
     }
+    await forgetCopyRun()
+    const newest = backups.find((b) => b.kind === 'daily')
+    if (folder && newest) await recordCopyRun(newest.name)
+  }
+
+  async function pickFolder(clear = false) {
+    if (clear) { await useFolder(null); return }
     const folder = await chooseFolder()
-    if (!folder) return
-    setCopyTo(folder)
-    await setDeviceSetting('backup_folder', folder)
+    if (folder) await useFolder(folder)
+  }
+
+  const useCloud = (root: string) => working('That folder could not be made', async () => {
+    await useFolder(await makeCloudFolder(root))
+  })
+
+  async function changeSchedule(every: string, at: string) {
+    await setDeviceSetting(EVERY_SETTING, every)
+    await setDeviceSetting(AT_SETTING, at)
+    // The timer reads these on its next look; nothing to restart.
+    setSchedule(backupSchedule())
   }
 
   async function testHook() {
@@ -138,11 +169,37 @@ export function BackupsSection() {
   return (
     <>
       <Intro>
-        One backup is taken automatically each day — when the shop opens, and again at
-        2 a.m. for a machine that is never switched off — and the last {Backup.KEEP_DAILY} are
-        kept. Each holds the whole shop: bills, stock, payments and customers. Photographs
-        attached to documents are carried for the last {CARRY_WINDOW_DAYS} days.
+        Backups are taken automatically — when the shop opens, and on the schedule below
+        for as long as this machine stays on. The last {Backup.KEEP_DAILY} days are kept:
+        every backup from today, and the last one of each earlier day. Each holds the whole
+        shop: bills, stock, payments and customers. Photographs attached to documents are
+        carried for the last {CARRY_WINDOW_DAYS} days.
       </Intro>
+
+      <Card title="When to back up">
+        <div style={{ display: 'flex', gap: 11, flexWrap: 'wrap' }}>
+          <Field label="How often">
+            <select
+              className="select" id="backup-every" value={schedule.every}
+              onChange={(e) => void changeSchedule(e.target.value, Backup.formatClock(schedule.at))}
+            >
+              {Backup.BACKUP_EVERY.map((h) => <option key={h} value={h}>{everyWords(h)}</option>)}
+            </select>
+          </Field>
+          <Field label={schedule.every === 24 ? 'At' : 'Starting at'}>
+            <input
+              className="input" id="backup-at" type="time" value={Backup.formatClock(schedule.at)}
+              onChange={(e) => { if (e.target.value) void changeSchedule(String(schedule.every), e.target.value) }}
+            />
+          </Field>
+        </div>
+        <div className="settings-group-why">
+          {schedule.every === 24
+            ? `Next backup ${whenNext(nextBackupAt())}, if this machine is on; otherwise as soon as it is switched on.`
+            : `At ${Backup.slotsOfDay(schedule).map(Backup.formatClock).join(', ')}. Next ${whenNext(nextBackupAt())}.`}
+          {schedule.every < 24 && ' Each backup pauses this till for a moment while it is written, so a large shop may prefer a time between rushes.'}
+        </div>
+      </Card>
 
       <Card
         title="Backups on this machine"
@@ -221,8 +278,8 @@ export function BackupsSection() {
 
       <Card title="Keep a copy somewhere else">
         <Field
-          label="Copy backups to"
-          hint="A USB stick, or a folder your Drive or OneDrive app syncs — that is an offsite copy without ShopOS ever going online."
+          label="Copy every backup to"
+          hint="Each backup is copied here the moment it is written. Choose a folder your Google Drive or OneDrive app syncs and it goes off this machine without ShopOS ever going online — or a USB stick that stays plugged in."
         >
           <div style={{ display: 'flex', gap: 6 }}>
             <input className="input" id="backup-folder" readOnly value={copyTo} placeholder="Not chosen"
@@ -231,6 +288,36 @@ export function BackupsSection() {
             {copyTo && <button className="btn ghost" type="button" onClick={() => void pickFolder(true)}>Clear</button>}
           </div>
         </Field>
+
+        {/* The setup a shopkeeper can actually do: install Drive, sign in, press this. */}
+        {clouds.filter((c) => c.target !== copyTo).length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 11 }}>
+            {clouds.filter((c) => c.target !== copyTo).map((c) => (
+              <button key={c.root} className="btn sm" type="button" disabled={busy} title={c.target}
+                onClick={() => void useCloud(c.root)}>
+                Use {c.label} ({c.root})
+              </button>
+            ))}
+          </div>
+        )}
+        {clouds.length === 0 && !copyTo && (
+          <div className="settings-group-why" style={{ marginBottom: 11 }}>
+            No Google Drive or OneDrive folder was found on this machine. Install Google Drive for
+            desktop and sign in, then come back here — a button to use it will appear.
+          </div>
+        )}
+
+        {/* The last copy, which happened after a backup nobody watched. A stick
+            left at home or a Drive app that stopped must not look like silence. */}
+        {copyTo && copyRun && (
+          <div style={{ marginBottom: 11 }}>
+            <Alert kind={copyRun.ok ? 'ok' : 'bad'}>
+              {copyRun.ok
+                ? `Last copied ${whenWas(copyRun.at)} to ${copyRun.output}`
+                : `Could not copy ${whenWas(copyRun.at)}: ${copyRun.output}`}
+            </Alert>
+          </div>
+        )}
 
         <Field
           label="Run after each backup"
@@ -302,6 +389,18 @@ function BackupVerdict({ result }: { result: CheckResult }) {
       {result.warning && <Alert kind="warn">{result.warning}</Alert>}
     </div>
   )
+}
+
+function everyWords(hours: number): string {
+  if (hours === 24) return 'Once a day'
+  if (hours === 1) return 'Every hour'
+  return `Every ${hours} hours`
+}
+
+/** "at 14:00 today", "at 02:00 tomorrow". */
+function whenNext(at: Date): string {
+  const time = at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return at.toDateString() === new Date().toDateString() ? `at ${time} today` : `at ${time} tomorrow`
 }
 
 function formatSize(bytes: number): string {
