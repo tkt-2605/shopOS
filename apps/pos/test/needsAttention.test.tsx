@@ -8,8 +8,8 @@ import type { Discrepancy } from '@shopos/core'
  * What is found is proved against real tills in core
  * (`discrepancies.test.ts`). What is asserted here is the telling: that it
  * shows to someone who can act and not to someone who cannot, that it names
- * the money, that "Seen" is remembered, and that a shop with nothing wrong is
- * told so rather than shown an empty box.
+ * the money, that a cleared one leaves the list and can be shown again, and
+ * that a shop with nothing wrong is told so rather than shown an empty box.
  */
 
 type Row = Discrepancy & { seen: boolean }
@@ -73,14 +73,28 @@ describe('the banner', () => {
 })
 
 describe('the list', () => {
-  it('shows each with what to do, and remembers one marked seen', async () => {
+  it('shows each with what to do, and takes one cleared off the list', async () => {
     render(<><DiscrepancyBanner canReview /><NeedsAttention /></>)
     await screen.findByText('Rice 25kg is below zero')
     expect(screen.getByText(/CMR\/2627\/00001 · CFC\/2627\/00001/)).toBeTruthy()
 
-    fireEvent.click(screen.getAllByText('Seen')[0]!)
+    fireEvent.click(screen.getAllByText('Clear')[0]!)
     await waitFor(() => expect(marked).toEqual([[refund.key]]))
     await screen.findByText(/One thing in the shop’s records does not add up/)
+    expect(screen.queryByText(refund.title)).toBeNull()
+
+    fireEvent.click(screen.getByText('Show 1 cleared'))
+    expect(screen.getByText(refund.title)).toBeTruthy()
+    expect(screen.getByText('cleared')).toBeTruthy()
+  })
+
+  it('clears them all at once, and says nothing is new', async () => {
+    render(<NeedsAttention />)
+    await screen.findByText('Rice 25kg is below zero')
+    fireEvent.click(screen.getByText('Clear all'))
+    await screen.findByText('Nothing new')
+    expect(marked).toEqual([[refund.key, below.key]])
+    expect(screen.getByText('Show 2 cleared')).toBeTruthy()
   })
 
   it('says everything adds up when nothing is wrong', async () => {

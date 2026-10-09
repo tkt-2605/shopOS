@@ -208,7 +208,9 @@ with what to do and the money at stake:
 The till asks at start and after every sync round that brought something in
 (`core/discrepancyWatch.ts`). A banner on every screen, for whoever may open the
 dashboard, says how many and the money; the dashboard's "Needs attention" lists
-each with a Seen button. Seen is kept per till (067, `discrepancies_seen`,
-which never travels) and per set of facts: a new refund of the same line, or a
+each with a Clear button, which takes it off the list (a toggle shows cleared
+ones again; some, like a past double refund, never stop being true, so a list
+of everything still true only grew). Cleared is kept per till (067,
+`discrepancies_seen`, which never travels) and per set of facts: a new refund of the same line, or a
 new document out of the books, is told again. A clean month of trade reports
 nothing. `discrepancies.test.ts`, `needsAttention.test.tsx`.
