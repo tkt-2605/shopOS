@@ -317,3 +317,38 @@ describe('two counters billing at once', () => {
     expect(list.every((r) => r.hasOpenSession)).toBe(true)
   })
 })
+
+describe('a till makes its own counter', () => {
+  it('computes the same prefix for the same machine and a different one for another', async () => {
+    const { prefixFor } = await import('../src/services/registers.js')
+    const a = newId(), b = newId()
+    expect(prefixFor(a)).toBe(prefixFor(a))
+    expect(prefixFor(a)).toMatch(/^[A-Z0-9]{4}$/)
+    expect(prefixFor(a)).not.toBe(prefixFor(b))
+  })
+
+  it('makes one, claims it, and returns the same one next time', async () => {
+    const { ensureOwnRegister, prefixFor } = await import('../src/services/registers.js')
+    const me = newId()
+    const id = await ensureOwnRegister(fx.db, me)
+    expect(id).not.toBeNull()
+    expect(await ensureOwnRegister(fx.db, me)).toBe(id)
+    const mine = (await listRegisters(fx.db)).find((r) => r.id === id)
+    expect(mine?.prefix).toBe(prefixFor(me))
+    expect(await listRegisters(fx.db)).toHaveLength(2)
+  })
+
+  it('moves to the next stem when the shop already has this one', async () => {
+    const { ensureOwnRegister, prefixFor } = await import('../src/services/registers.js')
+    const me = newId()
+    await createRegister(fx.db, { name: 'Typed', prefix: prefixFor(me), actorId: fx.adminId })
+    const id = await ensureOwnRegister(fx.db, me)
+    const mine = (await listRegisters(fx.db)).find((r) => r.id === id)
+    expect(mine?.prefix).toBe(prefixFor(me, 1))
+  })
+
+  it('does nothing for a machine that cannot say who it is', async () => {
+    const { ensureOwnRegister } = await import('../src/services/registers.js')
+    expect(await ensureOwnRegister(fx.db, null)).toBeNull()
+  })
+})

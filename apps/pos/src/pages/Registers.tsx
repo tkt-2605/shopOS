@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  listRegisters, createRegister, renameRegister, setRegisterActive,
+  listRegisters, renameRegister, setRegisterActive,
   resolveDeviceRegister, countersOtherTillsUse, takeRegister,
   type Register, type CounterTaken,
 } from '@shopos/core'
 import { chosenRegister } from '../core/device'
 import { takeCounter } from '../core/counters'
 import { useCore, useUser } from '../core/CoreProvider'
-import { Card, Modal, Field, Empty, Alert } from '../ui/components'
+import { Card, Empty, Alert } from '../ui/components'
 import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
 import { ago } from '../core/syncStatus'
@@ -18,7 +18,6 @@ export default function Registers() {
   const [confirmUi, ask] = useConfirm()
   const [rows, setRows] = useState<Register[]>([])
   const [deviceId, setDeviceId] = useState<string | null>(null)
-  const [adding, setAdding] = useState<{ name: string; prefix: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -43,22 +42,6 @@ export default function Registers() {
   useEffect(() => { void refresh() }, [refresh])
   // And again whenever the other till sends something this list shows.
   useShopChanged(refresh)
-
-  async function add() {
-    if (!adding) return
-    setError(null)
-    const result = await createRegister(db, { name: adding.name, prefix: adding.prefix, actorId: user.id })
-    if (!result.ok) {
-      setError(
-        result.code === 'PREFIX_TAKEN' ? `${result.prefix} is already used by another counter. Every counter needs its own, or two tills will print the same bill number.`
-        : result.code === 'NAME_TAKEN' ? 'A counter with that name already exists.'
-        : 'A prefix is 2 to 4 letters or digits, like FC or TIL2. Bill numbers are capped at 16 characters by GST rules, and the prefix is part of every one.',
-      )
-      return
-    }
-    setAdding(null)
-    await refresh()
-  }
 
   async function useHere(id: string) {
     setError(null)
@@ -184,13 +167,11 @@ export default function Registers() {
         </Alert>
       )}
 
-      <Card
-        title="Counters"
-        actions={<button className="btn primary sm" onClick={() => setAdding({ name: '', prefix: '' })}>Add counter</button>}
-      >
+      <Card title="Counters">
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
-          Each counter has its own bill number series and its own cash drawer. The prefix
-          is fixed once bills carry it.
+          Each till makes its own counter the first time it starts, with a bill prefix
+          worked out from the machine itself. It is never typed and never changes, so
+          two tills cannot end up with the same one.
         </div>
 
         <div className="card card-scroll">
@@ -284,30 +265,6 @@ export default function Registers() {
           </table>
         </div>
       </Card>
-
-      {adding && (
-        <Modal
-          title="Add a counter"
-          onClose={() => setAdding(null)}
-          footer={<>
-            <button className="btn" onClick={() => setAdding(null)}>Cancel</button>
-            <button className="btn primary" disabled={adding.name.trim() === '' || adding.prefix.trim() === ''}
-              onClick={() => void add()}>Add</button>
-          </>}
-        >
-          <Field label="Name">
-            <input className="input" id="reg-name" autoFocus value={adding.name}
-              onChange={(e) => setAdding({ ...adding, name: e.target.value })} placeholder="Front Counter" />
-          </Field>
-          <Field label="Bill prefix" hint="2–6 letters or digits. Appears in every bill number from this counter and cannot change later.">
-            <input className="input num" id="reg-prefix" value={adding.prefix}
-              onChange={(e) => setAdding({ ...adding, prefix: e.target.value.toUpperCase() })} placeholder="FC" />
-          </Field>
-          <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-            Bills will read <span className="num">INV/{adding.prefix || 'FC'}/26-27/00001</span>.
-          </div>
-        </Modal>
-      )}
     </div>
   )
 }

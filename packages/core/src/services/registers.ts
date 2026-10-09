@@ -12,6 +12,7 @@
 
 export { createRegister, listRegisters, renameRegister, setRegisterActive } from './registers/counters.js'
 export type { Register, RegisterResult } from './registers/counters.js'
+export { ensureOwnRegister, prefixFor } from './registers/own.js'
 export {
   countersOtherTillsUse, forgetLegacyDeviceRegister, legacyDeviceRegister, myRegisterPrefix,
   resolveDeviceRegister,

@@ -21,7 +21,7 @@ import { nudgingDriver } from './nudgingDriver'
 import { serializingDriver } from './writeLock'
 import {
   isFirstRun, firstRun, seedDemoData, applyUpgrades, login, pairWith, askToJoin, pollJoin,
-  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister, claimIfUnclaimed,
+  resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister, claimIfUnclaimed, ensureOwnRegister,
   renewClaim,
   moveSettingsToDevice, resetSyncState, witnessClock,
   loadFeatures, setFeature, FEATURES_OFF,
@@ -346,7 +346,18 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    const id = await resolveDeviceRegister(db, chosenRegister())
+    let id = await resolveDeviceRegister(db, chosenRegister())
+
+    /* A shop that has another till gives no guess (see `resolveDeviceRegister`),
+       and this machine has been told nothing: it makes its own counter, with a
+       prefix computed from its device id, rather than asking a person to type
+       one. Two tills that typed the same prefix while apart is how bills stopped
+       crossing between them. The original till never gets here -- it keeps the
+       counter it has. */
+    if (id === null) {
+      const own = await ensureOwnRegister(db)
+      if (own !== null && await chooseRegister(own)) id = own
+    }
 
     /* A till that is billing on a counter says so, even if nobody ever asked it
        which one -- a shop that has run on one machine for a year has never been
