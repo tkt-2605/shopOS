@@ -13,7 +13,7 @@ import { runOnce, onSyncRound } from '../core/syncLoop'
 import { syncNotice } from '../core/syncNotice'
 import { syncStatus, ago } from '../core/syncStatus'
 import { explain, explainRefusal, explainQuarantine, isVersionGap, looksLikeARefusal } from '../core/syncWords'
-import { startServing, stopServing, servingOn, keepTheDoorRight, type ServeInfo } from '../core/syncHost'
+import { startServing, servingOn, keepTheDoorRight, type ServeInfo } from '../core/syncHost'
 import { useCore } from '../core/CoreProvider'
 import { chosenRegister } from '../core/device'
 import { takeCounter } from '../core/counters'
@@ -145,7 +145,11 @@ export function SyncCard() {
   async function doneAdding() {
     withdrawPairing()
     setCode(null)
-    if (peers.length === 0) await stopServing()
+    /* Asked of the database, not of this screen's list. The list is as of the
+       last refresh, which is before the till that has just joined -- and
+       closing on it shut the main's door the moment Done was pressed, so the
+       new till could not reach it until the loop opened it again. */
+    await keepTheDoorRight(db)
     await refresh()
   }
 

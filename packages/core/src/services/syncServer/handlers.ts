@@ -1,4 +1,4 @@
-import { eq, and, lt, sql } from 'drizzle-orm'
+import { eq, and, lt, sql, isNotNull } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { MIN_PEER_SCHEMA_VERSION } from '../../db/migrationKinds.js'
@@ -64,6 +64,22 @@ export async function handleSyncRequest(
       .where(and(
         eq(schema.syncPeers.deviceId, auth.deviceId),
         sql`${schema.syncPeers.address} IS NOT ${seenAt}`,
+      ))
+  } else if (request.remoteAddress && (request.listenPort === null || request.listenPort === undefined)) {
+    /* And the other half: a till that asks while answering on no port has
+       said it cannot be dialled, so the address it once had goes. A till
+       that was briefly the main opened a port, was written down at it,
+       stepped down and closed it -- and the main went on knocking there
+       every round, refused every time, with "refused" on its screen about a
+       till that was syncing perfectly well the other way. The error from
+       those knocks goes with the address. Only when the socket's holder
+       says where the request came from: a host that reports nothing has
+       said nothing about the port. */
+    await q(db).update(schema.syncPeers)
+      .set({ address: null, lastError: null })
+      .where(and(
+        eq(schema.syncPeers.deviceId, auth.deviceId),
+        isNotNull(schema.syncPeers.address),
       ))
   }
 

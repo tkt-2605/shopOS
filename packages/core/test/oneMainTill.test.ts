@@ -38,10 +38,15 @@ async function serve(id: string, db: SqlDriver): Promise<{ server: Server; url: 
         const before = deviceId()
         setDeviceId(id)
         try {
+          const port = req.headers['x-shopos-port'] as string | undefined
           const answer = await handleSyncRequest(db, {
             path: req.url ?? '/',
             body,
             auth: (req.headers['x-shopos-auth'] as string | undefined) ?? null,
+            // As the app's listener reports them: where it came from, and the
+            // port it says it answers on -- none, for a till that dials.
+            remoteAddress: req.socket.remoteAddress ?? null,
+            listenPort: port === undefined ? null : Number(port),
           }, undefined, { keys: TEST_KEYS })
           res.writeHead(answer.status, { 'content-type': 'application/json' })
           res.end(answer.body)
@@ -219,6 +224,27 @@ describe('changing the main', () => {
     expect(await as(main, () => mainTill(main.db)), 'it heard the higher epoch').toEqual({ device: T1, epoch: 2 })
     expect(await as(main, () => tillRole(main.db))).toBe('till')
     expect(await has(t1.db, 'Sold on the old main after its repair'), 'and nothing it held is lost').toBe(true)
+  })
+})
+
+describe('a till that stops listening', () => {
+  it('is forgotten as an address, so the main stops knocking where nobody answers', async () => {
+    /* Till 2 of the first three-till run: briefly the main, it opened a port,
+       was written down at it, stepped down and closed it -- and the main went
+       on dialling the dead port every round, "refused" on its screen. */
+    await join(t1, main)
+    await main.db.execute(
+      `UPDATE sync_peers SET address = 'http://127.0.0.1:65337', last_error = 'refused' WHERE device_id = ?`, [T1],
+    )
+    expect((await pairedPeers(main.db)).map((p) => p.deviceId)).toEqual([T1])
+
+    await catchUp(t1)
+
+    const row = await main.db.get<{ address: string | null; last_error: string | null }>(
+      'SELECT address, last_error FROM sync_peers WHERE device_id = ?', [T1],
+    )
+    expect(row).toEqual({ address: null, last_error: null })
+    expect(await pairedPeers(main.db), 'the main dials nobody again').toEqual([])
   })
 })
 
