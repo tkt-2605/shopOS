@@ -27,6 +27,9 @@ export { isAheadOfUs, noteTillAhead, onTillAhead, type TillAhead } from './sync/
 export { applyBatch } from './sync/apply.js'
 export { adoptRestoredIdentity, type Adopted } from './sync/restored.js'
 export {
+  takeCopy, wouldLoseWork, type CopyHost, type CopyMaker, type CopyPlan, type CopyRefusal, type ShopCopy,
+} from './sync/copy.js'
+export {
   becomeMainIfAlone, handTheMainTo, hearMain, joinedMain, keepTillsEqual, listens, mainTill, makeThisTheMain,
   mayLetIn, tillRole,
   type LetIn, type MainTill, type Role,

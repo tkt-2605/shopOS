@@ -98,6 +98,13 @@ struct ToWebview {
 
 impl Answerer for ToWebview {
     fn answer(&self, request: http::Request) -> http::Reply {
+        /* A chunk of a copy of the shop is answered here, from the file. It is
+           megabytes, and the webview answers in strings with a two-minute wait;
+           the signed `/copy` that handed out its token went through the webview
+           like everything else. See `shop_copy.rs`. */
+        if request.path == http::COPY_PART_PATH {
+            return crate::shop_copy::answer_part(&self.app, &request.body);
+        }
         let host = self.app.state::<SyncHost>();
         let id = host.next.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = channel::<Reply>();

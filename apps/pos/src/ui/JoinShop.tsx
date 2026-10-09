@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { onCopyProgress, type CopyProgress } from '../core/shopCopy'
 import { listRegisters, countersOtherTillsUse, type Register, type CounterTaken } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { takeCounter } from '../core/counters'
@@ -46,6 +47,16 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
      no shouts and the till that cannot be reached any other way. */
   const [typingACode, setTypingACode] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /* The copy of the shop, as it arrives. Once the other till says yes, this
+     machine fetches a copy of its database and restarts into it, which on a
+     shop with years of trade is minutes, not a moment. */
+  const [copying, setCopying] = useState<CopyProgress | null>(null)
+
+  useEffect(() => {
+    let stop: (() => void) | null = null
+    void onCopyProgress(setCopying).then((un) => { stop = un })
+    return () => { stop?.() }
+  }, [])
 
   /* Asked on arrival rather than behind a button. A shopkeeper setting up a
      second till is holding a machine that knows nothing; the list of tills on
@@ -157,6 +168,19 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
         + 'It has joined the shop; open Counters after signing in and press "Use here".')
     }
     window.location.reload()
+  }
+
+  if (copying !== null) {
+    const mb = (n: number) => (n / (1024 * 1024)).toFixed(1)
+    return (
+      <div className="panel-body">
+        <h2 style={{ fontSize: 15, margin: '0 0 4px' }}>Taking a copy of the shop</h2>
+        <p style={{ fontSize: 12.5, color: 'var(--ink-2)', marginTop: 0 }}>
+          {mb(copying.done)} MB of {mb(copying.total)} MB. This machine restarts into
+          the shop when it has all of it. Leave both tills switched on until then.
+        </p>
+      </div>
+    )
   }
 
   if (stage.at === 'waiting') {

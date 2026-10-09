@@ -12,6 +12,7 @@ import { clock } from '../../clock.js'
 import { askingToJoin, letThemIn, offered, pollingAJoin, withdrawPairing } from './pairing.js'
 import { mayLetIn } from '../sync/layout.js'
 import { handleHello } from './hello.js'
+import { handleCopy } from './copy.js'
 import {
   type SyncRequest, type SyncResponse, type SyncServerOptions, ok, parse, peerAddressFrom, refuse,
 } from './wire.js'
@@ -66,14 +67,17 @@ export async function handleSyncRequest(
       ))
   }
 
-  return sealed(await route(db, request, auth.deviceId), auth.secret, auth.nonce)
+  return sealed(await route(db, request, auth.deviceId, opts), auth.secret, auth.nonce)
 }
 
-async function route(db: SqlDriver, request: SyncRequest, them: string): Promise<SyncResponse> {
+async function route(
+  db: SqlDriver, request: SyncRequest, them: string, opts: SyncServerOptions,
+): Promise<SyncResponse> {
   switch (request.path) {
     case '/hello': return handleHello(db, them, request)
     case '/fetch': return handleFetch(db, request, them)
     case '/offer': return handleOffer(db, request, them)
+    case '/copy': return handleCopy(db, them, opts)
     default: return refuse(404, 'NO_SUCH_REQUEST')
   }
 }
@@ -112,8 +116,12 @@ async function handlePair(
   const asked = parse<{
     code?: string; deviceId?: string; label?: string; requestId?: string
     fingerprint?: string; publicKey?: string; replaces?: string; commitment?: string; proof?: string
+    copy?: unknown
   }>(request.body)
   if (asked === null) return refuse(400, 'MALFORMED')
+  /* The joining till will take a copy of the shop rather than the feed. See
+     `sync/copy.ts`; it decides only whether the feed is seeded. */
+  const copy = asked.copy === true
 
   const theirDevice = typeof asked.deviceId === 'string' ? asked.deviceId.trim() : ''
   if (theirDevice === '') return refuse(400, 'MALFORMED')
@@ -145,7 +153,7 @@ async function handlePair(
   const joinerKey = asked.publicKey
 
   if (typeof asked.requestId === 'string') {
-    return await pollingAJoin(db, request, asked.requestId.trim(), theirDevice, joinerKey, now, opts)
+    return await pollingAJoin(db, request, asked.requestId.trim(), theirDevice, joinerKey, now, opts, copy)
   }
   if (typeof asked.proof !== 'string') return refuse(400, 'MALFORMED')
 
@@ -165,6 +173,7 @@ async function handlePair(
     db, request, theirDevice, asked.label ?? null, secret, ours.publicKey, now, opts,
     typeof asked.fingerprint === 'string' ? asked.fingerprint : null,
     replacesOf(asked.replaces, theirDevice),
+    copy,
   )
   if (answer.status !== 200) return answer
   /* Proof back the other way, over both keys: the joining till is told this

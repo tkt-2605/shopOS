@@ -5,6 +5,7 @@ import {
 } from '@shopos/core'
 import { logEvent, describe } from './log'
 import { deviceSetting, setDeviceSetting } from './device'
+import { copyMaker } from './shopCopy'
 
 /**
  * Answering the other till.
@@ -254,7 +255,7 @@ async function answer(db: SqlDriver, request: Forwarded): Promise<void> {
          till could receive a sync for ever and never start one. */
       remoteAddress: request.remoteAddress ?? null,
       listenPort: request.listenPort ?? null,
-    })
+    }, undefined, { copies: copyMaker })
     /* Refusals, from the side that did the refusing.
 
        This is the half that was invisible. A till that turns its partner away —

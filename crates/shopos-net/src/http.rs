@@ -102,13 +102,23 @@ pub const MAX_CONNECTIONS: usize = 16;
 /// while a pairing is being polled.
 pub const MAX_PER_PEER: usize = 4;
 
-/// Only the four the protocol has. An unknown path never reaches the answerer,
+/// Only the ones the protocol has. An unknown path never reaches the answerer,
 /// so a scanner sweeping the shop's network cannot use this to find out
 /// anything except that something is listening.
-pub const PATHS: [&str; 4] = ["/pair", "/hello", "/fetch", "/offer"];
+///
+/// `/copy` and `/copy-part` are how a joining till takes a copy of the shop
+/// from the main rather than the whole shop through the change feed
+/// (`docs/specs/one-main-till.md`, *Joining*).
+pub const PATHS: [&str; 6] = ["/pair", "/hello", "/fetch", "/offer", "/copy", "/copy-part"];
 
-/// The one path that is answered unsigned.
+/// A path answered unsigned because it is what agrees the signature.
 pub const PAIR_PATH: &str = "/pair";
+
+/// A path answered unsigned because it carries its own credential: a one-time
+/// token for one copy, handed out over a signed `/copy` and good for half an
+/// hour. Its chunks are answered from the file by the listener itself and
+/// never reach the webview, which is why it cannot be signed the ordinary way.
+pub const COPY_PART_PATH: &str = "/copy-part";
 
 /// The header a signed request carries its signature in.
 ///
@@ -459,7 +469,10 @@ pub fn read_checked(
         return Ok(Err(Refusal::NoSuchRequest));
     }
     let pairing = path == PAIR_PATH;
-    if !pairing && auth.is_none() {
+    // Both unsigned paths take a small body: a pairing message, or a token and
+    // an offset.
+    let unsigned = pairing || path == COPY_PART_PATH;
+    if !unsigned && auth.is_none() {
         return Ok(Err(Refusal::Unsigned));
     }
 
@@ -468,7 +481,7 @@ pub fn read_checked(
     let Some(length) = length else {
         return Ok(Err(Refusal::Malformed));
     };
-    if length > if pairing { MAX_PAIR_BODY } else { MAX_BODY } {
+    if length > if unsigned { MAX_PAIR_BODY } else { MAX_BODY } {
         return Ok(Err(Refusal::TooLarge));
     }
 
@@ -660,8 +673,8 @@ mod tests {
     }
 
     #[test]
-    fn only_the_four_paths_the_protocol_has() {
-        for path in ["/pair", "/hello", "/fetch", "/offer"] {
+    fn only_the_paths_the_protocol_has() {
+        for path in ["/pair", "/hello", "/fetch", "/offer", "/copy", "/copy-part"] {
             assert!(PATHS.contains(&path));
         }
         for path in ["/", "/admin", "/shop.db", "/../device.json"] {

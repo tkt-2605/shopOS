@@ -1,4 +1,5 @@
 import type { SigningKey } from '../../domain/licence.js'
+import type { CopyMaker } from '../sync/copy.js'
 
 /*
  * The shape of what arrives and what goes back, and the three ways an answer
@@ -60,6 +61,12 @@ export interface SyncResponse {
 export interface SyncServerOptions {
   /** Defaults to the build's own `LICENCE_KEYS`. Tests pass their own. */
   keys?: readonly SigningKey[]
+  /**
+   * How this host takes a copy of the shop for a joining till: a `VACUUM INTO`
+   * in Rust in the app, a file on disk in a test. Absent, `/copy` is refused
+   * and a joining till takes the shop through the feed as before.
+   */
+  copies?: CopyMaker
 }
 
 export function ok(payload: unknown): SyncResponse {

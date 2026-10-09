@@ -15,6 +15,7 @@ mod paths;
 mod pdf;
 mod printing;
 mod restore;
+mod shop_copy;
 mod sync_client;
 mod sync_server;
 mod updater;
@@ -159,6 +160,7 @@ pub fn run() {
             // Nothing listens until a shop asks for it. A single-till shop --
             // which is most of them -- never opens a port at all.
             app.manage(sync_server::SyncHost::default());
+            app.manage(shop_copy::CopyShelf::default());
 
             Ok(())
         })
@@ -183,6 +185,8 @@ pub fn run() {
             sync_server::sync_serve_status,
             sync_server::sync_reply,
             sync_client::sync_request,
+            shop_copy::sync_copy_prepare,
+            shop_copy::sync_copy_download,
             discovery::sync_look_around,
             printing::list_printers,
             printing::default_printer,
@@ -210,6 +214,7 @@ pub fn run() {
             restore::restore_begin,
             restore::restore_report,
             restore::restore_abandon,
+            restore::copy_install,
             version::app_version,
             version::shops_on_this_machine,
             updater::updates_enabled,
@@ -235,4 +240,5 @@ fn refuse_to_open(
         app.manage(restore::LastRestore(restore::Report::default()));
     }
     app.manage(sync_server::SyncHost::default());
+    app.manage(shop_copy::CopyShelf::default());
 }

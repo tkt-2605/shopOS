@@ -42,7 +42,31 @@ pub struct Marker {
     /// Where the pre-restore state was parked, so the owner can undo it.
     pub safety: String,
     pub staged_at: String,
+    /// Present when what is staged is a copy of the shop taken from the main,
+    /// rather than a backup of this till. See `shop_copy.rs`. Absent from every
+    /// marker written before it existed, which reads as an ordinary restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<CopyPlan>,
 }
+
+/// What installing a copy of the shop has to do besides the swap.
+///
+/// A restore puts this till's own past back and so takes a new identity
+/// (`start_over`). A copy is the opposite: it is the *shop*, taken from the
+/// main, and this till keeps everything that is its own -- its identity, its
+/// pairing with the main, its feed, its invoice series. Those are carried
+/// across from the database the copy replaces (`carry_over`), and the cursor
+/// on the main starts at the head the copy recorded, so the first round asks
+/// only for what was written after it.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CopyPlan {
+    pub main_device: String,
+    pub feed_head: i64,
+}
+
+/// The statements that carry this till's own tables across, shared with the
+/// tests in `packages/core` so what they prove is what runs here.
+const CARRY_OVER_SQL: &str = include_str!("../../../../packages/core/sql/carry-over-after-copy.sql");
 
 /// What the app did with a pending restore while it was starting. Held in state
 /// rather than written anywhere, because it is a message for this run only.
@@ -337,7 +361,7 @@ pub fn restore_begin(
        half a database, carried out faithfully. */
     files::copy_durably(&candidate, &staged).map_err(|e| format!("Could not stage the restore: {e}"))?;
 
-    let marker = Marker { source: name, safety: safety_name, staged_at: now };
+    let marker = Marker { source: name, safety: safety_name, staged_at: now, copy: None };
     let json = serde_json::to_vec_pretty(&marker).map_err(|e| e.to_string())?;
     // Written last, and whole or not at all. Until this exists, nothing above
     // has changed the live data.
@@ -454,9 +478,7 @@ fn apply_with(dir: &Path, rename: Rename<'_>) -> Report {
     if !swap.staged.exists() {
         if swap.previous.exists() && swap.live.exists() {
             // The swap happened and the commit did not. Commit.
-            let error = start_over(dir, &marker);
-            let _ = std::fs::remove_dir_all(&staging);
-            return Report { restored: Some(marker), error, ..Report::default() };
+            return settle(dir, &swap, marker, rename);
         }
         if swap.put_back(rename).is_err() {
             return stuck(&swap, &marker, "the backup went missing half-way through the restore");
@@ -521,9 +543,141 @@ fn apply_with(dir: &Path, rename: Rename<'_>) -> Report {
     }
 
     // 3b. Deleting the marker, and the parked database with it, is the commit.
-    let error = start_over(dir, &marker);
+    settle(dir, &swap, marker, rename)
+}
+
+/// The last step of a swap that has happened: whatever the staged file still
+/// needs, then the commit.
+///
+/// For a backup, a new identity (`start_over`). For a copy of the shop, this
+/// till's own tables carried across from the database it replaced, which is
+/// still parked in the staging folder until the commit deletes it -- and if
+/// that cannot be done, the copy is put aside and this till's own database
+/// comes back, because a copy without this till's pairing and feed is a till
+/// that cannot sync and has lost what it had not yet sent.
+///
+/// Reached on the start that did the swap and on the one after a power cut
+/// between swap and commit. Carrying over is idempotent, so the second does
+/// no harm.
+fn settle(dir: &Path, swap: &Swap, marker: Marker, rename: Rename<'_>) -> Report {
+    let staging = restore_dir(dir);
+    let Some(plan) = marker.copy.clone() else {
+        let error = start_over(dir, &marker);
+        let _ = std::fs::remove_dir_all(&staging);
+        return Report { restored: Some(marker), error, ..Report::default() };
+    };
+
+    if let Err(e) = carry_over(&swap.live, &swap.previous, &plan) {
+        let undone = discard_live(swap).and_then(|()| swap.put_back(rename));
+        if let Err(why) = undone {
+            return stuck(swap, &marker, &format!("{e}; then {why}"));
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+        return Report {
+            error: Some(format!(
+                "The copy of the shop could not be finished ({e}). This till is exactly as it was \
+                 before; join the shop again to try once more."
+            )),
+            ..Report::default()
+        };
+    }
     let _ = std::fs::remove_dir_all(&staging);
-    Report { restored: Some(marker), error, ..Report::default() }
+    Report { restored: Some(marker), ..Report::default() }
+}
+
+/// This till's own tables, from the database the copy replaced, into the copy.
+fn carry_over(live: &Path, previous: &Path, plan: &CopyPlan) -> Result<(), String> {
+    let mut conn = Connection::open(live).map_err(|e| format!("could not open the copy: {e}"))?;
+    conn.execute("ATTACH DATABASE ?1 AS prev", [previous.to_string_lossy()])
+        .map_err(|e| format!("could not open this till's own database beside it: {e}"))?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute_batch(CARRY_OVER_SQL).map_err(|e| format!("could not carry this till's tables across: {e}"))?;
+    tx.execute(
+        "UPDATE sync_peers SET their_cursor = ?1 WHERE device_id = ?2",
+        rusqlite::params![plan.feed_head, plan.main_device],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    conn.execute("DETACH DATABASE prev", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The copy steps aside, so the parked database can come back.
+fn discard_live(swap: &Swap) -> std::io::Result<()> {
+    for file in [&swap.live, &swap.live_wal, &swap.live_shm] {
+        match std::fs::remove_file(file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Stages a copy of the shop that `shop_copy::sync_copy_download` fetched and
+/// checked, then restarts to install it.
+///
+/// The same path as a restore -- a safety copy of what is here, the file staged
+/// beside the database, the marker written last -- with the plan in the marker
+/// that tells the next start to carry this till's own tables across rather
+/// than take a new identity. The file is the one place the download writes to,
+/// never a path the webview names.
+#[tauri::command(async)]
+pub fn copy_install(
+    app: tauri::AppHandle,
+    db: State<'_, DbState>,
+    main_device: String,
+    feed_head: i64,
+    safety_name: String,
+    now: String,
+    supported: i64,
+) -> Result<(), String> {
+    if db.get()?.has_open_transaction() {
+        return Err("A bill is being saved right now. Try again in a moment.".into());
+    }
+    let candidate = crate::shop_copy::downloaded(&app)?;
+    if !candidate.exists() {
+        return Err("The copy of the shop is not here. Join the shop again to fetch it.".into());
+    }
+
+    /* Exactly this build's schema. A backup from an older build is migrated on
+       the way in; a copy cannot be, because this till's own tables are carried
+       into it *before* the migrations run, column for column. */
+    let check = examine(&candidate, supported);
+    if !check.ok {
+        return Err(check.problem.unwrap_or_else(|| "That copy cannot be installed.".into()));
+    }
+    if check.schema != supported {
+        return Err(format!(
+            "The main till is on a different version of ShopOS (schema {}; this one is {}). Update \
+             the older one, then join again.",
+            check.schema, supported
+        ));
+    }
+
+    let dir = paths::data_dir(&app)?;
+    let backups = paths::backups_dir(&app)?;
+    let safety = safety_path(&backups, "a copy of the shop", &safety_name)?;
+    let staging = restore_dir(&dir);
+    std::fs::create_dir_all(&staging)
+        .map_err(|e| format!("Could not create {}: {e}", staging.display()))?;
+    let staged = staging.join(STAGED);
+    paths::remove_if_present(&staged)?;
+
+    db.get()?.vacuum_into(&safety)?;
+    files::copy_durably(&candidate, &staged).map_err(|e| format!("Could not stage the copy: {e}"))?;
+
+    let marker = Marker {
+        source: "a copy of the shop".into(),
+        safety: safety_name,
+        staged_at: now,
+        copy: Some(CopyPlan { main_device, feed_head }),
+    };
+    let json = serde_json::to_vec_pretty(&marker).map_err(|e| e.to_string())?;
+    files::write_durably(&staging.join(MARKER), &json)
+        .map_err(|e| format!("Could not record the copy: {e}"))?;
+
+    let _ = std::fs::remove_file(&candidate);
+    app.restart()
 }
 
 /// The machine takes a new identity, immediately before the commit.
@@ -651,6 +805,7 @@ mod tests {
                 source: "shop-2026-09-12.zip".into(),
                 safety: "before-restore-2026-09-13-0905.db".into(),
                 staged_at: "2026-09-13T09:05:00Z".into(),
+                copy: None,
             };
             std::fs::write(staging.join(MARKER), serde_json::to_vec(&m).unwrap()).unwrap();
         }
@@ -795,6 +950,7 @@ mod tests {
             source: "shop-2026-09-16.zip".into(),
             safety: "before-restore-2026-09-16-0905.db".into(),
             staged_at: "2026-09-16T09:05:00Z".into(),
+            copy: None,
         };
         std::fs::write(staging.join(MARKER), serde_json::to_vec(&marker).unwrap()).unwrap();
 
@@ -1064,5 +1220,110 @@ mod tests {
 
         assert!(apply_pending(&dir).restored.is_some());
         assert_ne!(crate::device::identity_of(&dir).unwrap().id, before);
+    }
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    use crate::shop_copy::tests::{add_product, count, migrated, scratch};
+
+    fn stage_copy(dir: &Path, copy: &Path, head: i64) {
+        let staging = restore_dir(dir);
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::copy(copy, staging.join(STAGED)).unwrap();
+        let marker = Marker {
+            source: "a copy of the shop".into(),
+            safety: "before-restore-2026-10-10-1000.db".into(),
+            staged_at: "2026-10-10T10:00:00Z".into(),
+            copy: Some(CopyPlan { main_device: "main".into(), feed_head: head }),
+        };
+        std::fs::write(staging.join(MARKER), serde_json::to_vec(&marker).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_copy_of_the_shop_keeps_what_is_this_tills_own() {
+        let dir = scratch("install");
+        // This till: joined the main, holds its secret, its own feed and series.
+        {
+            let conn = migrated(&dir.join(DB_FILE));
+            conn.execute(
+                "INSERT INTO sync_peers (device_id, secret, created_at) VALUES ('main', 'ours', '2026-10-10')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO change_feed (table_name, row_id, op, at) VALUES ('products', 'p1', 'upsert', '2026-10-10')",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO doc_sequences (scope, last_value) VALUES ('bill:TB:2627', 7)", []).unwrap();
+            conn.execute("UPDATE sync_state SET main_device = 'main', main_epoch = 1 WHERE id = 1", []).unwrap();
+        }
+        // The copy of the shop, as the main took it.
+        let copy = dir.join("from-main.db");
+        {
+            let conn = migrated(&copy);
+            add_product(&conn, "p1", "Rice");
+            add_product(&conn, "p2", "Dal");
+            conn.execute(
+                "INSERT INTO sync_peers (device_id, secret, created_at) VALUES ('another-till', 'theirs', '2026-10-10')",
+                [],
+            )
+            .unwrap();
+        }
+        let head = crate::shop_copy::prepare(&copy).unwrap();
+        stage_copy(&dir, &copy, head);
+
+        let report = apply_pending(&dir);
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert!(report.restored.is_some());
+        assert!(!restore_dir(&dir).exists(), "committed");
+
+        let conn = Connection::open(dir.join(DB_FILE)).unwrap();
+        assert_eq!(count(&conn, "products"), 2, "the shop arrived");
+        let (secret, cursor): (String, i64) = conn
+            .query_row("SELECT secret, their_cursor FROM sync_peers WHERE device_id = 'main'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(secret, "ours", "the pairing of this till with the main");
+        assert_eq!(cursor, head, "and it reads the main from where the copy was taken");
+        assert_eq!(count(&conn, "sync_peers"), 1, "no other pairing came with it");
+        assert_eq!(count(&conn, "change_feed"), 1, "what this till still had to send");
+        let series: i64 = conn
+            .query_row("SELECT last_value FROM doc_sequences WHERE scope = 'bill:TB:2627'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(series, 7, "its own invoice series");
+        let main: String =
+            conn.query_row("SELECT main_device FROM sync_state WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(main, "main");
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_finished_leaves_this_till_as_it_was() {
+        let dir = scratch("install-fails");
+        // Not a database the carry-over can read from: it has none of the tables.
+        {
+            let conn = Connection::open(dir.join(DB_FILE)).unwrap();
+            conn.execute_batch("CREATE TABLE what_was_here (x INTEGER); INSERT INTO what_was_here VALUES (42);")
+                .unwrap();
+        }
+        let copy = dir.join("from-main.db");
+        {
+            let conn = migrated(&copy);
+            add_product(&conn, "p1", "Rice");
+        }
+        let head = crate::shop_copy::prepare(&copy).unwrap();
+        stage_copy(&dir, &copy, head);
+
+        let report = apply_pending(&dir);
+        assert!(report.error.is_some(), "said so");
+        assert!(report.restored.is_none());
+        assert!(!report.incomplete, "and opened normally");
+
+        let conn = Connection::open(dir.join(DB_FILE)).unwrap();
+        let x: i64 = conn.query_row("SELECT x FROM what_was_here", [], |r| r.get(0)).unwrap();
+        assert_eq!(x, 42, "the database that was here is back");
     }
 }

@@ -15,6 +15,7 @@ import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 import { assertSafeToSpeak } from './sync/reach.js'
 import { joinedMain } from './sync/layout.js'
+import type { ShopCopy } from './sync/copy.js'
 
 /**
  * The side of a sync that asks.
@@ -66,12 +67,18 @@ export interface SelfAddress {
   listenPort?: number | null
 }
 
-export function httpTransport(
+/**
+ * One signed request to a paired till, and its signed answer.
+ *
+ * The three in `httpTransport` and `/copy` are all this; kept as one so a
+ * fourth cannot get the signing or the checking of the answer slightly wrong.
+ */
+function signedAsk(
   peer: PeerAddress,
-  fetchImpl: typeof fetch = fetch,
-  self: SelfAddress = {},
-): SyncTransport {
-  async function ask<T>(path: string, payload: unknown): Promise<T> {
+  fetchImpl: typeof fetch,
+  self: SelfAddress,
+): <T>(path: string, payload: unknown) => Promise<T> {
+  return async function ask<T>(path: string, payload: unknown): Promise<T> {
     const me = deviceId()
     if (me === null) throw new Error('This machine does not know which machine it is')
 
@@ -104,7 +111,14 @@ export function httpTransport(
     }
     return JSON.parse(text) as T
   }
+}
 
+export function httpTransport(
+  peer: PeerAddress,
+  fetchImpl: typeof fetch = fetch,
+  self: SelfAddress = {},
+): SyncTransport {
+  const ask = signedAsk(peer, fetchImpl, self)
   return {
     /* Our version, so a till we ask that is behind us learns it is. A build
        from before this sends nothing and the far side reads nothing into it. */
@@ -486,7 +500,34 @@ export async function rememberAddress(
  * Whose place this till is taking, when it has been restored from a backup.
  * See `setReplacedDevice`; absent on every ordinary pairing.
  */
-function succeeding(): { replaces?: string } {
+function succeeding(): { replaces?: string; copy?: true } {
   const was = replacedDevice()
-  return was === null ? {} : { replaces: was }
+  return {
+    ...(was === null ? {} : { replaces: was }),
+    ...(byCopy ? { copy: true as const } : {}),
+  }
+}
+
+/**
+ * This till will take a copy of the shop once it is let in, rather than the
+ * shop through the change feed. Said in every knock, so the main skips seeding
+ * its feed with the whole shop -- which would also re-send the shop to every
+ * till it already has. See `sync/copy.ts`.
+ *
+ * Process-wide, like the identity a restored till is replacing, because it is
+ * a fact about what this machine is doing, set once by the screen that joins.
+ */
+let byCopy = false
+
+export function joinByCopy(on = true): void {
+  byCopy = on
+}
+
+/** Asks the main for a copy of the shop, over a signed request. */
+export async function requestCopy(
+  peer: PeerAddress,
+  fetchImpl: typeof fetch = fetch,
+  self: SelfAddress = {},
+): Promise<ShopCopy> {
+  return signedAsk(peer, fetchImpl, self)<ShopCopy>('/copy', {})
 }

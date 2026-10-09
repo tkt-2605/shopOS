@@ -243,6 +243,8 @@ export async function pollingAJoin(
   joinerKey: string,
   now: number,
   opts: SyncServerOptions,
+  /** The joining till will take a copy of the shop. See `letThemIn`. */
+  copy = false,
 ): Promise<SyncResponse> {
   const live = pending
   /* Answering about somebody else's request would tell a stranger on the wifi
@@ -273,7 +275,7 @@ export async function pollingAJoin(
   live.secret ??= await agreeSecret(live.hostKey, joinerKey, joinerKey, live.hostKey.publicKey)
   return await letThemIn(
     db, request, theirDevice, live.label, live.secret, live.hostKey.publicKey, now, opts,
-    null, live.replaces,
+    null, live.replaces, copy,
   )
 }
 
@@ -302,6 +304,12 @@ export async function letThemIn(
    * till holds.
    */
   replaces: string | null = null,
+  /**
+   * The joining till will take a copy of the shop from here (`sync/copy.ts`),
+   * so the feed is not seeded: the copy carries everything, and seeding would
+   * put every row back in the feed for every till this one already has.
+   */
+  copy = false,
 ): Promise<SyncResponse> {
   /* The one place a till becomes a peer, whichever way it got here, and so the
      one place the multi-till plan is checked. The button on the other screen
@@ -361,7 +369,7 @@ export async function letThemIn(
      nothing arrives. */
   if (succeeding) await handOver(db, replaces, theirDevice)
 
-  await seedFeedWithEverything(db)
+  if (!copy) await seedFeedWithEverything(db)
 
   return ok({
     state: 'ALLOWED',

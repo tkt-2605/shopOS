@@ -19,6 +19,7 @@ import { startSyncLoop, stopSyncLoop, runOnce, nudgeSync } from './syncLoop'
 import { watchForTillsAhead } from './outOfDate'
 import { nudgingDriver } from './nudgingDriver'
 import { serializingDriver } from './writeLock'
+import { takeACopy } from './shopCopy'
 import {
   isFirstRun, firstRun, seedDemoData, applyUpgrades, login, pairWith, askToJoin, pollJoin,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister, claimIfUnclaimed, ensureOwnRegister,
@@ -29,6 +30,7 @@ import {
   loadRounding, setRounding, ROUNDING_DEFAULT,
   loadTaxScheme, setTaxScheme, taxSchemeAnswered, type TaxScheme,
   loadShopProfile, Backup,
+  joinByCopy,
 } from '@shopos/core'
 import type { SessionUser, Features, FeatureKey, StockPolicy, ShopProfile, Rounding } from '@shopos/core'
 import type { CoreValue, FailureKind, Status } from './coreValue'
@@ -393,6 +395,8 @@ export function CoreProvider({ children }: { children: ReactNode }) {
 
   /** Knocking. Nothing is granted here; the other till's shopkeeper decides. */
   async function askToJoinShop(address: string) {
+    // Said in every knock, so the main does not seed its feed with the shop.
+    joinByCopy(true)
     return await askToJoin(urlOf(address), null, syncFetch, await mineToGiveOut())
   }
 
@@ -406,11 +410,16 @@ export function CoreProvider({ children }: { children: ReactNode }) {
   /** The bottom rung: a code read off the other till, for a network that
    *  answers no shouts. `pairWith` settles it in one request. */
   async function joinShop(input: { address: string; code: string }) {
+    joinByCopy(true)
     await pairWith(db, urlOf(input.address), input.code.trim(), null, syncFetch, await mineToGiveOut())
     await theShopHasArrived()
   }
 
   async function theShopHasArrived() {
+    /* Restarts into the copy when it works. Not after a person has had to
+       wait through the feed for a shop of any size. */
+    if (await takeACopy(db, await mineToGiveOut())) return
+
     /* Everything, in batches, through the loop the app already runs rather than
        a second path that could differ from it. `force` because the loop's own
        backoff has no opinion yet about a peer it has never met. */
