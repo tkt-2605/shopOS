@@ -73,11 +73,30 @@ export interface PeerHello {
    * Absent on a build from before 046, which records as level.
    */
   now?: number
+  /**
+   * Which till the peer believes is the main, and at which epoch. See
+   * `sync/layout.ts` and migration 071.
+   *
+   * Sent in both directions -- the asking till puts its own in the body of
+   * `/hello` -- because the till that most needs to hear a higher epoch is an
+   * old main that came back, and nobody dials a main: it hears it from the
+   * till that asks it something.
+   *
+   * Absent on a build from before 071, and on a shop with no main. Silence is
+   * not a claim and changes nothing.
+   */
+  mainDevice?: string | null
+  mainEpoch?: number
 }
 
 export interface SyncTransport {
-  /** Who are you, what version are you on, and how far have you read of mine? */
-  hello(): Promise<PeerHello>
+  /**
+   * Who are you, what version are you on, and how far have you read of mine?
+   *
+   * Told who this till believes the main is, so the far side can follow a
+   * higher epoch. A transport that does not pass it on loses nothing but that.
+   */
+  hello(main?: { device: string | null; epoch: number }): Promise<PeerHello>
   /** Everything you have after `since`, up to `limit` records. */
   fetch(since: number, limit: number): Promise<ChangeBatch>
   /** Here is everything I have after your cursor. */

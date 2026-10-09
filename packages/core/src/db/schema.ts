@@ -978,6 +978,10 @@ export const syncState = sqliteTable('sync_state', {
   prunedThrough: integer('pruned_through').default(0).notNull(),
   /** Whether the books have been filled in for this database's history. Migration 066. */
   ledgerFilled: integer('ledger_filled').default(0).notNull(),
+  /** The till this one syncs through, or null in a shop that has none. Migration 071. */
+  mainDevice: text('main_device'),
+  /** Raised at every change of main; the highest heard wins. Migration 071. */
+  mainEpoch: integer('main_epoch').default(0).notNull(),
 })
 
 export const syncPeers = sqliteTable('sync_peers', {

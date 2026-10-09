@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
-  handleSyncRequest, listPeers, loadShopProfile, getSetting, type SqlDriver,
+  handleSyncRequest, listens, expectingAJoin, loadShopProfile, getSetting, type SqlDriver,
 } from '@shopos/core'
 import { logEvent, describe } from './log'
 import { deviceSetting, setDeviceSetting } from './device'
@@ -173,7 +173,10 @@ export async function serveIfPaired(db: SqlDriver): Promise<ServeInfo | null> {
   const already = await resumeServing(db)
   if (already !== null) return already
 
-  if ((await listPeers(db)).length === 0) return null
+  /* The main answers; a till dials and does not. `listens` is the one place
+     that knows, including the exception -- a main that has just handed over
+     goes on answering the tills that still dial it. */
+  if (!await listens(db)) return null
 
   const shop = await loadShopProfile(db)
   // No port: whatever this machine had last time, which is what its peers have
@@ -181,6 +184,30 @@ export async function serveIfPaired(db: SqlDriver): Promise<ServeInfo | null> {
   return await startServing(db, undefined, {
     name: shop.name, id: await getSetting(db, 'shop_id'),
   })
+}
+
+/**
+ * Opens or closes the door to match what this till now is.
+ *
+ * Asked after every round, because a round is where a till learns that it has
+ * become the main -- a handover, heard in a hello -- or that it no longer is.
+ * A main that did not start answering would leave every till dialling a door
+ * that never opens; an old main that kept answering would keep a port open
+ * that nothing should use.
+ *
+ * Never closes while a pairing is on offer: that is a person standing at this
+ * till adding one, and the port is open for them.
+ */
+export async function keepTheDoorRight(db: SqlDriver): Promise<void> {
+  const open = (await servingOn()) !== null
+  const should = await listens(db)
+  if (should && !open) {
+    await serveIfPaired(db)
+    logEvent('info', 'sync', 'answering other tills: this till is the main')
+  } else if (!should && open && !expectingAJoin()) {
+    await stopServing()
+    logEvent('info', 'sync', 'stopped answering: this till syncs through the main')
+  }
 }
 
 async function attend(db: SqlDriver): Promise<void> {

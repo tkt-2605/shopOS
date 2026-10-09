@@ -6,13 +6,14 @@ import {
   quarantinedRecords, acknowledgeQuarantine,
   forgetPeer,
   getSetting,
-  type PeerHealth, type RecordedConflict, type QuarantinedRecord,
+  tillRole, mainTill, makeThisTheMain, handTheMainTo,
+  type PeerHealth, type RecordedConflict, type QuarantinedRecord, type Role, type MainTill,
 } from '@shopos/core'
 import { runOnce, onSyncRound } from '../core/syncLoop'
 import { syncNotice } from '../core/syncNotice'
 import { syncStatus, ago } from '../core/syncStatus'
 import { explain, explainRefusal, explainQuarantine, isVersionGap, looksLikeARefusal } from '../core/syncWords'
-import { startServing, stopServing, servingOn, type ServeInfo } from '../core/syncHost'
+import { startServing, stopServing, servingOn, keepTheDoorRight, type ServeInfo } from '../core/syncHost'
 import { useCore } from '../core/CoreProvider'
 import { chosenRegister } from '../core/device'
 import { takeCounter } from '../core/counters'
@@ -38,7 +39,7 @@ import { useConfirm } from './useConfirm'
  */
 
 export function SyncCard() {
-  const { db, shop, registerId, reloadRegister } = useCore()
+  const { db, shop, registerId, reloadRegister, user } = useCore()
   const [confirmUi, ask] = useConfirm()
   const [serving, setServing] = useState<ServeInfo | null>(null)
   const [code, setCode] = useState<string | null>(null)
@@ -51,8 +52,14 @@ export function SyncCard() {
   /* What this till calls its shop when another one shouts on the network: a
      name and an opaque id, enough to tell two shops apart on one wire. */
   const [shopId, setShopId] = useState<string | null>(null)
+  /* Which till the shop syncs through. See `sync/layout.ts` in core. */
+  const [role, setRole] = useState<Role>('alone')
+  const [main, setMain] = useState<MainTill>({ device: null, epoch: 0 })
 
   const status = syncStatus(peers)
+  const naming = (p: PeerHealth | undefined, fallback: string) =>
+    p === undefined ? fallback : p.label ?? `till ${p.deviceId.slice(0, 8)}`
+  const mainName = naming(peers.find((p) => p.deviceId === main.device), 'the main till')
 
   const refresh = useCallback(async () => {
     setServing(await servingOn())
@@ -60,6 +67,8 @@ export function SyncCard() {
     setConflicts(await recentConflicts(db, { limit: 20 }))
     setRefused(await quarantinedRecords(db, { limit: 20 }))
     setShopId(await getSetting(db, 'shop_id'))
+    setRole(await tillRole(db))
+    setMain(await mainTill(db))
   }, [db])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -171,6 +180,60 @@ export function SyncCard() {
     await refresh()
   }
 
+  /**
+   * The main is gone, or the owner wants it here.
+   *
+   * Confirmed, and said plainly, because it is the one action on this screen
+   * that changes what every other till does. Never automatic: see
+   * `makeThisTheMain` for why a two-till shop has to switch by hand.
+   */
+  async function promote() {
+    const agreed = await ask(
+      'Make this the main till?\n\n'
+      + 'Do this when the main till is gone for good, or to move the main here. '
+      + 'The other tills will need to be paired with this one: press Add a till '
+      + 'here, and choose Join a shop on each of them.\n\n'
+      + 'If the old main till comes back, it will see that this one is the main '
+      + 'and step down on its own. Nothing it holds is lost.',
+    )
+    if (!agreed) return
+    setError(null)
+    try {
+      await makeThisTheMain(db, user?.id)
+      await keepTheDoorRight(db)
+      setNotice('This is now the main till. Pair the other tills with it.')
+    } catch (err) {
+      setError(explain(err))
+    }
+    await refresh()
+  }
+
+  /**
+   * The main hands its place to a till, while both are working.
+   *
+   * The gentle move: that till takes over the next time it catches up with
+   * this one, and this one goes on passing bills between it and every other
+   * till until each has been paired with the new main.
+   */
+  async function handOver(peer: PeerHealth) {
+    const who = naming(peer, 'that till')
+    const agreed = await ask(
+      `Make ${who} the main till?\n\n`
+      + `${who} takes over the next time it catches up with this till. This till `
+      + 'goes on passing bills between it and the other tills until each of them '
+      + `has been paired with ${who}, so nothing stops in between.`,
+    )
+    if (!agreed) return
+    setError(null)
+    try {
+      await handTheMainTo(db, peer.deviceId, user?.id)
+      setNotice(`${who} will be the main till from its next catch-up.`)
+    } catch (err) {
+      setError(explain(err))
+    }
+    await refresh()
+  }
+
   /* The same code the background loop runs. A "catch up now" that took its own
      path would be a second implementation to keep in step, and the one people
      press least would be the one that rots. */
@@ -221,7 +284,34 @@ export function SyncCard() {
               below is the detail behind it, for whoever wants the detail. */}
           <div style={{ fontSize: 14, fontWeight: 600 }}>{status.text}</div>
 
-          {code === null
+          {/* Which till is the main, said once, with the one thing a person can
+              do about it from here. */}
+          {role === 'main' && (
+            <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: 6 }}>
+              This is the <strong>main till</strong>. The other tills sync through it,
+              and a new till joins it here.
+            </div>
+          )}
+          {role === 'till' && (
+            <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: 6 }}>
+              This till syncs through the main till, <strong>{mainName}</strong>. A new
+              till joins there, not here.{' '}
+              <button className="link-btn" onClick={() => void promote()}>
+                Make this the main till
+              </button>
+            </div>
+          )}
+          {role === 'equals' && (
+            <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: 6 }}>
+              These tills were paired before ShopOS had a main till. Make one of them
+              the main — usually the one that is always on.{' '}
+              <button className="link-btn" onClick={() => void promote()}>
+                Make this the main till
+              </button>
+            </div>
+          )}
+
+          {role === 'till' ? null : code === null
             ? (
               <button className="btn sm" style={{ marginTop: 10 }} onClick={() => void addATill()}>
                 Add a till
@@ -299,6 +389,11 @@ export function SyncCard() {
                           )}
                       </td>
                       <td className="r">
+                        {role === 'main' && !p.needsPairing && (
+                          <button className="btn ghost sm" onClick={() => void handOver(p)}>
+                            Make this the main
+                          </button>
+                        )}
                         <button className="btn ghost sm" onClick={() => void forget(p)}>
                           This till is gone
                         </button>

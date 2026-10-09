@@ -160,6 +160,8 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* A batch's own price: a till below this bills the new pack at the item's
      old price. The other two columns only record. */
   [70, '070_a_batch_has_its_own_price.sql', 'breaking'],
+  /* Two columns on `sync_state`, which never travels. */
+  [71, '071_one_main_till.sql', 'additive'],
 ]
 
 /**

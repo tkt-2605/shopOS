@@ -56,6 +56,12 @@ const REFUSALS: Readonly<Record<string, string>> = {
     + 'yet. Nothing is wrong with either machine — the counter already there '
     + 'goes on working exactly as before. Settings, Licence on that till shows '
     + 'the shop id to quote when you ask us for the multi-counter plan.',
+  /* Tills join the main and nobody else. The other till is working; it is
+     simply not the one to join. */
+  NOT_THE_MAIN:
+    'That till is not the shop’s main till, so it cannot let a till in. Join '
+    + 'the main till instead — Settings, Two tills on any till in the shop says '
+    + 'which one it is.',
   UNKNOWN_PEER: 'The other till does not know this one. Pair them again.',
   BAD_SIGNATURE: 'The other till would not accept this one. Pair them again.',
   NOT_READY:

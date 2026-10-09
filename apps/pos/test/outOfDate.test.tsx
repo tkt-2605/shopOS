@@ -41,7 +41,9 @@ vi.mock('../src/core/device', () => ({
     return true
   },
 }))
-vi.mock('../src/core/syncHost', () => ({ servingOn: async () => null, lookAround: async () => [] }))
+vi.mock('../src/core/syncHost', () => ({
+  servingOn: async () => null, lookAround: async () => [], keepTheDoorRight: async () => undefined,
+}))
 vi.mock('../src/core/log', () => ({ logEvent: vi.fn(), describe: String }))
 vi.mock('../src/core/syncFetch', () => ({ syncFetch: vi.fn() }))
 

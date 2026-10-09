@@ -4,7 +4,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   migrate, bootstrap, createRegister, handleSyncRequest, offerPairing, withdrawPairing,
-  pairWith, pairedPeers, httpTransport, syncWith, newId, LISTEN_PORT_HEADER,
+  pairWith, pairedPeers, httpTransport, syncWith, newId, LISTEN_PORT_HEADER, keepTillsEqual,
   type SqlDriver, type SyncTransport, type SyncResult,
 } from '@shopos/core'
 import { openDatabase } from '@shopos/core/node'
@@ -33,6 +33,11 @@ import { asTill, installTillContext, type TillContext } from './context.js'
  */
 
 export interface TillOptions {
+  /**
+   * A shop's shape -- the first till that lets another in becomes the main,
+   * and only the main lets tills in. Off by default: see `startTill`.
+   */
+  star?: boolean
   /** Its own SQLite file and attachments live here. */
   dataDir: string
   deviceId: string
@@ -127,6 +132,11 @@ export interface Till {
 
 export async function startTill(opts: TillOptions): Promise<Till> {
   installTillContext()
+  /* The bench proves N tills converge over *any* graph, and builds its lines,
+     rings and meshes through the real pairing route. A shop is a star with one
+     main (`docs/specs/one-main-till.md`), which is one graph among those, so
+     the bench keeps every till equal unless a scenario asks for the star. */
+  keepTillsEqual(opts.star !== true)
 
   mkdirSync(opts.dataDir, { recursive: true })
   const db = openDatabase(join(opts.dataDir, 'shop.db'))

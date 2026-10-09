@@ -11,6 +11,7 @@ import { applyBatch } from './apply.js'
 import { BATCH, changedHere, collectChanges } from './collect.js'
 import { rememberPeer } from './peers.js'
 import { isAheadOfUs, noteTillAhead } from './versionGap.js'
+import { hearMain, mainTill } from './layout.js'
 import type { PeerHello, SyncResult, SyncTransport } from './types.js'
 
 /**
@@ -30,7 +31,7 @@ export async function syncWith(
   const me = deviceId()
   if (me === null) return { ok: false, code: 'NO_IDENTITY' }
 
-  const hello = await transport.hello()
+  const hello = await transport.hello(await mainTill(db))
 
   /* Before a single row moves.
    *
@@ -116,6 +117,12 @@ export async function syncWith(
 
   const peer = await rememberPeer(db, hello.deviceId, hello.label)
   await recordWhatTheySaid(db, hello)
+  /* Who the main is, before anything moves, and whatever the answer the round
+     goes on. A peer that turns out to be an old main still holds bills the
+     shop needs, and the merge is the same whoever is the main -- what stops
+     two mains is that the lower one hears the higher, not that they stop
+     talking. See `sync/layout.ts`. */
+  await hearMain(db, { device: hello.mainDevice, epoch: hello.mainEpoch })
 
   // ── pull ────────────────────────────────────────────────────────────────
   const incoming = await transport.fetch(peer.theirCursor, BATCH)

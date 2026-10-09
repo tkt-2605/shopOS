@@ -1,12 +1,12 @@
 import {
   syncUntilDone, httpTransport, pairedPeers, pruneAcknowledged, recordAttempt,
-  serveAs, rememberAddress, SyncHttpError, type SqlDriver,
+  serveAs, rememberAddress, SyncHttpError, tillRole, type SqlDriver,
 } from '@shopos/core'
 import { chosenRegister } from './device'
 import { caughtUpWith } from './outOfDate'
 import { caughtUpAfterRestore } from './restoreHold'
 import { logEvent } from './log'
-import { servingOn, lookAround } from './syncHost'
+import { servingOn, lookAround, keepTheDoorRight } from './syncHost'
 import { syncFetch } from './syncFetch'
 import { nextBackoff } from '@shopos/core'
 
@@ -44,6 +44,16 @@ import { nextBackoff } from '@shopos/core'
  * other till's changes on a counter that is not selling anything right now.
  */
 const EVERY_MS = 45_000
+
+/**
+ * How often a till that syncs through a main asks it.
+ *
+ * Shorter than the floor above, because a till is now the only side that
+ * dials: the main has no address for its tills and never starts a round, so a
+ * bill rung up at the main reaches a till only when that till next asks. A
+ * hello that finds nothing is one small signed request on the LAN.
+ */
+const TILL_EVERY_MS = 15_000
 
 /**
  * How long a write waits for the writes beside it.
@@ -120,9 +130,20 @@ export function onSyncRound(fn: (reports: LoopReport[]) => void): () => void {
   return () => { watchers.delete(fn) }
 }
 
+/** When the last round started, so a tick knows whether the floor is due. */
+let lastRoundAt = 0
+
+/* Every `TILL_EVERY_MS`, a till that syncs through a main asks it; every other
+   till keeps the old floor. Asked per tick, because a handover changes which
+   one this is. */
+async function tick(db: SqlDriver): Promise<void> {
+  const due = Date.now() - lastRoundAt >= EVERY_MS
+  if (due || await tillRole(db) === 'till') await runOnce(db)
+}
+
 export function startSyncLoop(db: SqlDriver): void {
   if (timer !== null) return
-  timer = setInterval(() => { void runOnce(db) }, EVERY_MS)
+  timer = setInterval(() => { void tick(db).catch(() => undefined) }, TILL_EVERY_MS)
   // Once at the start, so a till that has just been switched on does not wait
   // three quarters of a minute before it knows anything.
   void runOnce(db)
@@ -189,6 +210,7 @@ export function nudgeSync(db: SqlDriver): void {
 export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> {
   if (running) return { peers: 0, skipped: true, reports: [] }
   running = true
+  lastRoundAt = Date.now()
   const reports: LoopReport[] = []
   let paired = 0
 
@@ -335,6 +357,10 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
        confirmed. A change dropped early is one a switched-off till never learns
        about, and nothing afterwards will mention it again. */
     if (peers.length > 0) await pruneAcknowledged(db)
+
+    /* A round is where a till hears that it has become the main, or stopped
+       being it, so the door is checked after every one. */
+    await keepTheDoorRight(db).catch((err: unknown) => logEvent('warn', 'sync', describe(err)))
   } finally {
     running = false
   }

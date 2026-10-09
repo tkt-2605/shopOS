@@ -1,22 +1,17 @@
 import { eq, and, lt, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
-import { EXPECTED_SCHEMA_VERSION } from '../../db/schemaVersion.js'
 import { MIN_PEER_SCHEMA_VERSION } from '../../db/migrationKinds.js'
-import { deviceId } from '../../device.js'
 import type { ChangeBatch } from '../../domain/replicaShape.js'
 import { applyBatch, changedHere, collectChanges } from '../sync.js'
-import { feedHead } from '../changefeed.js'
-import { resolveDeviceRegister } from '../registers.js'
-import { getSetting } from '../settings.js'
 import {
   constantTimeEquals, signReply, verify, pairingKey, agreeSecret, isPairingPublicKey, isKeyCommitment,
   codeProof, codeConfirmation,
 } from '../syncAuth.js'
 import { clock } from '../../clock.js'
 import { askingToJoin, letThemIn, offered, pollingAJoin, withdrawPairing } from './pairing.js'
-import { currentServingRegister } from './serving.js'
-import { isAheadOfUs, noteTillAhead } from '../sync/versionGap.js'
+import { mayLetIn } from '../sync/layout.js'
+import { handleHello } from './hello.js'
 import {
   type SyncRequest, type SyncResponse, type SyncServerOptions, ok, parse, peerAddressFrom, refuse,
 } from './wire.js'
@@ -122,6 +117,10 @@ async function handlePair(
 
   const theirDevice = typeof asked.deviceId === 'string' ? asked.deviceId.trim() : ''
   if (theirDevice === '') return refuse(400, 'MALFORMED')
+  /* Tills join the main and nobody else. Refused at the first knock rather
+     than after a person has compared digits, and with a code the asking
+     screen turns into "join the main till instead". */
+  if (!(await mayLetIn(db)).ok) return refuse(409, 'NOT_THE_MAIN')
   /* Three messages arrive on this one path, because they are three turns of one
      conversation and a shop's firewall should not need a fourth port opened to
      hold it: a till asking to come in, that till asking whether it may yet, and
@@ -173,52 +172,6 @@ async function handlePair(
      middle of the conversation. */
   const body = JSON.parse(answer.body) as Record<string, unknown>
   return ok({ ...body, confirm: await codeConfirmation(live.code, theirDevice, joinerKey, ours.publicKey) })
-}
-
-async function handleHello(db: SqlDriver, them: string, request: SyncRequest): Promise<SyncResponse> {
-  /* A newer till asking an older one. It refuses the round at its end; this is
-     how the older till -- which may never dial anybody -- finds out it is the
-     one that has to be updated. */
-  const asker = parse<{ schemaVersion?: unknown; minPeerSchema?: unknown }>(request.body)
-  if (asker !== null && typeof asker.schemaVersion === 'number') {
-    const floor = typeof asker.minPeerSchema === 'number' ? asker.minPeerSchema : asker.schemaVersion
-    if (isAheadOfUs(floor)) noteTillAhead(them, asker.schemaVersion, floor)
-  }
-
-  const [row] = await q(db)
-    .select({ theirCursor: schema.syncPeers.theirCursor })
-    .from(schema.syncPeers)
-    .where(eq(schema.syncPeers.deviceId, them))
-  return ok({
-    deviceId: deviceId(),
-    label: await getSetting(db, 'shop_name'),
-    shopId: await getSetting(db, 'shop_id'),
-    schemaVersion: EXPECTED_SCHEMA_VERSION,
-    minPeerSchema: MIN_PEER_SCHEMA_VERSION,
-    /* Which counter this till bills on. Two tills on one counter mint invoice
-       numbers from the same series, so the asking side refuses before a bill
-       crosses and collides. */
-    registerId: await resolveDeviceRegister(db, currentServingRegister()),
-    // How far we have read of theirs is, from where they stand, how far they
-    // have been read. The two cursors are one number seen from two sides.
-    yourCursorWithThem: row?.theirCursor ?? 0,
-    /* And how far ours goes, which is the half that was missing. Without it the
-       asking till can work out what it owes us and cannot work out what we owe
-       it — so its screen says "everything sent" while it is ninety-five bills
-       short, and every total it prints is short with them. */
-    head: await feedHead(db),
-    /* Answering this request is the proof. A peer that cannot be dialled never
-       reaches this code, so the value is always true here — and it is sent
-       anyway, because the field is how a client that *cannot* answer says so
-       when it is the one holding the conversation. */
-    answers: true,
-    /* This till's own clock. Nothing secret — the request that got here was
-       signed with a timestamp of the caller's, so both machines already know
-       each other's idea of the time. What it buys is the shop being told while
-       the two are still talking, rather than at the moment every round starts
-       failing with `STALE`. */
-    now: clock.now(),
-  })
 }
 
 async function handleFetch(

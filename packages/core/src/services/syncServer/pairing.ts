@@ -8,6 +8,7 @@ import { newId } from '../../ids.js'
 import { seedFeedWithEverything } from '../changefeed.js'
 import { getSetting } from '../settings.js'
 import { entitled } from '../licence.js'
+import { becomeMainIfAlone, mayLetIn } from '../sync/layout.js'
 import {
   mintPairingCode, myFingerprint, pairingKey, agreeSecret, comparisonDigits, keyCommitment, type PairingKey,
 } from '../syncAuth.js'
@@ -319,6 +320,14 @@ export async function letThemIn(
   const succeeding = replaces !== null && await isPeer(db, replaces)
   if (!succeeding && !await entitled(db, 'multiTill', opts)) return refuse(403, 'NEEDS_MULTI_TILL')
 
+  /* Asked again here, at the row that matters, for the same reason the plan
+     is: `handlePair` refuses at the first knock, but this is the one place a
+     till becomes a peer, however it got here. */
+  if (!(await mayLetIn(db)).ok) return refuse(409, 'NOT_THE_MAIN')
+  /* Letting the first till in is what makes this one the main. See
+     `sync/layout.ts`; a shop paired before there was a main stays as it was. */
+  const main = await becomeMainIfAlone(db)
+
   /* The address, here, at the one moment both tills are certainly talking.
      Without it the joining till is recorded as a peer that cannot be reached,
      which reads on every later screen as a till that is paired and quiet. */
@@ -366,6 +375,10 @@ export async function letThemIn(
     shopId: await getSetting(db, 'shop_id'),
     schemaVersion: EXPECTED_SCHEMA_VERSION,
     minPeerSchema: MIN_PEER_SCHEMA_VERSION,
+    /* Who the joining till will sync through. Null on a shop paired before
+       there was a main, which the joining side reads as no claim. */
+    mainDevice: main.device,
+    mainEpoch: main.epoch,
   })
 }
 

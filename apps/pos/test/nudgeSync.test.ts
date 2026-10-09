@@ -39,10 +39,12 @@ vi.mock('@shopos/core', () => ({
   pruneAcknowledged: vi.fn(async () => undefined),
   serveAs: vi.fn(),
   nextBackoff: (n: number) => (n === 0 ? 1000 : n * 2),
+  tillRole: async () => 'equals',
 }))
 vi.mock('../src/core/syncHost', () => ({
   servingOn: async () => null,
   lookAround: async () => [],
+  keepTheDoorRight: async () => undefined,
 }))
 vi.mock('../src/core/device', () => ({ chosenRegister: () => 'a-counter' }))
 vi.mock('../src/core/outOfDate', () => ({ caughtUpWith: async () => undefined }))

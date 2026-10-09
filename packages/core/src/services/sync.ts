@@ -26,6 +26,11 @@ export { syncUntilDone, syncWith } from './sync/round.js'
 export { isAheadOfUs, noteTillAhead, onTillAhead, type TillAhead } from './sync/versionGap.js'
 export { applyBatch } from './sync/apply.js'
 export { adoptRestoredIdentity, type Adopted } from './sync/restored.js'
+export {
+  becomeMainIfAlone, handTheMainTo, hearMain, joinedMain, keepTillsEqual, listens, mainTill, makeThisTheMain,
+  mayLetIn, tillRole,
+  type LetIn, type MainTill, type Role,
+} from './sync/layout.js'
 export type { MergeOutcome } from './sync/apply.js'
 export {
   acknowledgeConflicts, acknowledgeQuarantine, discardQuarantined, quarantinedRecords,

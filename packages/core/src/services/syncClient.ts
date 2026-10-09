@@ -14,6 +14,7 @@ import { clock } from '../clock.js'
 import { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 import { assertSafeToSpeak } from './sync/reach.js'
+import { joinedMain } from './sync/layout.js'
 
 /**
  * The side of a sync that asks.
@@ -107,8 +108,11 @@ export function httpTransport(
   return {
     /* Our version, so a till we ask that is behind us learns it is. A build
        from before this sends nothing and the far side reads nothing into it. */
-    hello: () => ask<PeerHello>('/hello', {
+    hello: (main) => ask<PeerHello>('/hello', {
       schemaVersion: EXPECTED_SCHEMA_VERSION, minPeerSchema: MIN_PEER_SCHEMA_VERSION,
+      /* Who we believe is the main. An old main that came back is dialled by
+         nobody and hears it only here, from a till that asks it something. */
+      ...(main === undefined ? {} : { mainDevice: main.device, mainEpoch: main.epoch }),
     }),
     fetch: (since, limit) => ask<ChangeBatch>('/fetch', { since, limit }),
     offer: (batch) => ask<{ upTo: number }>('/offer', batch),
@@ -155,6 +159,12 @@ export interface PairOutcome {
    * adds the field later cannot ask a shop to re-pair every till it owns.
    */
   fingerprint?: string | null
+  /**
+   * Which till this one now syncs through, and at which epoch. Absent from a
+   * shop paired before there was a main. See `sync/layout.ts`.
+   */
+  mainDevice?: string | null
+  mainEpoch?: number
 }
 
 /**
@@ -222,6 +232,7 @@ function justTheShop(o: PairOutcome & { secret: string }): PairOutcome {
   return {
     deviceId: o.deviceId, label: o.label, shopId: o.shopId,
     schemaVersion: o.schemaVersion, fingerprint: o.fingerprint ?? null,
+    mainDevice: o.mainDevice ?? null, mainEpoch: o.mainEpoch ?? 0,
   }
 }
 
@@ -253,6 +264,8 @@ async function agreed(
   return {
     deviceId: it.deviceId, label: it.label ?? null, shopId: it.shopId ?? null,
     schemaVersion: it.schemaVersion, fingerprint: it.fingerprint ?? null, secret,
+    mainDevice: typeof it.mainDevice === 'string' ? it.mainDevice : null,
+    mainEpoch: typeof it.mainEpoch === 'number' ? it.mainEpoch : 0,
   }
 }
 
@@ -270,6 +283,8 @@ async function rememberTheShop(
   await q(db).insert(schema.syncPeers)
     .values({ deviceId: outcome.deviceId, ...peer, createdAt: clock.iso() })
     .onConflictDoUpdate({ target: schema.syncPeers.deviceId, set: peer })
+  // After the peer row, so `joinedMain` can tell whether this till has others.
+  await joinedMain(db, outcome.deviceId, { device: outcome.mainDevice, epoch: outcome.mainEpoch })
 }
 
 /**
