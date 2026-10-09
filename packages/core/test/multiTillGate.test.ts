@@ -9,6 +9,7 @@ import { httpTransport, pairWith, pairedPeers, SyncHttpError } from '../src/serv
 import { setDeviceId, deviceId } from '../src/device.js'
 import { setSetting } from '../src/services/bootstrap.js'
 import { allows, GATED } from '../src/domain/licence.js'
+import { mayTakeMoney } from '../src/services/extraCounters.js'
 import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
 import { TEST_KEYS, licenseTill } from './licenceHelper.js'
 import type { SqlDriver } from '../src/db/driver.js'
@@ -179,6 +180,14 @@ describe('a shop that already has two tills', () => {
       'SELECT name FROM products WHERE name = ?', ['Sold after it lapsed'],
     )
     expect(landed?.name, 'a lapsed shop must go on merging').toBe('Sold after it lapsed')
+
+    /* The rule of 27 September, built: once the plan is past grace the extra
+       till stops *starting* money documents, and the main -- the till it
+       joined -- goes on billing with the whole shop's books. Sync carries on
+       either way, so nothing either till holds is stranded. The licence that
+       says so travelled here with the round above, as every setting does. */
+    expect(await as(joiner, () => mayTakeMoney(joiner.db, { keys: TEST_KEYS })), 'the extra till').toBe(false)
+    expect(await as(host, () => mayTakeMoney(host.db, { keys: TEST_KEYS })), 'the main').toBe(true)
   })
 
   it('keeps a shop whose licence was removed entirely running', async () => {

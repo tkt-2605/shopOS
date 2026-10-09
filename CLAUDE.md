@@ -22,6 +22,11 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
 
 ## Rules that are not negotiable
 
+- A shop syncs through one main till (`sync/layout.ts`, `docs/specs/one-main-till.md`):
+  only the main lets tills in and listens, a till dials it, and who is the main
+  travels in every hello with an epoch. A change of main is a person's decision,
+  never automatic. A new till joins by taking a copy of the main's database.
+
 - Offline-first. The counter works with the line down. No fetch from the webview
   (CSP `connect-src` inherits `'self'`); network code lives in Rust.
 - Money is integer paise, branded `Money`. Quantities are scaled x10^4 (`QTY_SCALE`).
@@ -49,12 +54,12 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
   needs to take money, and that list is asserted in a test. Plans (decided 27
   Sep): Free is one counter for ever; Business is several counters, bought
   once, permanent; Cloud is monthly and includes several counters only while
-  paid. When paid time ends without Business, the shop does one final sync
-  and goes back to one counter -- extra counters stop starting money
-  documents, and never before they have handed over, because counters billing
-  after sync has stopped is what splits the books. **Decided, not built**:
-  until it is, the code and `multiTillGate.test.ts` still keep the old rule
-  (never gate syncing). Everything unconfigured fails closed and names the
+  paid. When paid time ends without Business, the extra counters stop
+  starting money documents once grace is over (`services/extraCounters.ts`)
+  and the main counter goes on billing with the whole shop's books. Built 10
+  Oct with one change from the 27 Sep text: extra tills keep syncing rather
+  than stopping after a final sync, so nothing they hold is stranded -- a
+  counter that cannot bill cannot split the books. Everything unconfigured fails closed and names the
   file to edit -- `NOT_CONFIGURED`, never `BAD_SIGNATURE`. See
   `docs/specs/licensing-and-accounts.md`, *When paid time ends*.
 - Staff sign in at the till with a username and a password, offline. Phone and

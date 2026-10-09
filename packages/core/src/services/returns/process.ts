@@ -5,6 +5,7 @@ import { requirePermission } from '../../integrity/permissions.js'
 import type { CreateReturnInput, ProcessReturnResult } from './types.js'
 import { createReturn } from './create.js'
 import { submitReturn } from './submit.js'
+import { requireMayTakeMoney } from '../extraCounters.js'
 
 /*
  * A return taken in one step, as the counter takes one: raised and posted
@@ -23,6 +24,7 @@ import { submitReturn } from './submit.js'
  */
 export async function processReturn(db: SqlDriver, input: CreateReturnInput): Promise<ProcessReturnResult> {
   await requirePermission(db, input.actorId, 'sales_return', 'create')
+  await requireMayTakeMoney(db)
   await requirePermission(db, input.actorId, 'sales_return', 'submit')
   const created = await createReturn(db, input)
   if (!created.ok) return created

@@ -13,6 +13,7 @@ import { loadOpenBills } from './outstanding.js'
 import type { ReceiptMethod } from './receipts.js'
 import { requirePermission } from '../../integrity/permissions.js'
 import { postVoucherGl } from '../ledger.js'
+import { requireMayTakeMoney } from '../extraCounters.js'
 
 /*
  * Advance credit: money the shop is holding for a customer, taken before
@@ -139,6 +140,7 @@ export async function applyAdvance(
   input: { customerId: string; actorId: string; billId?: string; now?: Date },
 ): Promise<ApplyAdvanceResult> {
   await requirePermission(db, input.actorId, 'payment', 'create')
+  await requireMayTakeMoney(db)
   /* The whole of it in one transaction. What the customer holds and what they
      owe are read and spent together; read first and spent after, two presses
      in a row measured the same advance and spent it twice. */
@@ -260,6 +262,7 @@ export async function refundAdvance(
   input: RefundAdvanceInput,
 ): Promise<RefundAdvanceResult> {
   await requirePermission(db, input.actorId, 'payment', 'create')
+  await requireMayTakeMoney(db)
   if (input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
   // What is held is read inside the transaction that pays it out, or two
   // refunds in a row could each be measured against the same balance.

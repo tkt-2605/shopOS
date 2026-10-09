@@ -1346,6 +1346,29 @@ setting wins the merge, and the other code silently stops working. The card
 shows when the code in force was made, which is how an owner would notice.
 The owner's phone and email login through the portal is the planned second way in.
 
+## One main till (10 October, branch `one-main-till`)
+
+Every till syncs through one main: a till on the LAN for Business, the cloud
+for Cloud once Phase 6 has a cloud peer. `docs/specs/one-main-till.md` has the
+plan and, at its top, what was built and where that differs.
+
+- The first till that lets another in becomes the main; only the main lets
+  tills in (`NOT_THE_MAIN`) and listens; a till dials it every 15 seconds.
+  Who is the main travels in every hello with an epoch (migration 071), so an
+  old main that comes back steps down at first contact. Settings, Two tills
+  can make a till the main, or hand the main to a till.
+- A new till joins by taking a copy of the main's database (`/copy`, Rust
+  `shop_copy.rs`, installed through the restore path with its own tables
+  carried across), not the shop through the feed, and the main no longer
+  seeds its feed for it -- which was re-sending the shop to every till.
+- When the plan for several counters is past grace, extra tills stop
+  starting money documents and the main bills on (`extraCounters.ts`). They
+  keep syncing: a change from the 27 September text, for the owner to confirm.
+
+Open: the installer cannot add a firewall rule while it installs per-user;
+stage 7 (the cloud as main, the home till, the grace window on the cloud)
+waits for the cloud peer.
+
 ## Not committed
 
 `docs/specs.zip` — a redundant archive of `docs/specs/`. Left untracked

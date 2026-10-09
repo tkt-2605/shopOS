@@ -156,6 +156,7 @@ export async function amendBill(
   input: { billId: string; actorId: string; now?: Date },
 ): Promise<CreateBillResult> {
   await requirePermission(db, input.actorId, 'bill', 'create')
+  // The new draft is made by `createBill`, which asks `requireMayTakeMoney`.
   const source = await loadBill(db, input.billId)
   assertAmendable('bill', parseDocStatus(source.docstatus))
 

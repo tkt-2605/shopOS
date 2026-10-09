@@ -9,6 +9,7 @@ import { writeAudit } from '../../integrity/audit.js'
 import { type ComputedLine, priceBill } from './price.js'
 import type { CreateBillInput, CreateBillResult } from './types.js'
 import { requirePermission } from '../../integrity/permissions.js'
+import { requireMayTakeMoney } from '../extraCounters.js'
 
 /*
  * A bill before it is final: created, and saved again as the cashier works.
@@ -61,6 +62,10 @@ async function writeLines(
 
 export async function createBill(db: SqlDriver, input: CreateBillInput): Promise<CreateBillResult> {
   await requirePermission(db, input.actorId, 'bill', 'create')
+  /* Starting a bill, not finishing one: `saveDraft` and submit are not asked,
+     so a bill already open on a till that has just gone view-only can be
+     finished. See `extraCounters.ts`. */
+  await requireMayTakeMoney(db)
   const priced = await priceBill(db, input)
   if (!priced.ok) return priced
 

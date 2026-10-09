@@ -66,6 +66,7 @@ export {
 export type {
   Entitlement, EntitlementOptions, InstallResult, Grant,
 } from '../services/licence.js'
+export { mayTakeMoney, requireMayTakeMoney, ViewOnlyTillError } from '../services/extraCounters.js'
 export {
   canInstall, dueForCheck, updateWords, CHECK_EVERY_MS,
 } from '../services/update.js'

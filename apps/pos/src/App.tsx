@@ -45,6 +45,7 @@ import PurchaseOrders from './pages/PurchaseOrders'
 import { CouldNotStart } from './entry/CouldNotStart'
 import { Login } from './entry/Login'
 import { UpdateLine } from './ui/UpdateLine'
+import { CounterPlanBanner } from './ui/CounterPlanBanner'
 
 /* Grouped by what the person is doing, rather than one flat list of every screen.
    A cashier lives in Sell and never opens Setup. */
@@ -394,6 +395,9 @@ function Shell() {
         <DeviceTroubleBanner />
         <OutOfDateBanner />
         <RestoreHoldBanner />
+        {/* An extra till whose plan for several counters is ending or has
+            ended: when, and where to bill instead. */}
+        <CounterPlanBanner />
         {/* For whoever may open the dashboard, where the list is: a refund
             taken twice on two counters is found by a sync nobody watches. */}
         <DiscrepancyBanner canReview={pages.includes('dashboard')} />

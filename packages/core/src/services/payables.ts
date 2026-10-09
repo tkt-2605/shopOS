@@ -10,6 +10,7 @@ import { requirePermission } from '../integrity/permissions.js'
 import { nextDocNo, seriesPrefix } from './numbering.js'
 import { openSessionFor, postCashMovement } from './cash.js'
 import { postVoucherGl } from './ledger.js'
+import { requireMayTakeMoney } from './extraCounters.js'
 
 /*
  * What the shop owes its suppliers, and paying them (065).
@@ -63,6 +64,7 @@ export async function paySupplier(
   },
 ): Promise<PaySupplierResult> {
   await requirePermission(db, input.actorId, 'payment', 'create')
+  await requireMayTakeMoney(db)
   if (!Number.isInteger(input.amount) || input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
   const [supplier] = await q(db)
     .select({ id: schema.suppliers.id })

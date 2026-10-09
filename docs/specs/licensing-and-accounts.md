@@ -54,9 +54,9 @@ see the value of.
 
 ### When paid time ends, the shop becomes a Free shop
 
-**Decided by the owner, 27 September 2026. Not built yet**: until it is, the
-code and `multiTillGate.test.ts` still hold the rule it replaces, described
-after this section.
+**Decided by the owner, 27 September 2026. Built 10 October 2026** on the
+branch `one-main-till` (`services/extraCounters.ts`, `ui/CounterPlanBanner.tsx`),
+with one change, below under *As built*.
 
 The plans (`billing.md`, *What is sold*) are Free (one counter, for ever),
 Business (several counters, bought once and permanent) and Cloud (monthly,
@@ -111,6 +111,31 @@ banner; the final sync and the state that says a till has handed over; the
 stop on new money documents; renewal lifting it; and tests for each, including
 a till switched off at the lapse that comes back and still delivers its bills.
 `CLAUDE.md` and `multiTillGate.test.ts` change in the same commit as the code.
+
+### As built
+
+- **The main counter** is the shop's main till (`docs/specs/one-main-till.md`):
+  the first till set up, or the one somebody made the main. Choosing it is
+  "Make this the main till" in Settings, Two tills.
+- **Extra counters stop starting money documents** -- new bills and amends,
+  returns, payments, opening a drawer, payouts -- when no grant on the shop
+  entitles `multiTill` (`mayTakeMoney`). Grace counts as paid, and a licence's
+  state changes only between business days, so it never stops part-way
+  through one. A bill already open may be finished (`saveDraft` and submit are
+  not asked).
+- **The change from the text above: extra tills keep syncing.** They do not
+  stop after a final sync. A till that cannot start a money document cannot
+  split the books, and a till that has stopped syncing would strand whatever
+  else a person does there -- a price, a customer -- and show stale stock to
+  whoever looks it up. So the final sync and the handed-over state are not
+  needed: everything a till holds goes on reaching the main. The owner may
+  still want sync itself to stop; that is a one-line change in `listens` and
+  the loop, and is theirs to decide.
+- **The warning** is a banner on every extra till in the week before the
+  paid-through date and through grace, and afterwards one saying where to
+  bill instead (`counterPlanWords.ts`).
+- Tills paired before there was a main keep billing: nobody has chosen which
+  of them is the counter that goes on.
 
 ### The rule this replaces
 

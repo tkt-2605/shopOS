@@ -9,6 +9,7 @@ import { writeAudit } from '../integrity/audit.js'
 import { recheckDocStatus } from '../integrity/transition.js'
 import { requirePermission } from '../integrity/permissions.js'
 import { postVoucherGl } from './ledger.js'
+import { requireMayTakeMoney } from './extraCounters.js'
 
 export type CashDirection = 'in' | 'out'
 export type TenderMethod = 'cash' | 'upi' | 'card' | 'credit' | 'loyalty' | 'adjustment'
@@ -93,6 +94,8 @@ export async function getOrOpenSession(
   await requirePermission(db, input.userId, 'cash_session', 'create')
   const existing = await openSessionFor(db, input.registerId)
   if (existing) return { sessionId: existing, opened: false }
+  // Opening a drawer is starting to take money; carrying on with one open is not.
+  await requireMayTakeMoney(db)
 
   const sessionId = newId()
   const now = (input.now ?? new Date()).toISOString()
@@ -372,6 +375,7 @@ export async function recordPayout(
   input: { sessionId: string; amount: Money; reason: string | null; userId: string; now?: Date },
 ): Promise<PayoutResult> {
   await requirePermission(db, input.userId, 'cash_session', 'write')
+  await requireMayTakeMoney(db)
   if (!Number.isInteger(input.amount) || input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
   const now = input.now ?? new Date()
 

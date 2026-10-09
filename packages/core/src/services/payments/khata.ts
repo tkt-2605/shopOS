@@ -12,6 +12,7 @@ import { OPENING_ADVANCE_REF } from '../../domain/credit.js'
 import { type ReceiptMethod, type RecordPaymentResult, recordPayment } from './receipts.js'
 import { requirePermission } from '../../integrity/permissions.js'
 import { postVoucherGl } from '../ledger.js'
+import { requireMayTakeMoney } from '../extraCounters.js'
 
 /*
  * The rest of the khata: the receipts a customer has made, what the shop
@@ -162,6 +163,7 @@ export async function recordOpeningBalance(
   },
 ): Promise<OpeningBalanceResult> {
   await requirePermission(db, input.actorId, 'payment', 'create')
+  await requireMayTakeMoney(db)
   if (input.amount === 0) return { ok: false, code: 'INVALID_AMOUNT' }
 
   const closed = await closedFor(db, input.asOf ?? businessDate(input.now ?? new Date()))

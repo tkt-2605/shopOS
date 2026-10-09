@@ -7,6 +7,7 @@ import { writeAudit } from '../../integrity/audit.js'
 import { computeLines } from './compute.js'
 import type { CreateReturnInput, CreateReturnResult } from './types.js'
 import { requirePermission } from '../../integrity/permissions.js'
+import { requireMayTakeMoney } from '../extraCounters.js'
 
 /*
  * A return raised as a draft: the lines checked against what the bill sold and
@@ -15,6 +16,7 @@ import { requirePermission } from '../../integrity/permissions.js'
 
 export async function createReturn(db: SqlDriver, input: CreateReturnInput): Promise<CreateReturnResult> {
   await requirePermission(db, input.actorId, 'sales_return', 'create')
+  await requireMayTakeMoney(db)
   const computed = await computeLines(db, input.billId, input.lines)
   if (!computed.ok) return computed
 

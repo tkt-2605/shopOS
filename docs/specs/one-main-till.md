@@ -4,6 +4,46 @@ Decided 10 October 2026. Built on the branch `one-main-till`, in stages that
 each merge back when green. Nothing here changes how a record merges; it
 changes who talks to whom.
 
+## As built (10 October 2026)
+
+Stages 0–4 and 6 are built on `one-main-till`; 5 was overtaken; 7 waits for
+the Phase 6 cloud peer. Where the build differs from the plan below, the build
+is right and the reason is here.
+
+- **Who dials whom needed no new rule.** A till that does not listen never
+  advertises a port, so the main holds no address for it and dials nobody,
+  and `pairedPeers` was already correct. A till asks the main every 15 seconds
+  instead of 45, because it is now the only side that starts a round.
+- **There is no `STALE_MAIN` refusal.** Every till holds the whole books and
+  merges both ways, so trading rows with an old main is never wrong, and
+  refusing it would strand whatever that main took while it believed it was
+  the main. What stops two mains is the epoch: the hello carries it both ways
+  (the asking till puts its own in the body), the lower side steps down at
+  first contact, and a tie goes to the lower device id.
+- **A planned handover does not introduce the new main to every till.**
+  Pairing keys are made fresh for each pairing, so the old main has no key of
+  the new one's to vouch for. Instead the old main keeps answering the tills
+  that still dial it (`listens`), relaying between them and the new main, and
+  each till is paired with the new main through the ordinary Allow prompt when
+  convenient. Nothing waits on the order things happen in.
+- **The firewall rule is not added.** The installer is per-user
+  (`installMode: currentUser`), and a firewall rule needs an administrator.
+  Changing the install mode moves where every shop's app lives, which is the
+  owner's call, not this branch's.
+- **Stage 5 is not needed.** 0.2.16 made every till create its own counter,
+  with a prefix computed from its device id, so there is nothing for the main
+  to hand out.
+- **Joining by copy keeps the till's identity** rather than taking a new one as
+  a restore does, and carries every table that is the till's own across
+  (`sql/carry-over-after-copy.sql`). A till that has written something the
+  main has not received is refused a copy. A main too old for `/copy` seeds as
+  it always did, so the till falls back to the feed.
+- **Stage 6: extra tills keep syncing.** See `licensing-and-accounts.md`, *As
+  built*.
+- **Tills paired before this** stay equal until somebody chooses a main, and
+  the bench keeps its tills equal (`keepTillsEqual`) because it proves
+  convergence over any graph.
+
 ## Why
 
 Until now every till has been the equal of every other: any till may answer,

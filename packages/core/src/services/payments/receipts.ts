@@ -14,6 +14,7 @@ import { loadOpenBills } from './outstanding.js'
 import { closedFor, type PeriodClosed } from '../books.js'
 import { requirePermission } from '../../integrity/permissions.js'
 import { postVoucherGl, reverseVoucherGl } from '../ledger.js'
+import { requireMayTakeMoney } from '../extraCounters.js'
 
 /*
  * Taking a payment, posting a return's credit against what is owed, and
@@ -49,6 +50,7 @@ export type RecordPaymentResult =
  */
 export async function recordPayment(db: SqlDriver, input: RecordPaymentInput): Promise<RecordPaymentResult> {
   await requirePermission(db, input.actorId, 'payment', 'create')
+  await requireMayTakeMoney(db)
   if (input.amount <= 0) return { ok: false, code: 'INVALID_AMOUNT' }
 
   /* A share of nothing or less is not a share. A negative one also lowered the
