@@ -17,6 +17,7 @@ export function sampleDoc(shop: ReceiptDoc['shop']): ReceiptDoc {
     shop,
     docNo: 'INV/MR/26-27/00023',
     postingDate: businessDate(),
+    postedAt: new Date().toISOString(),
     cashier: 'admin',
     customerName: 'Sri Vidya School',
     items: [

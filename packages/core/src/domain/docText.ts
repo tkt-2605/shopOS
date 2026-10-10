@@ -17,6 +17,20 @@ export function formatDate(iso: string): string {
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
+/** "02:35 pm", in the till's own clock, or '' when there is no usable time. */
+export function formatTime(iso: string | null | undefined): string {
+  if (!iso || iso.length <= 10) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+}
+
+/** The date, and the time after it when the document knows one. */
+export function formatDateTime(date: string, at?: string | null): string {
+  const time = formatTime(at)
+  return time ? `${formatDate(date)} ${time}` : formatDate(date)
+}
+
 export function titleCase(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }

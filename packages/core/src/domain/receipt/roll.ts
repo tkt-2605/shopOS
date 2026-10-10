@@ -3,7 +3,7 @@ import { QTY_SCALE, formatQty } from '../../quantity.js'
 import type { Block, DocFormat } from '../docFormat.js'
 import { rollColumns, STANDARD_RECEIPT, fillTokens } from '../docFormat.js'
 import { formatRate, savingsOf, type ReceiptDoc, type ReceiptItem } from './doc.js'
-import { factsFor } from '../docText.js'
+import { factsFor, formatDateTime } from '../docText.js'
 import { rasterCommand } from './raster.js'
 import {
   INIT, LF, ALIGN_LEFT, ALIGN_CENTER, BOLD_ON, BOLD_OFF, MODE_NORMAL, MODE_BANNER, MODE_TALL,
@@ -85,7 +85,11 @@ function renderBlock(block: Block, doc: ReceiptDoc, width: number): string {
     }
 
     case 'meta': {
-      const out = [ALIGN_LEFT, rule('-', width), kv(doc.docNo, formatDate(doc.postingDate), width)]
+      /* The time goes beside the date when the line has room for it; on a 58mm
+         roll with a long bill number it would wrap, so the date alone stays. */
+      const stamp = formatDateTime(doc.postingDate, doc.postedAt)
+      const when = doc.docNo.length + stamp.length < width ? stamp : formatDate(doc.postingDate)
+      const out = [ALIGN_LEFT, rule('-', width), kv(doc.docNo, when, width)]
       if (doc.customerName) {
         out.push(kv(cut(doc.customerName, Math.floor((width * 2) / 3)), doc.cashier ?? '', width))
       } else if (doc.cashier) {

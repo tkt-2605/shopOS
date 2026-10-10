@@ -652,7 +652,7 @@ tbody tr:hover { background: var(--accent-soft); }
    content becomes a second floor underneath the one set above. */
 .formats > .card { min-width: 0; }
 
-.format-meta { font-size: 11.5px; color: var(--ink-3); }
+.format-meta { font-size: 11.5px; color: var(--ink-3); margin-left: 8px; }
 .format-note { margin: 0 0 12px; font-size: 12.5px; color: var(--ink-3); }
 
 .block-list { display: flex; flex-direction: column; }

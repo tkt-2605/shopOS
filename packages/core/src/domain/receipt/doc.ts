@@ -103,6 +103,8 @@ export interface ReceiptDoc {
   shop: ReceiptShop
   docNo: string
   postingDate: string
+  /** When it was raised (ISO, as stored). Absent prints the date alone, as before. */
+  postedAt?: string | null
   cashier?: string | null
   customerName?: string | null
   items: ReceiptItem[]

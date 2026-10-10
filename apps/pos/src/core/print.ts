@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting } from './device'
 import { logoRaster, logoBlockOf } from './logoRaster'
 import {
-  Receipt, loadShopProfile, loadBillDetail, loadCustomer, customerAccount, businessDate, formatFor,
+  Receipt, loadShopProfile, loadBillDetail, loadBillLoyalty, loadCustomer, customerAccount, businessDate, formatFor,
   loadTaxScheme, billWording, schemeStatement, rateSummaryOf, batchTextFor,
   type SqlDriver, type ReceiptDoc, type ReceiptItem,
 } from '@shopos/core'
@@ -106,8 +106,10 @@ export async function printBill(db: SqlDriver, billId: string): Promise<PrintRes
     shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin },
     docNo: bill.docNo,
     postingDate: bill.postingDate,
+    postedAt: bill.createdAt,
     cashier: bill.createdBy,
     customerName: bill.customerName,
+    ...(await loadBillLoyalty(db, billId, bill.customerId) ?? {}),
     items,
     wording: billWording(scheme),
     ...(schemeStatement(scheme) ? { schemeStatement: schemeStatement(scheme) } : {}),

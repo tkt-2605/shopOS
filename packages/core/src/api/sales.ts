@@ -15,7 +15,7 @@ export * as HtmlTemplate from '../domain/htmlTemplate.js'
 export type { TemplateProblem } from '../domain/htmlTemplate.js'
 export type { Block, BlockKind, DocFormat as DocFormatDef, PaperSize, FormatProblem } from '../domain/docFormat.js'
 export {
-  createBill, submitBill, cancelBill, amendBill, loadLoyaltyProgram, monthToDateSpend, billSummary,
+  createBill, submitBill, cancelBill, amendBill, loadBillLoyalty, loadLoyaltyProgram, monthToDateSpend, billSummary,
   RULE_46F_THRESHOLD,
 } from '../services/billing.js'
 export type {

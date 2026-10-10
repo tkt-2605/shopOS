@@ -1,5 +1,5 @@
 import {
-  buildInvoiceHtml, formatFor, loadBillDetail, loadDocument, loadReturnDetail, loadShopProfile,
+  buildInvoiceHtml, formatFor, loadBillDetail, loadBillLoyalty, loadDocument, loadReturnDetail, loadShopProfile,
   loadTaxScheme, billWording, schemeStatement, rateSummaryOf, stateName, batchTextFor,
   type SqlDriver, type ReceiptDoc, type ReceiptItem, type BillDetailItem,
   type DocWording, type DocumentKind, type PlaceOfSupply, type ReturnDetailItem,
@@ -320,8 +320,10 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
     },
     docNo: bill.docNo,
     postingDate: bill.postingDate,
+    postedAt: bill.createdAt,
     cashier: bill.createdBy,
     customerName: bill.customerName,
+    ...(await loadBillLoyalty(db, billId, bill.customerId) ?? {}),
     items,
     subtotal: bill.subtotal,
     discount: bill.discount,

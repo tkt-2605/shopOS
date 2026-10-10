@@ -148,6 +148,8 @@ export async function countBills(db: SqlDriver, filter: BillFilter = {}): Promis
 export interface BillDetail extends BillListItem {
   /** Who it was billed to, for selling the same list to them again. */
   customerId: string | null
+  /** When the bill was raised, as stored (UTC ISO) -- the time of day the paper shows. */
+  createdAt: string
   subtotal: Money
   discount: Money
   taxableTotal: Money
@@ -214,6 +216,7 @@ export async function loadBillDetail(db: SqlDriver, billId: string): Promise<Bil
       docNo: schema.bills.docNo,
       docstatus: schema.bills.docstatus,
       postingDate: schema.bills.postingDate,
+      createdAt: schema.bills.createdAt,
       customerId: schema.bills.customerId,
       customerName: schema.bills.customerName,
       subtotal: schema.bills.subtotal,

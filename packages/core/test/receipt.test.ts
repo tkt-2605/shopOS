@@ -169,6 +169,13 @@ describe('receipt content', () => {
     expect(text).toContain('UPI')
   })
 
+  it('prints the time beside the date when the bill knows it', () => {
+    const at = new Date(2026, 9, 10, 14, 35).toISOString()
+    const text = visibleLines(buildReceipt({ ...doc, postedAt: at })).join('\n')
+    expect(text).toMatch(/\b0?2:35 pm\b/i)
+    expect(visibleLines(buildReceipt(doc)).join('\n')).not.toMatch(/\d:\d\d (am|pm)/i)
+  })
+
   it('leaves loyalty out entirely when no points were earned', () => {
     const none = { ...doc, pointsEarned: 0 }
     expect(visibleLines(buildReceipt(none)).join('\n')).not.toContain('Points earned')
