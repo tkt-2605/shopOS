@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { setStockPolicy } from '../src/services/features.js'
 import { rupees, add, type Money } from '../src/money.js'
 import { fromUnits, toUnits } from '../src/quantity.js'
-import { createBill, submitBill, cancelBill, amendBill, monthToDateSpend } from '../src/services/billing.js'
+import { createBill, submitBill, cancelBill, amendBill, monthToDateSpend, loadBillLoyalty } from '../src/services/billing.js'
 import { createReturn, submitReturn } from '../src/services/returns.js'
 import { currentStock, postMovement, recomputeStock } from '../src/services/stock.js'
 import { fiscalYear, fiscalYearTag, nextDocNo, docNoFits, MAX_DOC_NO } from '../src/services/numbering.js'
@@ -408,6 +408,8 @@ describe('loyalty through a bill', () => {
 
     const r = await submitBill(fx.db, { billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: fx.adminId })
     expect(r.ok && r.pointsEarned).toBe(10)
+    // The paper reads the same figure back from the ledger, with the balance after it.
+    expect(await loadBillLoyalty(fx.db, draft.billId, c)).toEqual({ pointsEarned: 10, pointsBalance: 10 })
   })
 
   it('does not earn on the credit portion', async () => {

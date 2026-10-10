@@ -3,7 +3,7 @@ import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { type Money, formatWithSymbol as formatMoney, sub } from '../../money.js'
 import { supplyTypeFor, type SupplyType } from '../../domain/tax.js'
-import { type LoyaltyProgram, type LoyaltyEntry, DEFAULT_PROGRAM } from '../../domain/loyalty.js'
+import { type LoyaltyProgram, type LoyaltyEntry, DEFAULT_PROGRAM, availablePoints } from '../../domain/loyalty.js'
 import { getSetting } from '../settings.js'
 import type { BillTotals } from './types.js'
 
@@ -139,6 +139,27 @@ export async function loadLoyaltyEntries(db: SqlDriver, customerId: string): Pro
     })
     .from(schema.loyaltyEntries)
     .where(eq(schema.loyaltyEntries.customerId, customerId))
+}
+
+/**
+ * What the paper says about points: what this bill earned, and what the customer
+ * holds now. Read from the entry the bill wrote at submit, so a reprint matches
+ * the loyalty ledger and not a recomputation. Null for a walk-in, or a bill that
+ * earned nothing, which prints no block.
+ */
+export async function loadBillLoyalty(
+  db: SqlDriver, billId: string, customerId: string | null,
+): Promise<{ pointsEarned: number; pointsBalance: number } | null> {
+  if (!customerId) return null
+  const [entry] = await q(db)
+    .select({ points: schema.loyaltyEntries.points, earned: schema.loyaltyEntries.earned,
+              cancelledAt: schema.loyaltyEntries.cancelledAt })
+    .from(schema.loyaltyEntries)
+    .where(eq(schema.loyaltyEntries.billId, billId))
+  if (!entry || entry.cancelledAt !== null) return null
+  const pointsEarned = entry.earned ?? entry.points
+  if (pointsEarned <= 0) return null
+  return { pointsEarned, pointsBalance: availablePoints(await loadLoyaltyEntries(db, customerId)) }
 }
 
 export async function loadLoyaltyProgram(db: SqlDriver): Promise<LoyaltyProgram> {

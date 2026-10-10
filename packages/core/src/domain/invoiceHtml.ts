@@ -7,7 +7,7 @@ import {
 import { fillTokens, PAPER, usesTemplate, type Block, type DocFormat } from './docFormat.js'
 import { renderTemplate, templateData } from './htmlTemplate.js'
 import { savingsOf } from './receipt/doc.js'
-import { factsFor, escapeHtml as esc, titleCase, formatDate } from './docText.js'
+import { factsFor, escapeHtml as esc, titleCase, formatDate, formatDateTime } from './docText.js'
 
 /**
  * The same document, on a sheet.
@@ -115,7 +115,7 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
     case 'meta':
       return `<table class="meta"><tbody>
         <tr><th>${esc(wordsFor(doc).docNo)}</th><td>${esc(doc.docNo)}</td></tr>
-        <tr><th>Date</th><td>${esc(formatDate(doc.postingDate))}</td></tr>
+        <tr><th>Date</th><td>${esc(formatDateTime(doc.postingDate, doc.postedAt))}</td></tr>
         ${doc.againstDocNo ? `<tr><th>Against invoice</th><td>${esc(doc.againstDocNo)}${
           doc.againstDate ? esc(` dated ${formatDate(doc.againstDate)}`) : ''}</td></tr>` : ''}
         ${doc.validUntil ? `<tr><th>Valid until</th><td>${esc(formatDate(doc.validUntil))}</td></tr>` : ''}
