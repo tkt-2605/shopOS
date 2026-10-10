@@ -81,6 +81,14 @@ documents. That is the rule already decided on 27 Sep in
 `licensing-and-accounts.md` (*When paid time ends*), and this spec is where it
 gets built.
 
+**Which machine should be the main** (owner's guidance, 10 October): with
+two or three tills, the counter that is on whenever the shop is open. With
+four or more, a dedicated always-on PC that nobody bills on -- a main till in
+every respect, set up as the shop and joined by the counters -- or the cloud.
+A shop of four counters where none is reliably on is the one case where every
+till being equal did better, and that is the answer to it rather than going
+back to it.
+
 **The home till** is the local till that takes the main back when Cloud ends.
 The owner picks it when subscribing; by default it is the till that was the
 local main, otherwise the first till. Nobody has to choose on the bad day.
