@@ -6,6 +6,7 @@ import { type ChangeBatch, type ChangeRecord } from '../../domain/replicaShape.j
 import { applyingRemote } from '../changefeed.js'
 import { recomputeStock } from '../stock.js'
 import { reconcileLoyalty } from '../loyaltyLedger.js'
+import { reconcileDoubleReversals } from '../stockReversals.js'
 import { reconcileReturnedQty } from '../returns/reconcile.js'
 import { reconcileFulfilledQty } from '../documents/reconcile.js'
 import { clock } from '../../clock.js'
@@ -103,6 +104,14 @@ export async function applyBatch(
      in the shop, forty-seven thousand movements on a year of trade, because one
      row for one item came across. */
   if (outcome.applied > 0) {
+    /* Before the stock is recomputed, so the cache is worked out from a ledger
+       that has already taken back a second reversal of one document. See
+       `stockReversals.ts`. */
+    const reversed = idsIn(arrived, new Set(['stock_ledger']), (r) => (
+      String(r.row?.['voucher_type'] ?? '').endsWith('_reversal') ? r.row?.['voucher_id'] : undefined))
+    if (reversed === null || reversed.length > 0) {
+      await reconcileDoubleReversals(db, { repair: true, voucherIds: reversed })
+    }
     const touched = productsIn(arrived)
     if (touched === null || touched.length > 0) {
       await recomputeStock(db, { repair: true, ...(touched ? { productIds: touched } : {}) })
