@@ -75,7 +75,7 @@ export function LicenceCard() {
         await reload()
         say('Licence saved.')
       } else {
-        setFailed(installProblem(result.code, result.shopId))
+        setFailed(installProblem(result.code, result.shopId, result.cause))
       }
     } finally {
       setBusy(false)

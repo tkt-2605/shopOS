@@ -234,7 +234,7 @@ export async function storedCodes(db: SqlDriver): Promise<string[]> {
 
 export type InstallResult =
   | { ok: true; entitlement: Entitlement }
-  | { ok: false; code: VerifyFailure | 'WRONG_SHOP'; shopId: string | null }
+  | { ok: false; code: VerifyFailure | 'WRONG_SHOP'; shopId: string | null; cause?: string }
 
 /**
  * Stores a licence code, if it is genuine and for this shop.
@@ -252,7 +252,10 @@ export async function installToken(
 
   const verified = await verifyToken(trimmed, keys)
   if (!verified.ok) {
-    return { ok: false, code: verified.code, shopId: readTokenUnverified(trimmed)?.shopId ?? null }
+    return {
+      ok: false, code: verified.code, shopId: readTokenUnverified(trimmed)?.shopId ?? null,
+      ...(verified.cause === undefined ? {} : { cause: verified.cause }),
+    }
   }
 
   const token = verified.token

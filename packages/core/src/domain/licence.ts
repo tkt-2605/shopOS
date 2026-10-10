@@ -77,7 +77,8 @@ export type VerifyFailure =
 
 export type VerifyResult =
   | { ok: true; token: LicenceToken }
-  | { ok: false; code: VerifyFailure }
+  /** `cause` is for a support call, never for the counter: why a build that has keys still could not use them. */
+  | { ok: false; code: VerifyFailure; cause?: string }
 
 /** A public key this build will accept a signature from, by `kid`. */
 export interface SigningKey {
@@ -130,10 +131,11 @@ export async function verifyToken(
   let publicKey: VerifyingKey
   try {
     publicKey = await importPublicKey(key.publicKey)
-  } catch {
-    // A key this build ships that is not a key. Not the holder's fault, and
-    // not something they can fix, but it is still not a verified licence.
-    return { ok: false, code: 'NOT_CONFIGURED' }
+  } catch (e) {
+    // A key this build ships that is not a key, or a webview that cannot do
+    // Ed25519. Not the holder's fault, and not something they can fix, but it
+    // is still not a verified licence. The cause is kept so a report says which.
+    return { ok: false, code: 'NOT_CONFIGURED', cause: describeCause(e) }
   }
 
   const good = await subtle().verify({ name: 'Ed25519' }, publicKey, signature, signed)
@@ -376,6 +378,12 @@ export function encodePayload(token: LicenceToken): string {
     issuedAt: token.issuedAt,
     kid: token.kid,
   })))
+}
+
+function describeCause(e: unknown): string {
+  const g = globalThis as { isSecureContext?: boolean }
+  const secure = g.isSecureContext === undefined ? '' : `, secure context ${g.isSecureContext}`
+  return `${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}${secure}`
 }
 
 async function importPublicKey(base64url: string): Promise<VerifyingKey> {
