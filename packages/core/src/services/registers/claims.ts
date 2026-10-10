@@ -2,6 +2,7 @@ import { eq, ne, and, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { deviceId } from '../../device.js'
+import { tillRole } from '../sync/layout.js'
 
 /*
  * Claims: which till has said it is billing on a counter, and taking one
@@ -167,6 +168,13 @@ export async function claims(db: SqlDriver, now = Date.now()): Promise<Map<strin
   const known = new Map(peers.map((p) => [p.deviceId, p.label]))
 
   const me = deviceId()
+  /* Only where every till pairs with every other does "never met" mean
+     "never existed". A till that syncs through a main has met the main and
+     nobody else, so every other till in the shop is a stranger to it -- and
+     reading them as ghosts offered a live till's counter, renewed that
+     morning, to whoever opened Counters. There, a claim goes stale by its
+     date and nothing else. The main has met every till, so it keeps the rule. */
+  const strangersAreGhosts = await tillRole(db) !== 'till'
   const held = new Map<string, Claim>()
   for (const row of rows) {
     if (row.claimedBy === null) {
@@ -177,7 +185,7 @@ export async function claims(db: SqlDriver, now = Date.now()): Promise<Map<strin
     /* A holder this shop has never paired with and that is not this machine is
        a ghost: the claim came in on a restored backup, and no amount of waiting
        will produce the till that made it. */
-    const ghost = !mine && !known.has(row.claimedBy)
+    const ghost = strangersAreGhosts && !mine && !known.has(row.claimedBy)
     const age = row.claimedAt === null ? null : now - Date.parse(row.claimedAt)
     held.set(row.id, {
       deviceId: row.claimedBy,
@@ -264,6 +272,11 @@ export async function forgetPeer(db: SqlDriver, peerDeviceId: string): Promise<v
  * restore, rather than discovered on a Saturday.
  */
 export async function ghostClaims(db: SqlDriver): Promise<Claim[]> {
+  /* A till that syncs through a main has met only the main, so every other
+     till in the shop would be listed here -- and freed, every counter in the
+     shop, by one press of the button this feeds. Only a till that has met
+     every till can say one is a ghost; the main can. See `claims`. */
+  if (await tillRole(db) === 'till') return []
   const held = await claims(db)
   const peers = await q(db)
     .select({ deviceId: schema.syncPeers.deviceId })
@@ -287,4 +300,40 @@ export async function clearGhostClaims(db: SqlDriver): Promise<number> {
       .where(eq(schema.registers.claimedBy, ghost.deviceId!))
   }
   return ghosts.length
+}
+
+export class CounterTakenError extends Error {
+  readonly code = 'COUNTER_TAKEN'
+  constructor() {
+    super(
+      'Another till has taken this counter, so this one cannot issue bills on it -- '
+      + 'two tills on one counter give two customers the same bill number. '
+      + 'Open Counters and choose the counter this machine sits at.',
+    )
+    this.name = 'CounterTakenError'
+  }
+}
+
+/**
+ * Refuses to mint a number on a counter another till now holds.
+ *
+ * `resolveDeviceRegister` asks the same question, but only when a till loads
+ * its counter at start. A claim that moves while a till is running -- another
+ * till pressed "Use here" -- was noticed by nobody: the first three-till run
+ * had two tills both issuing BTYW4 numbers, kept apart only because the main
+ * passed each one's latest number to the other within seconds. With the main
+ * off they would have minted the same ones. So it is asked again at the one
+ * moment it matters, as the number is taken.
+ *
+ * A counter nobody has claimed is not a loss: that is every counter in a shop
+ * that has only ever had one till.
+ */
+export async function assertCounterIsMine(db: SqlDriver, registerId: string): Promise<void> {
+  const me = deviceId()
+  if (me === null) return
+  const [row] = await q(db)
+    .select({ claimedBy: schema.registers.claimedBy })
+    .from(schema.registers)
+    .where(eq(schema.registers.id, registerId))
+  if (row && row.claimedBy !== null && row.claimedBy !== me) throw new CounterTakenError()
 }

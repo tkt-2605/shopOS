@@ -19,6 +19,6 @@ export {
 } from './registers/device.js'
 export {
   CLAIM_GOES_STALE_MS, claimIfUnclaimed, claimRegister, claims, clearGhostClaims, forgetPeer,
-  ghostClaims, renewClaim, takeRegister,
+  ghostClaims, renewClaim, takeRegister, assertCounterIsMine, CounterTakenError,
 } from './registers/claims.js'
 export type { Claim, CounterTaken, TakeRegisterResult } from './registers/claims.js'

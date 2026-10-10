@@ -11,7 +11,7 @@ import { nextDocNo } from '../numbering.js'
 import { applyBillFulfilment } from '../documents.js'
 import { loadBill, loadLoyaltyEntries, loadLoyaltyProgram, monthToDateSpend, recipientSnapshot } from './load.js'
 import type { SubmitBillInput, SubmitBillResult } from './types.js'
-import { refusedAsInvoice, refusedOnCredit, shelfFor } from './guards.js'
+import { assertCounterIsMine, refusedAsInvoice, refusedOnCredit, shelfFor } from './guards.js'
 import { postTenders } from './tender.js'
 import { takeOffShelf } from './stock.js'
 import { postVoucherGl } from '../ledger.js'
@@ -143,6 +143,9 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
     const snapshot = await recipientSnapshot(tx, bill)
     const nowIso = now.toISOString()
 
+    // As the number is taken: a counter another till has taken since this one
+    // loaded it is not one to mint on. See `assertCounterIsMine`.
+    await assertCounterIsMine(tx, bill.registerId)
     const docNo = await nextDocNo(tx, 'bill', register?.prefix ?? 'XX', now)
 
     await takeOffShelf(tx, {

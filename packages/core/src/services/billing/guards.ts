@@ -10,6 +10,7 @@ import { loadOpenBills } from '../payments/outstanding.js'
 import { RULE_46F_THRESHOLD, type SubmitBillResult } from './types.js'
 import { shortfallsOf, type BillStockLine } from './stock.js'
 import type { StockShortfall } from '../stock.js'
+export { assertCounterIsMine } from '../registers/claims.js'
 
 /*
  * What stops a bill being issued, asked before anything is written.
