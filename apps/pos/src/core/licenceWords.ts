@@ -183,9 +183,12 @@ export function clockLine(e: Entitlement): string {
 
 /** What a paste attempt that failed should say, reusing the same sentences. */
 export function installProblem(
-  code: string, shopId: string | null,
+  code: string, shopId: string | null, cause?: string,
 ): LicenceLine {
   const line = problemLine({ problem: code } as Entitlement)
+  if (code === 'NOT_CONFIGURED' && cause !== undefined) {
+    return { ...line, detail: `${line.detail} (${cause})` }
+  }
   if (code === 'WRONG_SHOP' && shopId !== null) {
     return { ...line, detail: `${line.detail} The code names shop ${shopId}.` }
   }
