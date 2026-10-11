@@ -11,7 +11,7 @@ import { handleSyncRequest, offerPairing, withdrawPairing } from '../src/service
 import {
   httpTransport, joinByCopy, pairWith, pairedPeers, requestCopy,
 } from '../src/services/syncClient.js'
-import { mainTill, tillRole } from '../src/services/sync/layout.js'
+import { tillRole } from '../src/services/sync/layout.js'
 import { NOT_REPLICATED } from '../src/domain/replicaShape.js'
 import { handleCopy } from '../src/services/syncServer/copy.js'
 import { setDeviceId, deviceId } from '../src/device.js'
@@ -191,7 +191,6 @@ describe('a till joining by copy', () => {
 
     const done = await as(T1, () => takeCopy(
       t1, { deviceId: MAIN, baseUrl: main.url },
-      async () => httpTransport(peer).hello(await mainTill(t1)),
       () => requestCopy(peer),
       host,
     ))
@@ -220,12 +219,35 @@ describe('a till joining by copy', () => {
     let asked = false
     const done = await as(T1, () => takeCopy(
       t1, { deviceId: MAIN, baseUrl: main.url },
-      async () => httpTransport(peer).hello(await mainTill(t1)),
       async () => { asked = true; return requestCopy(peer) },
       host,
     ))
     expect(done).toEqual({ ok: false, code: 'HOLDS_UNSENT' })
     expect(asked, 'nothing was asked of the main').toBe(false)
+  })
+})
+
+describe('a till that already holds a shop', () => {
+  it('never takes a copy, even with nothing left in its feed', async () => {
+    joinByCopy(true)
+    await joinMain()
+    const peer = (await pairedPeers(t1))[0]!
+    /* A till whose old main died: what that main acknowledged was pruned, so
+       the feed is empty -- and the bills it named may be on no other till. */
+    await t1.execute(`INSERT INTO settings (key, value, updated_at) VALUES ('shop_id', 'x', ?)
+                      ON CONFLICT (key) DO UPDATE SET value = excluded.value`, [new Date().toISOString()])
+    await as(T1, () => makeProduct(t1, { name: 'Only the dead main had this' }))
+    await t1.execute('DELETE FROM change_feed')
+
+    let asked = false
+    const done = await as(T1, () => takeCopy(
+      t1, { deviceId: MAIN, baseUrl: main.url },
+      async () => { asked = true; return requestCopy(peer) },
+      host,
+    ))
+    expect(done).toEqual({ ok: false, code: 'HOLDS_UNSENT' })
+    expect(asked).toBe(false)
+    expect(await t1.get(`SELECT 1 FROM products WHERE name = 'Only the dead main had this'`)).toBeTruthy()
   })
 })
 

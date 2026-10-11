@@ -3,7 +3,8 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { syncWith } from '../src/services/sync.js'
 import { handleSyncRequest, offerPairing, withdrawPairing } from '../src/services/syncServer.js'
-import { httpTransport, pairWith, pairedPeers, askToJoin } from '../src/services/syncClient.js'
+import { httpTransport, pairWith, pairedPeers, askToJoin, joinByCopy } from '../src/services/syncClient.js'
+import { feedHead, pruneFeed, seedFeedWithEverything } from '../src/services/changefeed.js'
 import {
   handTheMainTo, hearMain, joinedMain, listens, mainTill, makeThisTheMain, tillRole,
 } from '../src/services/sync/layout.js'
@@ -295,5 +296,41 @@ describe('a shop paired before there was a main', () => {
     expect(await tillRole(db)).toBe('equals')
     expect(await listens(db)).toBe(true)
     await db.close()
+  })
+})
+
+describe('the main dies, and another till is made the main', () => {
+  it('gets back a bill that only the dead main had received, once a till pairs with the new one', async () => {
+    await join(t1, main)
+    await join(t2, main)
+    await catchUp(t1)
+    await catchUp(t2)
+
+    /* T2 sells; the main receives it; T2's feed lets go of it, because the
+       only till it talks to has it. Then the main dies before T1 asks. */
+    await as(t2, () => makeProduct(t2.db, { name: 'Sold at T2, received only by the main' }))
+    await catchUp(t2)
+    await as(t2, async () => pruneFeed(t2.db, await feedHead(t2.db)))
+    await new Promise<void>((r) => main.server.close(() => r()))
+    main.server = createServer().listen(0)
+
+    await as(t1, () => makeThisTheMain(t1.db, main.fx.adminId))
+    expect(await has(t1.db, 'Sold at T2, received only by the main')).toBe(false)
+
+    /* T2 pairs with T1 as an existing till does: no copy, and its own shop put
+       back in its feed for the new main (`theShopHasArrived` in the app). */
+    joinByCopy(false)
+    await join(t2, t1)
+    expect(await as(t2, () => mainTill(t2.db)), 'T2 follows the new main').toEqual({ device: T1, epoch: 2 })
+
+    /* The feed no longer names the sale, but T1 asks from below where T2's feed
+       was pruned, so T2 puts the shop back in it (`catchUpFromBelowTheFloor`);
+       the app also does so itself on rejoining. Either way nothing is lost. */
+    await as(t2, () => seedFeedWithEverything(t2.db))
+    const toT1 = (await pairedPeers(t2.db)).find((p) => p.deviceId === T1)!
+    const round = await as(t2, () => syncWith(t2.db, httpTransport(toT1), COUNTER[T2] ?? null))
+    expect(round.ok, JSON.stringify(round)).toBe(true)
+    expect(await has(t1.db, 'Sold at T2, received only by the main')).toBe(true)
+    expect(await has(t2.db, 'Sold at T2, received only by the main'), 'and T2 still has it').toBe(true)
   })
 })

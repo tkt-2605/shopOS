@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import {
-  Backup, pairedPeers, httpTransport, takeCopy, requestCopy, mainTill, SyncHttpError,
+  Backup, pairedPeers, takeCopy, requestCopy, SyncHttpError, isFirstRun, joinByCopy, seedFeedWithEverything,
   type CopyHost, type CopyMaker, type SelfAddress, type SqlDriver,
 } from '@shopos/core'
 import { SCHEMA_VERSION } from './migrations'
@@ -68,16 +68,44 @@ export async function takeACopy(db: SqlDriver, self: SelfAddress): Promise<boole
   try {
     const taken = await takeCopy(
       db, { deviceId: peer.deviceId, baseUrl: peer.baseUrl },
-      async () => httpTransport(peer, syncFetch, self).hello(await mainTill(db)),
       () => requestCopy(peer, syncFetch, self),
       copyHost,
     )
     if (taken.ok) return true
     throw new Error(taken.code === 'VERSION_DIFFERS'
       ? 'The main till is on a different version of ShopOS. Update the older one, then join again.'
-      : 'This till holds work the main till has not received, so it cannot take a copy yet.')
+      : 'This till already holds the shop’s books, so it merges with the main till rather than take a copy.')
   } catch (err) {
     if (err instanceof SyncHttpError && err.code === 'NO_SUCH_REQUEST') return false
     throw err
   }
+}
+
+/**
+ * Says in the knock whether this machine will take a copy.
+ *
+ * A machine with nobody on it does. A till that already holds the shop --
+ * pairing with a main made after the last one died -- never does: its database
+ * may hold bills only the dead main ever had, and a copy would replace them. It
+ * merges both ways instead. Its knock carries no `copy`, so the main puts the
+ * whole shop in its feed for it, and it puts its own in its feed for the main
+ * (`offerEverythingIfRejoining`): the one full comparison of `one-main-till.md`.
+ */
+export async function knockAsWhatWeAre(db: SqlDriver): Promise<void> {
+  joinByCopy(await isFirstRun(db))
+}
+
+/**
+ * For a till that already had the shop, once it has been let in: everything it
+ * holds goes into its own feed, so whatever only a dead main had received
+ * reaches the new one. The feed's floor does the same for a peer asking from
+ * below it; this says it outright rather than leaning on that. Rows already in
+ * the feed are skipped, and rows the main already has write nothing there.
+ *
+ * False for a fresh machine, which takes a copy instead.
+ */
+export async function offerEverythingIfRejoining(db: SqlDriver): Promise<boolean> {
+  if (await isFirstRun(db)) return false
+  await seedFeedWithEverything(db)
+  return true
 }

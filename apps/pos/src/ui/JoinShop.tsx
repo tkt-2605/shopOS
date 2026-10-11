@@ -27,6 +27,13 @@ import { Field, Alert } from './components'
  * `SAME_REGISTER` — recoverable in ten seconds and completely opaque if you do
  * not already know what a counter is. Asking here costs one screen and removes
  * the only refusal this flow can cause by itself.
+ *
+ * ## Rejoining
+ *
+ * The same screen, from Settings, for a till that already has the shop and
+ * whose main has gone: it pairs with the main somebody made in its place. It
+ * keeps its database and its counter, takes no copy, and merges both ways
+ * (`theShopHasArrived`), so bills only the old main had received are not lost.
  */
 
 type Stage =
@@ -35,7 +42,12 @@ type Stage =
   | { at: 'joining' }
   | { at: 'counter'; registers: Register[]; taken: CounterTaken[] }
 
-export function JoinShop({ onCancel }: { onCancel: () => void }) {
+export function JoinShop({ onCancel, rejoining = false, onDone }: {
+  onCancel: () => void
+  /** A till that already has the shop, pairing with a new main. */
+  rejoining?: boolean
+  onDone?: () => void
+}) {
   const { db, joinShop, askToJoinShop, waitToJoinShop } = useCore()
   const [stage, setStage] = useState<Stage>({ at: 'choosing' })
   const [found, setFound] = useState<FoundTill[] | null>(null)
@@ -149,6 +161,8 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
   }
 
   async function arrived() {
+    // A till rejoining keeps the counter it has.
+    if (rejoining) { onDone?.(); return }
     /* The shop has arrived, so the counters are here to choose from -- and the
        first sync has run, so this till has been told which ones the others sit
        at. Those are shown and refused rather than hidden: a screen that removes
@@ -207,8 +221,11 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
     return (
       <div className="panel-body">
         <p style={{ fontSize: 13 }}>
-          Joining, and taking a copy of the shop. On a shop with a year of trade
-          behind it this takes a minute.
+          {rejoining
+            ? 'Pairing, and sending each other everything once. On a shop with a year of trade '
+              + 'behind it this takes a few minutes.'
+            : 'Joining, and taking a copy of the shop. On a shop with a year of trade behind it '
+              + 'this takes a minute.'}
         </p>
       </div>
     )
@@ -270,9 +287,11 @@ export function JoinShop({ onCancel }: { onCancel: () => void }) {
       {error && <Alert>{error}</Alert>}
 
       <p style={{ fontSize: 12.5, color: 'var(--ink-2)', marginTop: 0 }}>
-        This machine will receive the shop from a till that already has it —
-        staff, counters, prices and every bill. It does not set up a shop of its
-        own.
+        {rejoining
+          ? 'This till pairs with the shop’s new main till and keeps everything it holds. The two '
+            + 'send each other everything once, so no bill that only the old main had is lost.'
+          : 'This machine will receive the shop from a till that already has it — staff, '
+            + 'counters, prices and every bill. It does not set up a shop of its own.'}
       </p>
 
       <div style={{ marginTop: 10 }}>

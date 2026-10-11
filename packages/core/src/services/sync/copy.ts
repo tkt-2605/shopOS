@@ -1,9 +1,7 @@
 import type { SqlDriver } from '../../db/driver.js'
 import { EXPECTED_SCHEMA_VERSION } from '../../db/schemaVersion.js'
 import { getSetting } from '../settings.js'
-import { collectChanges } from './collect.js'
 import { mainTill } from './layout.js'
-import type { PeerHello } from './types.js'
 
 /*
  * A new till joining a shop takes a copy of the main's database, rather than
@@ -61,28 +59,25 @@ export interface CopyPlan {
 }
 
 export type CopyRefusal =
-  /** This till has written something the main has not received. */
+  /** This till already holds a shop; it joins by the feed instead. */
   | 'HOLDS_UNSENT'
   /** The two builds differ, and a copy is a whole database: update first. */
   | 'VERSION_DIFFERS'
 
 /**
- * Whether taking a copy would lose anything this till holds.
+ * Whether taking a copy could lose anything this till holds.
  *
  * A till that has never been set up has nothing of the shop's to lose. Any
- * other till -- re-joining after its main was replaced, say -- must first have
- * handed over everything it wrote, because the copy replaces its database:
- * whatever the main has not received is in nobody's books afterwards. The
- * check is the one the round itself uses to decide what to send.
+ * other till may, and the copy replaces its database, so it never takes one:
+ * it joins by the feed, where both sides merge and nothing is replaced.
+ *
+ * This used to ask the feed what had not reached the main, which is the wrong
+ * question after a main dies. What the dead main acknowledged was pruned from
+ * this till's feed, so the feed said "nothing unsent" about bills that are on
+ * no other till -- and the copy from the new main would have erased them.
  */
-export async function wouldLoseWork(
-  db: SqlDriver,
-  main: string,
-  hello: Pick<PeerHello, 'yourCursorWithThem'>,
-): Promise<boolean> {
-  if (await getSetting(db, 'shop_id') === null) return false
-  const left = await collectChanges(db, hello.yourCursorWithThem, 1, main)
-  return left.records.length > 0
+export async function wouldLoseWork(db: SqlDriver): Promise<boolean> {
+  return await getSetting(db, 'shop_id') !== null
 }
 
 /**
@@ -94,12 +89,10 @@ export async function wouldLoseWork(
 export async function takeCopy(
   db: SqlDriver,
   main: { deviceId: string; baseUrl: string },
-  hello: () => Promise<PeerHello>,
   ask: () => Promise<ShopCopy>,
   host: CopyHost,
 ): Promise<{ ok: true } | { ok: false; code: CopyRefusal }> {
-  const said = await hello()
-  if (await wouldLoseWork(db, main.deviceId, said)) return { ok: false, code: 'HOLDS_UNSENT' }
+  if (await wouldLoseWork(db)) return { ok: false, code: 'HOLDS_UNSENT' }
 
   const copy = await ask()
   /* Exactly equal. Rows cross between builds a migration apart because each
