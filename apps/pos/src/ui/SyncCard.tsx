@@ -6,7 +6,7 @@ import {
   quarantinedRecords, acknowledgeQuarantine,
   forgetPeer,
   getSetting,
-  tillRole, mainTill, makeThisTheMain, handTheMainTo,
+  tillRole, mainTill,
   type PeerHealth, type RecordedConflict, type QuarantinedRecord, type Role, type MainTill,
 } from '@shopos/core'
 import { runOnce, onSyncRound } from '../core/syncLoop'
@@ -20,6 +20,7 @@ import { takeCounter } from '../core/counters'
 import { caughtUpWith } from '../core/outOfDate'
 import { Card, Alert } from './components'
 import { useConfirm } from './useConfirm'
+import { promoteHere, handTheMainOn, RejoinMainCard } from './mainTillActions'
 
 /**
  * Two tills in one shop.
@@ -55,6 +56,9 @@ export function SyncCard() {
   /* Which till the shop syncs through. See `sync/layout.ts` in core. */
   const [role, setRole] = useState<Role>('alone')
   const [main, setMain] = useState<MainTill>({ device: null, epoch: 0 })
+  /* Pairing with a main made after this till's main died. The join screen,
+     in the mode that keeps this till's books and merges both ways. */
+  const [rejoining, setRejoining] = useState(false)
 
   const status = syncStatus(peers)
   const naming = (p: PeerHealth | undefined, fallback: string) =>
@@ -184,59 +188,20 @@ export function SyncCard() {
     await refresh()
   }
 
-  /**
-   * The main is gone, or the owner wants it here.
-   *
-   * Confirmed, and said plainly, because it is the one action on this screen
-   * that changes what every other till does. Never automatic: see
-   * `makeThisTheMain` for why a two-till shop has to switch by hand.
-   */
-  async function promote() {
-    const agreed = await ask(
-      'Make this the main till?\n\n'
-      + 'Do this when the main till is gone for good, or to move the main here. '
-      + 'The other tills will need to be paired with this one: press Add a till '
-      + 'here, and choose Join a shop on each of them.\n\n'
-      + 'If the old main till comes back, it will see that this one is the main '
-      + 'and step down on its own. Nothing it holds is lost.',
-    )
-    if (!agreed) return
+  /* Which till is the main: asked, done and explained in `mainTillActions`. */
+  async function mainTillAction(act: () => Promise<string | null>) {
     setError(null)
     try {
-      await makeThisTheMain(db, user?.id)
-      await keepTheDoorRight(db)
-      setNotice('This is now the main till. Pair the other tills with it.')
+      const said = await act()
+      if (said !== null) setNotice(said)
     } catch (err) {
       setError(explain(err))
     }
     await refresh()
   }
-
-  /**
-   * The main hands its place to a till, while both are working.
-   *
-   * The gentle move: that till takes over the next time it catches up with
-   * this one, and this one goes on passing bills between it and every other
-   * till until each has been paired with the new main.
-   */
-  async function handOver(peer: PeerHealth) {
-    const who = naming(peer, 'that till')
-    const agreed = await ask(
-      `Make ${who} the main till?\n\n`
-      + `${who} takes over the next time it catches up with this till. This till `
-      + 'goes on passing bills between it and the other tills until each of them '
-      + `has been paired with ${who}, so nothing stops in between.`,
-    )
-    if (!agreed) return
-    setError(null)
-    try {
-      await handTheMainTo(db, peer.deviceId, user?.id)
-      setNotice(`${who} will be the main till from its next catch-up.`)
-    } catch (err) {
-      setError(explain(err))
-    }
-    await refresh()
-  }
+  const promote = () => mainTillAction(() => promoteHere(db, user?.id, ask))
+  const handOver = (peer: PeerHealth) => mainTillAction(() =>
+    handTheMainOn(db, { deviceId: peer.deviceId, name: naming(peer, 'that till') }, user?.id, ask))
 
   /* The same code the background loop runs. A "catch up now" that took its own
      path would be a second implementation to keep in step, and the one people
@@ -267,6 +232,20 @@ export function SyncCard() {
   async function dismissRefused() {
     await acknowledgeQuarantine(db)
     await refresh()
+  }
+
+  if (rejoining) {
+    return (
+      <RejoinMainCard
+        onCancel={() => setRejoining(false)}
+        onDone={() => {
+          setRejoining(false)
+          setNotice('Paired with the new main till, and the two have sent each other everything. '
+            + 'Forget the old main till below once you are sure it is gone.')
+          void refresh()
+        }}
+      />
+    )
   }
 
   return (
@@ -303,6 +282,12 @@ export function SyncCard() {
               <button className="link-btn" onClick={() => void promote()}>
                 Make this the main till
               </button>
+              <div style={{ marginTop: 4 }}>
+                Main till gone, and another made the main in its place?{' '}
+                <button className="link-btn" onClick={() => { setError(null); setRejoining(true) }}>
+                  Pair with the new main till
+                </button>
+              </div>
             </div>
           )}
           {role === 'equals' && (
@@ -336,6 +321,14 @@ export function SyncCard() {
                 <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>
                   It lasts ten minutes and <strong>one attempt uses it up</strong>,
                   right or wrong — show a fresh one if it is mistyped.
+                </div>
+                {/* Windows asks the first time a till opens its port, and only an
+                    administrator can say yes. Answered no, or not at all, the other
+                    tills cannot reach this one and nothing on this screen says why. */}
+                <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>
+                  If Windows asks whether ShopOS may use the network, choose <strong>Allow</strong>.
+                  It needs an administrator: if this computer is signed in as an ordinary user,
+                  have whoever set up the computer sign in and allow it once. Windows remembers.
                 </div>
                 <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => void doneAdding()}>
                   Done
