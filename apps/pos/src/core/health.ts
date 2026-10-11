@@ -73,6 +73,19 @@ function brief(run: { ok: boolean; at: string } | null): { ok: boolean; at: stri
   return run === null ? null : { ok: run.ok, at: run.at }
 }
 
+/**
+ * The moment in the shop's own time, with its offset: `2026-10-12T01:00:00+05:30`.
+ * Rust names the file from its digits, and a name in UTC files an evening's
+ * report under the wrong day.
+ */
+export function localStamp(at: Date): string {
+  const pad = (n: number) => String(Math.abs(n)).padStart(2, '0')
+  const offset = -at.getTimezoneOffset()
+  const sign = offset >= 0 ? '+' : '-'
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+    + `${sign}${pad(Math.trunc(offset / 60))}:${pad(offset % 60)}`
+}
+
 /** One line for the caption: what someone opening the chat should see first. */
 export function healthLine(app: Record<string, unknown>): string {
   const parts: string[] = []
@@ -96,7 +109,7 @@ export async function sendHealth(db: SqlDriver): Promise<HealthSent> {
   const id = (shopId ?? '').replace(/[^0-9a-zA-Z]/g, '').slice(0, 8) || 'noid'
   const label = `${plain(profile.name) || 'Shop'} (${id})`
   return invoke<HealthSent>('health_send', {
-    now: new Date().toISOString(),
+    now: localStamp(new Date()),
     label,
     summary: `${label}\n${healthLine(app)}`,
     extra: app,

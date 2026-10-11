@@ -25,7 +25,7 @@ vi.mock('@shopos/core', async (original) => ({
   }]),
 }))
 
-const { appHealth, healthLine } = await import('../src/core/health')
+const { appHealth, healthLine, localStamp } = await import('../src/core/health')
 
 describe('the app half of the health report', () => {
   it('carries the licence state and the kind of each problem, never a name, an amount or a code', async () => {
@@ -50,5 +50,11 @@ describe('the app half of the health report', () => {
     })).toBe('licence: BAD_SIGNATURE | 2 problem(s) flagged | sync failing: connection timed out | 1 record(s) set aside')
     expect(healthLine({ licence: { state: 'none', problem: null }, discrepancies: [], lastSyncRound: null }))
       .toBe('licence: none | no problems flagged')
+  })
+
+  it('names the moment in the shop’s own time, offset and all', () => {
+    const stamp = localStamp(new Date(2026, 9, 12, 1, 0, 5))
+    expect(stamp.startsWith('2026-10-12T01:00:05')).toBe(true)
+    expect(stamp).toMatch(/[+-]\d\d:\d\d$/)
   })
 })
