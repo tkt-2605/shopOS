@@ -193,6 +193,11 @@ export function startReportSchedule(db: SqlDriver): () => void {
           const month: DateRange = { from: businessDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: today }
           await deliverPack(db, month)
           await setDeviceSetting(LAST_DAY, today)
+          // The shop's health goes with it: why a sync or a licence failed.
+          // Loaded here rather than imported, because it reads this module.
+          const { sendHealth } = await import('./health')
+          await sendHealth(db).catch((err: unknown) =>
+            logEvent('warn', 'reports', `The health report did not go out: ${err instanceof Error ? err.message : String(err)}`))
           return
         }
       }
@@ -204,7 +209,10 @@ export function startReportSchedule(db: SqlDriver): () => void {
     }
   }
 
+  let stopWatching: (() => void) | null = null
+  void import('./health').then(({ watchSyncForHealth }) => { stopWatching = watchSyncForHealth() })
+
   const first = setTimeout(() => void tick(), 60_000)
   const every = setInterval(() => void tick(), 10 * 60_000)
-  return () => { clearTimeout(first); clearInterval(every) }
+  return () => { clearTimeout(first); clearInterval(every); stopWatching?.() }
 }

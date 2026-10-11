@@ -7,6 +7,7 @@ import {
   deliverPack, findTelegramChats, flushOutbox, telegramBuiltIn, lastPackRun, say, type ChatSeen, type PackRun,
 } from '../../core/reportOut'
 import { Alert, Card, Field, rangePreset } from '../../ui/components'
+import { sendHealth } from '../../core/health'
 import { Intro, whenWas } from './parts'
 
 /*
@@ -83,6 +84,26 @@ export function ReportsOutSection() {
     setTgChat(id)
     save(TG_CHAT, id)
     setChats(null)
+  }
+
+  async function healthNow() {
+    setBusy(true)
+    setError(null)
+    setNote(null)
+    try {
+      const sent = await sendHealth(db)
+      const where = [
+        sent.telegram === 'sent' ? 'sent to Telegram' : sent.telegram === 'queued' ? 'Telegram waiting for the line' : null,
+        sent.mail === 'sent' ? 'emailed' : sent.mail === 'queued' ? 'email waiting for the line' : null,
+      ].filter(Boolean).join(', ')
+      const problem = sent.telegramError ?? sent.mailError
+      if (problem) setError(`Health report: ${problem}`)
+      else setNote(where ? `Health report ${where}.` : 'Health report made, but no Telegram or email is set up to send it.')
+    } catch (err) {
+      setError(`The health report could not be made: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function retry() {
@@ -218,9 +239,14 @@ export function ReportsOutSection() {
         <div style={{ display: 'flex', gap: 8, marginBottom: 11 }}>
           <button className="btn primary sm" disabled={busy} onClick={() => void sendNow('today')}>Send today’s now</button>
           <button className="btn sm" disabled={busy} onClick={() => void sendNow('month')}>Send this month’s now</button>
+          <button className="btn sm" disabled={busy} onClick={() => void healthNow()}>Send health report</button>
           <button className="btn sm" disabled={busy} onClick={() => void retry()}>
             Try waiting emails{waiting ? ` (${waiting})` : ''}
           </button>
+        </div>
+        <div className="settings-group-why" style={{ marginBottom: 11 }}>
+          The health report goes with the daily reports. It says how sync, the licence, backups and the
+          books are doing, with the app’s logs. It carries no customer, no amount and no password.
         </div>
         {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
         {note && <div style={{ marginBottom: 11 }}><Alert kind="ok">{note}</Alert></div>}

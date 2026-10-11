@@ -7,6 +7,7 @@ mod diagnostics;
 mod discovery;
 mod exports;
 mod files;
+mod health;
 mod hook;
 mod ids;
 mod instance;
@@ -194,6 +195,7 @@ pub fn run() {
             report_out::report_outbox,
             report_out::report_telegram_chats,
             report_out::report_telegram_builtin,
+            health::health_send,
             backup::backup_list,
             backup::backup_path,
             backup::backup_delete,
