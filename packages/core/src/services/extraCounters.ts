@@ -1,5 +1,6 @@
 import type { SqlDriver } from '../db/driver.js'
-import { entitled, type EntitlementOptions } from './licence.js'
+import { entitlement, type EntitlementOptions } from './licence.js'
+import { allowsAny } from '../domain/licence.js'
 import { tillRole } from './sync/layout.js'
 
 /*
@@ -50,7 +51,18 @@ export class ViewOnlyTillError extends Error {
  */
 export async function mayTakeMoney(db: SqlDriver, opts: EntitlementOptions = {}): Promise<boolean> {
   if (await tillRole(db) !== 'till') return true
-  return entitled(db, 'multiTill', opts)
+  /* Only a licence that was read and has run out stops a counter. One this
+     till could not check -- a build without keys, a webview without Ed25519
+     -- is not evidence the shop stopped paying, and a licence failing never
+     stops a shop taking money. So it fails open here, as the licence was
+     always meant to; the counters a shop has paid for are not at the mercy
+     of a webview update. */
+  try {
+    const held = await entitlement(db, opts)
+    return allowsAny(held.grants, 'multiTill') || held.problem === 'NOT_CONFIGURED'
+  } catch {
+    return true
+  }
 }
 
 /** Refuses, with a sentence a screen can show, when `mayTakeMoney` says no. */

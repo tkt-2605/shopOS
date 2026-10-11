@@ -138,7 +138,14 @@ export async function verifyToken(
     return { ok: false, code: 'NOT_CONFIGURED', cause: describeCause(e) }
   }
 
-  const good = await subtle().verify({ name: 'Ed25519' }, publicKey, signature, signed)
+  let good: boolean
+  try {
+    good = await subtle().verify({ name: 'Ed25519' }, publicKey, signature, signed)
+  } catch (e) {
+    // The same as a key that will not import: this runtime cannot check one.
+    // Thrown, it escaped `entitlement`, which promises never to throw.
+    return { ok: false, code: 'NOT_CONFIGURED', cause: describeCause(e) }
+  }
   return good ? { ok: true, token } : { ok: false, code: 'BAD_SIGNATURE' }
 }
 

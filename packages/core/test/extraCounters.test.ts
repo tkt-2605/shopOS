@@ -106,3 +106,29 @@ describe('an extra till, by the state of the plan', () => {
     expect(await mayTakeMoney(fx.db, opts), 'a Business licence, for good').toBe(true)
   })
 })
+
+describe('an extra till whose licence cannot be checked here', () => {
+  it('goes on billing in a build with no keys: that is not the shop having stopped paying', async () => {
+    await syncsThroughAMain()
+    await licenseTill(fx.db, 'multi', '2026-12-31')
+    expect(await mayTakeMoney(fx.db, { keys: [] })).toBe(true)
+  })
+
+  it('goes on billing in a webview that cannot verify Ed25519', async () => {
+    await syncsThroughAMain()
+    await licenseTill(fx.db, 'multi', '2026-12-31')
+    const subtle = globalThis.crypto.subtle
+    const verify = subtle.verify.bind(subtle)
+    subtle.verify = () => Promise.reject(new Error('Ed25519 is not supported'))
+    try {
+      expect(await mayTakeMoney(fx.db, { keys: TEST_KEYS })).toBe(true)
+    } finally {
+      subtle.verify = verify
+    }
+  })
+
+  it('still stops in a shop that holds no licence at all', async () => {
+    await syncsThroughAMain()
+    expect(await mayTakeMoney(fx.db, { keys: [] })).toBe(false)
+  })
+})
