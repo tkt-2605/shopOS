@@ -175,7 +175,10 @@ export function flushOutbox(): Promise<OutboxState> {
  */
 export function startReportSchedule(db: SqlDriver): () => void {
   let busy = false
-  // A build carrying the vendor's bot sends daily unless a person switched it off.
+  /* The reports go daily only when somebody at the shop switched it on: they
+     name customers. A build carrying the vendor's bot sends its health report
+     daily regardless -- it names none -- and Rust never lets that bot carry a
+     pack (`report_out.rs`, `Queued::vendor`). */
   let builtIn = false
   void telegramBuiltIn().then((yes) => { builtIn = yes })
 
@@ -183,15 +186,15 @@ export function startReportSchedule(db: SqlDriver): () => void {
     if (busy) return
     busy = true
     try {
-      const auto = deviceSetting(AUTO)
-      if (auto === '1' || (auto === null && builtIn)) {
+      const auto = deviceSetting(AUTO) === '1'
+      if (auto || builtIn) {
         const now = new Date()
         const today = businessDate(now)
         const [h, m] = (deviceSetting(AUTO_AT) ?? DEFAULT_AT).split(':').map(Number)
         const due = now.getHours() * 60 + now.getMinutes() >= (h ?? 21) * 60 + (m ?? 30)
         if (due && deviceSetting(LAST_DAY) !== today) {
           const month: DateRange = { from: businessDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: today }
-          await deliverPack(db, month)
+          if (auto) await deliverPack(db, month)
           await setDeviceSetting(LAST_DAY, today)
           // The shop's health goes with it: why a sync or a licence failed.
           // Loaded here rather than imported, because it reads this module.

@@ -29,9 +29,8 @@ export function ReportsOutSection() {
   const [tgChat, setTgChat] = useState(() => deviceSetting(TG_CHAT) ?? '')
   const [chats, setChats] = useState<ChatSeen[] | null>(null)
   const [builtIn, setBuiltIn] = useState(false)
+  // Off until somebody here switches it on: the reports name customers.
   const [auto, setAuto] = useState(() => deviceSetting(AUTO) === '1')
-  // A build with the bot in it sends daily unless somebody switched it off here.
-  useEffect(() => { if (builtIn && deviceSetting(AUTO) === null) setAuto(true) }, [builtIn])
   const [at, setAt] = useState(() => deviceSetting(AUTO_AT) ?? DEFAULT_AT)
   const [busy, setBusy] = useState(false)
   const [run, setRun] = useState<PackRun | null>(lastPackRun)
@@ -173,8 +172,8 @@ export function ReportsOutSection() {
       <Card title="Telegram">
         {builtIn && (
           <div className="settings-group-why" style={{ marginBottom: 11 }}>
-            This copy of ShopOS already sends to its supplier’s Telegram chat. Nothing needs to be
-            entered here; a token and chat typed below are used instead.
+            This copy of ShopOS sends its daily health report to its supplier’s Telegram chat. Reports
+            go only to a bot and chat entered here, which then take the health report as well.
           </div>
         )}
         <Field
@@ -196,7 +195,7 @@ export function ReportsOutSection() {
           />
         </Field>
         <div style={{ display: 'flex', gap: 8, marginBottom: 11 }}>
-          <button className="btn sm" disabled={busy || (tgToken.trim() === '' && !builtIn)} onClick={() => void findChats()}>
+          <button className="btn sm" disabled={busy || tgToken.trim() === ''} onClick={() => void findChats()}>
             Find my chat id
           </button>
         </div>
@@ -245,7 +244,7 @@ export function ReportsOutSection() {
           </button>
         </div>
         <div className="settings-group-why" style={{ marginBottom: 11 }}>
-          The health report goes with the daily reports. It says how sync, the licence, backups and the
+          The health report goes once a day{builtIn ? '' : ' with the daily reports'}. It says how sync, the licence, backups and the
           books are doing, with the app’s logs. It carries no customer, no amount and no password.
         </div>
         {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}

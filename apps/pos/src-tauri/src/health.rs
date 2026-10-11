@@ -64,7 +64,8 @@ pub fn health_send(
         .collect();
     let name = format!("health {} {stamp}.zip", label.trim());
     let subject = format!("ShopOS health - {}", label.trim());
-    let sent = report_out::send_out(&app, &name, &bytes, &subject, &summary)?;
+    // Names no customer, so the vendor's baked-in bot may carry it.
+    let sent = report_out::send_out(&app, &name, &bytes, &subject, &summary, true)?;
     Ok(HealthSent {
         name,
         bytes: bytes.len(),

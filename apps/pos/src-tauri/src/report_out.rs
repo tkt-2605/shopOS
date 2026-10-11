@@ -99,6 +99,12 @@ struct Queued {
     body: String,
     /// The zip's name as the recipient will see it.
     attach_name: String,
+    /// Whether the vendor's baked-in bot may carry it when this machine has no
+    /// bot of its own. Only the health report, which names no customer: the
+    /// baked-in token is in every copy of the program, so anything sent to that
+    /// chat can be read back by whoever lifts it. Absent reads as no.
+    #[serde(default)]
+    vendor: bool,
 }
 
 fn mail_channel() -> String {
@@ -231,11 +237,28 @@ fn token_shape(token: &str) -> bool {
     })
 }
 
-/// `None` when this machine has no bot set up.
+/// The shop's own bot and chat, typed on this machine. `None` when there is none.
+///
+/// Never the vendor's: see `vendor_settings`, and `Queued::vendor` for why the
+/// two are kept apart.
 fn telegram_settings(app: &tauri::AppHandle) -> Result<Option<Telegram>, String> {
     let data = paths::data_dir(app)?;
-    let token = device::setting(&data, TG_TOKEN)?.or_else(|| BUILT_TOKEN.map(str::to_string));
-    let chat = device::setting(&data, TG_CHAT)?.or_else(|| BUILT_CHAT.map(str::to_string));
+    let token = device::setting(&data, TG_TOKEN)?.filter(|t| !t.trim().is_empty());
+    let chat = device::setting(&data, TG_CHAT)?.filter(|c| !c.trim().is_empty());
+    telegram_of(&data, token, chat)
+}
+
+/// The vendor's bot and chat baked into this build, or `None`. For the health
+/// report only.
+fn vendor_settings(app: &tauri::AppHandle) -> Result<Option<Telegram>, String> {
+    if !report_telegram_builtin() {
+        return Ok(None);
+    }
+    let data = paths::data_dir(app)?;
+    telegram_of(&data, BUILT_TOKEN.map(str::to_string), BUILT_CHAT.map(str::to_string))
+}
+
+fn telegram_of(data: &Path, token: Option<String>, chat: Option<String>) -> Result<Option<Telegram>, String> {
     let (Some(token), Some(chat)) = (token, chat) else {
         return Ok(None);
     };
@@ -251,7 +274,7 @@ fn telegram_settings(app: &tauri::AppHandle) -> Result<Option<Telegram>, String>
     if !chat_ok {
         return Err("The Telegram chat id should be a number like 123456789, or -100… for a group.".into());
     }
-    let api = telegram_api(&data)?;
+    let api = telegram_api(data)?;
     Ok(Some(Telegram { token, chat, api }))
 }
 
@@ -269,7 +292,18 @@ fn telegram_api(data: &Path) -> Result<String, String> {
 /// What is set up on this machine, read once per call.
 struct Settings {
     mail: Option<Mail>,
+    /// The shop's own bot, for everything.
     telegram: Option<Telegram>,
+    /// The vendor's baked-in bot, for what is queued with `vendor` and only
+    /// when the shop has no bot of its own.
+    vendor: Option<Telegram>,
+}
+
+impl Settings {
+    /// The bot that carries `queued`, if any may.
+    fn bot_for(&self, queued: &Queued) -> Option<&Telegram> {
+        self.telegram.as_ref().or(if queued.vendor { self.vendor.as_ref() } else { None })
+    }
 }
 
 fn stamp() -> String {
@@ -316,7 +350,8 @@ pub fn report_deliver(
         Err(e) => (None, Some(e)),
     };
 
-    let sent = send_out(&app, &name, &bytes, &subject, &body)?;
+    // A pack names customers: never to the vendor's bot, only to the shop's own.
+    let sent = send_out(&app, &name, &bytes, &subject, &body, false)?;
     Ok(Delivery {
         zip: zip.to_string_lossy().to_string(),
         folder,
@@ -340,14 +375,16 @@ pub(crate) struct Sent {
 const TELEGRAM_MAX_BYTES: usize = 49 * 1024 * 1024;
 
 /// Queues one zip for every channel set up on this machine and tries them.
-/// Shared by the report pack and the diagnostics bundle; who receives it is
-/// read here, never passed in.
+/// Shared by the report pack and the health report; who receives it is read
+/// here, never passed in. `to_vendor` says only whether the vendor's baked-in
+/// bot may carry it when the shop has none of its own (`Queued::vendor`).
 pub(crate) fn send_out(
     app: &tauri::AppHandle,
     name: &str,
     bytes: &[u8],
     subject: &str,
     body: &str,
+    to_vendor: bool,
 ) -> Result<Sent, String> {
     let name = clean(name, "zip")?;
     let subject: String = subject.chars().filter(|c| !c.is_control()).take(200).collect();
@@ -367,6 +404,7 @@ pub(crate) fn send_out(
             subject: subject.clone(),
             body: if channel == "telegram" { caption.clone() } else { body.clone() },
             attach_name: name.clone(),
+            vendor: to_vendor,
         };
         let meta = serde_json::to_vec(&queued).map_err(|e| e.to_string())?;
         files::write_durably(&outbox.join(format!("{id}.zip")), &bytes)?;
@@ -374,7 +412,7 @@ pub(crate) fn send_out(
         Ok(id)
     };
 
-    let mut settings = Settings { mail: None, telegram: None };
+    let mut settings = Settings { mail: None, telegram: None, vendor: None };
     let (mut mail, mut mail_error) = ("off", None);
     let (mut telegram, mut telegram_error) = ("off", None);
     let (mut mail_id, mut telegram_id) = (None, None);
@@ -387,7 +425,11 @@ pub(crate) fn send_out(
             settings.mail = Some(m);
         }
     }
-    match telegram_settings(&app) {
+    let bot = match telegram_settings(&app) {
+        Ok(None) if to_vendor => vendor_settings(&app).map(|v| v.map(|v| (v, true))),
+        other => other.map(|t| t.map(|t| (t, false))),
+    };
+    match bot {
         Err(e) => telegram_error = Some(e),
         Ok(None) => {}
         Ok(Some(_)) if bytes.len() > TELEGRAM_MAX_BYTES => {
@@ -396,9 +438,13 @@ pub(crate) fn send_out(
                 bytes.len() / (1024 * 1024)
             ));
         }
-        Ok(Some(t)) => {
+        Ok(Some((t, vendor))) => {
             telegram_id = Some(queue("telegram", Vec::new())?);
-            settings.telegram = Some(t);
+            if vendor {
+                settings.vendor = Some(t);
+            } else {
+                settings.telegram = Some(t);
+            }
         }
     }
     trim_queue(&outbox);
@@ -430,6 +476,7 @@ pub fn report_outbox(app: tauri::AppHandle) -> Result<OutboxState, String> {
     let settings = Settings {
         mail: mail_settings(&app).unwrap_or(None),
         telegram: telegram_settings(&app).unwrap_or(None),
+        vendor: vendor_settings(&app).unwrap_or(None),
     };
     let state = flush(&outbox, &settings);
     Ok(OutboxState {
@@ -490,7 +537,7 @@ fn flush(outbox: &Path, settings: &Settings) -> Flushed {
             continue;
         }
         let result = match queued.channel.as_str() {
-            "telegram" => match &settings.telegram {
+            "telegram" => match settings.bot_for(&queued) {
                 Some(t) => send_telegram(outbox, &id, &queued, t),
                 None => continue,
             },
@@ -506,10 +553,10 @@ fn flush(outbox: &Path, settings: &Settings) -> Flushed {
                 sent += 1;
             }
             Err(e) => {
-                let e = match &settings.telegram {
-                    Some(t) => e.replace(&t.token, "..."),
-                    None => e,
-                };
+                let e = [&settings.telegram, &settings.vendor]
+                    .into_iter()
+                    .flatten()
+                    .fold(e, |e, t| e.replace(&t.token, "..."));
                 errors.insert(queued.channel.clone(), e);
             }
         }
@@ -690,8 +737,10 @@ pub fn report_telegram_builtin() -> bool {
 #[tauri::command(async)]
 pub fn report_telegram_chats(app: tauri::AppHandle) -> Result<Vec<ChatSeen>, String> {
     let data = paths::data_dir(&app)?;
+    /* The shop's own bot only. Asked of the vendor's, this listed every chat
+       that had ever written to it -- other shops' owners among them. */
     let token: String = device::setting(&data, TG_TOKEN)?
-        .or_else(|| BUILT_TOKEN.map(str::to_string))
+        .filter(|t| !t.trim().is_empty())
         .ok_or_else(|| "Enter the bot token first.".to_string())?
         .chars()
         .filter(|c| !c.is_whitespace())
@@ -852,6 +901,7 @@ mod tests {
             subject: "s".into(),
             body: "Shop: Test \u{20b9}".into(),
             attach_name: "Test (ab12cd34) 2026-10-11.zip".into(),
+            vendor: false,
         };
         (dir, queued)
     }
@@ -938,6 +988,27 @@ mod tests {
             (Some(_), Some(_)) => assert!(report_telegram_builtin(), "the baked-in token or chat is malformed"),
             _ => panic!("only one of SHOPOS_TG_TOKEN and SHOPOS_TG_CHAT was baked in"),
         }
+    }
+
+    #[test]
+    fn the_vendors_bot_carries_the_health_report_and_never_a_pack() {
+        let bot = |token: &str| Telegram { token: token.into(), chat: "1".into(), api: String::new() };
+        let (_, pack) = sandbox("who-carries");
+        let health = Queued { vendor: true, ..sandbox("who-carries-health").1 };
+
+        let vendor_only = Settings { mail: None, telegram: None, vendor: Some(bot("1:vendor")) };
+        assert!(vendor_only.bot_for(&pack).is_none(), "a pack names customers");
+        assert_eq!(vendor_only.bot_for(&health).map(|t| t.token.as_str()), Some("1:vendor"));
+
+        let own = Settings { mail: None, telegram: Some(bot("2:own")), vendor: Some(bot("1:vendor")) };
+        assert_eq!(own.bot_for(&pack).map(|t| t.token.as_str()), Some("2:own"));
+        assert_eq!(own.bot_for(&health).map(|t| t.token.as_str()), Some("2:own"), "the shop's own bot wins");
+
+        let queued_before: Queued = serde_json::from_str(
+            r#"{"channel":"telegram","subject":"s","body":"b","attach_name":"a.zip"}"#,
+        )
+        .unwrap();
+        assert!(!queued_before.vendor, "anything queued before this was a pack as far as anyone knows");
     }
 
     #[test]
