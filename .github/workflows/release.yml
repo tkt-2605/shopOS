@@ -10,11 +10,19 @@
 #                               public repo with just a README is enough.
 #              UPDATER_PUBKEY   the public half from `npx tauri signer generate`
 #              UPDATE_FEED_URL  optional: a feed on your own domain instead
+#              RELEASE_FIRST_SHOPS
+#                               optional: short shop ids, comma separated. A new
+#                               release goes to these shops only; widen it later
+#                               with `tools/release.ts target vX.Y.Z --all`.
 #              WINDOWS_SIGN_COMMAND
 #                               optional, once there is a certificate: the CA's
 #                               command, with %1 for the file. Its credentials
 #                               go in secrets and in the build step's env.
 #   secrets    TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#              SHOPOS_TG_TOKEN, SHOPOS_TG_CHAT
+#                               optional: the vendor's Telegram bot and chat,
+#                               baked in so shops send reports with nothing to
+#                               paste (see apps/pos/src-tauri/.env.example)
 #              RELEASE_TOKEN    a fine-grained token with Contents: write on
 #                               RELEASE_REPO only
 #
@@ -99,9 +107,13 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SHOPOS_TG_TOKEN: ${{ secrets.SHOPOS_TG_TOKEN }}
+          SHOPOS_TG_CHAT: ${{ secrets.SHOPOS_TG_CHAT }}
         run: npx tauri build --config src-tauri/tauri.release.json
 
       - run: npx tsx tools/release.ts manifest "$GITHUB_REF_NAME"
+        env:
+          RELEASE_FIRST_SHOPS: ${{ vars.RELEASE_FIRST_SHOPS }}
 
       - uses: actions/upload-artifact@v4
         with:

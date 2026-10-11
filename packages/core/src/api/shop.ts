@@ -72,6 +72,8 @@ export {
 export type {
   AvailableUpdate, UpdateSource, UpdateStage, CanInstall, InstallRefusal,
 } from '../services/update.js'
+export { releaseDecision, readTarget, shortShopId } from '../domain/updateTarget.js'
+export type { ReleaseTarget, ReleaseDecision } from '../domain/updateTarget.js'
 export { shopProgress, setupHidden, hideSetup } from '../services/setup.js'
 export type { ShopStep, ShopProgress } from '../services/setup.js'
 /* Everything in the records that does not add up, for a person to see. */

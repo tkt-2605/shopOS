@@ -4,14 +4,18 @@
  *   npx tsx tools/release.ts check v0.2.0
  *   npx tsx tools/release.ts config            # writes src-tauri/tauri.release.json
  *   npx tsx tools/release.ts manifest v0.2.0   # writes latest.json beside the installer
+ *   npx tsx tools/release.ts target v0.2.0 --only 01a1256f   # which shops get it
  *
  * `release.yml` runs them in that order. They are here rather than inline in
  * the workflow so that each is tested and can be run by hand.
  */
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readTarget, shortShopId, type ReleaseTarget } from '../packages/core/src/domain/updateTarget'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const RELEASE_CONFIG = join(root, 'apps/pos/src-tauri/tauri.release.json')
@@ -128,6 +132,8 @@ export interface Manifest {
   notes: string
   pub_date: string
   platforms: Record<string, { signature: string; url: string }>
+  /** Which shops the release is for (`domain/updateTarget.ts`). Absent: every shop. */
+  shops?: ReleaseTarget
 }
 
 /**
@@ -138,15 +144,83 @@ export interface Manifest {
  */
 export function manifest(opts: {
   tag: string; releaseRepo: string; installer: string; signature: string; notes?: string; now?: Date
+  shops?: ReleaseTarget | null
 }): Manifest {
   const url = `https://github.com/${opts.releaseRepo}/releases/download/${opts.tag}/${encodeURIComponent(opts.installer)}`
   const entry = { signature: opts.signature.trim(), url }
-  return {
+  return retarget({
     version: opts.tag.replace(/^v/, ''),
     notes: opts.notes ?? '',
     pub_date: (opts.now ?? new Date()).toISOString(),
     platforms: { 'windows-x86_64-nsis': entry, 'windows-x86_64': entry },
+  }, opts.shops ?? null)
+}
+
+// ---------------------------------------------------------------- target
+
+/**
+ * Which shops a release is for, from the command line:
+ *
+ *   --only 01a1256f,51c78eec   these shops and no others
+ *   --hold 51c78eec            never these
+ *   --percent 30               this share of the rest; 0 halts the release
+ *   --all                      every shop, as a release without targeting
+ *
+ * A shop is its short id, the eight characters on its reports and its
+ * Licence screen. `null` is `--all`.
+ */
+export function targetFromArgs(args: string[]): { target: ReleaseTarget | null } | { problems: string[] } {
+  const problems: string[] = []
+  const target: ReleaseTarget = {}
+  let all = false
+  const ids = (value: string | undefined, flag: string): string[] => {
+    const list = (value ?? '').split(',').map((v) => v.trim()).filter((v) => v !== '')
+    if (list.length === 0) problems.push(`${flag} needs one or more shop ids, separated by commas`)
+    for (const id of list) {
+      if (!/^[0-9a-zA-Z-]+$/.test(id) || shortShopId(id).length < 8) problems.push(`"${id}" is not a shop id; use the 8 characters on its reports`)
+    }
+    return list.map(shortShopId)
   }
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i]
+    if (flag === '--all') { all = true; continue }
+    const value = args[i + 1]
+    i += 1
+    if (flag === '--only') target.only = ids(value, flag)
+    else if (flag === '--hold') target.hold = ids(value, flag)
+    else if (flag === '--percent') {
+      const n = Number(value)
+      if (!Number.isInteger(n) || n < 0 || n > 100) problems.push(`--percent needs a whole number from 0 to 100, not "${value ?? ''}"`)
+      else target.percent = n
+    } else problems.push(`unknown option "${flag ?? ''}"; expected --only, --hold, --percent or --all`)
+  }
+  if (all && Object.keys(target).length > 0) problems.push('--all cannot be combined with --only, --hold or --percent')
+  if (!all && Object.keys(target).length === 0 && problems.length === 0) problems.push('say which shops: --only, --hold, --percent or --all')
+  if (problems.length > 0) return { problems }
+  return { target: all ? null : target }
+}
+
+/** The same release for different shops. Nothing else in it changes. */
+export function retarget(m: Manifest, target: ReleaseTarget | null): Manifest {
+  const { shops: _old, ...rest } = m
+  return target === null ? rest : { ...rest, shops: target }
+}
+
+/** A sentence for the person who ran it. */
+export function describeTarget(version: string, target: ReleaseTarget | null): string {
+  if (target === null) return `${version} is for every shop`
+  if (target.percent === 0 && !target.only) return `${version} is halted: no shop is offered it`
+  const parts: string[] = []
+  if (target.only) parts.push(`only ${target.only.join(', ')}`)
+  if (target.percent !== undefined) parts.push(target.percent === 0 ? 'halted for everyone else' : `${target.percent}% of the others`)
+  if (target.hold) parts.push(`never ${target.hold.join(', ')}`)
+  return `${version} is for ${parts.join('; ')}`
+}
+
+/** The first shops a new release goes to, from the `RELEASE_FIRST_SHOPS` variable. */
+export function firstShops(value: string | undefined): ReleaseTarget | null {
+  const list = (value ?? '').split(',').map((v) => v.trim()).filter((v) => v !== '').map(shortShopId)
+  return list.length === 0 ? null : { only: list }
 }
 
 /** The one installer for this version in the bundle folder, and its signature. */
@@ -185,9 +259,29 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.
   } else if (step === 'manifest') {
     const found = findInstaller(BUNDLE_DIR, tag.replace(/^v/, ''))
     const out = join(BUNDLE_DIR, 'latest.json')
-    writeFileSync(out, `${JSON.stringify(manifest({ tag, releaseRepo, ...found }), null, 2)}\n`)
+    const shops = firstShops(env.RELEASE_FIRST_SHOPS)
+    writeFileSync(out, `${JSON.stringify(manifest({ tag, releaseRepo, ...found, shops }), null, 2)}\n`)
+    process.stdout.write(`${describeTarget(tag, shops)}\n`)
     process.stdout.write(`${out}\n`)
+  } else if (step === 'target') {
+    /* Rewrites latest.json on a release that already exists, draft or
+       published, so a release can be widened, narrowed or halted without a
+       rebuild. Uses the GitHub CLI, signed in to an account that can write
+       to RELEASE_REPO. */
+    if (!/^v\d+\.\d+\.\d+/.test(tag)) fail([`"${tag}" is not a release tag like v0.2.20`])
+    if (!/^[\w.-]+\/[\w.-]+$/.test(releaseRepo)) fail(['set RELEASE_REPO to the owner/repo tills update from'])
+    const chosen = targetFromArgs(process.argv.slice(4))
+    if ('problems' in chosen) fail(chosen.problems)
+    const dir = mkdtempSync(join(tmpdir(), 'shopos-target-'))
+    execFileSync('gh', ['release', 'download', tag, '--repo', releaseRepo, '--pattern', 'latest.json', '--dir', dir], { stdio: 'inherit' })
+    const path = join(dir, 'latest.json')
+    const current = JSON.parse(readFileSync(path, 'utf8')) as Manifest
+    const was = readTarget(current.shops)
+    const next = retarget(current, chosen.target)
+    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`)
+    execFileSync('gh', ['release', 'upload', tag, path, '--repo', releaseRepo, '--clobber'], { stdio: 'inherit' })
+    process.stdout.write(`was: ${describeTarget(current.version, was)}\nnow: ${describeTarget(next.version, chosen.target)}\n`)
   } else {
-    fail([`unknown step "${step ?? ''}"; expected check, config or manifest`])
+    fail([`unknown step "${step ?? ''}"; expected check, config, manifest or target`])
   }
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   releaseProblems, readReleaseInputs, releaseConfig, feedUrl, isMinisignPublicKey,
-  manifest, findInstaller,
+  manifest, findInstaller, targetFromArgs, retarget, describeTarget, firstShops,
 } from '../../../tools/release'
 import { LICENCE_KEYS } from '../../../packages/core/src/config/licensing'
 
@@ -108,5 +108,53 @@ describe('latest.json', () => {
 
     writeFileSync(join(dir, 'ShopOS_0.2.0_x64-setup.exe.sig'), 'sig')
     expect(findInstaller(dir, '0.2.0')).toEqual({ installer: 'ShopOS_0.2.0_x64-setup.exe', signature: 'sig' })
+  })
+})
+
+describe('which shops a release is for', () => {
+  const base = manifest({
+    tag: 'v0.2.20', releaseRepo: 'o/r', installer: 'ShopOS_0.2.20_x64-setup.exe', signature: 's',
+    now: new Date('2026-10-12T00:00:00Z'),
+  })
+
+  it('is every shop unless the release says otherwise, exactly as before', () => {
+    expect(base).not.toHaveProperty('shops')
+    expect(firstShops(undefined)).toBeNull()
+    expect(firstShops('  ')).toBeNull()
+  })
+
+  it('goes first to the shops in RELEASE_FIRST_SHOPS', () => {
+    const made = manifest({
+      tag: 'v0.2.20', releaseRepo: 'o/r', installer: 'x', signature: 's', shops: firstShops('01a1256f, 51C78EEC'),
+    })
+    expect(made.shops).toEqual({ only: ['01a1256f', '51c78eec'] })
+  })
+
+  it('reads the options a person types', () => {
+    expect(targetFromArgs(['--only', '01a1256f,51c78eec'])).toEqual({ target: { only: ['01a1256f', '51c78eec'] } })
+    expect(targetFromArgs(['--hold', '51c78eec', '--percent', '30'])).toEqual({ target: { hold: ['51c78eec'], percent: 30 } })
+    expect(targetFromArgs(['--percent', '0'])).toEqual({ target: { percent: 0 } })
+    expect(targetFromArgs(['--all'])).toEqual({ target: null })
+  })
+
+  it('refuses what it cannot mean', () => {
+    for (const args of [[], ['--only'], ['--only', 'abc'], ['--percent', '150'], ['--percent', 'half'],
+      ['--all', '--only', '01a1256f'], ['--everyone']]) {
+      expect('problems' in targetFromArgs(args), args.join(' ')).toBe(true)
+    }
+  })
+
+  it('changes who gets a release and nothing else about it', () => {
+    const narrowed = retarget(base, { only: ['01a1256f'] })
+    expect(narrowed).toEqual({ ...base, shops: { only: ['01a1256f'] } })
+    expect(retarget(narrowed, null)).toEqual(base)
+  })
+
+  it('says what it did in a sentence', () => {
+    expect(describeTarget('0.2.20', null)).toBe('0.2.20 is for every shop')
+    expect(describeTarget('0.2.20', { only: ['01a1256f'], hold: ['51c78eec'] }))
+      .toBe('0.2.20 is for only 01a1256f; never 51c78eec')
+    expect(describeTarget('0.2.20', { percent: 0 })).toBe('0.2.20 is halted: no shop is offered it')
+    expect(describeTarget('0.2.20', { only: ['01a1256f'], percent: 0 })).toBe('0.2.20 is for only 01a1256f; halted for everyone else')
   })
 })
