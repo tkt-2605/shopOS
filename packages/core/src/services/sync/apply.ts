@@ -106,9 +106,9 @@ export async function applyBatch(
   if (outcome.applied > 0) {
     /* Before the stock is recomputed, so the cache is worked out from a ledger
        that has already taken back a second reversal of one document. See
-       `stockReversals.ts`. */
-    const reversed = idsIn(arrived, new Set(['stock_ledger']), (r) => (
-      String(r.row?.['voucher_type'] ?? '').endsWith('_reversal') ? r.row?.['voucher_id'] : undefined))
+       `stockReversals.ts`. Any movement, not only a reversal: one from before
+       060 that came ahead of its sale is judged when the sale lands. */
+    const reversed = idsIn(arrived, new Set(['stock_ledger']), (r) => r.row?.['voucher_id'])
     if (reversed === null || reversed.length > 0) {
       await reconcileDoubleReversals(db, { repair: true, voucherIds: reversed })
     }
