@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Reports as R, Money, listRegisters, chargesTax, listSessions, profitAndLoss, balanceSheet, ledgerChecks,
-  generalLedger,
+  Reports as R, Money, listRegisters, chargesTax,
   type DateRange, type Register,
 } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { Card, Stat, Empty, Alert, Rupees, DateRangePicker, rangePreset } from '../ui/components'
 import { saveFile } from '../core/exportFile'
 import { reportPdf } from '../core/pdf'
+import { deliverPack, say } from '../core/reportOut'
 import { useShopChanged } from '../core/useShopChanged'
 import { Completeness } from '../ui/Completeness'
 import { type Data, type Tab, describe, rupeeCell, tableFor } from './reports/tableFor'
 import {
   BooksTable, DaysTable, DrawerTable, MarginTable, ProductsTable, StaffTable, TaxTable, TendersTable,
 } from './reports/tables'
-import { EVERYTHING, LedgerFilters, LedgerTable, ledgerFilter, type LedgerView } from './reports/LedgerTable'
+import { EVERYTHING, LedgerFilters, LedgerTable, type LedgerView } from './reports/LedgerTable'
+import { loadReportData, gstDetailCsv } from './reports/loadData'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'days', label: 'By day' },
@@ -57,23 +58,7 @@ export default function Reports() {
     setBusy(true)
     setError(null)
     try {
-      const [summary, days, products, margin, marginRows, tax, tenders, staff, sessions, pl, bs, checks, ledger] = await Promise.all([
-        R.salesSummary(db, range),
-        R.salesByDay(db, range),
-        R.topProducts(db, range, 25),
-        R.grossMargin(db, range),
-        R.marginByProduct(db, range, 25),
-        R.taxByRate(db, range),
-        R.paymentMix(db, range),
-        R.salesByStaff(db, range),
-        listSessions(db, range),
-        profitAndLoss(db, range),
-        balanceSheet(db, range.to),
-        ledgerChecks(db),
-        // The whole shop's books whatever counter is chosen, as on the books tab.
-        generalLedger(db, { from: range.from, to: range.to, ...ledgerFilter(ledgerView) }),
-      ])
-      setData({ summary, days, products, margin, marginRows, tax, tenders, staff, sessions, pl, bs, checks, ledger })
+      setData(await loadReportData(db, range, ledgerView))
     } catch (err) {
       setData(null)
       setError(`The reports could not be built: ${err instanceof Error ? err.message : String(err)}`)
@@ -130,6 +115,23 @@ export default function Reports() {
     setTimeout(() => setNotice(null), 8000)
   }
 
+  /* Every report for this range, as one zip: kept here, copied to the backup
+     folder and emailed, as set up under Settings, Send reports. */
+  async function sendAll() {
+    setError(null)
+    setBusy(true)
+    try {
+      const delivery = await deliverPack(db, range)
+      const text = say(delivery)
+      if (delivery.mailError || delivery.folderError) setError(text)
+      else { setNotice(text); setTimeout(() => setNotice(null), 12000) }
+    } catch (err) {
+      setError(`The reports could not be sent: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function exportGstLines() {
     setError(null)
     const lines = await R.gstLines(db, range)
@@ -138,16 +140,7 @@ export default function Reports() {
     /* Two columns a CA needs and the sheet did not have: which kind of document
        a row is, and — for a credit note — the invoice it is raised against,
        which is what GSTR-1 table 9B is filled from. */
-    const csv = R.toCsv(
-      ['Document', 'Type', 'Against', 'Date', 'Customer', 'GSTIN', 'Place of supply',
-        'Rate %', 'Taxable', 'CGST', 'SGST', 'IGST', 'Cess', 'Total'],
-      lines.map((l) => [
-        l.docNo, l.kind === 'credit_note' ? 'Credit note' : 'Invoice', l.againstDocNo ?? '',
-        l.postingDate, l.customerName, l.gstin, l.placeOfSupply, l.rateBp / 100,
-        rupeeCell(l.taxable), rupeeCell(l.cgst), rupeeCell(l.sgst), rupeeCell(l.igst), rupeeCell(l.cess),
-        rupeeCell(l.total),
-      ]),
-    )
+    const csv = gstDetailCsv(lines)
     const result = await saveFile(`gst-detail-${range.from}-to-${range.to}.csv`, csv)
     if (!result.ok) { setError(result.message); return }
 
@@ -326,6 +319,7 @@ export default function Reports() {
             <div style={{ flex: 1 }} />
             <button className="btn sm" onClick={() => void exportCsv()}>Save as CSV</button>
             <button className="btn sm" onClick={() => void exportPdf()}>Save as PDF</button>
+            <button className="btn sm" disabled={busy} onClick={() => void sendAll()}>Send all reports</button>
           </div>
 
           {!collectsTax && (

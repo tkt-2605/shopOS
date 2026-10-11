@@ -160,7 +160,7 @@ const FOLDER_SETTING: &str = "backup_folder";
 /// request -- the same rule as the backup hook. The commands below copy into
 /// it and delete from it on a timer, and a delete is exactly the kind of thing
 /// a webview must not be able to point somewhere else.
-fn chosen_folder(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn chosen_folder(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = device::setting(&paths::data_dir(app)?, FOLDER_SETTING)?
         .map(PathBuf::from)
         .ok_or_else(|| "No folder is chosen to copy backups to.".to_string())?;

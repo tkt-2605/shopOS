@@ -59,7 +59,7 @@ fn safe_name(name: &str, allowed: &[&str]) -> Result<String, String> {
 /// name and the later one quietly replaced the earlier. The original shop
 /// keeps the folder it has always had, for the same reason `paths::data_dir`
 /// does: somebody already knows where to look.
-fn exports_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn exports_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base = app
         .path()
         .document_dir()

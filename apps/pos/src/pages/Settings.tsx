@@ -11,6 +11,7 @@ import { FeaturesSection } from './settings/FeaturesSection'
 import { LoyaltySection } from './settings/LoyaltySection'
 import { PrinterSection, AppearanceSection } from './settings/DeviceSections'
 import { BackupsSection } from './settings/BackupsSection'
+import { ReportsOutSection } from './settings/ReportsOutSection'
 import { TeamSection, hasTeamScreens } from './settings/TeamSection'
 import { HelpSection } from './settings/HelpSection'
 import { Intro } from './settings/parts'
@@ -37,7 +38,7 @@ export type SettingsSection =
   | 'shop' | 'tax' | 'format' | 'printer'
   | 'features' | 'loyalty'
   | 'team' | 'sync' | 'licence'
-  | 'backups'
+  | 'backups' | 'reportsOut'
   | 'appearance' | 'help'
 
 interface SectionDef {
@@ -74,7 +75,10 @@ const GROUPS: { label: string; sections: SectionDef[] }[] = [
   },
   {
     label: 'Data',
-    sections: [{ id: 'backups', label: 'Backups & restore' }],
+    sections: [
+      { id: 'backups', label: 'Backups & restore' },
+      { id: 'reportsOut', label: 'Send reports' },
+    ],
   },
   {
     label: 'This computer',
@@ -173,6 +177,7 @@ function body(section: SettingsSection, openFormat: (() => void) | null): ReactN
       </>
     )
     case 'backups': return <BackupsSection />
+    case 'reportsOut': return <ReportsOutSection />
     case 'appearance': return <AppearanceSection />
     case 'help': return <HelpSection />
   }
