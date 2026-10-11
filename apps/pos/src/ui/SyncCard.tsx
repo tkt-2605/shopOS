@@ -243,6 +243,14 @@ export function SyncCard() {
                   It lasts ten minutes and <strong>one attempt uses it up</strong>,
                   right or wrong — show a fresh one if it is mistyped.
                 </div>
+                {/* Windows asks the first time a till opens its port, and only an
+                    administrator can say yes. Answered no, or not at all, the other
+                    tills cannot reach this one and nothing on this screen says why. */}
+                <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>
+                  If Windows asks whether ShopOS may use the network, choose <strong>Allow</strong>.
+                  It needs an administrator: if this computer is signed in as an ordinary user,
+                  have whoever set up the computer sign in and allow it once. Windows remembers.
+                </div>
                 <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => void doneAdding()}>
                   Done
                 </button>
