@@ -82,9 +82,21 @@ start() {
   # window gone -- so a till started from the panel, one click and done, died
   # a second later. systemd owns it instead, and the unit is also exactly the
   # set of processes a power cut has to take: the app and its webview's.
+  #
+  # The unit outlives the first process, because the app restarts itself --
+  # joining a shop takes a copy of the main and restarts to open it, and so
+  # does a restore. Tauri restarts by starting the new copy and then exiting
+  # the old one, and a unit whose main process has exited is stopped with
+  # everything in it, the new copy too. So the unit's main process is this
+  # keeper, which waits until no ShopOS is left in the till's namespace.
+  local keep='"$@"
+    while ip netns pids "$NS" | while read -r p; do
+            [ "$(cat /proc/$p/comm 2>/dev/null)" = shopos-pos ] && echo y; done | grep -q y
+    do sleep 1; done'
   systemctl reset-failed "$(unit_of "$n")" 2>/dev/null
-  systemd-run --quiet --collect --unit="$(unit_of "$n")" \
+  systemd-run --quiet --collect --unit="$(unit_of "$n")" -E NS="$ns" \
     -p StandardOutput="append:$dir/app.log" -p StandardError="append:$dir/app.log" \
+    bash -c "$keep" keeper \
     ip netns exec "$ns" runuser -u "$user" -- env -i \
       HOME="$home" USER="$user" PATH=/usr/bin:/bin \
       DISPLAY="${DISPLAY:-:0}" GDK_BACKEND=x11 XDG_RUNTIME_DIR="/run/user/$uid" \
