@@ -38,6 +38,7 @@ data="$home/.shopos-tills"
 switch=sb-win
 
 ns_of() { echo "sb-w$1"; }
+unit_of() { echo "shopos-till$1"; }
 ip_of() { echo "10.77.3.1$1"; }
 valid() { [[ "${1:-}" =~ ^[123]$ ]] || { echo "Which till: 1, 2 or 3"; exit 1; }; }
 
@@ -75,20 +76,38 @@ start() {
   # lock that keeps one copy per folder, and the webview's cache. X11 rather
   # than Wayland: WSLg's Wayland socket belongs to the first Linux user, and
   # its X socket is open to every user, which is the one that always works.
-  # setsid: a session of its own, so closing the terminal that started it is
-  # not a power cut.
-  ( setsid -f ip netns exec "$ns" runuser -u "$user" -- env -i \
+  #
+  # A systemd unit of its own, not a background job. WSL ends whatever a
+  # `wsl.exe` command started when that command returns -- a hangup, and the
+  # window gone -- so a till started from the panel, one click and done, died
+  # a second later. systemd owns it instead, and the unit is also exactly the
+  # set of processes a power cut has to take: the app and its webview's.
+  systemctl reset-failed "$(unit_of "$n")" 2>/dev/null
+  systemd-run --quiet --collect --unit="$(unit_of "$n")" \
+    -p StandardOutput="append:$dir/app.log" -p StandardError="append:$dir/app.log" \
+    ip netns exec "$ns" runuser -u "$user" -- env -i \
       HOME="$home" USER="$user" PATH=/usr/bin:/bin \
       DISPLAY="${DISPLAY:-:0}" GDK_BACKEND=x11 XDG_RUNTIME_DIR="/run/user/$uid" \
       XDG_DATA_HOME="$dir/data" XDG_CONFIG_HOME="$dir/config" XDG_CACHE_HOME="$dir/cache" \
       WEBKIT_DISABLE_DMABUF_RENDERER=1 \
-      "$app" >>"$dir/app.log" 2>&1 & )
+      "$app" || { echo "till $n would not start"; return 1; }
   echo "till $n on at $(ip_of "$n")  (log: $dir/app.log)"
 }
 
 power() {
+  # SIGKILL to every process in the unit at once: no clean close, no flush.
+  if systemctl is-active --quiet "$(unit_of "$1")"; then
+    # WSL's systemd kills the unit's processes and then complains it could
+    # not signal "auxiliary" ones, which a unit started this way has none of.
+    systemctl kill --signal=KILL "$(unit_of "$1")" 2>/dev/null
+    echo "till $1: power cut"
+  else
+    echo "till $1 was already off"
+  fi
+  # Anything left in the namespace from before units, or a stray child.
   local pids; pids=$(ip netns pids "$(ns_of "$1")" 2>/dev/null)
-  [ -n "$pids" ] && kill -9 $pids && echo "till $1: power cut" || echo "till $1 was already off"
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+  return 0
 }
 
 case "${1:-}" in
