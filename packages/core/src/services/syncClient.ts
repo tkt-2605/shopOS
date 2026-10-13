@@ -16,6 +16,7 @@ import { MIN_PEER_SCHEMA_VERSION } from '../db/migrationKinds.js'
 import { assertSafeToSpeak } from './sync/reach.js'
 import { joinedMain } from './sync/layout.js'
 import type { ShopCopy } from './sync/copy.js'
+import type { ClaimAnswer, ClaimAsk } from './registers.js'
 
 /**
  * The side of a sync that asks.
@@ -530,4 +531,18 @@ export async function requestCopy(
   self: SelfAddress = {},
 ): Promise<ShopCopy> {
   return signedAsk(peer, fetchImpl, self)<ShopCopy>('/copy', {})
+}
+
+/**
+ * Asks the main to let this till sit at a counter. Throws when the main cannot
+ * be reached or refuses the request itself; a counter held by somebody else is
+ * an answer, not a throw. See `changeCounter`.
+ */
+export async function requestClaim(
+  peer: PeerAddress,
+  ask: ClaimAsk,
+  fetchImpl: typeof fetch = fetch,
+  self: SelfAddress = {},
+): Promise<ClaimAnswer> {
+  return signedAsk(peer, fetchImpl, self)<ClaimAnswer>('/claim', ask)
 }

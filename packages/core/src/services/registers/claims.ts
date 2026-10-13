@@ -85,6 +85,10 @@ export async function claimIfUnclaimed(
   who: string | null = deviceId(),
 ): Promise<void> {
   if (who === null) return
+  /* Not on a till behind a main: taking a free counter is still taking a
+     counter, and that is the main's to grant (`changeCounter`). The main would
+     not keep the claim anyway -- see `sync/record.ts`. */
+  if (await tillRole(db) === 'till') return
   await q(db).update(schema.registers)
     .set({ claimedBy: who, updatedAt: new Date().toISOString() })
     .where(and(eq(schema.registers.id, registerId), isNull(schema.registers.claimedBy)))
@@ -231,6 +235,114 @@ export async function takeRegister(
     .set({ claimedBy: me, claimedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
     .where(eq(schema.registers.id, registerId))
   return { ok: true }
+}
+
+/*
+ * Which counter a till sits at is the main's to say, and only while it can be
+ * asked.
+ *
+ * A counter is a number series and a drawer, and the only way two machines
+ * come to print one bill number is two machines on one counter. Tills apart
+ * from each other cannot settle that between themselves -- each holds its own
+ * copy of who sits where, and a till switched off for four days wakes up
+ * believing the counter it left is still its own. So the claim has one keeper.
+ * A till that is not the main asks it, live; when the main cannot be reached
+ * nothing changes, and the till goes on billing where it was. And the main
+ * does not take a claim from a merge either (`sync/record.ts`), so a till that
+ * wrote one by itself -- an old build, or one that woke up on its old counter
+ * -- is put right at its next sync instead of overwriting the main's answer.
+ *
+ * A counter a till makes for itself is not a change of anybody's: its prefix
+ * comes from that machine, so it collides with nobody, and it is made and
+ * claimed offline as before (`ensureOwnRegister`).
+ */
+
+/** What a till asks the main for. */
+export interface ClaimAsk {
+  registerId: string
+  /** Take a counter held by a till that has gone quiet. Refused otherwise. */
+  take: boolean
+}
+
+/** The main's answer. */
+export type ClaimAnswer =
+  | { ok: true }
+  | { ok: false; code: 'NO_SUCH_COUNTER' | 'COUNTER_OFF' }
+  | { ok: false; code: 'STILL_HELD'; label: string | null; at: string | null; stale: boolean }
+
+/** The main's answer, or why there was none. */
+export type CounterChange =
+  | ClaimAnswer
+  | { ok: false; code: 'MAIN_UNREACHABLE'; error: string }
+
+/**
+ * The keeper's decision: whether `requester` may sit at this counter, and
+ * recording it when it may. Run on the main for a till that asks, and on a
+ * till that is the main or has nobody to ask, for itself.
+ *
+ * Free, or already the requester's: yes. Held by another till: no, unless the
+ * request is to take it and the claim has gone stale, by the same test the
+ * Counters screen offers it on. Claiming releases whatever the requester held
+ * before, so the till that moves does not leave its old counter looking taken.
+ */
+export async function grantClaim(
+  db: SqlDriver,
+  requester: string,
+  ask: ClaimAsk,
+  now = Date.now(),
+): Promise<ClaimAnswer> {
+  const [row] = await q(db)
+    .select({ isActive: schema.registers.isActive })
+    .from(schema.registers)
+    .where(eq(schema.registers.id, ask.registerId))
+  if (row === undefined) return { ok: false, code: 'NO_SUCH_COUNTER' }
+  if (row.isActive !== 1) return { ok: false, code: 'COUNTER_OFF' }
+
+  const claim = (await claims(db, now)).get(ask.registerId)
+  if (claim !== undefined && claim.deviceId !== null && claim.deviceId !== requester) {
+    if (!ask.take || !claim.stale) {
+      return { ok: false, code: 'STILL_HELD', label: claim.label, at: claim.at, stale: claim.stale }
+    }
+  }
+
+  await claimRegister(db, { registerId: ask.registerId, deviceId: requester })
+  await renewClaim(db, ask.registerId, requester)
+  return { ok: true }
+}
+
+/**
+ * Changing the counter this machine sits at.
+ *
+ * On a till behind a main, `askMain` puts the question to the main, and only
+ * a yes changes anything. The yes is then written here as well, so this till
+ * bills on the counter at once rather than after the next round; the main
+ * already holds the same claim, so the merge has nothing to put right. A main,
+ * or a till with nobody to ask, decides for itself by the same rule.
+ *
+ * `askMain` throwing is the main not answering, and nothing is written.
+ */
+export async function changeCounter(
+  db: SqlDriver,
+  ask: ClaimAsk,
+  askMain: (ask: ClaimAsk) => Promise<ClaimAnswer>,
+  now = Date.now(),
+): Promise<CounterChange> {
+  const me = deviceId()
+  if (me === null) throw new Error('this machine has no device id')
+
+  if (await tillRole(db) !== 'till') return grantClaim(db, me, ask, now)
+
+  let answer: ClaimAnswer
+  try {
+    answer = await askMain(ask)
+  } catch (err) {
+    return { ok: false, code: 'MAIN_UNREACHABLE', error: err instanceof Error ? err.message : String(err) }
+  }
+  if (!answer.ok) return answer
+
+  await claimRegister(db, { registerId: ask.registerId, deviceId: me })
+  await renewClaim(db, ask.registerId, me)
+  return answer
 }
 
 /**

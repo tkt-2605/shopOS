@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   listRegisters, renameRegister, setRegisterActive,
-  resolveDeviceRegister, countersOtherTillsUse, takeRegister,
+  resolveDeviceRegister, countersOtherTillsUse,
   type Register, type CounterTaken,
 } from '@shopos/core'
 import { chosenRegister } from '../core/device'
@@ -63,18 +63,14 @@ export default function Registers() {
 
     /* Which counter this machine bills on goes to the machine; which till sits
        here goes to the shop. `takeCounter` says why neither can be done alone. */
-    if (!(await takeCounter(db, id))) {
+    const outcome = await takeCounter(db, id)
+    if (!outcome.ok) {
       /* The choice did not happen at all: nothing was written and this machine
          is still on the counter it was on. Saying "it will go back at the next
          start" would describe a move that never took place, and the green
          notice below used to appear alongside this, so the screen said the
          choice had been made and had failed, at once. */
-      const staying = rows.find((r) => r.id === chosenRegister())
-      setError(
-        'This machine could not record which counter it is, so the choice was not made. '
-        + `It is still on ${staying ? staying.name : 'the counter it resolved to'}, and `
-        + 'billing is unaffected. The banner above says why.',
-      )
+      setError(outcome.why)
       await refresh()
       return
     }
@@ -103,16 +99,18 @@ export default function Registers() {
     )
     if (!agreed) return
 
-    const result = await takeRegister(db, r.id)
-    if (!result.ok) {
-      setError(
-        `${result.label ?? 'That till'} has started up since this screen was drawn, so the `
-        + 'counter is still theirs. Nothing was changed.',
-      )
+    /* Asked of the main, which checks the claim against its own record and
+       not this screen's: the holder may have started up since it was drawn. */
+    const outcome = await takeCounter(db, r.id, { take: true })
+    if (!outcome.ok) {
+      setError(outcome.why)
       await refresh()
       return
     }
-    await useHere(r.id)
+    await reloadRegister()
+    await refresh()
+    setNotice('This machine now bills on that counter.')
+    setTimeout(() => setNotice(null), 3000)
   }
 
   async function toggle(r: Register) {
@@ -225,7 +223,7 @@ export default function Registers() {
                              offered with a name and a date on it, because
                              "claimed" is not a thing a shopkeeper can act on
                              and "last used by the back counter on the 3rd" is.
-                             `takeRegister` checks again before it writes. */
+                             The main checks again before it grants it (`grantClaim`). */
                           if (!holder.stale) {
                             return (
                               <span style={{ color: 'var(--ink-3)', fontSize: 12 }}>

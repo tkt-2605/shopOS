@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
-import type { Register, CounterTaken, TakeRegisterResult } from '@shopos/core'
+import type { Register, CounterTaken } from '@shopos/core'
+import type { CounterOutcome } from '../src/core/counters'
 
 /**
  * Taking a counter back from a till that has stopped starting up.
@@ -17,19 +18,28 @@ import type { Register, CounterTaken, TakeRegisterResult } from '@shopos/core'
 
 let rows: Register[] = []
 let taken: CounterTaken[] = []
-let result: TakeRegisterResult = { ok: true }
+let result: CounterOutcome = { ok: true }
 let tookWhich: string | null = null
+let tookOver = false
 
 vi.mock('@shopos/core', async (real) => ({
   ...(await real<Record<string, unknown>>()),
   listRegisters: async () => rows,
   countersOtherTillsUse: async () => taken,
   resolveDeviceRegister: async () => null,
-  takeRegister: async (_db: unknown, id: string) => { tookWhich = id; return result },
 }))
 
 vi.mock('../src/core/device', () => ({ chosenRegister: () => null }))
-vi.mock('../src/core/counters', () => ({ takeCounter: async () => true }))
+/* Taking it over is asked of the main, through the one way a counter is
+   taken (`takeCounter`); the screen's part is to ask the person first and to
+   say what the main answered. */
+vi.mock('../src/core/counters', () => ({
+  takeCounter: async (_db: unknown, id: string, opts: { take?: boolean } = {}) => {
+    tookWhich = id
+    tookOver = opts.take === true
+    return result
+  },
+}))
 vi.mock('../src/core/useShopChanged', () => ({ useShopChanged: () => {} }))
 
 const core = { db: {}, reloadRegister: async () => {} }
@@ -97,6 +107,7 @@ beforeEach(() => {
   taken = []
   result = { ok: true }
   tookWhich = null
+  tookOver = false
 })
 
 afterEach(() => cleanup())
@@ -161,14 +172,17 @@ describe('a counter another till is holding', () => {
     await answer(true)
 
     expect(tookWhich).toBe('front')
+    expect(tookOver, 'asked as a take-over, which the main checks is stale').toBe(true)
   })
 
-  it('stands down when that till has started up since the screen was drawn', async () => {
-    /* The list on screen may be a minute old. `takeRegister` checks again at
-       the moment it writes, and a screen that ignored the refusal would put two
-       tills on one counter on the strength of a stale render. */
+  it('stands down when the main says no', async () => {
+    /* The list on screen may be a minute old, and the main checks the claim
+       against its own record before it grants it -- the holder may have
+       started up since, or the main may be out of reach. A screen that
+       ignored the refusal would put two tills on one counter on the strength
+       of a stale render. */
     taken = [heldBy()]
-    result = { ok: false, code: 'STILL_HELD', label: 'Back counter', at: null }
+    result = { ok: false, why: 'Back counter is billing on that counter. The main till refused.' }
     await show()
 
     await act(async () => {
@@ -177,8 +191,7 @@ describe('a counter another till is holding', () => {
     })
     await answer(true)
 
-    expect(document.body.textContent)
-      .toContain('Back counter has started up since this screen was drawn')
-    expect(document.body.textContent).toContain('Nothing was changed')
+    expect(document.body.textContent).toContain('Back counter is billing on that counter. The main till refused.')
+    expect(document.body.textContent).not.toContain('now bills on that counter')
   })
 })

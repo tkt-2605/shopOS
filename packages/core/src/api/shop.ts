@@ -25,6 +25,7 @@ export {
   listRegisters, createRegister, renameRegister, setRegisterActive,
   renewClaim, claims, takeRegister, forgetPeer, ghostClaims, clearGhostClaims, CounterTakenError,
   CLAIM_GOES_STALE_MS, type Claim, type TakeRegisterResult,
+  grantClaim, changeCounter, type ClaimAsk, type ClaimAnswer, type CounterChange,
   resolveDeviceRegister, legacyDeviceRegister, forgetLegacyDeviceRegister,
   countersOtherTillsUse, claimRegister, claimIfUnclaimed, ensureOwnRegister, prefixFor,
 } from '../services/registers.js'

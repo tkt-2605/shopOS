@@ -10,7 +10,8 @@ import {
 } from '../syncAuth.js'
 import { clock } from '../../clock.js'
 import { askingToJoin, letThemIn, offered, pollingAJoin, withdrawPairing } from './pairing.js'
-import { mayLetIn } from '../sync/layout.js'
+import { mayLetIn, tillRole } from '../sync/layout.js'
+import { grantClaim } from '../registers.js'
 import { handleHello } from './hello.js'
 import { handleCopy } from './copy.js'
 import {
@@ -94,6 +95,7 @@ async function route(
     case '/fetch': return handleFetch(db, request, them)
     case '/offer': return handleOffer(db, request, them)
     case '/copy': return handleCopy(db, them, opts)
+    case '/claim': return handleClaim(db, request, them)
     default: return refuse(404, 'NO_SUCH_REQUEST')
   }
 }
@@ -292,6 +294,28 @@ export async function handleOffer(
     ))
 
   return ok({ upTo: batch.upTo })
+}
+
+/**
+ * A till asking to sit at a counter. Only the main answers: the claim has one
+ * keeper, and a till that is not it says so rather than deciding for a shop
+ * whose claims it does not keep. See `grantClaim`.
+ *
+ * Its answer is an answer either way -- a counter held by somebody else is a
+ * 200 saying so, with who and since when, because the asking screen has a
+ * sentence to write about it. Only a request that cannot be read is refused.
+ */
+async function handleClaim(
+  db: SqlDriver,
+  request: SyncRequest,
+  them: string,
+): Promise<SyncResponse> {
+  if (await tillRole(db) !== 'main') return refuse(409, 'NOT_THE_MAIN')
+  const asked = parse<{ registerId?: unknown; take?: unknown }>(request.body)
+  if (asked === null || typeof asked.registerId !== 'string' || asked.registerId === '') {
+    return refuse(400, 'MALFORMED')
+  }
+  return ok(await grantClaim(db, them, { registerId: asked.registerId, take: asked.take === true }))
 }
 
 /** A `replaces` worth passing on: a string, and not the joining till itself. */

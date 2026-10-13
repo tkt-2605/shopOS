@@ -177,9 +177,12 @@ export function JoinShop({ onCancel, rejoining = false, onDone }: {
 
   async function useCounter(id: string) {
     setError(null)
-    if (!(await takeCounter(db, id))) {
-      setError('This machine could not record which counter it sits at. '
-        + 'It has joined the shop; open Counters after signing in and press "Use here".')
+    const outcome = await takeCounter(db, id)
+    if (!outcome.ok) {
+      /* It has joined either way; the counter is what did not happen. Said,
+         and the list stays up to pick again. */
+      setError(outcome.why)
+      return
     }
     window.location.reload()
   }

@@ -7,6 +7,7 @@ import {
   refusedAsSubmitted, refusedLinesOfSubmitted, DOCUMENT_TABLES, SUBMITTED,
 } from '../../integrity/docstatus.js'
 import type { ContestedChange } from './types.js'
+import { tillRole } from './layout.js'
 
 /*
  * One record against what is already here: decided, trimmed to the columns
@@ -171,6 +172,35 @@ export async function applyRecord(
         winner: call.winner, explain: call.explain,
       })
     }
+
+    /* Which till sits at a counter is the main's to say (`grantClaim`), and a
+       merge is not the main saying it. A till that wrote a claim by itself --
+       an old build, or one that woke up after days off still believing the
+       counter it left was its own -- would otherwise win on revision like any
+       other edit and hand one number series to two machines. So the main
+       keeps the claim it holds, takes the rest of the row as the merge
+       decides, and sends its answer back out above both revisions: keeping
+       it quietly would leave the sender holding its own claim, billing on it,
+       with nothing ever arriving to say otherwise. */
+    if (await claimStaysWithMain(tx, shape.table, mine, record.row)) {
+      const base = call.winner === 'mine' ? mine : known(record.row, columns).row
+      await upsert(tx, shape.table, shape.key, {
+        ...base,
+        claimed_by: mine['claimed_by'] ?? null,
+        claimed_at: mine['claimed_at'] ?? null,
+        rev: Math.max(numberOf(mine['rev']) ?? 0, numberOf(record.row['rev']) ?? 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
+      await feedApplied(tx, shape.table, record.rowId, 'upsert', deviceId())
+      return {
+        ...NOTHING,
+        applied: 1,
+        contested: [...contested.filter((c) => c.rowId !== record.rowId), {
+          table: record.table, rowId: record.rowId, winner: 'mine',
+          explain: 'which till sits at a counter is the main till’s to say, so its record of it was kept',
+        }],
+      }
+    }
     // Keeping what is here writes nothing at all, which is always the safer
     // of two answers — and leaves this machine's feed exactly as it was.
     if (call.winner === 'mine') return { ...NOTHING, contested }
@@ -331,6 +361,17 @@ async function insert(tx: SqlDriver, table: string, row: Row): Promise<void> {
      VALUES (${columns.map(() => '?').join(', ')})`,
     columns.map((c) => row[c] as SqlValue),
   )
+}
+
+/**
+ * Whether an incoming counter row would move a claim this database keeps.
+ * Only on the main, and only for a counter it already holds a row for: a
+ * counter a till has just made for itself is nobody else's.
+ */
+async function claimStaysWithMain(tx: SqlDriver, table: string, mine: Row, theirs: Row): Promise<boolean> {
+  if (table !== 'registers') return false
+  if ((theirs['claimed_by'] ?? null) === (mine['claimed_by'] ?? null)) return false
+  return await tillRole(tx) === 'main'
 }
 
 function numberOf(v: SqlValue | undefined): number | null {

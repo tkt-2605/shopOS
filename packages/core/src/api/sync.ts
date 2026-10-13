@@ -13,7 +13,7 @@ export {
   forgetNonces, CLOCK_TOLERANCE_MS, setFingerprintSource, pairingKey, comparisonDigits, codeProof, codeConfirmation, keyCommitment,
 } from '../services/syncAuth.js'
 export { nextBackoff, BACKOFF_START_MS, BACKOFF_MAX_MS } from '../services/syncBackoff.js'
-export { httpTransport, pairWith, askToJoin, pollJoin, pairedPeers, rememberAddress, SyncHttpError, joinByCopy, requestCopy, type PeerAddress, type PairOutcome, type SelfAddress, type JoinProgress } from '../services/syncClient.js'
+export { httpTransport, pairWith, askToJoin, pollJoin, pairedPeers, rememberAddress, SyncHttpError, joinByCopy, requestCopy, requestClaim, type PeerAddress, type PairOutcome, type SelfAddress, type JoinProgress } from '../services/syncClient.js'
 export { recentConflicts, acknowledgeConflicts, unreadConflictCount, recordAttempt, type RecordedConflict, type PeerHealth } from '../services/sync.js'
 export {
   quarantinedRecords, unreadQuarantineCount, acknowledgeQuarantine, discardQuarantined,

@@ -34,7 +34,7 @@ vi.mock('../src/core/syncHost', () => ({
 }))
 vi.mock('../src/core/device', () => ({ chosenRegister: () => chosen }))
 vi.mock('../src/core/counters', () => ({
-  takeCounter: async (_db: unknown, id: string) => { taken.push(id); chosen = id; return true },
+  takeCounter: async (_db: unknown, id: string) => { taken.push(id); chosen = id; return { ok: true as const } },
 }))
 
 const core = { db: {}, shop: { name: 'Test Shop' }, shopName: 'Test Shop', registerId: 'main-counter', reloadRegister }

@@ -4,6 +4,7 @@ import { q, schema } from '../../db/q.js'
 import { deviceId } from '../../device.js'
 import { getSetting, forgetSetting } from '../settings.js'
 import { type CounterTaken, claims } from './claims.js'
+import { tillRole } from '../sync/layout.js'
 
 /*
  * Which counter this machine bills on, and the ones the other tills use.
@@ -46,6 +47,11 @@ export async function resolveDeviceRegister(
        is every counter in a shop that has only ever had one till. */
     const me = deviceId()
     if (live && live.claimedBy !== null && me !== null && live.claimedBy !== me) return null
+    /* Behind a main, a counter nobody holds is not one to bill on either: the
+       main grants counters (`changeCounter`), and a till that finds its claim
+       gone -- put right by the main at a sync -- asks again rather than
+       carrying on as if a counter with no keeper were its own. */
+    if (live && live.claimedBy === null && await tillRole(db) === 'till') return null
     if (live) return live.id
   }
 
