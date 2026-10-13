@@ -16,6 +16,7 @@ import { runStockCheck, startMaintenanceTimer } from './maintenance'
 import { serveIfPaired, servingOn } from './syncHost'
 import { syncFetch } from './syncFetch'
 import { startSyncLoop, stopSyncLoop, runOnce, nudgeSync } from './syncLoop'
+import { startReportSchedule } from './reportOut'
 import { watchForTillsAhead } from './outOfDate'
 import { nudgingDriver } from './nudgingDriver'
 import { serializingDriver } from './writeLock'
@@ -191,6 +192,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     let stopBackupTimer: (() => void) | null = null
     let stopMaintenance: (() => void) | null = null
+    let stopReports: (() => void) | null = null
     /* Before anything can talk to another till, so the first hello from a
        newer one is written down. */
     const stopWatching = watchForTillsAhead()
@@ -253,6 +255,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
            gets its turn on Monday rather than waiting another week. */
         void runStockCheck(db)
         stopMaintenance = startMaintenanceTimer(db, () => {})
+        stopReports = startReportSchedule(db)
       } catch (err) {
         if (!cancelled) setStatus({ phase: 'failed', error: describe(err), kind: kindOf(err) })
       }
@@ -263,6 +266,7 @@ export function CoreProvider({ children }: { children: ReactNode }) {
       stopSyncLoop()
       stopBackupTimer?.()
       stopMaintenance?.()
+      stopReports?.()
       stopWatching()
     }
   }, [])

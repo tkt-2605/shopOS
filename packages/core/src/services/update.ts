@@ -36,6 +36,12 @@ export interface AvailableUpdate {
   notes: string
   /** ISO, from the feed. Null when the feed does not say. */
   publishedAt: string | null
+  /**
+   * The `shops` field of `latest.json`, unread: which shops the release is
+   * for (`domain/updateTarget.ts`). Absent on every release made before
+   * targeting, which is a release for every shop.
+   */
+  shops?: unknown
 }
 
 export type UpdateStage =

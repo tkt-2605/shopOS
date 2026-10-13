@@ -7,6 +7,7 @@ mod diagnostics;
 mod discovery;
 mod exports;
 mod files;
+mod health;
 mod hook;
 mod ids;
 mod instance;
@@ -14,6 +15,7 @@ mod log;
 mod paths;
 mod pdf;
 mod printing;
+mod report_out;
 mod restore;
 mod shop_copy;
 mod sync_client;
@@ -193,6 +195,11 @@ pub fn run() {
             printing::print_receipt,
             exports::export_file,
             exports::export_pdf,
+            report_out::report_deliver,
+            report_out::report_outbox,
+            report_out::report_telegram_chats,
+            report_out::report_telegram_builtin,
+            health::health_send,
             backup::backup_list,
             backup::backup_path,
             backup::backup_delete,

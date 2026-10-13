@@ -20,10 +20,21 @@ import { applyingRemote } from './changefeed.js'
  * -- because each derives the same answer from the same rows and a row relayed
  * to a till that has already made it would only be a second copy to quarantine.
  *
- * Which reversal is the extra one: a document makes one reversal per movement,
- * so for each product on it, those beyond the count of its original movements,
- * latest id first out. The ids are the same on every till, so every till
- * chooses alike.
+ * Which reversals are the extra ones: a till that cancels a document writes one
+ * whole set of reversals for it, under its own `device_id` (060), and no till
+ * cancels one document twice. So where reversals of one document and product
+ * come from two tills, the set from the lower device id stays and every other
+ * is taken back. That is decided from the reversals alone -- each one says who
+ * made it -- so it comes out the same on every till whatever order the rows
+ * arrived in.
+ *
+ * It used to be decided by counting: the reversals beyond the number of
+ * original movements, latest id first out. A reversal that arrived before the
+ * sale it reverses -- which a feed re-seeded below its floor sends every time,
+ * because the sale was pruned and is appended after it -- was counted against
+ * nothing and taken back, and the sale then left the shelf for good on that
+ * till alone. Counting is kept only for reversals from before 060, which carry
+ * no device, and never judges a document whose sale has not arrived.
  */
 
 /** What a reversal is of, for the documents that reverse stock. */
@@ -51,6 +62,7 @@ interface Row {
   voucher_id: string
   posting_date: string
   created_by: string | null
+  device_id: string | null
 }
 
 /** Enough placeholders per statement to stay well under SQLite's limit. */
@@ -94,7 +106,7 @@ async function excessAmong(db: SqlDriver, vouchers: readonly string[] | null): P
   // against their original movements and the takings-back already written.
   const reversals = await db.query<Row>(
     `SELECT r.id, r.product_id, r.qty_change, r.unit_cost, r.value_change, r.voucher_type,
-            r.voucher_id, r.posting_date, r.created_by
+            r.voucher_id, r.posting_date, r.created_by, r.device_id
        FROM stock_ledger r
       WHERE r.voucher_type IN (${kinds.map(() => '?').join(', ')})${where}
         AND NOT EXISTS (SELECT 1 FROM stock_ledger v WHERE v.id = r.id || '~dup')
@@ -103,27 +115,36 @@ async function excessAmong(db: SqlDriver, vouchers: readonly string[] | null): P
   )
   if (reversals.length === 0) return []
 
-  // How many movements each product on each document made going out, which is
-  // how many reversals it is owed.
-  const counts = new Map<string, number>()
-  const seen = new Set<string>()
-  const out: Row[] = []
+  // One document and product at a time. Reversals already taken back are not
+  // here: they were the extra ones.
+  const groups = new Map<string, Row[]>()
   for (const r of reversals) {
-    const original = r.voucher_type.slice(0, -'_reversal'.length)
-    const key = `${original}\u0000${r.voucher_id}\u0000${r.product_id}`
-    if (!counts.has(key)) {
-      // raw: a count by document and product.
-      const [n] = await db.query<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM stock_ledger
-          WHERE voucher_type = ? AND voucher_id = ? AND product_id = ?`,
-        [original, r.voucher_id, r.product_id],
-      )
-      counts.set(key, n?.n ?? 0)
+    const key = `${r.voucher_type}\u0000${r.voucher_id}\u0000${r.product_id}`
+    const group = groups.get(key)
+    if (group) group.push(r)
+    else groups.set(key, [r])
+  }
+
+  const out: Row[] = []
+  for (const rows of groups.values()) {
+    const devices = rows.map((r) => r.device_id)
+    if (devices.every((d): d is string => d !== null)) {
+      const keep = devices.reduce((lowest, d) => (d < lowest ? d : lowest))
+      out.push(...rows.filter((r) => r.device_id !== keep))
+      continue
     }
-    // Reversals already taken back are not counted: they were the extra ones.
-    const done = [...seen].filter((k) => k.startsWith(`${key}\u0000`)).length
-    seen.add(`${key}\u0000${r.id}`)
-    if (done >= (counts.get(key) ?? 0)) out.push(r)
+
+    /* From before 060: by count, and only once the sale is here to count. */
+    const first = rows[0]!
+    const original = first.voucher_type.slice(0, -'_reversal'.length)
+    // raw: a count by document and product.
+    const [n] = await db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM stock_ledger
+        WHERE voucher_type = ? AND voucher_id = ? AND product_id = ?`,
+      [original, first.voucher_id, first.product_id],
+    )
+    const owed = n?.n ?? 0
+    if (owed > 0) out.push(...rows.slice(owed))
   }
   return out
 }

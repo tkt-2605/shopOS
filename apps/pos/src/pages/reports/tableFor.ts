@@ -10,6 +10,9 @@ import {
 
 export type Tab = 'days' | 'products' | 'margin' | 'tax' | 'tenders' | 'staff' | 'drawer' | 'books' | 'ledger'
 
+/** Every report that goes out in the emailed pack, in the order they are listed. */
+export const TABS_IN_PACK: Tab[] = ['days', 'products', 'margin', 'tax', 'tenders', 'staff', 'drawer', 'books', 'ledger']
+
 export interface Data {
   summary: R.SalesSummary
   days: R.DayRow[]

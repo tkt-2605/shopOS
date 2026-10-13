@@ -99,7 +99,7 @@ struct DbFacts {
 }
 
 #[derive(Serialize)]
-struct BackupFile {
+pub(crate) struct BackupFile {
     name: String,
     bytes: u64,
 }
@@ -110,7 +110,7 @@ struct BackupFile {
 /// and the sizes say whether a run produced a real file or an empty one, which
 /// between them answer "has this shop been backing up" without shipping any of
 /// the shop's data inside a file meant for a developer.
-fn list_backups(data: &Path) -> Vec<BackupFile> {
+pub(crate) fn list_backups(data: &Path) -> Vec<BackupFile> {
     let Ok(entries) = std::fs::read_dir(data.join("backups")) else {
         return Vec::new();
     };

@@ -2,7 +2,7 @@ import {
   canInstall, dueForCheck, updateWords, CHECK_EVERY_MS,
   type AvailableUpdate, type UpdateSource, type UpdateStage, type InstallRefusal,
 } from '@shopos/core'
-import type { SqlDriver } from '@shopos/core'
+import { getSetting, readTarget, releaseDecision, type SqlDriver } from '@shopos/core'
 import { invoke } from '@tauri-apps/api/core'
 import { logEvent } from './log'
 
@@ -30,6 +30,8 @@ interface UpdaterPlugin {
     version: string
     body?: string
     date?: string
+    /** The whole `latest.json`, which is where the release's `shops` field is. */
+    rawJson?: Record<string, unknown>
     /* Download and install as two calls, never `downloadAndInstall`. On
        Windows installing runs the installer and the app exits there and then,
        so a combined call made in the background -- which is when a download
@@ -62,6 +64,7 @@ export function tauriUpdateSource(
         version: found.version,
         notes: found.body ?? '',
         publishedAt: found.date ?? null,
+        shops: found.rawJson?.['shops'],
       }
     },
 
@@ -155,6 +158,12 @@ export interface UpdaterOptions {
    * press installs anyway (`update-rollout.md`, step 7).
    */
   backupFirst?: () => Promise<string | null>
+  /**
+   * This shop's id, for a release made for some shops only. Defaults to the
+   * one in the shop's settings; a till without one is offered only releases
+   * meant for every shop.
+   */
+  shopId?: () => Promise<string | null>
 }
 
 export function createUpdater(opts: UpdaterOptions): Updater {
@@ -177,6 +186,16 @@ export function createUpdater(opts: UpdaterOptions): Updater {
     move({ stage: 'checking' })
     try {
       const found = await opts.source.check()
+      if (found !== null && found.shops !== undefined) {
+        const shopId = await (opts.shopId ?? (() => getSetting(opts.db, 'shop_id')))().catch(() => null)
+        const decision = releaseDecision(shopId, found.version, readTarget(found.shops))
+        if (!decision.offer) {
+          /* Not for this shop yet. To the shop it is exactly as if there
+             were nothing new; the log says why, for a support call. */
+          logEvent('info', 'updater', `${found.version} is not offered to this shop yet (${decision.why})`)
+          return move({ stage: 'idle', checkedAt: now() })
+        }
+      }
       return move(found === null
         ? { stage: 'idle', checkedAt: now() }
         : { stage: 'available', update: found })
