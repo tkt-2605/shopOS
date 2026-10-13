@@ -38,7 +38,17 @@ const USAGE = `virtual-till serve --data DIR --device ID --register PFX [--port 
   --register  the counter prefix it bills on, 2-4 of A-Z0-9
   --port      0 for an ephemeral one (default 7803)
   --seed      'shop' sets up a new shop; 'empty' (default) waits to be paired
+  --star      a shop's shape: the first till to let another in becomes the main
+  --clock-offset  minutes this till's clock is ahead (negative: behind)
 `
+
+function offsetClock(minutes: number): () => number {
+  if (!Number.isFinite(minutes)) {
+    process.stderr.write('virtual-till: --clock-offset takes a number of minutes\n')
+    process.exit(2)
+  }
+  return () => Date.now() + minutes * 60_000
+}
 
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2)
@@ -62,6 +72,10 @@ async function main(): Promise<void> {
     port: Number(args['port'] ?? 7803),
     ...(args['advertise'] ? { advertisePort: Number(args['advertise']) } : {}),
     seed: args['seed'] === 'shop' ? 'shop' : 'empty',
+    star: args['star'] === 'true',
+    /* A machine whose clock is wrong, which a namespace cannot have: they all
+       share the kernel's. The till reads this one instead. */
+    ...(args['clock-offset'] ? { clock: offsetClock(Number(args['clock-offset'])) } : {}),
   })
 
   /* The stand-in for a person pressing buttons, for a till in a container that

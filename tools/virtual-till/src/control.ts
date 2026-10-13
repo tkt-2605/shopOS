@@ -73,6 +73,12 @@ export async function startControl(till: Till, port: number): Promise<Control> {
       return { table, count: row?.n ?? 0 }
     },
 
+    /** Who this till thinks the main is, and what that makes it. */
+    '/control/role': async () => {
+      const { mainTill, tillRole } = await import('@shopos/core')
+      return till.as(async () => ({ role: await tillRole(till.db), main: (await mainTill(till.db)).device }))
+    },
+
     /** One bill, so there is something for a sync to carry. */
     '/control/bill': async (body) => {
       const docNo = String(body['docNo'] ?? '')
