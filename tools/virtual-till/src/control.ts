@@ -113,22 +113,30 @@ export async function startControl(till: Till, port: number): Promise<Control> {
      */
     '/control/sell': async (body) => {
       const units = Number(body['units'] ?? 1)
+      /* `times` rings the same sale up that many times in one request: a day's
+         trade for a catch-up test, without a round trip a bill. */
+      const times = Math.max(1, Number(body['times'] ?? 1))
       const { createBill, submitBill, Quantity } = await import('@shopos/core')
       return till.as(async () => {
         if (till.registerId === null) return { ok: false, code: 'NO_COUNTER' }
         const actor = await actorOf(till)
-        const draft = await createBill(till.db, {
-          registerId: till.registerId,
-          lines: [{ productId: SOAK_ITEM, qty: Quantity.fromUnits(units) }],
-          actorId: actor,
-        })
-        if (!draft.ok) return draft
-        const done = await submitBill(till.db, {
-          billId: draft.billId,
-          payments: [{ method: 'cash', amount: draft.grandTotal }],
-          actorId: actor,
-        })
-        return done.ok ? { ok: true, docNo: done.docNo } : done
+        let last: unknown = null
+        for (let i = 0; i < times; i += 1) {
+          const draft = await createBill(till.db, {
+            registerId: till.registerId,
+            lines: [{ productId: SOAK_ITEM, qty: Quantity.fromUnits(units) }],
+            actorId: actor,
+          })
+          if (!draft.ok) return { ...draft, sold: i }
+          const done = await submitBill(till.db, {
+            billId: draft.billId,
+            payments: [{ method: 'cash', amount: draft.grandTotal }],
+            actorId: actor,
+          })
+          if (!done.ok) return { ...done, sold: i }
+          last = done.docNo
+        }
+        return { ok: true, docNo: last, sold: times }
       })
     },
 
