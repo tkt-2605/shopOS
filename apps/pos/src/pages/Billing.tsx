@@ -13,7 +13,7 @@ import { useRepricing } from '../core/useRepricing'
 import { useShortcuts } from '../core/useShortcuts'
 import { Empty, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
-import { useSearch } from '../ui/useSearch'
+import { useSearch, productMatches } from '../ui/useSearch'
 import { useConfirm } from '../ui/useConfirm'
 import { totalsLinesOf, shortOf, picksOf } from './billing/cart'
 import { submitMessage, unsavedMessage } from './billing/submitMessage'
@@ -62,11 +62,7 @@ export default function Billing() {
   const focusScan = useCallback(() => scanRef.current?.focus(), [])
   useEffect(() => { focusScan() }, [focusScan, active.tabId])
 
-  const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 40 }), {
-    browse: true,
-    // What `searchProducts` matches on, so the list waiting for its answer shows nothing it would not.
-    matches: (p, t) => [p.name, p.brand, p.code].some((v) => v?.toLowerCase().includes(t.toLowerCase())),
-  })
+  const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 40 }), { browse: true, matches: productMatches })
   const results = search.rows
 
   /* The shop's rounding rule, applied here as well as in the service. The

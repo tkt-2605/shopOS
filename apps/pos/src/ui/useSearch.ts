@@ -78,3 +78,22 @@ export function useSearch<T>(
       : found.rows
   return { rows, current, latest }
 }
+
+/**
+ * Whether a row already on screen fits what is being typed, for `useSearch`'s
+ * `matches`: the fields each search matches on in core, and no others, so the
+ * list waiting for its answer shows nothing the answer would not.
+ */
+
+const fits = (fields: ReadonlyArray<string | null | undefined>, term: string): boolean => {
+  const t = term.toLowerCase()
+  return fields.some((v) => v?.toLowerCase().includes(t))
+}
+
+/** `searchProducts`: name, brand, code. */
+export const productMatches = (p: { name: string; brand: string | null; code: string | null }, term: string): boolean =>
+  fits([p.name, p.brand, p.code], term)
+
+/** `searchCustomers`: name, phone, code. */
+export const customerMatches = (c: { name: string; phone: string | null; code: string | null }, term: string): boolean =>
+  fits([c.name, c.phone, c.code], term)

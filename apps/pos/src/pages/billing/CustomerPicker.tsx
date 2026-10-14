@@ -3,7 +3,7 @@ import { searchCustomers, type CustomerListItem } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { Modal, Rupees } from '../../ui/components'
 import { usePickList } from '../../ui/PickList'
-import { useSearch } from '../../ui/useSearch'
+import { useSearch, customerMatches } from '../../ui/useSearch'
 
 /**
  * Who the bill is for.
@@ -18,11 +18,7 @@ export function CustomerPicker({ onChoose, onClose }: {
 }) {
   const { db } = useCore()
   const [term, setTerm] = useState('')
-  const search = useSearch(term, (t) => searchCustomers(db, t), {
-    browse: true,
-    // What `searchCustomers` matches on, so the list waiting for its answer shows nothing it would not.
-    matches: (c, t) => [c.name, c.phone, c.code].some((v) => v?.toLowerCase().includes(t.toLowerCase())),
-  })
+  const search = useSearch(term, (t) => searchCustomers(db, t), { browse: true, matches: customerMatches })
   const customers = search.rows
 
   const customerPick = usePickList({

@@ -3,7 +3,7 @@ import { Money, searchCustomers, recordOpeningBalance, periodClosedMessage, type
 import { useCore } from '../../core/CoreProvider'
 import { Modal, Field, Alert } from '../../ui/components'
 import { usePickList, Results } from '../../ui/PickList'
-import { useSearch } from '../../ui/useSearch'
+import { useSearch, customerMatches } from '../../ui/useSearch'
 
 /*
  * What a customer already owed, or had paid ahead, when the shop's book moved
@@ -26,11 +26,7 @@ export function OpeningBalance({
   const [asOf, setAsOf] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const search = useSearch(term, (t) => searchCustomers(db, t, 20), {
-    browse: true,
-    // What `searchCustomers` matches on, so the list waiting for its answer shows nothing it would not.
-    matches: (c, t) => [c.name, c.phone, c.code].some((v) => v?.toLowerCase().includes(t.toLowerCase())),
-  })
+  const search = useSearch(term, (t) => searchCustomers(db, t, 20), { browse: true, matches: customerMatches })
   const found = search.rows
 
   const box = useRef<HTMLInputElement>(null)
