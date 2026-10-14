@@ -26,7 +26,11 @@ export function OpeningBalance({
   const [asOf, setAsOf] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const search = useSearch(term, (t) => searchCustomers(db, t, 20), { browse: true })
+  const search = useSearch(term, (t) => searchCustomers(db, t, 20), {
+    browse: true,
+    // What `searchCustomers` matches on, so the list waiting for its answer shows nothing it would not.
+    matches: (c, t) => [c.name, c.phone, c.code].some((v) => v?.toLowerCase().includes(t.toLowerCase())),
+  })
   const found = search.rows
 
   const box = useRef<HTMLInputElement>(null)

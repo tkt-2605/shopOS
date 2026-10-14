@@ -18,7 +18,11 @@ export function CustomerPicker({ onChoose, onClose }: {
 }) {
   const { db } = useCore()
   const [term, setTerm] = useState('')
-  const search = useSearch(term, (t) => searchCustomers(db, t), { browse: true })
+  const search = useSearch(term, (t) => searchCustomers(db, t), {
+    browse: true,
+    // What `searchCustomers` matches on, so the list waiting for its answer shows nothing it would not.
+    matches: (c, t) => [c.name, c.phone, c.code].some((v) => v?.toLowerCase().includes(t.toLowerCase())),
+  })
   const customers = search.rows
 
   const customerPick = usePickList({

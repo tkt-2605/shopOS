@@ -28,10 +28,16 @@ export function useSearch<T>(
   term: string,
   /** Read afresh on every search, so it may close over anything. */
   find: (term: string) => Promise<T[]>,
-  { delayMs = 140, browse = false }: {
+  { delayMs = 140, browse = false, matches }: {
     delayMs?: number
     /** Search an empty term too, for a list that shows everything before typing. */
     browse?: boolean
+    /**
+     * Whether a row already on screen fits the term being typed. Given, the
+     * rows found for an older term are narrowed to those while the answer for
+     * this one is on its way -- see the return below.
+     */
+    matches?: (row: T, term: string) => boolean
   } = {},
 ): Search<T> {
   const [found, setFound] = useState<{ term: string | null; rows: T[] }>({ term: null, rows: [] })
@@ -60,5 +66,15 @@ export function useSearch<T>(
   }, [ask])
 
   const cleared = term.trim() === '' && !browse
-  return { rows: cleared ? [] : found.rows, current: found.term === term, latest }
+  /* Between a keystroke and its answer the list on screen is the last term's,
+     and for a list that browses that is the whole catalog, A to Z: whatever a
+     cashier typed, A4 Copier Paper sat at the top for as long as they kept
+     typing, and a click or an arrow and Enter put it on the bill. Narrowed to
+     what fits the term, the list never shows a row the term cannot mean. */
+  const current = found.term === term
+  const rows = cleared ? []
+    : !current && matches !== undefined && term.trim() !== ''
+      ? found.rows.filter((row) => matches(row, term.trim()))
+      : found.rows
+  return { rows, current, latest }
 }

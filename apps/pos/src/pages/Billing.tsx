@@ -62,7 +62,11 @@ export default function Billing() {
   const focusScan = useCallback(() => scanRef.current?.focus(), [])
   useEffect(() => { focusScan() }, [focusScan, active.tabId])
 
-  const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 40 }), { browse: true })
+  const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 40 }), {
+    browse: true,
+    // What `searchProducts` matches on, so the list waiting for its answer shows nothing it would not.
+    matches: (p, t) => [p.name, p.brand, p.code].some((v) => v?.toLowerCase().includes(t.toLowerCase())),
+  })
   const results = search.rows
 
   /* The shop's rounding rule, applied here as well as in the service. The
