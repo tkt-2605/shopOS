@@ -123,8 +123,11 @@ export function httpTransport(
   return {
     /* Our version, so a till we ask that is behind us learns it is. A build
        from before this sends nothing and the far side reads nothing into it. */
-    hello: (main) => ask<PeerHello>('/hello', {
+    hello: (main, head) => ask<PeerHello>('/hello', {
       schemaVersion: EXPECTED_SCHEMA_VERSION, minPeerSchema: MIN_PEER_SCHEMA_VERSION,
+      /* How far our feed goes. The answering till records it, which is the
+         only way a main -- dialled, never dialling -- learns what it is owed. */
+      ...(head === undefined ? {} : { head }),
       /* Who we believe is the main. An old main that came back is dialled by
          nobody and hears it only here, from a till that asks it something. */
       ...(main === undefined ? {} : { mainDevice: main.device, mainEpoch: main.epoch }),

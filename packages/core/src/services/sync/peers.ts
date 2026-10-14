@@ -1,4 +1,4 @@
-import { eq, count, min, sql } from 'drizzle-orm'
+import { eq, count, min, sql, isNotNull } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { REPLICATED } from '../../domain/replicaShape.js'
@@ -121,11 +121,23 @@ export async function listPeers(db: SqlDriver): Promise<PeerHealth[]> {
     .from(schema.syncPeers)
     .orderBy(schema.syncPeers.createdAt)
 
+  /* What a till is called when it has never said: the counter it sits at.
+     Behind a main the counters dial and the main is dialled, so the main
+     never hears a counter's own name, and every screen on it named the other
+     tills by the first eight characters of a device id. The counter's name is
+     the one the shop chose and can change, on every till alike. */
+  const seats = await q(db)
+    .select({ device: schema.registers.claimedBy, name: schema.registers.name })
+    .from(schema.registers)
+    .where(isNotNull(schema.registers.claimedBy))
+  const counterOf = new Map(seats.map((r) => [r.device, r.name]))
+
   const out: PeerHealth[] = []
   for (const r of rows) {
     const { myCursor, theirCursor, theirHead, headSaidAt, secret, ...peer } = r
     out.push({
       ...peer,
+      label: peer.label ?? counterOf.get(peer.deviceId) ?? null,
       needsPairing: secret === null,
       waiting: await pendingCount(db, myCursor),
       /* Zero, not negative: a head from a handshake that has since been

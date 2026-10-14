@@ -26,6 +26,7 @@ export async function handleHello(db: SqlDriver, them: string, request: SyncRequ
      one that has to be updated. */
   const asker = parse<{
     schemaVersion?: unknown; minPeerSchema?: unknown; mainDevice?: unknown; mainEpoch?: unknown
+    head?: unknown
   }>(request.body)
   if (asker !== null && typeof asker.schemaVersion === 'number') {
     const floor = typeof asker.minPeerSchema === 'number' ? asker.minPeerSchema : asker.schemaVersion
@@ -36,6 +37,16 @@ export async function handleHello(db: SqlDriver, them: string, request: SyncRequ
      the first till that asks it anything. Before our own answer is built, so
      what we say back is already the settled view. */
   if (asker !== null) await hearMain(db, { device: asker.mainDevice, epoch: asker.mainEpoch })
+  /* How far the asking till's feed goes, against how far this till has read
+     it, is how much this till is owed. A till that is only ever asked -- the
+     main -- learns it nowhere else, and said "cannot tell" about every
+     counter in the shop, on every screen that adds the shop up. A build that
+     does not send it leaves the old answer standing. */
+  if (asker !== null && typeof asker.head === 'number' && Number.isFinite(asker.head)) {
+    await q(db).update(schema.syncPeers)
+      .set({ theirHead: asker.head, headSaidAt: clock.iso() })
+      .where(eq(schema.syncPeers.deviceId, them))
+  }
   const main = await mainTill(db)
 
   const [row] = await q(db)

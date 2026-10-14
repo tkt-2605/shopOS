@@ -96,7 +96,12 @@ export interface SyncTransport {
    * Told who this till believes the main is, so the far side can follow a
    * higher epoch. A transport that does not pass it on loses nothing but that.
    */
-  hello(main?: { device: string | null; epoch: number }): Promise<PeerHello>
+  /**
+   * `head` is how far this till's own feed goes, said so the answering till
+   * can tell how much it is owed: behind one main the counters do all the
+   * asking, and the main had no other way to learn it.
+   */
+  hello(main?: { device: string | null; epoch: number }, head?: number): Promise<PeerHello>
   /** Everything you have after `since`, up to `limit` records. */
   fetch(since: number, limit: number): Promise<ChangeBatch>
   /** Here is everything I have after your cursor. */

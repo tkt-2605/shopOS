@@ -1,3 +1,4 @@
+import { feedHead } from '../changefeed.js'
 import { eq } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
@@ -31,7 +32,7 @@ export async function syncWith(
   const me = deviceId()
   if (me === null) return { ok: false, code: 'NO_IDENTITY' }
 
-  const hello = await transport.hello(await mainTill(db))
+  const hello = await transport.hello(await mainTill(db), await feedHead(db))
 
   /* Before a single row moves.
    *

@@ -9,6 +9,8 @@ import {
   handTheMainTo, hearMain, joinedMain, listens, mainTill, makeThisTheMain, tillRole,
 } from '../src/services/sync/layout.js'
 import { PermissionError } from '../src/integrity/permissions.js'
+import { grantClaim } from '../src/services/registers.js'
+import { listPeers } from '../src/services/sync/peers.js'
 import { setDeviceId, deviceId } from '../src/device.js'
 import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
 import { TEST_KEYS, licenseTill } from './licenceHelper.js'
@@ -440,3 +442,21 @@ async function claimedBy(db: SqlDriver, registerId: string): Promise<string | nu
   const row = await db.get<{ claimed_by: string | null }>(`SELECT claimed_by FROM registers WHERE id = ?`, [registerId])
   return row?.claimed_by ?? null
 }
+
+describe('what the main knows about the tills that dial it', () => {
+  it('knows how far each one has got, and calls it by its counter', async () => {
+    /* Behind one main the counters do all the asking, so the main heard
+       neither how far a counter's feed went nor what it was called: every
+       screen adding up the shop said it could not tell, and named the
+       counters by the first eight characters of a device id. */
+    await join(t1, main)
+    // As the app joins: the counter's own name never reaches the main.
+    await main.db.execute(`UPDATE sync_peers SET label = NULL WHERE device_id = ?`, [T1])
+    await as(main, () => grantClaim(main.db, T1, { registerId: 'c-t1', take: false }))
+    await catchUp(t1)
+
+    const [seen] = await as(main, () => listPeers(main.db))
+    expect(seen?.behind, 'it said how far its feed goes').toBe(0)
+    expect(seen?.label, 'named by the counter it sits at').toBe('c-t1')
+  })
+})
