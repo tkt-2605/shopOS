@@ -220,6 +220,54 @@ export async function correctedTwice(db: SqlDriver): Promise<Discrepancy[]> {
 }
 
 /**
+ * One shelf counted on two tills that could not see each other.
+ *
+ * A count is a statement of what is on the shelf, but it is posted as the
+ * difference from what that till expected. Two tills that both found two
+ * missing each took two off, and the stock now shows four gone where two were.
+ * A later count that expected exactly what an earlier one expected -- when the
+ * earlier one had found a difference -- never saw that difference posted: a
+ * count taken after it would have expected what it found.
+ */
+export async function countedTwice(db: SqlDriver): Promise<Discrepancy[]> {
+  const rows = await db.query<{
+    product_id: string; product_name: string; first: string; second: string
+    expected: number; found_first: number; found_second: number; at: string
+  }>(
+    `SELECT a.product_id, p.name AS product_name, ca.doc_no AS first, cb.doc_no AS second,
+            a.expected_qty AS expected, a.counted_qty AS found_first, b.counted_qty AS found_second,
+            cb.opened_at AS at
+       FROM stock_count_items a
+       JOIN stock_counts ca ON ca.id = a.count_id AND ca.docstatus = 1
+       JOIN stock_count_items b ON b.product_id = a.product_id AND b.count_id <> a.count_id
+       JOIN stock_counts cb ON cb.id = b.count_id AND cb.docstatus = 1
+        AND (cb.opened_at > ca.opened_at OR (cb.opened_at = ca.opened_at AND cb.id > ca.id))
+       JOIN products p ON p.id = a.product_id
+      WHERE a.counted_qty IS NOT NULL AND b.counted_qty IS NOT NULL
+        AND a.counted_qty <> a.expected_qty
+        AND b.expected_qty = a.expected_qty
+        -- A count taken after both is the shelf counted once more: settled.
+        AND NOT EXISTS (
+          SELECT 1 FROM stock_count_items l
+            JOIN stock_counts cl ON cl.id = l.count_id AND cl.docstatus = 1
+           WHERE l.product_id = a.product_id AND l.counted_qty IS NOT NULL
+             AND (cl.opened_at > cb.opened_at OR (cl.opened_at = cb.opened_at AND cl.id > cb.id)))`)
+  return rows.map((r) => ({
+    key: `counted_twice:${r.product_id}:${r.first}:${r.second}`,
+    kind: 'counted_twice',
+    area: 'stock',
+    at: r.at,
+    amount: null,
+    title: `${r.product_name} was counted on two tills that could not see each other`,
+    detail: `${r.first} and ${r.second} both expected ${qty(r.expected as Qty)} and found `
+      + `${qty(r.found_first as Qty)} and ${qty(r.found_second as Qty)}; each took its own difference off, so the `
+      + 'stock now shows the shortfall twice.',
+    action: 'Count this item once more and submit that count: it sets the stock to what is on the shelf.',
+    refs: [r.first, r.second],
+  }))
+}
+
+/**
  * A supplier paid more than they are owed. It can be on purpose -- an advance
  * -- and then it is marked seen; more often it is one bill paid on two counters.
  */

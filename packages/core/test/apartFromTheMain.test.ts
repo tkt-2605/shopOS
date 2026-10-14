@@ -23,6 +23,7 @@ import { archiveCustomer } from '../src/services/customers.js'
 import { createDocument, submitDocument } from '../src/services/documents.js'
 import { documentToCart } from '../src/services/convert.js'
 import { setSetting } from '../src/services/bootstrap.js'
+import { openCount, setCounted, submitCount } from '../src/services/stockCount.js'
 import { freshDb, emptyDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 import { as, pull, type Till } from './twoTills.js'
 import type { SqlDriver } from '../src/db/driver.js'
@@ -488,5 +489,136 @@ describe('the main is off and both counters act on the same record', () => {
     expect(await partyBalance(main.db, { type: 'customer', id: customer })).toBe(rupees(1000))
     await expectSettled(['advance_spent_twice'])
   })
-})
 
+  it('19 part of one bill taken back on each counter', async () => {
+    // Three sold. One back on each counter is two of three: nothing wrong.
+    const sale = await sell(main, 3)
+    await settle()
+    const back = (c: Till, units: number) => as(c.id, () => processReturn(c.db, {
+      billId: sale.billId, lines: [{ billItemId: sale.itemId, qty: fromUnits(units) }], refundMethod: 'cash', actorId: fx.adminId,
+    }))
+    expect((await back(c1, 1)).ok).toBe(true)
+    expect((await back(c2, 1)).ok).toBe(true)
+    await settle()
+    expect(await shelf(main)).toBe(fromUnits(9))
+    const told = (await findDiscrepancies(main.db)).map((d) => d.kind)
+    expect(told, 'two of three back is not a double refund').not.toContain('refunded_twice')
+    await expectSettled()
+  })
+
+  it('19b more of one bill taken back across the counters than was sold', async () => {
+    // Three sold; two back on each counter while apart is four of three.
+    const sale = await sell(main, 3)
+    await settle()
+    for (const c of [c1, c2]) {
+      const r = await as(c.id, () => processReturn(c.db, {
+        billId: sale.billId, lines: [{ billItemId: sale.itemId, qty: fromUnits(2) }], refundMethod: 'cash', actorId: fx.adminId,
+      }))
+      expect(r.ok).toBe(true)
+    }
+    await settle()
+    await expectSettled(['refunded_twice'])
+  })
+
+  it('20 taken back on one counter, corrected on the other', async () => {
+    const sale = await sell(main, 2)
+    await settle()
+    await as(C1, () => processReturn(c1.db, {
+      billId: sale.billId, lines: [{ billItemId: sale.itemId, qty: fromUnits(2) }], refundMethod: 'cash', actorId: fx.adminId,
+    }))
+    await as(C2, async () => {
+      await cancelBill(c2.db, { billId: sale.billId, reason: 'amend', actorId: fx.adminId })
+      const draft = await amendBill(c2.db, { billId: sale.billId, registerId: counterOf.get(C2)!, actorId: fx.adminId })
+      if (!draft.ok) throw new Error(draft.code)
+      const done = await submitBill(c2.db, { billId: draft.billId, payments: [{ method: 'cash', amount: draft.grandTotal }], actorId: fx.adminId })
+      if (!done.ok) throw new Error(done.code)
+    })
+    await settle()
+    // The correction cancelled the bill the return was taken against.
+    await expectSettled(['refunded_and_cancelled'])
+  })
+
+  it('21 the same shelf counted on both counters', async () => {
+    // Ten on the books, eight on the shelf: both counters find the two missing.
+    for (const c of [c1, c2]) {
+      await as(c.id, async () => {
+        const opened = await openCount(c.db, { scope: { kind: 'chosen', productIds: [product] }, actorId: fx.adminId })
+        if (!opened.ok) throw new Error(opened.code)
+        await setCounted(c.db, { countId: opened.countId, productId: product, countedQty: fromUnits(8) })
+        const done = await submitCount(c.db, { countId: opened.countId, actorId: fx.adminId })
+        if (!done.ok) throw new Error(done.code)
+      })
+    }
+    await settle()
+    // Each took its own two off: the stock says six, the shelf holds eight -- and the shop is told to count again.
+    expect(await shelf(main)).toBe(fromUnits(6))
+    await expectSettled(['counted_twice'])
+
+    // The recount it is told to make puts the stock right, and the warning is not raised again by it.
+    await as(MAIN, async () => {
+      const opened = await openCount(main.db, { scope: { kind: 'chosen', productIds: [product] }, actorId: fx.adminId })
+      if (!opened.ok) throw new Error(opened.code)
+      await setCounted(main.db, { countId: opened.countId, productId: product, countedQty: fromUnits(8) })
+      const done = await submitCount(main.db, { countId: opened.countId, actorId: fx.adminId })
+      if (!done.ok) throw new Error(done.code)
+    })
+    await settle()
+    expect(await shelf(main)).toBe(fromUnits(8))
+    for (const t of [main, c1, c2]) {
+      expect((await findDiscrepancies(t.db)).map((d) => d.kind)).not.toContain('counted_twice')
+    }
+    await expectSettled()
+  })
+
+  it('21b one shelf counted twice on one till, one after the other, is not a double count', async () => {
+    for (const found of [8, 7]) {
+      await as(C1, async () => {
+        const opened = await openCount(c1.db, { scope: { kind: 'chosen', productIds: [product] }, actorId: fx.adminId })
+        if (!opened.ok) throw new Error(opened.code)
+        await setCounted(c1.db, { countId: opened.countId, productId: product, countedQty: fromUnits(found) })
+        const done = await submitCount(c1.db, { countId: opened.countId, actorId: fx.adminId })
+        if (!done.ok) throw new Error(done.code)
+      })
+    }
+    await settle()
+    expect(await shelf(main)).toBe(fromUnits(7))
+    expect((await findDiscrepancies(main.db)).map((d) => d.kind)).not.toContain('counted_twice')
+    await expectSettled()
+  })
+
+  it('22 the main acts too, while the counters cannot reach it', async () => {
+    // The main is up but both counters are cut off from it: three tills apart, not two.
+    const sale = await sell(main, 1)
+    await settle()
+    await as(MAIN, () => cancelBill(main.db, { billId: sale.billId, reason: 'main', actorId: fx.adminId }))
+    for (const c of [c1, c2]) {
+      await as(c.id, () => processReturn(c.db, {
+        billId: sale.billId, lines: [{ billItemId: sale.itemId, qty: fromUnits(1) }], refundMethod: 'cash', actorId: fx.adminId,
+      }))
+    }
+    await settle()
+    await expectSettled(['refunded_twice', 'refunded_and_cancelled'])
+  })
+
+  it('23 the counters come back one at a time, with the main busy in between', async () => {
+    const rate = async (t: Till) => (await t.db.get<{ r: number }>(`SELECT base_rate AS r FROM products WHERE id = ?`, [product]))!.r
+    await as(C1, () => c1.db.execute(`UPDATE products SET base_rate = ?, updated_at = ? WHERE id = ?`, [rupees(550), '2026-10-15T10:00:00.000Z', product]))
+    await as(C2, () => c2.db.execute(`UPDATE products SET base_rate = ?, updated_at = ? WHERE id = ?`, [rupees(450), '2026-10-15T10:05:00.000Z', product]))
+    await sell(c1, 1)
+    await sell(c2, 1)
+
+    // The first counter back; the main sells and changes the price again meanwhile.
+    await pull(c1, main)
+    await sell(main, 1)
+    await as(MAIN, () => main.db.execute(`UPDATE products SET base_rate = ?, updated_at = ? WHERE id = ?`, [rupees(600), '2026-10-15T10:10:00.000Z', product]))
+    await pull(c1, main)
+    // Only now the second.
+    await pull(c2, main)
+    await settle()
+
+    // The last change wins everywhere, and every sale is on every till.
+    for (const t of [main, c1, c2]) expect(await rate(t)).toBe(rupees(600))
+    expect(await shelf(main)).toBe(fromUnits(7))
+    await expectSettled()
+  })
+})

@@ -8,6 +8,7 @@ export type DiscrepancyKind =
   | 'advance_spent_twice'
   | 'points_spent_twice'
   | 'corrected_twice'
+  | 'counted_twice'
   | 'supplier_overpaid'
   | 'order_billed_twice'
   | 'sold_below_zero'
