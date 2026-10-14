@@ -3,6 +3,12 @@ import type { Money } from '../../money.js'
 /** What kind of thing does not add up. */
 export type DiscrepancyKind =
   | 'refunded_twice'
+  | 'refunded_and_cancelled'
+  | 'paid_twice'
+  | 'advance_spent_twice'
+  | 'points_spent_twice'
+  | 'corrected_twice'
+  | 'supplier_overpaid'
   | 'order_billed_twice'
   | 'sold_below_zero'
   | 'over_credit_limit'

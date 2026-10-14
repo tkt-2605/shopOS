@@ -47,6 +47,11 @@ export interface Versioned {
   rev?: number | null
   /** ISO 8601. Written by every service; the fallback when revisions tie. */
   updatedAt?: string | null
+  /**
+   * The row itself, in one canonical form: the last word when revision and
+   * time both tie. See `decideRow`.
+   */
+  content?: string | null
 }
 
 export interface MergeInput {
@@ -65,6 +70,7 @@ export interface MergeInput {
 export type MergeReason =
   | 'higher_rev'
   | 'later_timestamp'
+  | 'content_tiebreak'
   | 'device_tiebreak'
   | 'identical'
 
@@ -118,6 +124,30 @@ export function decideRow(input: MergeInput): MergeDecision {
   }
   if (theirsAt !== null && mineAt === null) {
     return decide('theirs', 'later_timestamp', contested, 'this copy carries no time')
+  }
+
+  /* A dead heat: the same revision at the same moment. It happens -- a write
+     that bumps the revision without touching `updated_at`, or two tills that
+     each wrote the same derived row -- and it has to be settled the same way
+     on every till, or two tills keep two answers for ever.
+
+     By the rows themselves, not by who is asking. Comparing this till's id
+     with the sender's agrees only while the sender is the row's author, which
+     is true between two tills and false behind a main: there every row
+     arrives from the main, so a counter compared its own id with the main's
+     while the main compared the main's with the counter's, and the two
+     settled the same pair of rows in opposite directions. The content is the
+     one thing every till holding these two copies sees alike. */
+  const mineContent = textOr(mine.content)
+  const theirsContent = textOr(theirs.content)
+  if (mineContent !== null && theirsContent !== null) {
+    if (mineContent === theirsContent) return decide('mine', 'identical', false, 'the two copies are the same')
+    return decide(
+      mineContent > theirsContent ? 'mine' : 'theirs',
+      'content_tiebreak',
+      contested,
+      'the same revision and the same moment, settled by the rows themselves, the same way on every till',
+    )
   }
 
   const myId = textOr(input.myDevice) ?? ''

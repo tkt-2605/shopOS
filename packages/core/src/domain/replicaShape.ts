@@ -53,7 +53,9 @@ export interface RecordShape {
   /**
    * Columns that say when a machine wrote the row rather than what the row
    * says. Two copies that differ only in these are one row, and arriving is
-   * not an edit. Only `gl_entries`, whose ids two tills can derive alike.
+   * not an edit. Only the two ledgers whose ids two tills can derive alike:
+   * `gl_entries`, and `stock_ledger`, whose correction of a double reversal
+   * (`stockReversals.ts`, `<id>~dup`) every till that finds one writes itself.
    */
   incidental?: readonly string[]
 }
@@ -158,7 +160,7 @@ export const REPLICATED: readonly RecordShape[] = [
     key: 'id',
     lines: [{ table: 'stock_count_items', parentKey: 'count_id' }],
   },
-  { table: 'stock_ledger', key: 'id', lines: [] },
+  { table: 'stock_ledger', key: 'id', lines: [], incidental: ['created_at'] },
   /* Append-only and travelling on its own, for the ledger's reasons: a
      merge of the bill a movement belongs to must not be able to lose it. */
   { table: 'batch_movements', key: 'id', lines: [] },

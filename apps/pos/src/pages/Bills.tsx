@@ -31,7 +31,7 @@ const STATUSES: { id: BillStatusFilter; label: string }[] = [
 ]
 
 export default function Bills() {
-  const { db } = useCore()
+  const { db, registerId } = useCore()
   const [confirmUi, ask] = useConfirm()
   const user = useUser()
   const [bills, setBills] = useState<BillListItem[]>([])
@@ -141,7 +141,7 @@ export default function Bills() {
       + 'and takes its own number when it is paid.',
     ))) return
 
-    const result = await amendBill(db, { billId: bill.id, actorId: user.id })
+    const result = await amendBill(db, { billId: bill.id, registerId, actorId: user.id })
     if (!result.ok) {
       setError(`That bill could not be corrected: ${result.code}.`)
       return

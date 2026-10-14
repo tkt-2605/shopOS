@@ -90,6 +90,24 @@ describe('the tiebreak exists so both tills agree', () => {
     expect(onB.winner).toBe('mine')
   })
 
+  it('settles a dead heat by the rows themselves, whoever is asking and whoever sent it', () => {
+    /* Behind a main every row arrives from the main, so "the other device" is
+       the main on a counter and the counter on the main -- and settling by
+       device id had the two settle the same pair of rows in opposite
+       directions. The rows are the one thing every till sees alike. */
+    const at = { rev: 2, updatedAt: '2026-01-01T09:00:00.000Z' }
+    const low = { ...at, content: '[["base_rate",45000]]' }
+    const high = { ...at, content: '[["base_rate",55000]]' }
+
+    const onMain = decideRow({ mine: low, theirs: high, myDevice: TILL_A, theirDevice: TILL_B })
+    const onCounter = decideRow({ mine: high, theirs: low, myDevice: TILL_B, theirDevice: TILL_A })
+    const elsewhere = decideRow({ mine: high, theirs: low, myDevice: TILL_A, theirDevice: TILL_A })
+
+    expect(onMain).toMatchObject({ winner: 'theirs', reason: 'content_tiebreak' })
+    expect(onCounter.winner).toBe('mine')
+    expect(elsewhere.winner).toBe('mine')
+  })
+
   it('agrees from either side on a revision too', () => {
     const onA = decideRow({
       mine: { rev: 2 }, theirs: { rev: 8 }, myDevice: TILL_A, theirDevice: TILL_B,

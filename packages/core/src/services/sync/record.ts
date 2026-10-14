@@ -112,9 +112,18 @@ export async function applyRecord(
      It is also what makes skipping the line tables here safe: 022 raises the
      parent revision when a line changes on the sending side, so a head that
      matches means the lines match too. */
+  /* Lines that are added to a document after it was written, on whichever
+     till: these merge by union, whatever the head decides. See `UNION_LINES`.
+     Before the check below, because the case that needs it is exactly two
+     heads that look the same -- each till added its line, each raised the
+     revision by one -- with different lines under them. */
+  const joined = record.op === 'upsert' && mine !== undefined
+    ? await unionLines(tx, shape, record)
+    : 0
+
   if (record.op === 'upsert' && record.row !== null && mine !== undefined
       && same(known(record.row, columns).row, mine, shape.incidental)) {
-    return NOTHING
+    return joined > 0 ? { ...NOTHING, applied: 1 } : NOTHING
   }
 
   if (record.op === 'delete') {
@@ -160,8 +169,14 @@ export async function applyRecord(
   const contested: ContestedChange[] = []
   if (mine !== undefined) {
     const call = decideRow({
-      mine: { rev: numberOf(mine['rev']), updatedAt: textOf(mine['updated_at']) },
-      theirs: { rev: numberOf(record.row['rev']), updatedAt: textOf(record.row['updated_at']) },
+      mine: {
+        rev: numberOf(mine['rev']), updatedAt: textOf(mine['updated_at']),
+        content: canonical(mine, columns, shape.incidental),
+      },
+      theirs: {
+        rev: numberOf(record.row['rev']), updatedAt: textOf(record.row['updated_at']),
+        content: canonical(known(record.row, columns).row, columns, shape.incidental),
+      },
       myDevice: deviceId(),
       theirDevice: batch.fromDevice,
       bothChangedSinceLastSync: both,
@@ -251,6 +266,8 @@ export async function applyRecord(
   await feedApplied(tx, shape.table, record.rowId, 'upsert', origin(record, batch))
 
   for (const line of shape.lines) {
+    // Already merged above, by union, for a document this till held.
+    if (UNION_LINES.has(line.table) && mine !== undefined) continue
     /* The winning side's document is the document. Merging lines one by one
        builds a bill neither till ever had — three items from here, two from
        there, and totals belonging to nobody. */
@@ -283,13 +300,80 @@ async function linesRefused(
   if (!DOCUMENT_TABLES.has(shape.table) || Number(mine['docstatus']) < SUBMITTED) return null
   if (record.lines === undefined || shape.lines.length === 0) return null
   const held: Record<string, Row[]> = {}
+  const arriving: Record<string, Row[]> = {}
   for (const line of shape.lines) {
+    // Not part of what a submitted document is: added to it afterwards, and merged by union.
+    if (UNION_LINES.has(line.table)) continue
     /* raw: `REPLICATED`'s names again. See the note on `upsert`. */
     held[line.table] = await tx.query<Row>(
       `SELECT * FROM "${line.table}" WHERE "${line.parentKey}" = ?`, [record.rowId],
     )
+    const theirs = record.lines[line.table]
+    if (theirs !== undefined) arriving[line.table] = theirs
   }
-  return refusedLinesOfSubmitted(shape.table, mine, held, record.lines)
+  return refusedLinesOfSubmitted(shape.table, mine, held, arriving)
+}
+
+/**
+ * Line tables whose rows are added to a document after it was written, on
+ * whichever till does it, and never taken away -- so two tills' sets are both
+ * true, and the merge is their union rather than one set replacing the other.
+ *
+ * `payment_allocations`: a payment taken on one till, and its advance spent on
+ * a bill at another (`applyAdvance`). As lines of the payment, two counters
+ * spending one advance while apart each added a line and each raised the
+ * payment's revision by one; the two heads then looked the same, the merge
+ * took them for one row, and each till kept its own allocation for good. And
+ * a submitted payment's lines were frozen against the merge besides, so even
+ * a head that differed was refused. Allocations are not what a payment *is*
+ * -- cancelling one leaves them in place and only the status changes -- so
+ * the union keeps both, and the shop is told an advance went further than it
+ * was worth.
+ *
+ * The value is the column that, with the parent, may appear only once
+ * (`UNIQUE (payment_id, bill_id)`): two tills that allocated one payment to
+ * one bill each wrote that pair under an id of their own, which is one
+ * allocation, settled to the lower id on every till.
+ */
+const UNION_LINES: ReadonlyMap<string, string> = new Map([['payment_allocations', 'bill_id']])
+
+/** Adds the arriving union lines this till does not hold. Returns how many changed. */
+async function unionLines(
+  tx: SqlDriver,
+  shape: NonNullable<ReturnType<typeof shapeOf>>,
+  record: ChangeRecord,
+): Promise<number> {
+  let changed = 0
+  for (const line of shape.lines) {
+    const pair = UNION_LINES.get(line.table)
+    if (pair === undefined) continue
+    const lineColumns = await localColumns(tx, line.table)
+    if (lineColumns === null) continue
+    for (const raw of record.lines?.[line.table] ?? []) {
+      const row = known(raw, lineColumns).row
+      if (String(row[line.parentKey]) !== record.rowId) {
+        throw new Error(`${line.table} line under ${record.rowId} belongs to ${String(row[line.parentKey])}`)
+      }
+      const id = String(row['id'])
+      // raw: `UNION_LINES`' names, which come from this file and never the wire.
+      const held = await tx.get<Row>(
+        `SELECT * FROM "${line.table}" WHERE "${line.parentKey}" = ? AND "${pair}" = ?`,
+        [record.rowId, row[pair] ?? null],
+      )
+      if (held === undefined) {
+        await insert(tx, line.table, row)
+        changed += 1
+      } else if (String(held['id']) !== id && id < String(held['id'])) {
+        await tx.execute(`DELETE FROM "${line.table}" WHERE id = ?`, [held['id'] ?? null])
+        await insert(tx, line.table, row)
+        changed += 1
+      }
+    }
+  }
+  /* Passed on as this till's, so it reaches every other till -- the sender
+     included, which is the one missing what this till held. */
+  if (changed > 0) await feedApplied(tx, shape.table, record.rowId, 'upsert', deviceId())
+  return changed
 }
 
 /**
@@ -304,6 +388,19 @@ async function linesRefused(
  */
 function origin(_record: ChangeRecord, batch: ChangeBatch): string | null {
   return batch.fromDevice
+}
+
+/**
+ * A row as one string that every till holding it writes alike: its columns in
+ * name order, those this database has, less the incidental ones. What a dead
+ * heat is settled by (`decideRow`), so it must not depend on which till asks.
+ */
+function canonical(row: Row, columns: Set<string>, incidental: readonly string[] = []): string {
+  return JSON.stringify(
+    [...columns].sort()
+      .filter((c) => !incidental.includes(c))
+      .map((c) => [c, row[c] ?? null]),
+  )
 }
 
 /**

@@ -153,7 +153,21 @@ export async function cancelBill(
  */
 export async function amendBill(
   db: SqlDriver,
-  input: { billId: string; actorId: string; now?: Date },
+  input: {
+    billId: string
+    /**
+     * The counter the corrected bill is raised at: this till's. Left out, the
+     * original's -- right on a till that has only ever had one counter, and
+     * wrong anywhere else. A corrected bill is a new bill made here, and its
+     * number comes from this counter's series; taking it from the original's
+     * counter had a till mint numbers in another till's series, which is two
+     * machines on one counter -- two counters correcting one bill while apart
+     * both raised the same number, and one of the two never reached the shop.
+     */
+    registerId?: string
+    actorId: string
+    now?: Date
+  },
 ): Promise<CreateBillResult> {
   await requirePermission(db, input.actorId, 'bill', 'create')
   // The new draft is made by `createBill`, which asks `requireMayTakeMoney`.
@@ -203,11 +217,11 @@ export async function amendBill(
      ── Why the posting date is not carried ─────────────────────────────────
      This is a new document raised today. Under GST there is no amended
      invoice, only a cancellation and a fresh one, so it takes today's date and
-     its own number from the same series. Carrying the old date would back-date
+     its own number, from the series of the counter raising it. Carrying the old date would back-date
      a document into a period that may already have been filed. `createBill`
      defaults it, so it is simply not passed. */
   const created = await createBill(db, {
-    registerId: source.registerId,
+    registerId: input.registerId ?? source.registerId,
     customerId: source.customerId,
     /* The order comes with it. Cancelling the original gave the order back what
        it had taken, so an amendment that dropped the link would leave the order

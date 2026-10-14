@@ -57,6 +57,204 @@ export async function refundedTwice(db: SqlDriver): Promise<Discrepancy[]> {
   })
 }
 
+/**
+ * A bill cancelled on one counter and taken back on another.
+ *
+ * Each is a whole answer on its own: the cancel puts the goods back and the
+ * money with them, and so does the return. Together the money went back
+ * twice and the shelf shows the goods put back twice. `refundedTwice` counts
+ * returns against what was sold and so never sees it -- one return is not more
+ * than the line -- which is why it is its own check.
+ */
+export async function refundedAndCancelled(db: SqlDriver): Promise<Discrepancy[]> {
+  const rows = await db.query<{
+    id: string; bill_no: string; customer_name: string | null; refunded: number; returns: string; last_at: string
+  }>(
+    `SELECT b.id, b.doc_no AS bill_no, b.customer_name, SUM(r.refund_total) AS refunded,
+            GROUP_CONCAT(r.doc_no, ', ') AS returns, MAX(r.created_at) AS last_at
+       FROM bills b
+       JOIN sales_returns r ON r.bill_id = b.id AND r.docstatus = 1
+      WHERE b.docstatus = 2
+      GROUP BY b.id`)
+  return rows.map((r) => ({
+    key: `refunded_and_cancelled:${r.id}:${r.returns}`,
+    kind: 'refunded_and_cancelled',
+    area: 'money',
+    at: r.last_at,
+    amount: r.refunded as Money,
+    title: `Bill ${r.bill_no} was cancelled and taken back as well`,
+    detail: `Bill ${r.bill_no}${r.customer_name ? ` (${r.customer_name})` : ''} was cancelled, and `
+      + `${rupees(r.refunded)} was also refunded against it on ${r.returns}.`,
+    action: 'Two counters dealt with this bill while they could not reach each other. The money went back '
+      + 'twice and the stock shows the goods put back twice: cancel the return that should not stand, and '
+      + 'recover the money from the customer if you can.',
+    refs: [r.bill_no, ...r.returns.split(', ')],
+  }))
+}
+
+/**
+ * A bill on account paid off by more than was put on account: the customer's
+ * payment taken on two counters. Only one payment happened at the counter, so
+ * one drawer will be short by the other.
+ */
+export async function paidTwice(db: SqlDriver): Promise<Discrepancy[]> {
+  const rows = await db.query<{
+    id: string; bill_no: string; customer_name: string | null; owed: number; paid: number
+    payments: string; last_at: string
+  }>(
+    `SELECT b.id, b.doc_no AS bill_no, b.customer_name,
+            (SELECT COALESCE(SUM(bp.amount), 0) FROM bill_payments bp
+              WHERE bp.bill_id = b.id AND bp.method = 'credit') AS owed,
+            SUM(a.amount) AS paid, GROUP_CONCAT(p.doc_no, ', ') AS payments, MAX(p.created_at) AS last_at
+       FROM bills b
+       JOIN payment_allocations a ON a.bill_id = b.id
+       JOIN payment_entries p ON p.id = a.payment_id AND p.docstatus = 1
+      WHERE b.docstatus = 1
+      GROUP BY b.id
+     HAVING COUNT(DISTINCT p.id) > 1 AND SUM(a.amount) > owed`)
+  return rows.map((r) => ({
+    key: `paid_twice:${r.id}:${r.paid}`,
+    kind: 'paid_twice',
+    area: 'money',
+    at: r.last_at,
+    amount: (r.paid - r.owed) as Money,
+    title: `Bill ${r.bill_no} was paid off more than once`,
+    detail: `Bill ${r.bill_no}${r.customer_name ? ` (${r.customer_name})` : ''} had ${rupees(r.owed)} on account; `
+      + `${rupees(r.paid)} was recorded against it, on ${r.payments}.`,
+    action: 'Two counters took this payment while they could not reach each other. Count the drawers: if '
+      + 'only one payment was really made, cancel the other.',
+    refs: [r.bill_no, ...r.payments.split(', ')],
+  }))
+}
+
+/**
+ * A customer's advance spent on more than it held: spent on two counters.
+ *
+ * Each counter set the same advance against a bill of its own, and both stand
+ * (`UNION_LINES` in `sync/record.ts`), so the bills read as paid while the
+ * customer's account shows what is really still owed. One of them is not paid.
+ */
+export async function advanceSpentTwice(db: SqlDriver): Promise<Discrepancy[]> {
+  const rows = await db.query<{
+    id: string; doc_no: string; customer_name: string | null; amount: number; spent: number
+    bills: string; last_at: string
+  }>(
+    `SELECT p.id, p.doc_no, c.name AS customer_name, p.amount, SUM(a.amount) AS spent,
+            GROUP_CONCAT(b.doc_no, ', ') AS bills, MAX(p.updated_at) AS last_at
+       FROM payment_entries p
+       JOIN payment_allocations a ON a.payment_id = p.id
+       JOIN bills b ON b.id = a.bill_id
+       LEFT JOIN customers c ON c.id = p.customer_id
+      WHERE p.docstatus = 1 AND p.party_type = 'customer' AND p.direction = 'in'
+      GROUP BY p.id
+     HAVING SUM(a.amount) > p.amount`)
+  return rows.map((r) => ({
+    key: `advance_spent_twice:${r.id}:${r.spent}`,
+    kind: 'advance_spent_twice',
+    area: 'money',
+    at: r.last_at,
+    amount: (r.spent - r.amount) as Money,
+    title: `${r.customer_name ?? 'A customer'}'s payment ${r.doc_no} was spent on more than it was worth`,
+    detail: `${r.doc_no} was ${rupees(r.amount)}; ${rupees(r.spent)} of bills were paid from it: ${r.bills}.`,
+    action: 'Two counters used this advance while they could not reach each other. '
+      + `${rupees(r.spent - r.amount)} of those bills is still owed: collect it, or put it on the customer's account.`,
+    refs: [r.doc_no, ...r.bills.split(', ')],
+  }))
+}
+
+/**
+ * Loyalty points spent on more than one counter: the same points redeemed
+ * against two bills while the counters could not reach each other. Each
+ * redemption is a line of its own bill, so both stand, and the customer had
+ * the discount twice for points they had once.
+ */
+export async function pointsSpentTwice(db: SqlDriver): Promise<Discrepancy[]> {
+  const rows = await db.query<{
+    id: string; customer_name: string | null; points: number; spent: number; bills: string; last_at: string
+  }>(
+    `SELECT e.id, c.name AS customer_name, e.points, SUM(r.points) AS spent,
+            GROUP_CONCAT(b.doc_no, ', ') AS bills, MAX(r.created_at) AS last_at
+       FROM loyalty_entries e
+       JOIN loyalty_redemptions r ON r.loyalty_entry_id = e.id AND r.reversed_at IS NULL
+       JOIN bills b ON b.id = r.bill_id AND b.docstatus = 1
+       LEFT JOIN customers c ON c.id = e.customer_id
+      GROUP BY e.id
+     HAVING SUM(r.points) > e.points`)
+  return rows.map((r) => ({
+    key: `points_spent_twice:${r.id}:${r.spent}`,
+    kind: 'points_spent_twice',
+    area: 'money',
+    at: r.last_at,
+    amount: null,
+    title: `${r.customer_name ?? 'A customer'} spent the same loyalty points twice`,
+    detail: `${r.spent} points were redeemed against ${r.bills}, from ${r.points} the customer had.`,
+    action: 'Two counters took these points while they could not reach each other, so the discount was given '
+      + 'twice. Take it into account next time the customer redeems, or recover it if you can.',
+    refs: r.bills.split(', '),
+  }))
+}
+
+/**
+ * One cancelled bill corrected on two counters: two new bills standing for one
+ * sale, the goods out twice and the customer charged twice.
+ */
+export async function correctedTwice(db: SqlDriver): Promise<Discrepancy[]> {
+  const rows = await db.query<{ id: string; doc_no: string; customer_name: string | null; bills: string; last_at: string }>(
+    `SELECT o.id, o.doc_no, o.customer_name, GROUP_CONCAT(b.doc_no, ', ') AS bills, MAX(b.created_at) AS last_at
+       FROM bills o
+       JOIN bills b ON b.amended_from = o.id AND b.docstatus = 1
+      GROUP BY o.id
+     HAVING COUNT(*) > 1`)
+  return rows.map((r) => ({
+    key: `corrected_twice:${r.id}:${r.bills}`,
+    kind: 'corrected_twice',
+    area: 'money',
+    at: r.last_at,
+    amount: null,
+    title: `Bill ${r.doc_no} was corrected twice`,
+    detail: `${r.bills} were both raised to replace ${r.doc_no}${r.customer_name ? ` (${r.customer_name})` : ''}.`,
+    action: 'Two counters corrected this bill while they could not reach each other, so the goods went out and '
+      + 'the customer was charged twice. Cancel the corrected bill that should not stand.',
+    refs: [r.doc_no, ...r.bills.split(', ')],
+  }))
+}
+
+/**
+ * A supplier paid more than they are owed. It can be on purpose -- an advance
+ * -- and then it is marked seen; more often it is one bill paid on two counters.
+ */
+export async function supplierOverpaid(db: SqlDriver): Promise<Discrepancy[]> {
+  const rows = await db.query<{ id: string; name: string; owed: number; payments: string; last_at: string | null }>(
+    `SELECT s.id, s.name, x.owed,
+            (SELECT GROUP_CONCAT(p.doc_no, ', ') FROM payment_entries p
+              WHERE p.supplier_id = s.id AND p.party_type = 'supplier' AND p.docstatus = 1) AS payments,
+            (SELECT MAX(p.created_at) FROM payment_entries p
+              WHERE p.supplier_id = s.id AND p.party_type = 'supplier' AND p.docstatus = 1) AS last_at
+       FROM suppliers s
+       JOIN (SELECT suppliers.id,
+              (CASE WHEN suppliers.opening_as_of IS NULL THEN 0 ELSE suppliers.opening_balance END)
+              + COALESCE((SELECT SUM(e.invoice_total) FROM stock_entries e
+                           WHERE e.supplier_id = suppliers.id AND e.docstatus = 1 AND e.entry_type = 'purchase'), 0)
+              - COALESCE((SELECT SUM(CASE WHEN p.direction = 'out' THEN p.amount ELSE -p.amount END)
+                            FROM payment_entries p
+                           WHERE p.supplier_id = suppliers.id AND p.party_type = 'supplier' AND p.docstatus = 1), 0)
+              AS owed
+             FROM suppliers) x ON x.id = s.id
+      WHERE x.owed < 0`)
+  return rows.map((r) => ({
+    key: `supplier_overpaid:${r.id}:${r.owed}`,
+    kind: 'supplier_overpaid',
+    area: 'money',
+    at: r.last_at,
+    amount: (-r.owed) as Money,
+    title: `${r.name} has been paid ${rupees(-r.owed)} more than they are owed`,
+    detail: `Payments to ${r.name}: ${r.payments ?? 'none'}.`,
+    action: 'If this was an advance, mark it seen. If one bill was paid on two counters, cancel the payment '
+      + 'that should not stand, or ask the supplier to set it against the next bill.',
+    refs: (r.payments ?? '').split(', ').filter(Boolean),
+  }))
+}
+
 /** An order or quotation billed for more than it asked for: billed on two counters. */
 export async function orderBilledTwice(db: SqlDriver): Promise<Discrepancy[]> {
   const rows = await db.query<{

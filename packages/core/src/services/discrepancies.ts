@@ -3,7 +3,8 @@ import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { clock } from '../clock.js'
 import {
-  refundedTwice, orderBilledTwice, soldBelowZero, overCreditLimit, figuresLeft, theBooks, syncLeftovers,
+  refundedTwice, refundedAndCancelled, paidTwice, advanceSpentTwice, pointsSpentTwice, correctedTwice, supplierOverpaid,
+  orderBilledTwice, soldBelowZero, overCreditLimit, figuresLeft, theBooks, syncLeftovers,
 } from './discrepancies/checks.js'
 import type { Discrepancy } from './discrepancies/types.js'
 
@@ -28,7 +29,7 @@ const ORDER: Record<Discrepancy['area'], number> = { money: 0, stock: 1, books: 
 /** Everything that does not add up right now, seen or not. */
 export async function findDiscrepancies(db: SqlDriver): Promise<Discrepancy[]> {
   const found: Discrepancy[] = []
-  for (const check of [refundedTwice, orderBilledTwice, soldBelowZero, overCreditLimit, figuresLeft, theBooks, syncLeftovers]) {
+  for (const check of [refundedTwice, refundedAndCancelled, paidTwice, advanceSpentTwice, pointsSpentTwice, correctedTwice, supplierOverpaid, orderBilledTwice, soldBelowZero, overCreditLimit, figuresLeft, theBooks, syncLeftovers]) {
     found.push(...await check(db))
   }
   return found.sort((a, b) => ORDER[a.area] - ORDER[b.area] || (b.at ?? '').localeCompare(a.at ?? ''))
