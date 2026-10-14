@@ -37,7 +37,7 @@ result() { # result <name> <command...>: run it, keep its output and evidence
 
 fail=0
 {
-  echo "ShopOS nightly $(date -u '+%Y-%m-%d %H:%M UTC'), commit $(git -C "$here" log -1 --format=%h 2>/dev/null || echo unknown)"
+  echo "ShopOS nightly $(date -u '+%Y-%m-%d %H:%M UTC'), commit $(git -c safe.directory="*" -C "$here" log -1 --format=%h 2>/dev/null || echo unknown)"
   echo "soak: STEPS=$STEPS SEED=$SOAK_SEED   catch-up: SALES=$SALES CUTS=$CUTS SEED=$CATCHUP_SEED"
   result soak env STEPS="$STEPS" SEED="$SOAK_SEED" "$here/soak.sh" || fail=1
   result catchup env SALES="$SALES" CUTS="$CUTS" SEED="$CATCHUP_SEED" "$here/catchup.sh" || fail=1
