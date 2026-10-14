@@ -1,0 +1,24 @@
+-- Which grant of a counter is the latest, so every till keeps that one.
+--
+-- Since 071 a shop's main grants counters (`grantClaim`), and the merge kept
+-- the main's own record of who sits where against anything a till sent. That
+-- assumed the main's record was the newest, and a main that has just been
+-- handed the job is the till whose record is oldest: it took the old main's
+-- grants as stale edits and threw them away, and a counter granted the day
+-- before the handover read as nobody's.
+--
+-- So a claim says when it was granted. Every grant takes the next number in
+-- the shop's sequence, and every till -- the main and a counter alike -- keeps
+-- the claim with the higher number, whichever till it came from. A new main
+-- inherits the old main's later grants; a till that wakes up after days on a
+-- counter that has since been taken over loses to the take-over, which came
+-- after; and a claim a till writes by itself never moves the number, so it
+-- can never win.
+--
+-- No backfill. Every claim made before this reads as grant 0, and two of
+-- those are settled as they were.
+--
+-- Additive: a column with a default, on a table whose older tills keep their
+-- claims by the rule they always had.
+
+ALTER TABLE registers ADD COLUMN claim_seq INTEGER NOT NULL DEFAULT 0;

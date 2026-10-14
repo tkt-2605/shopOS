@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { syncWith } from '../src/services/sync.js'
 import { handleSyncRequest, offerPairing, withdrawPairing } from '../src/services/syncServer.js'
-import { httpTransport, pairWith, pairedPeers, askToJoin, joinByCopy } from '../src/services/syncClient.js'
+import { httpTransport, pairWith, pairedPeers, askToJoin, joinByCopy, requestClaim } from '../src/services/syncClient.js'
 import { feedHead, pruneFeed, seedFeedWithEverything } from '../src/services/changefeed.js'
 import {
   handTheMainTo, hearMain, joinedMain, listens, mainTill, makeThisTheMain, tillRole,
@@ -334,3 +334,109 @@ describe('the main dies, and another till is made the main', () => {
     expect(await has(t2.db, 'Sold at T2, received only by the main'), 'and T2 still has it').toBe(true)
   })
 })
+
+describe('handing the main on, when things go wrong around it', () => {
+  it('the main hands over and dies before the till it named has heard; made main by hand, nothing is lost', async () => {
+    await join(t1, main)
+    await join(t2, main)
+    await catchUp(t1)
+    await catchUp(t2)
+
+    // Handed on -- and the old main dies before T1 has asked it anything.
+    await as(main, () => handTheMainTo(main.db, T1, main.fx.adminId))
+    await as(t2, () => makeProduct(t2.db, { name: 'Sold at T2 as the main went' }))
+    await catchUp(t2) // the old main takes it, still answering as a till
+    await new Promise<void>((r) => main.server.close(() => r()))
+    main.server = createServer().listen(0)
+    expect(await as(t1, () => mainTill(t1.db)), 'T1 never heard').toEqual({ device: MAIN, epoch: 1 })
+
+    // Somebody makes T1 the main by hand: the same answer the dead main gave.
+    await as(t1, () => makeThisTheMain(t1.db, main.fx.adminId))
+    expect(await as(t1, () => mainTill(t1.db))).toEqual({ device: T1, epoch: 2 })
+
+    // T2 rejoins at the new main, putting its own shop back in its feed.
+    joinByCopy(false)
+    await join(t2, t1)
+    await as(t2, () => seedFeedWithEverything(t2.db))
+    const toT1 = (await pairedPeers(t2.db)).find((p) => p.deviceId === T1)!
+    const round = await as(t2, () => syncWith(t2.db, httpTransport(toT1), COUNTER[T2] ?? null))
+    expect(round.ok, JSON.stringify(round)).toBe(true)
+    expect(await has(t1.db, 'Sold at T2 as the main went')).toBe(true)
+    expect(await as(t2, () => mainTill(t2.db))).toEqual({ device: T1, epoch: 2 })
+  })
+
+  it('two people make two different tills the main while apart; when they meet, one main and everything kept', async () => {
+    await join(t1, main)
+    await join(t2, main)
+    await catchUp(t1)
+    await catchUp(t2)
+    await new Promise<void>((r) => main.server.close(() => r()))
+    main.server = createServer().listen(0)
+
+    // The main is dead. One person makes T1 the main, another T2, neither knowing.
+    await as(t1, () => makeThisTheMain(t1.db, main.fx.adminId))
+    await as(t2, () => makeThisTheMain(t2.db, main.fx.adminId))
+    await as(t1, () => makeProduct(t1.db, { name: 'Sold at T1 as a main' }))
+    await as(t2, () => makeProduct(t2.db, { name: 'Sold at T2 as a main' }))
+
+    // They meet: T2 pairs with T1.
+    joinByCopy(false)
+    await join(t2, t1)
+    await as(t2, () => seedFeedWithEverything(t2.db))
+    await as(t1, () => seedFeedWithEverything(t1.db))
+    for (let i = 0; i < 3; i += 1) {
+      const toT1 = (await pairedPeers(t2.db)).find((p) => p.deviceId === T1)!
+      const round = await as(t2, () => syncWith(t2.db, httpTransport(toT1), COUNTER[T2] ?? null))
+      expect(round.ok, JSON.stringify(round)).toBe(true)
+    }
+
+    // One main, the same on both, settled the same way on both sides; both sales on both.
+    const onT1 = await as(t1, () => mainTill(t1.db))
+    const onT2 = await as(t2, () => mainTill(t2.db))
+    expect(onT1).toEqual(onT2)
+    expect(onT1.device).toBe([T1, T2].sort()[0])
+    for (const t of [t1, t2]) {
+      expect(await has(t.db, 'Sold at T1 as a main')).toBe(true)
+      expect(await has(t.db, 'Sold at T2 as a main')).toBe(true)
+    }
+  })
+
+  it('claims go with the main: the new main grants counters, and the old one no longer does', async () => {
+    const now = new Date().toISOString()
+    await main.db.execute(
+      `INSERT INTO registers (id, name, prefix, is_active, created_at, updated_at) VALUES ('spare', 'Spare', 'SP', 1, ?, ?)`,
+      [now, now],
+    )
+    await join(t1, main)
+    await join(t2, main)
+    await catchUp(t1)
+    await catchUp(t2)
+    const ask = (from: Till, to: Till, registerId: string) => as(from, async () => {
+      const peer = (await pairedPeers(from.db)).find((p) => p.deviceId === to.id)!
+      return requestClaim(peer, { registerId, take: false }, fetch, {})
+    })
+
+    // T2 takes its counter from the main as it stands.
+    expect(await ask(t2, main, 'c-t2')).toEqual({ ok: true })
+    await catchUp(t2)
+
+    await as(main, () => handTheMainTo(main.db, T1, main.fx.adminId))
+    await catchUp(t1)
+    expect(await as(t1, () => tillRole(t1.db))).toBe('main')
+
+    // The old main says it is not the one to ask.
+    await expect(ask(t2, main, 'spare')).rejects.toMatchObject({ code: 'NOT_THE_MAIN' })
+
+    // The new main has T2's claim, refuses T2's counter to anyone else, and grants the spare.
+    await join(t2, t1)
+    expect(await as(t1, () => claimedBy(t1.db, 'c-t2'))).toBe(T2)
+    expect(await ask(t2, t1, 'spare')).toEqual({ ok: true })
+    expect(await as(t1, () => claimedBy(t1.db, 'spare'))).toBe(T2)
+    expect(await as(t1, () => claimedBy(t1.db, 'c-t2')), 'and the counter T2 left is free again').toBeNull()
+  })
+})
+
+async function claimedBy(db: SqlDriver, registerId: string): Promise<string | null> {
+  const row = await db.get<{ claimed_by: string | null }>(`SELECT claimed_by FROM registers WHERE id = ?`, [registerId])
+  return row?.claimed_by ?? null
+}

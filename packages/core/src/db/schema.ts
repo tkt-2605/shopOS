@@ -298,6 +298,8 @@ export const registers = sqliteTable('registers', {
   updatedAt: text('updated_at').notNull(),
   /** When the claim was last renewed. Null means never — see migration 045. */
   claimedAt: text('claimed_at'),
+  /** Which grant this claim is, in the shop's sequence; the higher one stands. See 072. */
+  claimSeq: integer('claim_seq').default(0).notNull(),
 })
 
 export const cashSessions = sqliteTable('cash_sessions', {

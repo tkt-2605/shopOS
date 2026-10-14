@@ -1,4 +1,4 @@
-import { eq, ne, and, isNull } from 'drizzle-orm'
+import { eq, ne, and, isNull, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { deviceId } from '../../device.js'
@@ -44,7 +44,12 @@ export interface CounterTaken {
  */
 export async function claimRegister(
   db: SqlDriver,
-  input: { registerId: string; deviceId?: string | null },
+  input: {
+    registerId: string
+    deviceId?: string | null
+    /** Which grant this is, when the main is granting it (`grantClaim`). See 072. */
+    claimSeq?: number
+  },
 ): Promise<void> {
   const me = input.deviceId ?? deviceId()
   if (me === null) {
@@ -54,14 +59,15 @@ export async function claimRegister(
   }
   const now = new Date().toISOString()
   await db.transaction(async (tx) => {
+    const seq = input.claimSeq === undefined ? {} : { claimSeq: input.claimSeq }
     await q(tx).update(schema.registers)
-      .set({ claimedBy: null, updatedAt: now })
+      .set({ claimedBy: null, updatedAt: now, ...seq })
       .where(and(
         eq(schema.registers.claimedBy, me),
         ne(schema.registers.id, input.registerId),
       ))
     await q(tx).update(schema.registers)
-      .set({ claimedBy: me, updatedAt: now })
+      .set({ claimedBy: me, updatedAt: now, ...seq })
       .where(eq(schema.registers.id, input.registerId))
   })
 }
@@ -305,7 +311,12 @@ export async function grantClaim(
     }
   }
 
-  await claimRegister(db, { registerId: ask.registerId, deviceId: requester })
+  /* The next grant in the shop's sequence, so this claim outranks every one
+     made before it on every till it reaches (072). */
+  const [top] = await q(db)
+    .select({ seq: sql<number>`COALESCE(MAX(${schema.registers.claimSeq}), 0)` })
+    .from(schema.registers)
+  await claimRegister(db, { registerId: ask.registerId, deviceId: requester, claimSeq: (top?.seq ?? 0) + 1 })
   await renewClaim(db, ask.registerId, requester)
   return { ok: true }
 }

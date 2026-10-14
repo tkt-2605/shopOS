@@ -188,21 +188,28 @@ export async function applyRecord(
       })
     }
 
-    /* Which till sits at a counter is the main's to say (`grantClaim`), and a
-       merge is not the main saying it. A till that wrote a claim by itself --
-       an old build, or one that woke up after days off still believing the
-       counter it left was its own -- would otherwise win on revision like any
-       other edit and hand one number series to two machines. So the main
-       keeps the claim it holds, takes the rest of the row as the merge
-       decides, and sends its answer back out above both revisions: keeping
-       it quietly would leave the sender holding its own claim, billing on it,
-       with nothing ever arriving to say otherwise. */
-    if (await claimStaysWithMain(tx, shape.table, mine, record.row)) {
+    /* Which till sits at a counter is the main's to grant (`grantClaim`), and
+       a merge is not a grant. A till that wrote a claim by itself -- an old
+       build, or one that woke up after days off still believing the counter
+       it left was its own and renewing it at every start -- would otherwise
+       win on revision like any other edit and hand one number series to two
+       machines. So the claim goes by which grant it is (`claim_seq`, 072):
+       the later grant stands, on every till, whichever till it came from --
+       which is also how a main that has just been handed the job takes the
+       old main's grants rather than its own older record of them. The rest
+       of the row goes as the merge decides, and when that would not carry the
+       standing claim, the row is written with it and sent back out above both
+       revisions: keeping it quietly would leave the sender billing on a claim
+       nothing would ever arrive to correct. */
+    const claim = await claimThatStands(tx, shape.table, mine, record.row)
+    if (claim !== null && (claim === 'mine' || call.winner === 'mine')) {
       const base = call.winner === 'mine' ? mine : known(record.row, columns).row
+      const from = claim === 'mine' ? mine : record.row
       await upsert(tx, shape.table, shape.key, {
         ...base,
-        claimed_by: mine['claimed_by'] ?? null,
-        claimed_at: mine['claimed_at'] ?? null,
+        claimed_by: from['claimed_by'] ?? null,
+        claimed_at: from['claimed_at'] ?? null,
+        claim_seq: from['claim_seq'] ?? 0,
         rev: Math.max(numberOf(mine['rev']) ?? 0, numberOf(record.row['rev']) ?? 0) + 1,
         updated_at: new Date().toISOString(),
       })
@@ -210,10 +217,12 @@ export async function applyRecord(
       return {
         ...NOTHING,
         applied: 1,
-        contested: [...contested.filter((c) => c.rowId !== record.rowId), {
-          table: record.table, rowId: record.rowId, winner: 'mine',
-          explain: 'which till sits at a counter is the main till’s to say, so its record of it was kept',
-        }],
+        contested: claim === 'mine'
+          ? [...contested.filter((c) => c.rowId !== record.rowId), {
+              table: record.table, rowId: record.rowId, winner: 'mine',
+              explain: 'which till sits at this counter was granted later here, so that grant was kept',
+            }]
+          : contested,
       }
     }
     // Keeping what is here writes nothing at all, which is always the safer
@@ -461,14 +470,19 @@ async function insert(tx: SqlDriver, table: string, row: Row): Promise<void> {
 }
 
 /**
- * Whether an incoming counter row would move a claim this database keeps.
- * Only on the main, and only for a counter it already holds a row for: a
- * counter a till has just made for itself is nobody else's.
+ * Whose claim on a counter stands, when the two copies name different tills:
+ * the later grant (`claim_seq`). Two of the same grant -- every claim made
+ * before 072 is grant 0 -- are settled as they were: the main keeps its own,
+ * and anywhere else the merge decides. Null when the claims agree, or when
+ * nothing here overrides the merge.
  */
-async function claimStaysWithMain(tx: SqlDriver, table: string, mine: Row, theirs: Row): Promise<boolean> {
-  if (table !== 'registers') return false
-  if ((theirs['claimed_by'] ?? null) === (mine['claimed_by'] ?? null)) return false
-  return await tillRole(tx) === 'main'
+async function claimThatStands(tx: SqlDriver, table: string, mine: Row, theirs: Row): Promise<'mine' | 'theirs' | null> {
+  if (table !== 'registers') return null
+  if ((theirs['claimed_by'] ?? null) === (mine['claimed_by'] ?? null)) return null
+  const mineSeq = numberOf(mine['claim_seq']) ?? 0
+  const theirSeq = numberOf(theirs['claim_seq']) ?? 0
+  if (theirSeq !== mineSeq) return theirSeq > mineSeq ? 'theirs' : 'mine'
+  return await tillRole(tx) === 'main' ? 'mine' : null
 }
 
 function numberOf(v: SqlValue | undefined): number | null {

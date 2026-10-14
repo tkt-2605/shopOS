@@ -162,6 +162,7 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [70, '070_a_batch_has_its_own_price.sql', 'breaking'],
   /* Two columns on `sync_state`, which never travels. */
   [71, '071_one_main_till.sql', 'additive'],
+  [72, '072_a_claim_says_when_it_was_granted.sql', 'additive'],
 ]
 
 /**
@@ -175,6 +176,10 @@ export const REVIEWED_DEFAULTS: Readonly<Record<string, string>> = {
   '051_points_that_move.sql:loyalty_entries.rev':
     'A revision, not a figure: 1 is what every row starts at, and no till below 051 '
     + 'is above the floor 050 set, so none can relay an entry without it.',
+  '072_a_claim_says_when_it_was_granted.sql:registers.claim_seq':
+    'Grant 0 is what every claim made by the old rule is. A till below 072 grants and relays '
+    + 'claims with no number; a counter it sends arrives as grant 0, and two of those are settled '
+    + 'by the rule they always were.',
 }
 
 /**
