@@ -23,11 +23,28 @@ export type Held = Map<string, Map<string, Row>>
 export async function contents(db: SqlDriver): Promise<Held> {
   const held: Held = new Map()
   for (const shape of REPLICATED) {
-    held.set(shape.table, await dump(db, shape.table, shape.key))
-    for (const line of shape.lines) held.set(line.table, await dump(db, line.table, null))
+    const rows = await dump(db, shape.table, shape.key)
+    /* A bill nobody has rung up yet stays on the till typing it (042): its
+       row and its lines enter the feed when it is submitted, and not before.
+       So a draft on one till and not another is the rule working -- a sale
+       cut off between the cart and the payment leaves exactly that -- and is
+       left out here rather than reported as a till that failed to converge. */
+    const drafts = DRAFTS_STAY.has(shape.table)
+      ? new Set([...rows].filter(([, r]) => Number(r['docstatus']) === 0).map(([id]) => id))
+      : new Set<string>()
+    for (const id of drafts) rows.delete(id)
+    held.set(shape.table, rows)
+    for (const line of shape.lines) {
+      const lines = await dump(db, line.table, null)
+      for (const [id, r] of lines) if (drafts.has(String(r[line.parentKey]))) lines.delete(id)
+      held.set(line.table, lines)
+    }
   }
   return held
 }
+
+/** Documents whose drafts never leave the till. See `contents`. */
+const DRAFTS_STAY: ReadonlySet<string> = new Set(['bills'])
 
 /**
  * Rows by the thing that identifies them.
@@ -153,6 +170,8 @@ export interface Health {
   /** Bill numbers missing from a counter's series, e.g. `MR/2627/00007`. Must be none. */
   missingNumbers: string[]
   bills: number
+  /** Bills started and never rung up, which stay on this till (042). */
+  drafts: number
 }
 
 export async function health(db: SqlDriver): Promise<Health> {
@@ -177,7 +196,8 @@ export async function health(db: SqlDriver): Promise<Health> {
   /* A gap in a counter's series is a number issued and lost, or never issued
      -- either way a hole an auditor asks about, and under GST a series runs
      without one. Read off the numbers themselves: `MR/2627/00007`. */
-  const numbers = await db.query<{ doc_no: string }>(`SELECT doc_no FROM bills`)
+  const numbers = await db.query<{ doc_no: string }>(`SELECT doc_no FROM bills WHERE docstatus <> 0`)
+  const drafts = await count(`SELECT COUNT(*) AS n FROM bills WHERE docstatus = 0`)
   const series = new Map<string, number[]>()
   for (const { doc_no } of numbers) {
     const cut = doc_no.lastIndexOf('/')
@@ -196,6 +216,6 @@ export async function health(db: SqlDriver): Promise<Health> {
 
   return {
     quarantined, conflicts, unbalancedVouchers, stockAdrift, missingNumbers,
-    bills: numbers.length,
+    bills: numbers.length, drafts,
   }
 }

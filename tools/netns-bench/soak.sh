@@ -19,7 +19,7 @@
 #   STEPS=2000 SEED=42 sudo tools/netns-bench/soak.sh
 #
 # The seed is printed first: a failure is replayed by running the same seed,
-# and the step log in /tmp/shopos-netns/soak.log says what happened when.
+# and the step log in /var/tmp/shopos-netns/soak.log says what happened when.
 set -uo pipefail
 
 STEPS=${STEPS:-300}

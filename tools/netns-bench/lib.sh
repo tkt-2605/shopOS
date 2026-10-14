@@ -9,7 +9,7 @@
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tsx="$repo/node_modules/.bin/tsx"
 net_bin="$repo/target/release/shopos-net"
-work=/tmp/shopos-netns
+work=/var/tmp/shopos-netns   # not /tmp: WSL clears it when it restarts, and the evidence goes with it
 [ -x "$tsx" ] || { echo "No $tsx -- run npm ci in $repo first"; exit 1; }
 [ -x "$net_bin" ] || { echo "No $net_bin -- build shopos-net first"; exit 1; }
 
