@@ -63,7 +63,30 @@ export async function startControl(till: Till, port: number): Promise<Control> {
     },
 
     /** Take a counter of this till's own, after it has the shop. */
-    '/control/claim-register': async () => ({ registerId: await till.claimRegister() }),
+    '/control/claim-register': async () => {
+      const registerId = await till.claimRegister()
+      /* And says it sits there, as the app does when it starts on a counter: a
+         counter left unclaimed is one the main will grant to whichever till
+         asks for it next (`grantClaim`), and then this till's own sales are
+         refused. Only one nobody holds -- the main keeps the claims. */
+      const { claimRegister } = await import('@shopos/core')
+      await till.as(async () => {
+        const row = await till.db.get<{ claimed_by: string | null }>(
+          `SELECT claimed_by FROM registers WHERE id = ?`, [registerId])
+        if (row !== undefined && row.claimed_by === null) {
+          await claimRegister(till.db, { registerId, deviceId: till.deviceId })
+        }
+      })
+      return { registerId }
+    },
+
+    /** A counter nobody sits at yet: a spare a till may ask the main for. */
+    '/control/add-counter': async (body) => {
+      const prefix = String(body['prefix'] ?? '')
+      if (!/^[A-Z0-9]{2,4}$/.test(prefix)) throw new Error('prefix is 2-4 of A-Z0-9')
+      const { createRegister } = await import('@shopos/core')
+      return till.as(async () => createRegister(till.db, { name: `Spare ${prefix}`, prefix, actorId: await actorOf(till) }))
+    },
 
     /** What this till holds, for an assertion on stored rows rather than a return value. */
     '/control/count': async (body) => {
@@ -140,6 +163,93 @@ export async function startControl(till: Till, port: number): Promise<Control> {
       })
     },
 
+    /**
+     * A sale on account to the soak's one customer: the bill is owed, and paid
+     * later on whichever till (`/control/pay`).
+     */
+    '/control/sell-on-credit': async (body) => {
+      const units = Number(body['units'] ?? 1)
+      const { createBill, submitBill, Quantity } = await import('@shopos/core')
+      return till.as(async () => {
+        if (till.registerId === null) return { ok: false, code: 'NO_COUNTER' }
+        const actor = await actorOf(till)
+        const customer = await soakCustomer(till)
+        const draft = await createBill(till.db, {
+          registerId: till.registerId, customerId: customer,
+          lines: [{ productId: SOAK_ITEM, qty: Quantity.fromUnits(units) }],
+          actorId: actor,
+        })
+        if (!draft.ok) return draft
+        const done = await submitBill(till.db, {
+          billId: draft.billId, payments: [{ method: 'credit', amount: draft.grandTotal }], actorId: actor,
+        })
+        return done.ok ? { ok: true, docNo: done.docNo } : done
+      })
+    },
+
+    /** The soak's customer pays something off, set against what they owe. */
+    '/control/pay': async (body) => {
+      const { recordPayment, applyAdvance, Money } = await import('@shopos/core')
+      return till.as(async () => {
+        if (till.registerId === null) return { ok: false, code: 'NO_COUNTER' }
+        const actor = await actorOf(till)
+        const customer = await soakCustomer(till)
+        const paid = await recordPayment(till.db, {
+          customerId: customer, amount: Money.rupees(Number(body['rupees'] ?? 100)), method: 'cash',
+          registerId: till.registerId, actorId: actor,
+        })
+        if (!paid.ok) return paid
+        const set = await applyAdvance(till.db, { customerId: customer, actorId: actor })
+        return { ok: true, docNo: paid.docNo, applied: set.ok ? set.applied : 0 }
+      })
+    },
+
+    /**
+     * One unit of a bill taken back -- any bill this till holds with something
+     * left to return, whichever till sold it.
+     */
+    '/control/return': async (body) => {
+      const { processReturn, Quantity } = await import('@shopos/core')
+      return till.as(async () => {
+        const pick = Number(body['pick'] ?? 0)
+        const lines = await till.db.query<{ id: string; bill_id: string }>(
+          `SELECT bi.id, bi.bill_id FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
+            WHERE b.docstatus = 1 AND bi.qty - bi.returned_qty >= ? ORDER BY bi.id`,
+          [Quantity.fromUnits(1)],
+        )
+        if (lines.length === 0) return { ok: false, code: 'NOTHING_TO_RETURN' }
+        const line = lines[pick % lines.length]!
+        return processReturn(till.db, {
+          billId: line.bill_id, lines: [{ billItemId: line.id, qty: Quantity.fromUnits(1) }],
+          refundMethod: 'cash', actorId: await actorOf(till),
+        })
+      })
+    },
+
+    /**
+     * Moves this till to another counter, asked of the main as the Counters
+     * screen asks it (`changeCounter`); granted only for a counter nobody holds.
+     */
+    '/control/change-counter': async (body) => {
+      const { changeCounter, requestClaim, pairedPeers, mainTill } = await import('@shopos/core')
+      return till.as(async () => {
+        const pick = Number(body['pick'] ?? 0)
+        const others = await till.db.query<{ id: string }>(
+          `SELECT id FROM registers WHERE is_active = 1 AND id IS NOT ? ORDER BY id`, [till.registerId],
+        )
+        if (others.length === 0) return { ok: false, code: 'NO_OTHER_COUNTER' }
+        const target = others[pick % others.length]!.id
+        const answer = await changeCounter(till.db, { registerId: target, take: false }, async (ask) => {
+          const main = (await mainTill(till.db)).device
+          const peer = (await pairedPeers(till.db)).find((p) => p.deviceId === main)
+          if (peer === undefined) throw new Error('no main to ask')
+          return requestClaim(peer, ask, fetch, { listenPort: till.port })
+        })
+        if (answer.ok) await till.useRegister(target)
+        return { ...answer, registerId: target }
+      })
+    },
+
     /** Cancels this counter's newest bill that still stands. */
     '/control/cancel': async () => {
       const { cancelBill } = await import('@shopos/core')
@@ -204,6 +314,19 @@ export async function startControl(till: Till, port: number): Promise<Control> {
 
 /** The one item a soak stocks and sells. Fixed, so every till names it alike. */
 const SOAK_ITEM = 'soak-item-0000-4000-8000-000000000001'
+
+/** The one customer a soak sells to on account. Made where first asked: the main. */
+const SOAK_CUSTOMER = 'soak-cust-0000-4000-8000-000000000001'
+
+async function soakCustomer(till: Till): Promise<string> {
+  const now = new Date().toISOString()
+  await till.db.execute(
+    `INSERT OR IGNORE INTO customers (id, name, credit_limit, created_at, updated_at)
+     VALUES (?, 'Soak customer', 100000000, ?, ?)`,
+    [SOAK_CUSTOMER, now, now],
+  )
+  return SOAK_CUSTOMER
+}
 
 /** Who the bench bills as: the shop's administrator, which every till has once synced. */
 async function actorOf(till: Till): Promise<string> {

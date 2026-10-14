@@ -109,7 +109,12 @@ pub const MAX_PER_PEER: usize = 4;
 /// `/copy` and `/copy-part` are how a joining till takes a copy of the shop
 /// from the main rather than the whole shop through the change feed
 /// (`docs/specs/one-main-till.md`, *Joining*).
-pub const PATHS: [&str; 6] = ["/pair", "/hello", "/fetch", "/offer", "/copy", "/copy-part"];
+///
+/// `/claim` is a till asking the main to let it sit at a counter, which only
+/// the main grants (`grantClaim` in core). Left off this list, every such ask
+/// was refused here as a request the protocol does not have, before core ever
+/// saw it -- and the screen said the main was on an older ShopOS.
+pub const PATHS: [&str; 7] = ["/pair", "/hello", "/fetch", "/offer", "/copy", "/copy-part", "/claim"];
 
 /// A path answered unsigned because it is what agrees the signature.
 pub const PAIR_PATH: &str = "/pair";
@@ -674,7 +679,7 @@ mod tests {
 
     #[test]
     fn only_the_paths_the_protocol_has() {
-        for path in ["/pair", "/hello", "/fetch", "/offer", "/copy", "/copy-part"] {
+        for path in ["/pair", "/hello", "/fetch", "/offer", "/copy", "/copy-part", "/claim"] {
             assert!(PATHS.contains(&path));
         }
         for path in ["/", "/admin", "/shop.db", "/../device.json"] {

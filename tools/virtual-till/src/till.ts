@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   migrate, bootstrap, createRegister, handleSyncRequest, offerPairing, withdrawPairing,
@@ -151,7 +151,15 @@ export async function startTill(opts: TillOptions): Promise<Till> {
     clock: opts.clock ?? (() => Date.now()),
   }
 
-  let registerId: string | null = null
+  /* Which counter this machine sits at, kept beside the database as the app
+     keeps it in `device.json`: a fact about the machine, so it survives a
+     restart. Without it a bench till that moved counters went back to making
+     its first one when it was switched on again -- which another till may
+     have taken by then -- and the bench put two tills on one counter itself. */
+  const counterFile = join(opts.dataDir, 'counter.txt')
+  let registerId: string | null = existsSync(counterFile) ? readFileSync(counterFile, 'utf8').trim() || null : null
+  const remember = (id: string) => { writeFileSync(counterFile, id) }
+  context.registerId = registerId
   let adminId = ''
 
   await asTill(context, async () => {
@@ -168,6 +176,7 @@ export async function startTill(opts: TillOptions): Promise<Till> {
       )
       registerId = await makeRegister(db, opts.registerPrefix, opts.label, adminId)
       context.registerId = registerId
+      remember(registerId)
       /* A bench shop is a shop that has other tills, so it is on a plan that
          allows them. Without this `letThemIn` refuses every pairing and no
          convergence run gets started. */
@@ -305,6 +314,7 @@ export async function startTill(opts: TillOptions): Promise<Till> {
         }
         registerId = await makeRegister(db, opts.registerPrefix, opts.label, adminId)
         context.registerId = registerId
+        remember(registerId)
         return registerId
       })
     },
@@ -312,6 +322,7 @@ export async function startTill(opts: TillOptions): Promise<Till> {
     async useRegister(id: string): Promise<void> {
       registerId = id
       context.registerId = id
+      remember(id)
     },
 
     async stop(): Promise<void> {

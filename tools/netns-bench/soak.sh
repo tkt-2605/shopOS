@@ -41,10 +41,10 @@ count() { tally[$1]=$(( ${tally[$1]:-0} + 1 )); }
 pick() { local a=("$@"); echo "${a[$((RANDOM % ${#a[@]}))]}"; }
 ups() { local t; for t in "$@"; do [ "${up[$t]}" = 1 ] && echo "$t"; done; }
 
-switch_on() {
-  local t=$1 seed=empty
+switch_on() { # switch_on <till> [flags for the till...]
+  local t=$1 seed=empty; shift
   [ -d "$work/$t" ] || { [ "$t" = a1 ] && seed=shop; }
-  start "$t" "$seed" || { bad "till $t would not start"; return 1; }
+  start "$t" "$seed" "$@" || { bad "till $t would not start"; return 1; }
   up[$t]=1
   ctl "$t" /control/claim-register >/dev/null
 }
@@ -72,6 +72,11 @@ for t in "${COUNTERS[@]}"; do
   ctl "$t" /control/claim-register >/dev/null
 done
 ctl a1 /control/stock-in '{"units":100000}' >/dev/null
+# Two spare counters, so a till asking for another counter has one to be given.
+for prefix in SPA SPB; do ctl a1 /control/add-counter "{\"prefix\":\"$prefix\"}" >/dev/null; done
+# The customer the soak sells to on account, made on the main like any customer.
+r=$(ctl a1 /control/sell-on-credit '{"units":1}')
+sed -n 's/.*"docNo":"\([^"]*\)".*/\1/p' <<<"$r" >>"$work/sold.txt"
 for _ in 1 2 3; do for t in "${COUNTERS[@]}"; do sync_to "$t" a1 >/dev/null; done; done
 started=$SECONDS
 
@@ -89,7 +94,7 @@ for step in $(seq 1 "$STEPS"); do
   live=($(ups "${SHOP_TILLS[@]}"))
   [ "${#live[@]}" -gt 0 ] || continue
 
-  if (( roll < 45 )); then
+  if (( roll < 35 )); then
     t=$(pick "${live[@]}")
     r=$(ctl "$t" /control/sell "{\"units\":$(( RANDOM % 3 + 1 ))}")
     if grep -q '"ok":true' <<<"$r"; then
@@ -98,7 +103,30 @@ for step in $(seq 1 "$STEPS"); do
       count refused; note "sale on $t refused: $r"
     fi
 
-  elif (( roll < 65 )); then
+  elif (( roll < 42 )); then
+    # On account, to be paid off later on whichever till.
+    t=$(pick "${live[@]}")
+    r=$(ctl "$t" /control/sell-on-credit "{\"units\":$(( RANDOM % 2 + 1 ))}")
+    if grep -q '"ok":true' <<<"$r"; then
+      count "sold on credit"; sed -n 's/.*"docNo":"\([^"]*\)".*/\1/p' <<<"$r" >>"$work/sold.txt"
+    else
+      count refused; note "credit sale on $t refused: $r"
+    fi
+
+  elif (( roll < 46 )); then
+    t=$(pick "${live[@]}")
+    r=$(ctl "$t" /control/pay "{\"rupees\":$(( (RANDOM % 5 + 1) * 100 ))}")
+    grep -q '"ok":true' <<<"$r" && count paid
+    note "payment on $t: ${r:0:160}"
+
+  elif (( roll < 51 )); then
+    # A unit back, against any bill the till holds -- often another till's.
+    t=$(pick "${live[@]}")
+    r=$(ctl "$t" /control/return "{\"pick\":$RANDOM}")
+    grep -q '"ok":true' <<<"$r" && count returned
+    note "return on $t: ${r:0:160}"
+
+  elif (( roll < 66 )); then
     spokes=($(ups "${COUNTERS[@]}"))
     [ "${#spokes[@]}" -gt 0 ] && [ "${up[a1]}" = 1 ] || continue
     t=$(pick "${spokes[@]}")
@@ -111,7 +139,16 @@ for step in $(seq 1 "$STEPS"); do
     grep -q '"ok":true' <<<"$r" && count cancelled
     note "cancel on $t: ${r:0:160}"
 
-  elif (( roll < 76 )); then
+  elif (( roll < 71 )); then
+    # A counter asks the main for another counter: granted only for one nobody holds.
+    spokes=($(ups "${COUNTERS[@]}"))
+    [ "${#spokes[@]}" -gt 0 ] || continue
+    t=$(pick "${spokes[@]}")
+    r=$(ctl "$t" /control/change-counter "{\"pick\":$RANDOM}")
+    if grep -q '"ok":true' <<<"$r"; then count "moved counter"; else count "counter refused"; fi
+    note "change counter on $t: ${r:0:200}"
+
+  elif (( roll < 77 )); then
     t=$(pick a1 "${COUNTERS[@]}" "${COUNTERS[@]}")
     if [ "${wired[$t]}" = 1 ]; then cable "$t" down; wired[$t]=0; count unplugged; note "$t cable out"
     else cable "$t" up; wired[$t]=1; note "$t cable in"; fi
@@ -121,7 +158,7 @@ for step in $(seq 1 "$STEPS"); do
     if [ "${dropping[$t]}" = 0 ]; then lossy "$t" 0.2; dropping[$t]=1; count lossy; note "$t losing 20%"
     else clean "$t"; dropping[$t]=0; note "$t network clean"; fi
 
-  elif (( roll < 91 )); then
+  elif (( roll < 90 )); then
     t=$(pick "${live[@]}")
     if [ "$t" = a1 ]; then
       # The main, while a counter is mid-round with it.
@@ -140,6 +177,16 @@ for step in $(seq 1 "$STEPS"); do
     wait 2>/dev/null
     count "power cut"; note "$t power cut; in flight: $(head -c 160 "$work/inflight.json" 2>/dev/null)"
     # A sale cut off may have committed or not; only one that answered is counted.
+
+  elif (( roll < 93 )); then
+    # A counter whose clock has wandered: within the five minutes sync allows,
+    # either way, so every edit it makes carries a time a few minutes out.
+    spokes=($(ups "${COUNTERS[@]}"))
+    [ "${#spokes[@]}" -gt 0 ] || continue
+    t=$(pick "${spokes[@]}")
+    off=$(( RANDOM % 9 - 4 ))
+    shut_down "$t"; up[$t]=0
+    switch_on "$t" --clock-offset "$off" && { count "clock moved"; note "$t restarted $off min out"; }
 
   else
     [ "${up[a1]}" = 1 ] || continue

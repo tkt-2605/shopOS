@@ -63,7 +63,7 @@ pub(crate) fn literal(address: &str) -> Result<SocketAddr, String> {
 /// network code lives here. `syncClient.ts` takes the fetch it uses as an
 /// argument for exactly this reason: the app hands it one that arrives here.
 ///
-/// Enough HTTP/1.1 for the four POSTs in `PATHS` and deliberately not a byte
+/// Enough HTTP/1.1 for the POSTs in `PATHS` and deliberately not a byte
 /// more, which is the same bargain `read_request` makes on the other side.
 pub fn request(
     address: &str,
