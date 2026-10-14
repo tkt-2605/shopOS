@@ -130,6 +130,16 @@ export interface Till {
   stop(): Promise<void>
 }
 
+/**
+ * `fetch` with the app's deadline on it. The app asks through Rust, which gives
+ * up on an answer after `ASK_DEADLINE` (150 s, `shopos-net/src/client.rs`);
+ * plain `fetch` never does, and on a link losing packets a connection whose
+ * last segment was lost waited for ever and stopped a soak's sync with it.
+ */
+const ASK_DEADLINE_MS = 150_000
+const askWithin: typeof fetch = (input, init) =>
+  fetch(input, { ...init, signal: init?.signal ?? AbortSignal.timeout(ASK_DEADLINE_MS) })
+
 export async function startTill(opts: TillOptions): Promise<Till> {
   installTillContext()
   /* The bench proves N tills converge over *any* graph, and builds its lines,
@@ -247,7 +257,7 @@ export async function startTill(opts: TillOptions): Promise<Till> {
       const code = await other.as(async () => offerPairing())
       try {
         await asTill(context, () =>
-          pairWith(db, other.url, code, opts.label, fetch, { listenPort: advertise }))
+          pairWith(db, other.url, code, opts.label, askWithin, { listenPort: advertise }))
       } finally {
         await other.as(async () => { withdrawPairing() })
       }
@@ -275,7 +285,7 @@ export async function startTill(opts: TillOptions): Promise<Till> {
           }
           throw new Error(`${opts.label} has not paired with ${peerDeviceId}; pair first`)
         }
-        const inner = httpTransport(peer, fetch, { listenPort: advertise })
+        const inner = httpTransport(peer, askWithin, { listenPort: advertise })
         const transport = opts.transport ? opts.transport(inner) : inner
         try {
           return await syncWith(db, transport, registerId)

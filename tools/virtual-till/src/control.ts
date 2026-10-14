@@ -239,6 +239,9 @@ export async function startControl(till: Till, port: number): Promise<Control> {
         )
         if (others.length === 0) return { ok: false, code: 'NO_OTHER_COUNTER' }
         const target = others[pick % others.length]!.id
+        // Hands over what it holds first, as the app does before it asks.
+        const main = (await mainTill(till.db)).device
+        if (main !== null) await till.syncWithPeer(main)
         const answer = await changeCounter(till.db, { registerId: target, take: false }, async (ask) => {
           const main = (await mainTill(till.db)).device
           const peer = (await pairedPeers(till.db)).find((p) => p.deviceId === main)

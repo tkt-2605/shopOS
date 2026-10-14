@@ -5,7 +5,7 @@ import {
 import { chooseRegister } from './device'
 import { syncFetch } from './syncFetch'
 import { servingOn } from './syncHost'
-import { nudgeSync } from './syncLoop'
+import { nudgeSync, runOnce } from './syncLoop'
 
 export type CounterOutcome = { ok: true } | { ok: false; why: string }
 
@@ -42,7 +42,14 @@ export async function takeCounter(
   registerId: string,
   opts: { take?: boolean } = {},
 ): Promise<CounterOutcome> {
-  const answer = await changeCounter(db, { registerId, take: opts.take === true }, (ask) => askTheMain(db, ask))
+  const ask = { registerId, take: opts.take === true }
+  let answer = await changeCounter(db, ask, (a) => askTheMain(db, a))
+  if (!answer.ok && answer.code === 'HAND_OVER_FIRST') {
+    /* What this till still owes the main goes first -- a counter stops only
+       once it has handed over -- and then the question is asked again. */
+    await runOnce(db, true)
+    answer = await changeCounter(db, ask, (a) => askTheMain(db, a))
+  }
   if (!answer.ok) return { ok: false, why: refusal(answer) }
 
   if (!(await chooseRegister(registerId))) {
@@ -81,6 +88,10 @@ function refusal(answer: Exclude<Awaited<ReturnType<typeof changeCounter>>, { ok
       return `${who} is billing on that counter${since}. `
         + 'Two tills on one counter give two customers the same bill number, so the main till refused.'
     }
+    case 'HAND_OVER_FIRST':
+      return `This till has ${answer.owed} change(s) the main till has not received yet, and a counter `
+        + 'moves only once its bills are with the main -- otherwise the next till on it would reuse '
+        + 'their numbers. Let it sync, then try again.'
     case 'COUNTER_OFF':
       return 'That counter is switched off. Switch it on first.'
     case 'NO_SUCH_COUNTER':

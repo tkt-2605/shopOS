@@ -77,6 +77,7 @@ describe('a till changes counter only by asking the main', () => {
   it('changes nothing while the main is switched off', async () => {
     const { main, back, backCounter } = await shop()
     await back.as(() => changeCounter(back.db, { registerId: backCounter, take: false }, ask(back)))
+    await drain(back, main) // handed over, so the only thing in the way is the main being off
     const otherCounter = main.registerId!
     await main.stop()
 
@@ -87,6 +88,29 @@ describe('a till changes counter only by asking the main', () => {
     // Still where it was, and still billing there.
     expect(await claimedBy(back, backCounter)).toBe(back.deviceId)
     expect(await back.as(() => resolveDeviceRegister(back.db, backCounter))).toBe(backCounter)
+  })
+})
+
+describe('a counter moves only once it has handed over', () => {
+  it('is refused while it holds a bill the main has not received, and moves once it has synced', async () => {
+    /* What the soak found: a till billed offline, came back and moved counter
+       before syncing; another till was granted the counter it left, carried on
+       from the highest number the main had seen, and issued the same numbers. */
+    const { main, back, backCounter } = await shop()
+    await back.as(() => changeCounter(back.db, { registerId: backCounter, take: false }, ask(back)))
+    await drain(back, main)
+    const spare = main.registerId!
+
+    await back.writeBill('BBC/2627/00001')
+    const early = await back.as(() =>
+      changeCounter(back.db, { registerId: spare, take: false }, ask(back)))
+    expect(early).toMatchObject({ ok: false, code: 'HAND_OVER_FIRST' })
+    expect(await claimedBy(main, backCounter), 'and it is still on its own counter').toBe(back.deviceId)
+
+    await drain(back, main)
+    const after = await back.as(() =>
+      changeCounter(back.db, { registerId: backCounter, take: false }, ask(back)))
+    expect(after, 'handed over, it may ask').toEqual({ ok: true })
   })
 })
 

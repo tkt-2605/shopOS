@@ -129,7 +129,9 @@ shut_down() { ip netns pids "$(ns_of "$1")" | xargs -r kill -TERM; sleep 1.5; }
 ctl() {
   local body=${3:-}
   [ -n "$body" ] || body='{}'
-  ip netns exec "$(ns_of "$1")" curl -sS -m 120 -X POST "http://127.0.0.1:7804$2" -d "$body"
+  # Longer than the 150 s a till waits on another (`ASK_DEADLINE`), so a slow
+  # round is reported by the till that asked, not cut off here first.
+  ip netns exec "$(ns_of "$1")" curl -sS -m 200 -X POST "http://127.0.0.1:7804$2" -d "$body"
 }
 bills()  { ctl "$1" /control/count '{"table":"bills"}' | sed -n 's/.*"count":\([0-9]*\).*/\1/p'; }
 sync_to(){ ctl "$1" /control/sync "{\"deviceId\":\"$(device_of "$2")\"}"; }

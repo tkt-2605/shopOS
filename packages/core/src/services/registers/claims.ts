@@ -1,8 +1,8 @@
-import { eq, ne, and, isNull, sql } from 'drizzle-orm'
+import { eq, ne, and, isNull, gt, or, sql, count } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { deviceId } from '../../device.js'
-import { tillRole } from '../sync/layout.js'
+import { mainTill, tillRole } from '../sync/layout.js'
 
 /*
  * Claims: which till has said it is billing on a counter, and taking one
@@ -280,6 +280,8 @@ export type ClaimAnswer =
 export type CounterChange =
   | ClaimAnswer
   | { ok: false; code: 'MAIN_UNREACHABLE'; error: string }
+  /** This till has changes the main has not received: it hands them over first. */
+  | { ok: false; code: 'HAND_OVER_FIRST'; owed: number }
 
 /**
  * The keeper's decision: whether `requester` may sit at this counter, and
@@ -322,6 +324,25 @@ export async function grantClaim(
 }
 
 /**
+ * How many changes this till holds that a peer has not taken: its feed past
+ * the peer's cursor, less what came from that peer in the first place.
+ */
+async function owedTo(db: SqlDriver, peer: string): Promise<number> {
+  const [cursor] = await q(db)
+    .select({ at: schema.syncPeers.myCursor })
+    .from(schema.syncPeers)
+    .where(eq(schema.syncPeers.deviceId, peer))
+  const [row] = await q(db)
+    .select({ n: count() })
+    .from(schema.changeFeed)
+    .where(and(
+      gt(schema.changeFeed.seq, cursor?.at ?? 0),
+      or(isNull(schema.changeFeed.originDevice), ne(schema.changeFeed.originDevice, peer)),
+    ))
+  return row?.n ?? 0
+}
+
+/**
  * Changing the counter this machine sits at.
  *
  * On a till behind a main, `askMain` puts the question to the main, and only
@@ -342,6 +363,17 @@ export async function changeCounter(
   if (me === null) throw new Error('this machine has no device id')
 
   if (await tillRole(db) !== 'till') return grantClaim(db, me, ask, now)
+
+  /* A counter stops only once it has handed over. Its number series runs on
+     whichever till holds it next, and that till carries on from the highest
+     number the shop has seen -- which is the main's, so a bill this till rang
+     up and has not yet passed to the main is a number the next holder will
+     issue again. Found by the soak: a till billed offline, came back and moved
+     counter before syncing, another was granted the counter it left, and
+     twenty-one bills went out under numbers already used. */
+  const main = (await mainTill(db)).device
+  const owed = main === null ? 0 : await owedTo(db, main)
+  if (owed > 0) return { ok: false, code: 'HAND_OVER_FIRST', owed }
 
   let answer: ClaimAnswer
   try {
