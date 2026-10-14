@@ -106,6 +106,23 @@ export const UNLICENSED: Entitlement = {
   tills: 1, clockUnreliable: false, shopId: null, problem: null,
 }
 
+/**
+ * The keys a licence is checked against when a caller names none: the
+ * build's own, `LICENCE_KEYS`.
+ *
+ * A headless bench till is the one thing that changes it. Its shop is
+ * licensed with a key minted for the bench, because the shipped key's private
+ * half is not in this repository and must never be -- and a bench counter in
+ * its own process reaches the money gate (`requireMayTakeMoney`) through
+ * `createBill`, which names no keys. Set once, at start, like the clock and
+ * the device id; the app never calls it.
+ */
+let defaultKeys: readonly SigningKey[] = LICENCE_KEYS
+
+export function useLicenceKeys(keys: readonly SigningKey[]): void {
+  defaultKeys = keys
+}
+
 export interface EntitlementOptions {
   now?: Date
   /** This machine's store, for the clock high-water mark. */
@@ -127,7 +144,7 @@ export async function entitlement(
   db: SqlDriver, opts: EntitlementOptions = {},
 ): Promise<Entitlement> {
   const now = opts.now ?? new Date()
-  const keys = opts.keys ?? LICENCE_KEYS
+  const keys = opts.keys ?? defaultKeys
   const clockUnreliable = opts.device === undefined ? false : clockLooksWrong(opts.device, now)
 
   const codes = await storedCodes(db)
@@ -247,7 +264,7 @@ export type InstallResult =
 export async function installToken(
   db: SqlDriver, ctx: AuditContext, raw: string, opts: EntitlementOptions = {},
 ): Promise<InstallResult> {
-  const keys = opts.keys ?? LICENCE_KEYS
+  const keys = opts.keys ?? defaultKeys
   const trimmed = raw.trim()
 
   const verified = await verifyToken(trimmed, keys)

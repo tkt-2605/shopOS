@@ -1,4 +1,4 @@
-import { webcrypto } from 'node:crypto'
+import { createPrivateKey, createPublicKey, sign } from 'node:crypto'
 import { setSetting, getSetting, type SqlDriver } from '@shopos/core'
 import { encodePayload, toBase64Url, type SigningKey } from '@shopos/core/licence'
 
@@ -6,31 +6,37 @@ import { encodePayload, toBase64Url, type SigningKey } from '@shopos/core/licenc
  * A bench till that is allowed to have other tills.
  *
  * `multiTill` gates `letThemIn`, so a bench shop with no licence refuses every
- * pairing and the convergence runs never start. That is the gate working. What
- * it means here is that a bench till has to carry a licence, the same way a
- * real shop running four counters does.
+ * pairing and the convergence runs never start; and it gates a counter taking
+ * money, so a bench counter with no licence it can check is view-only. That is
+ * the gate working. What it means here is that a bench till has to carry a
+ * licence, the same way a real shop running four counters does.
  *
- * The key is minted in this process and is not the one the product ships. The
- * shipped public key's private half is not in this repository and must never
- * be, so no test and no bench can sign a token the real build would accept —
- * which is the property that makes licensing worth anything. `handleSyncRequest`
- * takes the keys to check against for exactly this reason.
+ * The key is the bench's own and is not the one the product ships. The shipped
+ * public key's private half is not in this repository and must never be, so no
+ * test and no bench can sign a token the real build would accept -- which is
+ * the property that makes licensing worth anything. This one is the opposite:
+ * a fixed seed, written down here, so that every bench till -- in one process
+ * or, in the namespace soak, one per machine -- signs and checks with the same
+ * key. Nothing the product ships trusts it.
  *
- * Deliberately a copy of the same twenty lines in `packages/core/test`, rather
- * than an import across a package boundary into somebody else's test folder.
- * Two independent processes, two independent keys, and neither package reaches
- * into the other to get set up.
+ * Deliberately separate from the same few lines in `packages/core/test`,
+ * rather than an import across a package boundary into somebody else's test
+ * folder.
  */
 
-const pair = await webcrypto.subtle.generateKey(
-  { name: 'Ed25519' }, true, ['sign', 'verify'],
-) as webcrypto.CryptoKeyPair
+/** Thirty-two bytes, and nothing else about them is special. */
+const BENCH_SEED = Buffer.from('shopos-bench-licence-key-not-for-shipping!'.slice(0, 32), 'utf8')
 
-/** Passed to `handleSyncRequest` in place of the build's own list. */
-export const BENCH_KEYS: readonly SigningKey[] = [{
-  kid: 'bench-key',
-  publicKey: toBase64Url(new Uint8Array(await webcrypto.subtle.exportKey('raw', pair.publicKey))),
-}]
+/** An Ed25519 private key in PKCS#8 is this prefix and the seed. */
+const PKCS8_ED25519 = Buffer.from('302e020100300506032b657004220420', 'hex')
+
+const privateKey = createPrivateKey({
+  key: Buffer.concat([PKCS8_ED25519, BENCH_SEED]), format: 'der', type: 'pkcs8',
+})
+const publicJwk = createPublicKey(privateKey).export({ format: 'jwk' })
+
+/** Passed to `handleSyncRequest`, and set as the process's own (`useLicenceKeys`). */
+export const BENCH_KEYS: readonly SigningKey[] = [{ kid: 'bench-key', publicKey: String(publicJwk.x) }]
 
 /**
  * Puts a perpetual `branches` licence on a bench shop.
@@ -48,8 +54,6 @@ export async function licenseBenchShop(db: SqlDriver): Promise<void> {
     shopId, tier: 'branches', paidThrough: null, tills: 99,
     issuedAt: new Date().toISOString(), kid: 'bench-key',
   })
-  const signature = new Uint8Array(await webcrypto.subtle.sign(
-    { name: 'Ed25519' }, pair.privateKey, new TextEncoder().encode(payload),
-  ))
+  const signature = new Uint8Array(sign(null, Buffer.from(payload, 'utf8'), privateKey))
   await setSetting(db, 'licence_token', `${payload}.${toBase64Url(signature)}`, new Date().toISOString())
 }

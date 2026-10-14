@@ -79,6 +79,86 @@ export async function startControl(till: Till, port: number): Promise<Control> {
       return till.as(async () => ({ role: await tillRole(till.db), main: (await mainTill(till.db)).device }))
     },
 
+    /**
+     * Goods in, through a real stock entry, of the one item the soak sells.
+     * The item is made here the first time, on the till that is asked -- the
+     * main, so it reaches every counter by sync like anything a shop adds.
+     */
+    '/control/stock-in': async (body) => {
+      const units = Number(body['units'] ?? 1000)
+      const { createStockEntry, submitStockEntry, Quantity, Money } = await import('@shopos/core')
+      return till.as(async () => {
+        const actor = await actorOf(till)
+        const now = new Date().toISOString()
+        await till.db.execute(
+          `INSERT OR IGNORE INTO products (id, name, base_rate, tax_rate_bp, created_at, updated_at)
+           VALUES (?, 'Soak item', 10000, 0, ?, ?)`,
+          [SOAK_ITEM, now, now],
+        )
+        const entry = await createStockEntry(till.db, {
+          entryType: 'purchase',
+          lines: [{ productId: SOAK_ITEM, qty: Quantity.fromUnits(units), unitCost: Money.rupees(60) }],
+          actorId: actor,
+        })
+        if (!entry.ok) return entry
+        return submitStockEntry(till.db, { entryId: entry.entryId, actorId: actor })
+      })
+    },
+
+    /**
+     * A sale the way a counter makes one: a cart, then submitted with cash.
+     * The number comes from the counter's series, the stock goes out through
+     * the stock ledger and the money through the general ledger -- the three
+     * things a raw `INSERT INTO bills` skips and a soak has to exercise.
+     */
+    '/control/sell': async (body) => {
+      const units = Number(body['units'] ?? 1)
+      const { createBill, submitBill, Quantity } = await import('@shopos/core')
+      return till.as(async () => {
+        if (till.registerId === null) return { ok: false, code: 'NO_COUNTER' }
+        const actor = await actorOf(till)
+        const draft = await createBill(till.db, {
+          registerId: till.registerId,
+          lines: [{ productId: SOAK_ITEM, qty: Quantity.fromUnits(units) }],
+          actorId: actor,
+        })
+        if (!draft.ok) return draft
+        const done = await submitBill(till.db, {
+          billId: draft.billId,
+          payments: [{ method: 'cash', amount: draft.grandTotal }],
+          actorId: actor,
+        })
+        return done.ok ? { ok: true, docNo: done.docNo } : done
+      })
+    },
+
+    /** Cancels this counter's newest bill that still stands. */
+    '/control/cancel': async () => {
+      const { cancelBill } = await import('@shopos/core')
+      return till.as(async () => {
+        const bill = await till.db.get<{ id: string; doc_no: string }>(
+          `SELECT id, doc_no FROM bills WHERE register_id = ? AND docstatus = 1
+           ORDER BY created_at DESC LIMIT 1`,
+          [till.registerId],
+        )
+        if (bill === undefined) return { ok: false, code: 'NOTHING_TO_CANCEL' }
+        const done = await cancelBill(till.db, { billId: bill.id, reason: 'soak', actorId: await actorOf(till) })
+        return { ...done, docNo: bill.doc_no }
+      })
+    },
+
+    /** Every replicated row this till holds, for comparing with the others. */
+    '/control/dump': async () => {
+      const { contents, heldToJson } = await import('./books.js')
+      return heldToJson(await contents(till.db))
+    },
+
+    /** This till's books checked against themselves. See `books.ts`. */
+    '/control/health': async () => {
+      const { health } = await import('./books.js')
+      return health(till.db)
+    },
+
     /** One bill, so there is something for a sync to carry. */
     '/control/bill': async (body) => {
       const docNo = String(body['docNo'] ?? '')
@@ -112,6 +192,16 @@ export async function startControl(till: Till, port: number): Promise<Control> {
     port: (server.address() as { port: number }).port,
     stop: () => new Promise<void>((resolve) => (server as Server).close(() => resolve())),
   }
+}
+
+/** The one item a soak stocks and sells. Fixed, so every till names it alike. */
+const SOAK_ITEM = 'soak-item-0000-4000-8000-000000000001'
+
+/** Who the bench bills as: the shop's administrator, which every till has once synced. */
+async function actorOf(till: Till): Promise<string> {
+  const user = await till.db.get<{ id: string }>(`SELECT id FROM users ORDER BY created_at LIMIT 1`)
+  if (user === undefined) throw new Error('this till has no user to act as; sync first')
+  return user.id
 }
 
 /** Length declared, for the same reason `till.ts` does it. */

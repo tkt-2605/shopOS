@@ -1,4 +1,4 @@
-import { REPLICATED, type SqlDriver } from '@shopos/core'
+import { contents, disagreementsBetween, type Disagreement } from '../src/books.js'
 import { benchDir, till } from './bench.js'
 import type { Till } from '../src/till.js'
 
@@ -198,125 +198,19 @@ export async function quiesce(shop: Shop, passes = 12): Promise<void> {
   )
 }
 
-/**
- * What one till holds, on every table that is supposed to travel.
- *
- * Whole rows, not counts. A count says two tills have the same number of
- * products, which is the assertion a broken merge passes: the tiebreak went one
- * way here and the other way there, both tills hold one row, and they disagree
- * about what is in it.
- */
-export async function contents(db: SqlDriver): Promise<Map<string, Map<string, Row>>> {
-  const held = new Map<string, Map<string, Row>>()
-  for (const shape of REPLICATED) {
-    held.set(shape.table, await dump(db, shape.table, shape.key))
-    for (const line of shape.lines) held.set(line.table, await dump(db, line.table, null))
-  }
-  return held
-}
-
-type Row = Record<string, unknown>
+export { contents, type Disagreement } from '../src/books.js'
 
 /**
- * Rows by the thing that identifies them.
- *
- * The line tables do not all have one — `role_permissions` is keyed by the
- * pair — so a row with no `id` is identified by everything in it except the
- * three columns below. That is enough to line two tills' copies up, which is
- * all this needs to do.
- */
-async function dump(db: SqlDriver, table: string, key: string | null): Promise<Map<string, Row>> {
-  const rows = await db.query<Row>(`SELECT * FROM "${table}"`)
-  const held = new Map<string, Row>()
-  for (const row of rows) {
-    const id = key !== null && key in row ? String(row[key])
-      : 'id' in row ? String(row['id'])
-        : bare(row)
-    held.set(id, row)
-  }
-  return held
-}
-
-/**
- * When a row was written and how many times, which is the one thing two tills
- * may hold differently without having failed to converge — but only for the
- * rows in `Shop.seeded`. See `disagreements`.
- */
-const PROVENANCE = new Set(['created_at', 'updated_at', 'rev'])
-
-function bare(row: Row): string {
-  return Object.keys(row).sort()
-    .filter((c) => !PROVENANCE.has(c))
-    .map((c) => `${c}=${String(row[c])}`)
-    .join('')
-}
-
-export interface Disagreement {
-  table: string
-  rowId: string
-  /** The till that differs from till 0, and what it holds instead. */
-  till: string
-  detail: string
-}
-
-/**
- * Every row on which some till holds something another one does not.
- *
- * `rev` and `updated_at` are compared like any other column, and deliberately:
- * they are what the *next* merge will compare, so two tills agreeing on a price
- * while disagreeing about its revision have not converged — they have arranged
- * to diverge later.
- *
- * The exception is `Shop.seeded`: rows a migration wrote, which every till
- * writes for itself at upgrade time and which are deliberately kept out of the
- * feed. `029_document_says_what_it_is.sql` carries the argument — a shop's
- * receipt format edited by an upgrade must not arrive at the other till as
- * somebody's edit, because then every till in the shop manufactures a conflict
- * on a row nobody touched. The cost of that decision is that the two tills hold
- * the same row with two timestamps on it for ever, and since neither is an edit
- * there is nothing for replication to settle. Their *contents* are still
- * compared, so a migration that genuinely lands differently on two tills fails
- * here.
+ * Every row on which some till holds something another one does not. The rule
+ * is `disagreementsBetween`'s; this lines a shop's tills up for it, with the
+ * rows its migrations seeded on each till for itself.
  */
 export async function disagreements(shop: Shop): Promise<Disagreement[]> {
-  const first = await contents(shop.tills[0]!.db)
-  const found: Disagreement[] = []
-
-  for (const other of shop.tills.slice(1)) {
-    const theirs = await contents(other.db)
-    for (const [table, mine] of first) {
-      const yours = theirs.get(table) ?? new Map<string, Row>()
-      const seeded = shop.seeded.get(table) ?? new Set<string>()
-      for (const id of new Set([...mine.keys(), ...yours.keys()])) {
-        const a = mine.get(id)
-        const b = yours.get(id)
-        if (a === undefined || b === undefined) {
-          found.push({
-            table, rowId: id, till: other.label,
-            detail: a === undefined ? 'till 0 does not have it' : 'they do not have it',
-          })
-          continue
-        }
-        const differs = seeded.has(id)
-          ? (bare(a) === bare(b) ? null : 'contents')
-          : firstDifferingColumn(a, b)
-        if (differs !== null) {
-          found.push({
-            table, rowId: id, till: other.label,
-            detail: `${differs}: till 0 has ${String(a[differs] ?? bare(a))}, they have ${String(b[differs] ?? bare(b))}`,
-          })
-        }
-      }
-    }
+  const tills = []
+  for (const [i, t] of shop.tills.entries()) {
+    tills.push({ label: i === 0 ? 'till 0' : t.label, held: await contents(t.db) })
   }
-  return found
-}
-
-function firstDifferingColumn(a: Row, b: Row): string | null {
-  for (const column of Object.keys(a).sort()) {
-    if (String(a[column]) !== String(b[column])) return column
-  }
-  return null
+  return disagreementsBetween(tills, shop.seeded)
 }
 
 /** What every till's feed still holds for one row. For the error above. */

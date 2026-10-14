@@ -62,7 +62,7 @@ export type {
 } from '../domain/licence.js'
 export {
   entitlement, entitled, installToken, removeToken, storedToken, storedCodes,
-  tillOverage, witnessClock, UNLICENSED, CLOCK_SLACK_MS,
+  tillOverage, witnessClock, UNLICENSED, CLOCK_SLACK_MS, useLicenceKeys,
 } from '../services/licence.js'
 export type {
   Entitlement, EntitlementOptions, InstallResult, Grant,

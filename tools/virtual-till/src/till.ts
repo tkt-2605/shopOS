@@ -4,7 +4,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   migrate, bootstrap, createRegister, handleSyncRequest, offerPairing, withdrawPairing,
-  pairWith, pairedPeers, httpTransport, syncWith, newId, LISTEN_PORT_HEADER, keepTillsEqual,
+  pairWith, pairedPeers, httpTransport, syncWith, newId, LISTEN_PORT_HEADER, keepTillsEqual, useLicenceKeys,
   type SqlDriver, type SyncTransport, type SyncResult,
 } from '@shopos/core'
 import { openDatabase } from '@shopos/core/node'
@@ -137,6 +137,10 @@ export async function startTill(opts: TillOptions): Promise<Till> {
      main (`docs/specs/one-main-till.md`), which is one graph among those, so
      the bench keeps every till equal unless a scenario asks for the star. */
   keepTillsEqual(opts.star !== true)
+  /* Whatever checks a licence without naming keys -- the money gate behind
+     `createBill` -- checks it against the bench's key, the one its shop is
+     licensed with. See `licence.ts`. */
+  useLicenceKeys(BENCH_KEYS)
 
   mkdirSync(opts.dataDir, { recursive: true })
   const db = openDatabase(join(opts.dataDir, 'shop.db'))
