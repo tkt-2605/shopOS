@@ -1,0 +1,68 @@
+# The soak and the catch-up, every night, each on a seed nobody chose.
+#
+# Three tills in network namespaces on the runner -- the same `shopos-net`
+# and the same core the app runs -- selling, syncing and losing cables, packets
+# and power at random, then checked to the row (`tools/netns-bench/`). A seed
+# that passed once proves little; the value is a new one every night, and a
+# failure names the seed that reproduces it.
+#
+# Never a required check: a red mark here is a finding to read, with its
+# evidence attached, not a gate on a pull request.
+#
+# GitHub runs a scheduled workflow from the default branch only, so this
+# starts running nightly once it is merged there; until then, start it by hand.
+
+name: soak nightly
+
+on:
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: soak steps
+        default: '1000'
+      sales:
+        description: catch-up sales
+        default: '2000'
+  schedule:
+    # 21:30 UTC, which is 03:00 IST: done long before the shop opens.
+    - cron: '30 21 * * *'
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: packages
+        run: npm ci
+
+      - name: shopos-net, the till's network half
+        run: cargo build --release --manifest-path crates/shopos-net/Cargo.toml
+
+      - name: the night's run
+        id: run
+        run: |
+          sudo env STEPS='${{ inputs.steps || 1000 }}' SALES='${{ inputs.sales || 2000 }}' \
+            NIGHTLY_DIR=/var/tmp/shopos-nightly tools/netns-bench/nightly.sh | tee summary.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo '### Soak nightly'
+            echo '```'
+            cat summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: keep the evidence of a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-evidence
+          path: /var/tmp/shopos-nightly
+          retention-days: 14

@@ -238,8 +238,9 @@ Sandbox, which has no persistent disk and so cannot show you what survived.
 
 Carried here so it is not lost between the two lists:
 
-- [ ] A test that the GST tab is hidden under composition. `chargesTax()` is
-      tested; `Reports.tsx` reading it is not.
+- [x] A test that the GST tab is hidden under composition. Done in
+      `apps/pos/test/reportsGstTab.test.tsx` (c133870): composition and
+      unregistered, and a shop moved off the tab when it stops collecting GST.
 
 ---
 
