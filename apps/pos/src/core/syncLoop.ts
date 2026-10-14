@@ -65,6 +65,9 @@ const TILL_EVERY_MS = 15_000
  */
 const NUDGE_MS = 400
 
+/** How long a counter waits before asking an unreachable main on the LAN again. */
+const MAIN_RETRY_MS = 15_000
+
 interface PeerState {
   /** Not before this time. Zero when the peer is answering normally. */
   quietUntil: number
@@ -227,6 +230,7 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
     const peers = await pairedPeers(db)
     paired = peers.length
     const now = Date.now()
+    const role = await tillRole(db)
 
     for (const peer of peers) {
       const mine = state.get(peer.deviceId) ?? { quietUntil: 0, backoff: 0 }
@@ -324,7 +328,14 @@ export async function runOnce(db: SqlDriver, force = false): Promise<LoopRound> 
         }
 
         // Could not be reached at all: switched off, asleep, moved, unplugged.
-        const wait = nextBackoff(mine.backoff)
+        /* Except the main, on the shop's own network: a counter that backed off
+           to ten minutes while the main was switched off went on waiting long
+           after it came back, and the main sat showing figures without that
+           counter's bills in them. A refused knock on a machine across the
+           room costs milliseconds; asking every few seconds is the right price. */
+        const wait = role === 'till' && peer.reach === 'lan'
+          ? Math.min(nextBackoff(mine.backoff), MAIN_RETRY_MS)
+          : nextBackoff(mine.backoff)
         state.set(peer.deviceId, { quietUntil: now + wait, backoff: wait })
         await recordAttempt(db, peer.deviceId, describe(err))
 

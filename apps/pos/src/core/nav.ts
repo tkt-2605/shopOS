@@ -30,3 +30,18 @@ export function onGoTo(listener: (page: Page) => void): () => void {
   listeners.add(listener)
   return () => { listeners.delete(listener) }
 }
+
+/* A customer's account to open when Credit next mounts: the way through from a
+   warning about a payment to the payment itself. Taken once, by Credit. */
+let accountToOpen: string | null = null
+
+export function openAccount(customerId: string): void {
+  accountToOpen = customerId
+  goTo('credit')
+}
+
+export function takeAccountToOpen(): string | null {
+  const id = accountToOpen
+  accountToOpen = null
+  return id
+}

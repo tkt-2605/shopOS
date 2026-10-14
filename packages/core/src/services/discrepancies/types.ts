@@ -42,6 +42,11 @@ export interface Discrepancy {
   amount: Money | null
   /** Document numbers to look up. */
   refs: string[]
+  /**
+   * The customer whose account it is about, when there is one: the screen
+   * then offers to open it, where the payment to cancel is.
+   */
+  customerId?: string | null
   /** When it last happened, when that is known. */
   at: string | null
 }

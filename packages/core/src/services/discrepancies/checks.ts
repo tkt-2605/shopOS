@@ -99,10 +99,10 @@ export async function refundedAndCancelled(db: SqlDriver): Promise<Discrepancy[]
  */
 export async function paidTwice(db: SqlDriver): Promise<Discrepancy[]> {
   const rows = await db.query<{
-    id: string; bill_no: string; customer_name: string | null; owed: number; paid: number
+    id: string; bill_no: string; customer_name: string | null; customer_id: string | null; owed: number; paid: number
     payments: string; last_at: string
   }>(
-    `SELECT b.id, b.doc_no AS bill_no, b.customer_name,
+    `SELECT b.id, b.doc_no AS bill_no, b.customer_name, b.customer_id,
             (SELECT COALESCE(SUM(bp.amount), 0) FROM bill_payments bp
               WHERE bp.bill_id = b.id AND bp.method = 'credit') AS owed,
             SUM(a.amount) AS paid, GROUP_CONCAT(p.doc_no, ', ') AS payments, MAX(p.created_at) AS last_at
@@ -122,8 +122,9 @@ export async function paidTwice(db: SqlDriver): Promise<Discrepancy[]> {
     detail: `Bill ${r.bill_no}${r.customer_name ? ` (${r.customer_name})` : ''} had ${rupees(r.owed)} on account; `
       + `${rupees(r.paid)} was recorded against it, on ${r.payments}.`,
     action: 'Two counters took this payment while they could not reach each other. Count the drawers: if '
-      + 'only one payment was really made, cancel the other.',
+      + 'only one payment was really made, open the account and press Cancel payment on the other.',
     refs: [r.bill_no, ...r.payments.split(', ')],
+    customerId: r.customer_id,
   }))
 }
 
@@ -136,10 +137,10 @@ export async function paidTwice(db: SqlDriver): Promise<Discrepancy[]> {
  */
 export async function advanceSpentTwice(db: SqlDriver): Promise<Discrepancy[]> {
   const rows = await db.query<{
-    id: string; doc_no: string; customer_name: string | null; amount: number; spent: number
+    id: string; doc_no: string; customer_name: string | null; customer_id: string | null; amount: number; spent: number
     bills: string; last_at: string
   }>(
-    `SELECT p.id, p.doc_no, c.name AS customer_name, p.amount, SUM(a.amount) AS spent,
+    `SELECT p.id, p.doc_no, c.name AS customer_name, p.customer_id, p.amount, SUM(a.amount) AS spent,
             GROUP_CONCAT(b.doc_no, ', ') AS bills, MAX(p.updated_at) AS last_at
        FROM payment_entries p
        JOIN payment_allocations a ON a.payment_id = p.id
@@ -159,6 +160,7 @@ export async function advanceSpentTwice(db: SqlDriver): Promise<Discrepancy[]> {
     action: 'Two counters used this advance while they could not reach each other. '
       + `${rupees(r.spent - r.amount)} of those bills is still owed: collect it, or put it on the customer's account.`,
     refs: [r.doc_no, ...r.bills.split(', ')],
+    customerId: r.customer_id,
   }))
 }
 

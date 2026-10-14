@@ -322,7 +322,7 @@ export function AccountPanel({
                   </td>
                   <td className="r">
                     {p.docstatus === 1 && canUndo && (
-                      <button className="btn ghost sm" onClick={() => void undo(p)}>Undo</button>
+                      <button className="btn ghost sm" onClick={() => void undo(p)}>Cancel payment</button>
                     )}
                   </td>
                 </tr>

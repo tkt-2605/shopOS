@@ -10,6 +10,7 @@ import { DeviceTroubleBanner } from './ui/DeviceTrouble'
 import { OutOfDateBanner } from './ui/OutOfDateBanner'
 import { RestoreHoldBanner } from './ui/RestoreHoldBanner'
 import { DiscrepancyBanner } from './ui/DiscrepancyBanner'
+import { StartupSync } from './ui/StartupSync'
 import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
 import { ChangePassword } from './ui/ChangePassword'
@@ -409,6 +410,8 @@ function Shell() {
             counter, while the person adding one is at the other machine. A
             prompt behind Settings is a prompt nobody is there to answer. */}
         <JoinRequestPrompt />
+        {/* Over everything until this till has caught up with the shop. */}
+        <StartupSync />
         <div className={current === 'billing' ? 'content flush' : 'content'}>
           {/* Inside `main`, not around the shell: a page that throws must not
               take the sidebar with it, or there is no way back to the counter

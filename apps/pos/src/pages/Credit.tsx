@@ -7,6 +7,7 @@ import { useCore, useUser } from '../core/CoreProvider'
 import { Empty, Alert, Rupees, Stat } from '../ui/components'
 import { usePickList } from '../ui/PickList'
 import { useShopChanged } from '../core/useShopChanged'
+import { takeAccountToOpen } from '../core/nav'
 import { type Account, AccountPanel } from './credit/AccountPanel'
 import { OpeningBalance } from './credit/OpeningBalance'
 
@@ -111,6 +112,14 @@ export default function Credit() {
     ])
     setOpen({ customer, bills, payments })
   }, [db])
+
+  // Arrived from a warning about this customer's payments: open their account.
+  useEffect(() => {
+    const id = takeAccountToOpen()
+    if (id === null) return
+    void searchCustomers(db, '', 10_000, { includeArchived: true })
+      .then((all) => { const c = all.find((x) => x.id === id); if (c) void load(c) })
+  }, [db, load])
 
   async function reload() {
     if (!open) return

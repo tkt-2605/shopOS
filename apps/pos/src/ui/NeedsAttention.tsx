@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { openAccount } from '../core/nav'
 import { Money } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { checkDiscrepancies, discrepancies, markSeen, onDiscrepancies, type Found } from '../core/discrepancyWatch'
@@ -65,6 +66,10 @@ export function NeedsAttention() {
               </div>
               <div>{d.detail}</div>
               <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{d.action}</div>
+              {d.customerId && (
+                <button className="btn sm" type="button" style={{ alignSelf: 'flex-start' }}
+                  onClick={() => openAccount(d.customerId!)}>Open account</button>
+              )}
               {d.refs.length > 0 && (
                 <div style={{ fontSize: 12, color: 'var(--ink-3)' }} className="num">{d.refs.join(' · ')}</div>
               )}

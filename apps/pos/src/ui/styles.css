@@ -907,3 +907,26 @@ tbody tr:hover { background: var(--accent-soft); }
   padding: 14px 16px; border: 1px solid var(--rule-soft);
   text-align: center; user-select: all; overflow-wrap: anywhere;
 }
+
+/* A till catching up with the shop as it starts: over everything, so nothing
+   out of date is used. Four squares taking turns -- square, like everything. */
+.startup-sync {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--ground);
+}
+.startup-sync-card {
+  width: min(420px, calc(100vw - 32px)); padding: 28px;
+  background: var(--surface); border: 1px solid var(--rule); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center;
+}
+.startup-sync-card h2 { margin: 6px 0 0; font-size: 15px; }
+.startup-sync-card p { margin: 0; font-size: 12.5px; color: var(--ink-2); }
+.startup-sync-warn { color: var(--warn) !important; }
+.four-squares { display: grid; grid-template-columns: 14px 14px; gap: 4px; }
+.four-squares span { width: 14px; height: 14px; background: var(--accent); opacity: 0.2; animation: four-squares 1.2s infinite; }
+.four-squares span:nth-child(2) { animation-delay: 0.3s; }
+.four-squares span:nth-child(4) { animation-delay: 0.6s; }
+.four-squares span:nth-child(3) { animation-delay: 0.9s; }
+@keyframes four-squares { 0%, 100% { opacity: 0.2; } 25% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .four-squares span { animation: none; opacity: 0.6; } }

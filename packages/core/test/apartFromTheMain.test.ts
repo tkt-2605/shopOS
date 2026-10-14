@@ -276,6 +276,9 @@ describe('the main is off and both counters act on the same record', () => {
     await settle()
     expect(await customerOutstanding(main.db, customer)).toBe(-rupees(500))
     await expectSettled(['paid_twice'])
+    // And it says whose account, so the screen can open it at the payment to cancel.
+    const warning = (await findDiscrepancies(main.db)).find((d) => d.kind === 'paid_twice')
+    expect(warning?.customerId).toBe(customer)
   })
 
   it('5 one payment cancelled on both counters', async () => {

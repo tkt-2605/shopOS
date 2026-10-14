@@ -31,6 +31,8 @@ vi.mock('@shopos/core', () => ({
   pruneAcknowledged: vi.fn(async () => undefined),
   serveAs: vi.fn(),
   nextBackoff: (n: number) => (n === 0 ? 1000 : n * 2),
+  // Tills as equals: the backoff is this test's subject, and a main on the LAN shortens it.
+  tillRole: async () => 'equals',
 }))
 vi.mock('../src/core/device', () => ({
   chosenRegister: () => 'a-counter',
