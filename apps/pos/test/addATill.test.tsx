@@ -23,6 +23,11 @@ vi.mock('@shopos/core', async (real) => ({
   quarantinedRecords: async () => [],
   getSetting: async () => null,
   entitled: async () => true,
+  /* Which till is the main, asked by the card on mount. This one is: it is
+     the till letting others in. Unmocked, it was asked of the fake `db` and
+     threw after every test, outside it, as an unhandled error. */
+  tillRole: async () => 'main',
+  mainTill: async () => ({ device: 'this-till', epoch: 1 }),
   offerPairing: () => 'CODE1234',
   withdrawPairing: () => {},
 }))
