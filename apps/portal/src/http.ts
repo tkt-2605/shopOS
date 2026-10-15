@@ -7,6 +7,9 @@ import {
 import { currentLicence, issueLicence, noteDevice, tillsSeen } from './licences.js'
 import { isTier } from '@shopos/core/licence'
 import type { AddressThrottle } from './auth/throttle.js'
+import { bearer, decoded, ok, bad, unauthorised } from './reply.js'
+import { supportRoutes } from './routes/support.js'
+import type { Role } from './console/vendor.js'
 
 /**
  * The portal's HTTP surface, as a function from request to response.
@@ -62,6 +65,8 @@ export interface PortalDeps {
   exposeCodes?: boolean
   /** How many codes one address may ask for. See `auth/throttle.ts`. */
   throttle?: AddressThrottle
+  /** Phones that may use the console, and as what (`console/vendor.ts`). Absent: nobody. */
+  vendors?: ReadonlyMap<string, Role>
   now?: () => Date
 }
 
@@ -234,6 +239,10 @@ export async function handle(
     return ok({ shopId, tillsSeen: await tillsSeen(deps.db, shopId, thirtyDaysAgo) })
   }
 
+  /* Health reports from tills, and the vendor's console (`routes/support.ts`). */
+  const support = await supportRoutes(deps, request, now)
+  if (support !== null) return support
+
   return { status: 404, body: { error: 'NO_ROUTE', method, path } }
 }
 
@@ -242,13 +251,6 @@ export async function handle(
 async function signedIn(deps: PortalDeps, request: PortalRequest, now: Date) {
   const token = bearer(request)
   return token === null ? null : accountForSession(deps.db, token, now)
-}
-
-function bearer(request: PortalRequest): string | null {
-  const header = request.headers['authorization']
-  if (header === undefined) return null
-  const match = /^Bearer (.+)$/.exec(header)
-  return match?.[1] ?? null
 }
 
 /**
@@ -260,15 +262,6 @@ function sameSecret(given: string | null, expected: string): boolean {
   if (given === null) return false
   const digest = (s: string) => createHash('sha256').update(s).digest()
   return timingSafeEqual(digest(given), digest(expected))
-}
-
-/** A path segment, or null when its percent-escapes are not escapes. `decodeURIComponent` throws. */
-function decoded(segment: string): string | null {
-  try {
-    return decodeURIComponent(segment)
-  } catch {
-    return null
-  }
 }
 
 function publicAccount(account: { id: string; phone: string; name: string | null }) {
@@ -291,18 +284,6 @@ function numberField(body: unknown, name: string): number | null {
 function rest(result: Record<string, unknown>): Record<string, unknown> {
   const { ok: _ok, code: _code, ...others } = result
   return others
-}
-
-function ok(body: unknown): PortalResponse {
-  return { status: 200, body }
-}
-
-function bad(detail: string): PortalResponse {
-  return { status: 400, body: { error: 'BAD_REQUEST', detail } }
-}
-
-function unauthorised(): PortalResponse {
-  return { status: 401, body: { error: 'UNAUTHORISED' } }
 }
 
 export { normalisePhone }

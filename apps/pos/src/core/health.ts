@@ -25,6 +25,9 @@ export interface HealthSent {
   mailError: string | null
   telegram: 'off' | 'sent' | 'queued'
   telegramError: string | null
+  /** The vendor's portal (`portal_out.rs`): `off` when this build has none. */
+  portal: 'off' | 'sent' | 'queued'
+  portalError: string | null
 }
 
 /** The last round of sync, as the loop reported it, kept from the moment the schedule starts. */
@@ -112,6 +115,7 @@ export async function sendHealth(db: SqlDriver): Promise<HealthSent> {
     now: localStamp(new Date()),
     label,
     summary: `${label}\n${healthLine(app)}`,
-    extra: app,
+    // The shop's own name, so the vendor's console can say which shop this is.
+    extra: { ...app, shopName: plain(profile.name) || null },
   })
 }

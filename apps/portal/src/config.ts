@@ -6,6 +6,8 @@ import { loadSigningKey } from './keys.js'
 import { firstThatWorks, type OtpChannel } from './otp/channel.js'
 import { telegramGateway } from './otp/telegram.js'
 import { consoleChannel, smsChannel, whatsappChannel } from './otp/channels.js'
+import { parseVendors } from './console/vendor.js'
+import type { DigestBot } from './health/digest.js'
 
 /**
  * Everything the portal reads from its environment, in one place.
@@ -19,6 +21,9 @@ import { consoleChannel, smsChannel, whatsappChannel } from './otp/channels.js'
  * | `SHOPOS_TELEGRAM_TOKEN` | unset | Telegram Gateway access token |
  * | `SHOPOS_OTP_CHANNELS` | `console` | comma-separated, tried in order |
  * | `SHOPOS_EXPOSE_CODES` | unset | `1` returns OTP codes in the response |
+ * | `SHOPOS_VENDOR_PHONES` | unset | who may use `/console`: `+91...:admin,+91...:view` |
+ * | `SHOPOS_DIGEST_TOKEN` | unset | the bot that sends the morning digest |
+ * | `SHOPOS_DIGEST_CHAT` | unset | the chat it goes to |
  *
  * **Every secret is unset by default and every unset secret disables its
  * feature rather than weakening it.** No signing key means the issuing route
@@ -34,6 +39,8 @@ import { consoleChannel, smsChannel, whatsappChannel } from './otp/channels.js'
  */
 
 export interface PortalConfig extends PortalDeps {
+  /** Null when no bot is set: the digest is then not sent, and `/console` still shows everything. */
+  digestBot: DigestBot | null
   /** Closed on shutdown. */
   close: () => Promise<void>
 }
@@ -68,6 +75,10 @@ export async function fromEnvironment(
     adminToken: env['SHOPOS_ADMIN_TOKEN'] ?? null,
     ...(exposeCodes ? { exposeCodes: true } : {}),
     throttle: new AddressThrottle(),
+    vendors: parseVendors(env['SHOPOS_VENDOR_PHONES']),
+    digestBot: env['SHOPOS_DIGEST_TOKEN'] && env['SHOPOS_DIGEST_CHAT']
+      ? { token: env['SHOPOS_DIGEST_TOKEN'], chat: env['SHOPOS_DIGEST_CHAT'] }
+      : null,
     close: () => db.close(),
   }
 }

@@ -25,7 +25,7 @@ use tauri::State;
 use zip::write::SimpleFileOptions;
 
 use crate::db::DbState;
-use crate::{diagnostics, paths, report_out};
+use crate::{device, diagnostics, paths, portal_out, report_out};
 
 /// Rows of any one list. Enough to see a pattern, small enough for a poor line.
 const LIST_ROWS: usize = 200;
@@ -39,6 +39,9 @@ pub struct HealthSent {
     mail_error: Option<String>,
     telegram: &'static str,
     telegram_error: Option<String>,
+    /// The vendor's portal: `off` when this build has none, `sent` or `queued`.
+    portal: &'static str,
+    portal_error: Option<String>,
 }
 
 /// Builds the health zip and sends it the way reports go, to whoever this
@@ -54,7 +57,8 @@ pub fn health_send(
 ) -> Result<HealthSent, String> {
     let data = paths::data_dir(&app)?;
     let version = app.package_info().version.to_string();
-    let bytes = health_zip(&data, &now, &version, db.get().ok(), &extra)?;
+    let (report, checks) = health_parts(&data, &now, &version, db.get().ok());
+    let bytes = zip_of(&data, &report, &checks, &extra)?;
 
     let stamp: String = now.chars().filter(char::is_ascii_digit).take(12).collect();
     let label: String = label
@@ -68,6 +72,21 @@ pub fn health_send(
     let (_, faults) = crate::faults::snapshot(&data);
     let summary = if faults.is_empty() { summary } else { format!("{summary}\n{faults}") };
     let sent = report_out::send_out(&app, &name, &bytes, &subject, &summary, true)?;
+
+    // To the portal as well, as JSON and without the logs, when this till knows its shop.
+    let shop = extra.get("shopId").and_then(Json::as_str).map(str::to_string);
+    let till = device::identity_of(&data).ok().map(|i| i.id);
+    let (portal, portal_error) = match (shop, till) {
+        (Some(shop), Some(till)) => {
+            let payload = portal_payload(&shop, &till, &now, &version, &report, &checks, &extra, &data);
+            match serde_json::to_vec(&payload) {
+                Ok(bytes) => portal_out::send(&app, &bytes, &shop, &till, &version),
+                Err(e) => ("off", Some(e.to_string())),
+            }
+        }
+        _ => ("off", None),
+    };
+
     Ok(HealthSent {
         name,
         bytes: bytes.len(),
@@ -75,6 +94,37 @@ pub fn health_send(
         mail_error: sent.mail_error,
         telegram: sent.telegram,
         telegram_error: sent.telegram_error,
+        portal,
+        portal_error,
+    })
+}
+
+/// What the portal is sent: the zip's JSON parts and `faults.json`, without
+/// the logs, which are for a person reading one shop and too large for a line
+/// that is poor every day.
+#[allow(clippy::too_many_arguments)]
+fn portal_payload(
+    shop: &str,
+    till: &str,
+    now: &str,
+    version: &str,
+    report: &Json,
+    checks: &Json,
+    extra: &Json,
+    data: &Path,
+) -> Json {
+    let (faults, _) = crate::faults::snapshot(data);
+    json!({
+        "format": 1,
+        "shopId": shop,
+        "deviceId": till,
+        "shopName": extra.get("shopName").cloned().unwrap_or(Json::Null),
+        "generatedAt": now,
+        "appVersion": version,
+        "health": report,
+        "checks": checks,
+        "app": extra,
+        "faults": faults,
     })
 }
 
@@ -87,6 +137,13 @@ pub fn health_zip(
     db: Option<&crate::db::Db>,
     extra: &Json,
 ) -> Result<Vec<u8>, String> {
+    let (report, checks) = health_parts(data, now, app_version, db);
+    zip_of(data, &report, &checks, extra)
+}
+
+/// The machine (`health.json`) and the database (`checks.json`), worked out once
+/// for both the zip and the portal.
+fn health_parts(data: &Path, now: &str, app_version: &str, db: Option<&crate::db::Db>) -> (Json, Json) {
     let mut problems: Vec<String> = Vec::new();
     let device = diagnostics::redacted_device(data, &mut problems);
     let backups = diagnostics::list_backups(data);
@@ -117,10 +174,13 @@ pub fn health_zip(
         "backups": backups,
         "problems": problems,
     });
+    (report, checks)
+}
 
+fn zip_of(data: &Path, report: &Json, checks: &Json, extra: &Json) -> Result<Vec<u8>, String> {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    add(&mut zip, "health.json", &pretty(&report)?)?;
-    add(&mut zip, "checks.json", &pretty(&checks)?)?;
+    add(&mut zip, "health.json", &pretty(report)?)?;
+    add(&mut zip, "checks.json", &pretty(checks)?)?;
     if !extra.is_null() {
         add(&mut zip, "app.json", &pretty(extra)?)?;
     }

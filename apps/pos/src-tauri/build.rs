@@ -4,7 +4,9 @@
 /// Read from `src-tauri/.env` (git-ignored, see `.env.example` beside it) or
 /// from the build's environment, which is how CI passes a secret. Never from a
 /// file in git: the token is a key to the vendor's chat.
-const BAKED: [&str; 4] = ["SHOPOS_TG_TOKEN", "SHOPOS_TG_CHAT", "SHOPOS_SUPPORT_PHONE", "SHOPOS_SUPPORT_WHATSAPP"];
+const BAKED: [&str; 5] = [
+    "SHOPOS_TG_TOKEN", "SHOPOS_TG_CHAT", "SHOPOS_SUPPORT_PHONE", "SHOPOS_SUPPORT_WHATSAPP", "SHOPOS_PORTAL_URL",
+];
 
 fn main() {
     let from_file = std::fs::read_to_string(".env").unwrap_or_default();

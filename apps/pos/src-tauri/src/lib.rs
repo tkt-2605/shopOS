@@ -14,6 +14,7 @@ mod ids;
 mod instance;
 mod log;
 mod paths;
+mod portal_out;
 mod pdf;
 mod printing;
 mod report_out;
@@ -203,6 +204,7 @@ pub fn run() {
             report_out::report_outbox,
             report_out::report_telegram_chats,
             report_out::report_telegram_builtin,
+            report_out::report_health_daily,
             health::health_send,
             backup::backup_list,
             backup::backup_path,

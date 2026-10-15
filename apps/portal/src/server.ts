@@ -1,5 +1,6 @@
 import { createServer, type Server, type IncomingMessage } from 'node:http'
 import { handle, type PortalDeps, type PortalRequest } from './http.js'
+import { HEALTH_PATH } from './routes/support.js'
 
 /**
  * `node:http` around `handle`. Nothing decides anything here.
@@ -10,6 +11,8 @@ import { handle, type PortalDeps, type PortalRequest } from './http.js'
  */
 
 const MAX_BODY_BYTES = 64 * 1024
+/** A till's health report: its checks, its counts and its errors, without the logs. */
+const MAX_HEALTH_BYTES = 2 * 1024 * 1024
 
 export interface ServeOptions {
   port: number
@@ -36,7 +39,8 @@ export function createPortalServer(deps: PortalDeps): Server {
 
         const response = await handle(deps, request)
 
-        const body = response.body === null ? '' : JSON.stringify(response.body)
+        // A page goes as it is; everything else is JSON.
+        const body = response.body === null ? '' : typeof response.body === 'string' ? response.body : JSON.stringify(response.body)
         res.writeHead(response.status, {
           'Content-Type': 'application/json',
           /* The portal answers tills and a phone browser, and neither is a
@@ -78,7 +82,7 @@ async function readRequest(req: IncomingMessage): Promise<PortalRequest | null> 
   let size = 0
   for await (const chunk of req) {
     size += (chunk as Buffer).length
-    if (size > MAX_BODY_BYTES) return null
+    if (size > (HEALTH_PATH.test(url.pathname) ? MAX_HEALTH_BYTES : MAX_BODY_BYTES)) return null
     chunks.push(chunk as Buffer)
   }
 

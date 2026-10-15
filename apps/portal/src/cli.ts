@@ -5,6 +5,7 @@ import { fromEnvironment } from './config.js'
 import { issueLicence, currentLicence } from './licences.js'
 import { isTier } from '@shopos/core/licence'
 import { serve } from './server.js'
+import { runDigest, DIGEST_CHECK_MS } from './health/runDigest.js'
 
 /**
  * The portal from a terminal.
@@ -111,8 +112,25 @@ switch (command) {
     process.stdout.write(
       `portal on http://127.0.0.1:${port} — ` +
       `otp via ${portal.channel.name}, ` +
-      `${portal.signingKey === null ? 'no signing key' : `signing as ${portal.kid}`}\n`,
+      `${portal.signingKey === null ? 'no signing key' : `signing as ${portal.kid}`}, ` +
+      `${portal.vendors?.size ?? 0} vendor phone(s), ` +
+      `digest ${portal.digestBot === null ? 'off' : 'on'}\n`,
     )
+    // The morning digest, asked about every few minutes; it goes once a day.
+    setInterval(() => {
+      void runDigest(portal.db, portal.digestBot).then((r) => {
+        if (!r.sent && r.why === 'failed') process.stderr.write(`[portal] digest: ${r.error}\n`)
+      })
+    }, DIGEST_CHECK_MS).unref()
+    break
+  }
+
+  case 'digest': {
+    const portal = await fromEnvironment()
+    const result = await runDigest(portal.db, portal.digestBot, { force: true })
+    process.stdout.write(result.sent ? `${result.text}\n` : `not sent: ${result.why}${'error' in result ? ` (${result.error})` : ''}\n`)
+    await portal.close()
+    if (!result.sent) process.exit(1)
     break
   }
 
@@ -125,6 +143,7 @@ switch (command) {
       '        [--paid-through YYYY-MM-DD] [--tills n]',
       '  show --shop <id>                            the shop\'s current licence',
       '  serve [--port 8787]                         run the HTTP service',
+      '  digest                                      send the morning digest now',
       '',
       'Run it directly, not through `npm run portal --`: npm swallows every',
       '--flag and passes only the values, so a correct command line arrives',

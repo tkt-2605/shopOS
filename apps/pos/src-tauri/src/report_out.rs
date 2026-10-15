@@ -479,6 +479,10 @@ pub fn report_outbox(app: tauri::AppHandle) -> Result<OutboxState, String> {
         vendor: vendor_settings(&app).unwrap_or(None),
     };
     let state = flush(&outbox, &settings);
+    // The portal's queue retries on the same beat (`portal_out.rs`).
+    if let Some(e) = crate::portal_out::flush(&app) {
+        crate::log::write("warn", "portal", &e);
+    }
     Ok(OutboxState {
         waiting: state.waiting,
         sent: state.sent,
@@ -623,7 +627,7 @@ try {
 /// it, killing it if the far end goes quiet. The variables carry every secret:
 /// nothing sensitive is ever on the command line.
 #[cfg(windows)]
-fn run_powershell(script: &str, env: &[(&str, String)], quiet: &str) -> Result<String, String> {
+pub(crate) fn run_powershell(script: &str, env: &[(&str, String)], quiet: &str) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
@@ -731,6 +735,14 @@ fn chats_seen(_: &str, _: &str) -> Result<Vec<ChatSeen>, String> {
 #[tauri::command]
 pub fn report_telegram_builtin() -> bool {
     BUILT_TOKEN.is_some_and(token_shape) && BUILT_CHAT.is_some_and(|c| !c.trim().is_empty())
+}
+
+/// Whether the health report goes out daily from this build whatever the shop
+/// has set up: it does when the build carries the vendor's bot or the
+/// vendor's portal. It names no customer, so it needs nobody's say-so.
+#[tauri::command]
+pub fn report_health_daily() -> bool {
+    report_telegram_builtin() || crate::portal_out::built_in()
 }
 
 /// Reads the token from this machine's settings, never from the request.

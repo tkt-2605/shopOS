@@ -164,6 +164,11 @@ export function telegramBuiltIn(): Promise<boolean> {
   return invoke<boolean>('report_telegram_builtin').catch(() => false)
 }
 
+/** True when this build sends the health report daily by itself: it carries the vendor's bot or portal. */
+export function healthGoesDaily(): Promise<boolean> {
+  return invoke<boolean>('report_health_daily').catch(() => false)
+}
+
 export function flushOutbox(): Promise<OutboxState> {
   return invoke<OutboxState>('report_outbox')
 }
@@ -178,9 +183,10 @@ export function startReportSchedule(db: SqlDriver): () => void {
   /* The reports go daily only when somebody at the shop switched it on: they
      name customers. A build carrying the vendor's bot sends its health report
      daily regardless -- it names none -- and Rust never lets that bot carry a
-     pack (`report_out.rs`, `Queued::vendor`). */
+     pack (`report_out.rs`, `Queued::vendor`). So does a build carrying the
+     vendor's portal (`portal_out.rs`), which takes the health report only. */
   let builtIn = false
-  void telegramBuiltIn().then((yes) => { builtIn = yes })
+  void healthGoesDaily().then((yes) => { builtIn = yes })
 
   async function tick() {
     if (busy) return

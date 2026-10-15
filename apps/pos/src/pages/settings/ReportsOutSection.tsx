@@ -94,8 +94,9 @@ export function ReportsOutSection() {
       const where = [
         sent.telegram === 'sent' ? 'sent to Telegram' : sent.telegram === 'queued' ? 'Telegram waiting for the line' : null,
         sent.mail === 'sent' ? 'emailed' : sent.mail === 'queued' ? 'email waiting for the line' : null,
+        sent.portal === 'sent' ? 'sent to support' : sent.portal === 'queued' ? 'support copy waiting for the line' : null,
       ].filter(Boolean).join(', ')
-      const problem = sent.telegramError ?? sent.mailError
+      const problem = sent.telegramError ?? sent.mailError ?? sent.portalError
       if (problem) setError(`Health report: ${problem}`)
       else setNote(where ? `Health report ${where}.` : 'Health report made, but no Telegram or email is set up to send it.')
     } catch (err) {

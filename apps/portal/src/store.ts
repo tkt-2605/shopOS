@@ -106,6 +106,46 @@ const SCHEMA: readonly string[] = [
      version     TEXT,
      PRIMARY KEY (shop_id, device_id)
    )`,
+
+  /* A till's daily health report (`health/`), every shop, every plan. The
+     whole report is kept as it came, beside what the alert rules read from
+     it, so a rule added later can be run over reports already here. It names
+     no customer, no amount and no credential: the till holds it to that. */
+  `CREATE TABLE health_reports (
+     id            TEXT PRIMARY KEY,
+     shop_id       TEXT NOT NULL,
+     device_id     TEXT NOT NULL,
+     shop_name     TEXT,
+     received_at   TEXT NOT NULL,
+     generated_at  TEXT,
+     version       TEXT,
+     summary       TEXT NOT NULL,
+     body          TEXT NOT NULL
+   )`,
+  `CREATE INDEX idx_health_till ON health_reports(shop_id, device_id, received_at)`,
+
+  /* The key each till proves itself with, given on its first report. Only a
+     hash, as for sessions. Without it, anybody who learned a shop's id could
+     write that shop's health for it. */
+  `CREATE TABLE health_keys (
+     shop_id     TEXT NOT NULL,
+     device_id   TEXT NOT NULL,
+     key_hash    TEXT NOT NULL,
+     created_at  TEXT NOT NULL,
+     PRIMARY KEY (shop_id, device_id)
+   )`,
+
+  /* What support did: which shop was looked at, by whom, when. What makes
+     "support can see my shop's health" something an owner can be shown. */
+  `CREATE TABLE support_log (
+     id          TEXT PRIMARY KEY,
+     at          TEXT NOT NULL,
+     account_id  TEXT NOT NULL,
+     action      TEXT NOT NULL,
+     shop_id     TEXT,
+     detail      TEXT
+   )`,
+  `CREATE INDEX idx_support_log_shop ON support_log(shop_id, at)`,
 ]
 
 /** Brings a portal database up to date. Safe to run at every boot. */

@@ -93,6 +93,19 @@ Decision needed: `diagnosticsUpload` is gated to Cloud in `domain/licence.ts`. T
 
 Size: 4–5 days. This is the piece that turns support from reacting to reports into watching the fleet.
 
+Built 16 Oct. The owner decided every shop sends, on every plan; the `diagnosticsUpload` gate stays for part 4.
+
+- **Till** (`src-tauri/src/portal_out.rs`):
+  - The health report goes to `SHOPOS_PORTAL_URL`, built in like the bot, or a machine's `portal_url` setting. It is sent as JSON without the logs, from its own queue in `outbox-portal/`, retried with the outbox.
+  - The first report is answered with a key. The till keeps it in `portal-key` beside the database and sends it after that.
+  - A build with a portal sends health daily whatever the shop has set up.
+- **Portal** (`apps/portal/src/health/`, `routes/support.ts`, `console/`):
+  - `POST /v1/shops/:id/health` takes up to 2 MB. It keeps 60 reports per till, with a summary the rules read.
+  - The alert rules are the table above. The digest goes to `SHOPOS_DIGEST_TOKEN`/`SHOPOS_DIGEST_CHAT` after 08:00 IST, once a day, logged in `support_log`. `cli.ts digest` sends it now.
+  - `/console` is for phones listed in `SHOPOS_VENDOR_PHONES` (`+91…:admin`). It offers the fleet, one shop, a raw report and Forget key, and every look at a shop is logged.
+
+Not yet: the portal hosted (a VPS, a domain and TLS). Until then it is tried on this machine (`npx tsx apps/portal/src/cli.ts serve`). Tills on builds older than this send nothing to the portal; they appear once they update.
+
 ### 3. Crash and error reporting (observe)
 
 - **Rust:** the panic hook in `log.rs` already writes the panic. Add a crash marker that the next start reads, so the health report says "crashed at 14:32, signature X".
