@@ -28,6 +28,8 @@ First, always:
 | 9 | [The disk is full](disk-full.md) | P1 |
 | 10 | [Forgotten password](forgotten-password.md) | P1 if it is the only owner, else P3 |
 
-A runbook whose fix says "by hand" marks a repair that the repair packs
-(`docs/specs/support-kit.md`, part 6) should take over. Each new case that
+A fix made with `tools/support/pack.ts` is applied by the owner from
+Settings → Help → Apply a fix from support, after a backup, and is in the
+audit. A runbook whose fix still says "by hand" marks a repair the packs do
+not do yet. Each new case that
 needed hand work gets a page here the same week.

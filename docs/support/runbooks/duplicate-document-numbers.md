@@ -12,12 +12,14 @@
 - a counter freed while its old machine still billed;
 - on versions before 0.3.0, a counter moved before the till had handed over.
 
-**Fix.** This one is by hand today:
-1. Have the shop send the diagnostics report from both tills.
-2. Find both bills with that number. Both are real sales; neither is dropped.
-3. Over remote help, on the till that did not make the original, move that counter's next number past the highest number used. There is no screen for it yet, so it is done by hand, with a backup first.
-4. The set-aside bill needs a new number before it can land. There is no screen for this. Note the bill and the customer, and escalate.
+**Fix.**
+1. Have the shop send their data (Settings → Help → Send my data to support) from both tills, or the diagnostics report.
+2. Find both bills with `support.ts timeline <file> --doc <number>` on each. Both are real sales; neither is dropped.
+3. Make a fix that moves the counter's next number past the highest one used. Send it to the till that did not make the original; the owner applies it from Settings → Help → Apply a fix from support.
+
+   `pack.ts --shop <id> --ticket "<case>" --repair renumber_from:docType=bill,prefix=<FC>,fiscalYear=2627,next=<highest+1>`
+4. The bill that was set aside still holds its number. Note it and the customer, and escalate: renumbering a bill that has been set aside has no repair yet.
 
 **Prevent.** From 0.3.0 a till cannot change counter while it holds changes the main has not got (`HAND_OVER_FIRST`), and the latest claim wins (`claim_seq`).
 
-**Escalate.** Always, until the `renumber_from` repair exists. Write the case down: it is the test for that repair.
+**Escalate.** For step 4, always. Write the case down: it is the test for a repair that renumbers a set-aside bill.

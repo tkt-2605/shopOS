@@ -387,6 +387,18 @@ export function encodePayload(token: LicenceToken): string {
   })))
 }
 
+/**
+ * Whether `signature` is `publicKey`'s over `message` -- the check under a
+ * licence, for anything else this build accepts signed (`repairPack.ts`).
+ * Throws when this runtime cannot check one at all, which a caller reports as
+ * NOT_CONFIGURED rather than as a bad signature.
+ */
+export async function verifyEd25519(message: Uint8Array, signature: Uint8Array, publicKey: string): Promise<boolean> {
+  return subtle().verify({ name: 'Ed25519' }, await importPublicKey(publicKey), signature, message)
+}
+
+export { describeCause }
+
 function describeCause(e: unknown): string {
   const g = globalThis as { isSecureContext?: boolean }
   const secure = g.isSecureContext === undefined ? '' : `, secure context ${g.isSecureContext}`

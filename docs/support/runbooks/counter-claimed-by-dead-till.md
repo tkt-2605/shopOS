@@ -15,4 +15,6 @@
 
 **Prevent.** Retire a till from Counters before it leaves the shop.
 
+**When there is no Free them.** On a counter till that syncs through a main, the button does not show, because only the main has met every till. Free the counter from the main, or send a fix: `pack.ts --shop <id> --ticket "<case>" --repair free_counter:registerId=<id>` (the id is in `support.ts check`).
+
 **Escalate.** Freeing does not stick after a sync. The claim comes back from another till, so look at `claim_seq` on `registers` on both sides.

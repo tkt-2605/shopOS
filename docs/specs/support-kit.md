@@ -235,6 +235,22 @@ Size: 4 days.
 
 Size: 5 days for the frame and the first five repairs.
 
+Built 16 Oct.
+- **The pack** (`domain/repairPack.ts`) is the licence's shape: base64url JSON, a dot, and an Ed25519 signature over the first part's text.
+  - It is checked against `REPAIR_KEYS` in `config/repairs.ts`, which is empty until the owner makes a key; until then every pack is refused as NOT_CONFIGURED.
+  - It names one shop, ends on a date, and is used once for the whole shop, recorded as a setting so every till knows.
+- **The repairs** (`services/repair.ts`): `reconcile`, `retry_set_aside` (the merge's own retry, marked as remote), `free_counter`, `renumber_from` (only ever forward) and `reset_peer_cursor` (only ever back).
+  - Each has a preview in words. A pack with any part that does not fit this shop is applied not at all.
+  - Each repair is its own transaction with an audit row naming the pack and the case. One that fails stops the rest and leaves the pack unused.
+- **The till:** Settings → Help → Apply a fix from support. The owner pastes the text, reads what it will do, gives the password, and a backup is taken before it is applied. There is no file picker and no portal delivery yet: the pack is text, and WhatsApp carries it.
+- **The vendor:**
+  - `tools/support/keygen.ts --repair` makes the Ed25519 pair.
+  - `tools/support/pack.ts --shop … --ticket … --repair kind:field=value` signs a pack, after reading it back with the tills' own parser, so a pack the tills would refuse is never made.
+- **Not yet:**
+  - `rebuild_feed` and `set_setting`.
+  - A repair that renumbers a bill which has been set aside.
+  - Applying a pack from the sign-in screen, for an owner locked out with no recovery code.
+
 ### 7. Remote session (the last resort)
 
 Don't build one. Use RustDesk (open source, can be self-hosted later) or AnyDesk:

@@ -4,6 +4,7 @@ import { useCore } from '../../core/CoreProvider'
 import { writeDiagnosticsBundle } from '../../core/diagnostics'
 import { spokenShop } from '../../core/support'
 import { SendDataCard } from './SendDataCard'
+import { ApplyFixCard } from './ApplyFixCard'
 import { appVersion, versionLine, shopLine, type AppVersion } from '../../core/version'
 import { Card, Alert } from '../../ui/components'
 import { Intro } from './parts'
@@ -93,6 +94,7 @@ export function HelpSection() {
       </Card>
 
       <SendDataCard />
+      <ApplyFixCard />
     </>
   )
 }
