@@ -850,6 +850,17 @@ tbody tr:hover { background: var(--accent-soft); }
 .about-line { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid var(--rule-soft); font-size: 12.5px; }
 .card-body > .about-line:first-child { border-top: 0; }
 
+/* Get help: the support code is the first thing on it, and big enough to read out. */
+.get-help { display: flex; flex-direction: column; gap: 18px; }
+.get-help section { display: flex; flex-direction: column; gap: 6px; }
+.get-help-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); }
+.get-help-code { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; }
+.get-help-code .num { font-size: 26px; letter-spacing: .08em; color: var(--ink); }
+.get-help-part { font-size: 13px; color: var(--ink-2); }
+.get-help-phone { font-size: 18px; color: var(--ink); }
+.get-help-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.get-help-note { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
+
 .mono { font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px; }
 
 @media (max-width: 900px) {

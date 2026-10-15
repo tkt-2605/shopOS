@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
+import { getSetting, shortShopId } from '@shopos/core'
+import { useCore } from '../../core/CoreProvider'
 import { writeDiagnosticsBundle } from '../../core/diagnostics'
+import { spokenShop } from '../../core/support'
 import { appVersion, versionLine, shopLine, type AppVersion } from '../../core/version'
 import { Card, Alert } from '../../ui/components'
 import { Intro } from './parts'
@@ -17,8 +20,13 @@ export function HelpSection() {
   const [written, setWritten] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [version, setVersion] = useState<AppVersion | null>(null)
+  const { db } = useCore()
+  const [shop, setShop] = useState<string | null>(null)
 
   useEffect(() => { void appVersion().then(setVersion) }, [])
+  useEffect(() => {
+    void getSetting(db, 'shop_id').then((id) => setShop(id ? shortShopId(id) : null)).catch(() => {})
+  }, [db])
 
   async function make() {
     setBusy(true)
@@ -45,6 +53,10 @@ export function HelpSection() {
         <div className="about-line">
           <span className="settings-option-note">Version</span>
           <span className="num">{versionLine(version)}</span>
+        </div>
+        <div className="about-line">
+          <span className="settings-option-note">Support code</span>
+          <span className="num">{shop ? spokenShop(shop) : 'no shop yet'}</span>
         </div>
         {version?.shop && (
           <div className="about-line">

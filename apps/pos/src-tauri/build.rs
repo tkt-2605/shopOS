@@ -1,9 +1,10 @@
-/// The vendor's Telegram bot, baked into the build so a shop pastes nothing.
+/// The vendor's Telegram bot and support number, baked into the build so a
+/// shop pastes nothing.
 ///
 /// Read from `src-tauri/.env` (git-ignored, see `.env.example` beside it) or
 /// from the build's environment, which is how CI passes a secret. Never from a
 /// file in git: the token is a key to the vendor's chat.
-const BAKED: [&str; 2] = ["SHOPOS_TG_TOKEN", "SHOPOS_TG_CHAT"];
+const BAKED: [&str; 4] = ["SHOPOS_TG_TOKEN", "SHOPOS_TG_CHAT", "SHOPOS_SUPPORT_PHONE", "SHOPOS_SUPPORT_WHATSAPP"];
 
 fn main() {
     let from_file = std::fs::read_to_string(".env").unwrap_or_default();

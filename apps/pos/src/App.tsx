@@ -14,6 +14,7 @@ import { StartupSync } from './ui/StartupSync'
 import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
 import { ChangePassword } from './ui/ChangePassword'
+import { GetHelp } from './ui/GetHelp'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
 import { appVersion, shopLine, type AppVersion } from './core/version'
@@ -303,6 +304,7 @@ function Shell() {
   useEffect(() => { void appVersion().then(setSlot) }, [])
   const pages = Permissions.visiblePages(user!.permissions)
   const [changingPassword, setChangingPassword] = useState(false)
+  const [gettingHelp, setGettingHelp] = useState(false)
   const [current, setCurrent] = useState<Page>(
     NAV_GROUPS.flatMap((g) => g.pages).find((p) => pages.includes(p)) ?? pages[0] ?? 'dashboard',
   )
@@ -372,11 +374,15 @@ function Shell() {
             <button className="link-btn" onClick={() => setChangingPassword(true)}>
               Change my password
             </button>
+            {/* Anybody signed in: the person at the counter when something goes
+                wrong is as often a cashier as the owner. */}
+            <button className="link-btn" onClick={() => setGettingHelp(true)}>Get help</button>
           </div>
         </div>
       </aside>
 
       {changingPassword && <ChangePassword onClose={() => setChangingPassword(false)} />}
+      {gettingHelp && <GetHelp onClose={() => setGettingHelp(false)} />}
 
       <main className="main">
         <div className="topbar">

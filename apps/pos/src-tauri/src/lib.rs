@@ -18,6 +18,7 @@ mod printing;
 mod report_out;
 mod restore;
 mod shop_copy;
+mod support;
 mod sync_client;
 mod sync_server;
 mod updater;
@@ -222,6 +223,9 @@ pub fn run() {
             restore::restore_report,
             restore::restore_abandon,
             restore::copy_install,
+            support::support_contact,
+            support::support_whatsapp,
+            support::start_remote_help,
             version::app_version,
             version::shops_on_this_machine,
             updater::updates_enabled,
