@@ -7,8 +7,10 @@ import {
   orderBilledTwice, soldBelowZero, overCreditLimit, figuresLeft, theBooks, syncLeftovers,
 } from './discrepancies/checks.js'
 import type { Discrepancy } from './discrepancies/types.js'
+import { withRemedies } from './discrepancies/remedies.js'
+export { applyRemedy, type RemedyResult } from './discrepancies/remedies.js'
 
-export type { Discrepancy, DiscrepancyKind } from './discrepancies/types.js'
+export type { Discrepancy, DiscrepancyKind, Remedy } from './discrepancies/types.js'
 
 /*
  * Everything in the shop's records that does not add up, in one list.
@@ -32,7 +34,8 @@ export async function findDiscrepancies(db: SqlDriver): Promise<Discrepancy[]> {
   for (const check of [refundedTwice, refundedAndCancelled, paidTwice, advanceSpentTwice, pointsSpentTwice, correctedTwice, countedTwice, supplierOverpaid, orderBilledTwice, soldBelowZero, overCreditLimit, figuresLeft, theBooks, syncLeftovers]) {
     found.push(...await check(db))
   }
-  return found.sort((a, b) => ORDER[a.area] - ORDER[b.area] || (b.at ?? '').localeCompare(a.at ?? ''))
+  found.sort((a, b) => ORDER[a.area] - ORDER[b.area] || (b.at ?? '').localeCompare(a.at ?? ''))
+  return withRemedies(db, found)
 }
 
 /** Each discrepancy with whether somebody on this till has marked it seen. */

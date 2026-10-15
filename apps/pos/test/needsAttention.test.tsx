@@ -15,6 +15,7 @@ import type { Discrepancy } from '@shopos/core'
 type Row = Discrepancy & { seen: boolean }
 let rows: Row[] = []
 const marked: string[][] = []
+const cancelled: string[] = []
 
 const refund: Row = {
   key: 'refunded_twice:line-1:20000', kind: 'refunded_twice', area: 'money', seen: false,
@@ -32,6 +33,11 @@ const below: Row = {
 vi.mock('@shopos/core', async (real) => ({
   ...(await real<Record<string, unknown>>()),
   discrepanciesWithSeen: async () => rows,
+  applyRemedy: async (_db: unknown, r: { id: string; docNo: string }) => {
+    cancelled.push(r.id)
+    rows = rows.filter((x) => x.kind !== 'refunded_twice')
+    return { ok: true, docNo: r.docNo }
+  },
   markDiscrepanciesSeen: async (_db: unknown, input: { keys: string[] }) => {
     marked.push(input.keys)
     rows = rows.map((r) => (input.keys.includes(r.key) ? { ...r, seen: true } : r))
@@ -40,7 +46,7 @@ vi.mock('@shopos/core', async (real) => ({
 vi.mock('../src/core/syncLoop', () => ({ onSyncRound: () => () => {} }))
 vi.mock('../src/core/log', () => ({ logEvent: () => {} }))
 const went: string[] = []
-vi.mock('../src/core/nav', () => ({ goTo: (page: string) => { went.push(page) } }))
+vi.mock('../src/core/nav', () => ({ goTo: (page: string) => { went.push(page) }, openAccount: () => {} }))
 const core = { db: {} }
 vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core, useUser: () => ({ id: 'u1' }) }))
 
@@ -48,7 +54,7 @@ const { DiscrepancyBanner } = await import('../src/ui/DiscrepancyBanner')
 const { NeedsAttention } = await import('../src/ui/NeedsAttention')
 const { checkDiscrepancies } = await import('../src/core/discrepancyWatch')
 
-beforeEach(() => { rows = [refund, below]; marked.length = 0; went.length = 0 })
+beforeEach(() => { rows = [refund, below]; marked.length = 0; went.length = 0; cancelled.length = 0 })
 afterEach(async () => {
   cleanup()
   rows = []
@@ -101,5 +107,56 @@ describe('the list', () => {
     rows = []
     render(<NeedsAttention />)
     await screen.findByText('Everything adds up')
+  })
+})
+
+describe('a thing done twice, put right from the warning', () => {
+  /* Seen in a shop: told a payment was taken twice and to cancel one, with no
+     way there -- the warning named document numbers, and the button was on
+     another screen, called Undo. The documents to choose between are on the
+     warning now, each with where and when, and one press cancels one. */
+  const twice: Row = {
+    ...refund,
+    remedies: [
+      { act: 'cancel_return', id: 'ret-a', docNo: 'CMR/2627/00001', amount: 100000 as never, where: 'Main Register', at: '2026-10-07T10:00:00Z' },
+      { act: 'cancel_return', id: 'ret-b', docNo: 'CFC/2627/00001', amount: 100000 as never, where: 'Front counter', at: '2026-10-07T10:05:00Z' },
+    ],
+  }
+  const recount: Row = { ...below, key: 'counted_twice:p1:a:b', kind: 'counted_twice' }
+
+  it('lists the returns to choose between, each saying where it was taken', async () => {
+    rows = [twice]
+    render(<NeedsAttention />)
+    expect(await screen.findByText('Only one of these returns really happened. Cancel the other:')).toBeTruthy()
+    expect(screen.getAllByText('Cancel this return')).toHaveLength(2)
+    expect(document.body.textContent).toContain('Front counter')
+  })
+
+  it('asks first, and cancels the one chosen and nothing else', async () => {
+    rows = [twice]
+    render(<NeedsAttention />)
+    fireEvent.click((await screen.findAllByText('Cancel this return'))[1]!)
+    const yes = await screen.findByText('Yes, go ahead')
+    expect(cancelled, 'nothing while it asks').toEqual([])
+    expect(document.body.textContent).toContain('Cancel return CFC/2627/00001')
+    fireEvent.click(yes)
+    await waitFor(() => expect(cancelled).toEqual(['ret-b']))
+    expect(await screen.findByText('CFC/2627/00001 cancelled.')).toBeTruthy()
+  })
+
+  it('cancels nothing when the answer is no', async () => {
+    rows = [twice]
+    render(<NeedsAttention />)
+    fireEvent.click((await screen.findAllByText('Cancel this return'))[0]!)
+    fireEvent.click(await screen.findByText('No, leave it'))
+    await waitFor(() => expect(screen.queryByText('No, leave it')).toBeNull())
+    expect(cancelled).toEqual([])
+  })
+
+  it('offers to count a shelf counted twice again', async () => {
+    rows = [recount]
+    render(<NeedsAttention />)
+    fireEvent.click(await screen.findByText('Count again'))
+    expect(went).toEqual(['stock_count'])
   })
 })

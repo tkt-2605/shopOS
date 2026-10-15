@@ -930,3 +930,8 @@ tbody tr:hover { background: var(--accent-soft); }
 .four-squares span:nth-child(3) { animation-delay: 0.9s; }
 @keyframes four-squares { 0%, 100% { opacity: 0.2; } 25% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .four-squares span { animation: none; opacity: 0.6; } }
+
+/* The documents a warning about a thing done twice lets a person choose between. */
+.remedies { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding: 8px 10px; background: var(--surface-2, var(--ground)); border: 1px solid var(--rule); }
+.remedy { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+.remedy .btn { margin-left: auto; }

@@ -4,8 +4,8 @@ import { applyingRemote } from '../changefeed.js'
 /**
  * `document_items.fulfilled_qty`, held to the records of what each line became.
  *
- * A line has been fulfilled by what bills took from it (`bill_fulfilments`,
- * removed when the bill is cancelled) and what conversions took from it
+ * A line has been fulfilled by what bills still standing took from it
+ * (`bill_fulfilments`, kept when a bill is cancelled and no longer counted) and what conversions took from it
  * (`document_fulfilments`, 054). The figure itself is raised in place, one step
  * at a time, and two tills billing or converting against one order while apart
  * each raise their own copy -- one copy of the order wins the merge and the
@@ -29,7 +29,9 @@ export interface FulfilledDrift {
 /* raw: correlated sums per line, which the builder cannot say. */
 const DERIVED = `
   SELECT di.id AS document_item_id, di.document_id, di.qty, di.fulfilled_qty AS stored,
-         COALESCE((SELECT SUM(bf.qty) FROM bill_fulfilments bf WHERE bf.document_item_id = di.id), 0)
+         COALESCE((SELECT SUM(bf.qty) FROM bill_fulfilments bf
+                     JOIN bills b ON b.id = bf.bill_id AND b.docstatus = 1
+                    WHERE bf.document_item_id = di.id), 0)
        + COALESCE((SELECT SUM(df.qty) FROM document_fulfilments df WHERE df.document_item_id = di.id), 0) AS derived
     FROM document_items di`
 

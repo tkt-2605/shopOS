@@ -35,9 +35,19 @@ export async function cancelReturn(
     await reverseBatches(tx, 'sales_return', input.returnId, ret.postingDate, input.actorId)
     await reverseVoucherGl(tx, 'sales_return', input.returnId)
 
+    /* Taken off, but never below what the returns still standing add up to.
+       The figure is held to the line's quantity, so a line refunded twice on two
+       counters -- one sold, two back -- stores one; taking this return's one off
+       that read nought while the other return still stood, and this till parted
+       from every till that heard of the cancellation by merge, which recounts
+       (`reconcileReturnedQty`). */
     for (const line of lines) {
       await q(tx).update(schema.billItems)
-        .set({ returnedQty: sql`${schema.billItems.returnedQty} - ${line.qty}` })
+        .set({
+          returnedQty: sql`MAX(${schema.billItems.returnedQty} - ${line.qty}, MIN(${schema.billItems.qty}, COALESCE((
+            SELECT SUM(ri.qty) FROM sales_return_items ri JOIN sales_returns r ON r.id = ri.return_id
+             WHERE ri.bill_item_id = ${schema.billItems.id} AND r.docstatus = 1 AND r.id <> ${input.returnId}), 0)))`,
+        })
         .where(eq(schema.billItems.id, line.billItemId))
     }
 

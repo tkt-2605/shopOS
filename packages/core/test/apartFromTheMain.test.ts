@@ -7,7 +7,7 @@ import { createSupplier } from '../src/services/suppliers.js'
 import { createStockEntry, submitStockEntry } from '../src/services/stockEntry.js'
 import { currentStock, recomputeStock } from '../src/services/stock.js'
 import { customerOutstanding } from '../src/services/payments/outstanding.js'
-import { findDiscrepancies } from '../src/services/discrepancies.js'
+import { findDiscrepancies, applyRemedy } from '../src/services/discrepancies.js'
 import { ensureOwnRegister } from '../src/services/registers.js'
 import { ledgerChecks, partyBalance } from '../src/repos/ledger.js'
 import { REPLICATED } from '../src/domain/replicaShape.js'
@@ -221,6 +221,27 @@ async function expectSettled(told: readonly string[] = []): Promise<void> {
   }
 }
 
+
+/**
+ * The warning's own way out: it names the documents to choose between, and
+ * cancelling the one that should not stand -- from the warning, as the
+ * dashboard does -- makes the warning go, on every till, with the books whole.
+ */
+async function putRight(kind: string, cancels: 'cancel_payment' | 'cancel_return' | 'cancel_bill'): Promise<void> {
+  const warning = (await findDiscrepancies(main.db)).find((d) => d.kind === kind)
+  expect(warning?.remedies?.map((r) => r.act), `${kind} offers a way out`).toEqual([cancels, cancels])
+  for (const r of warning!.remedies!) {
+    expect(r.where, `${r.docNo} says which counter`).not.toBeNull()
+  }
+  const done = await as(MAIN, () => applyRemedy(main.db, warning!.remedies![1]!, fx.adminId))
+  expect(done).toMatchObject({ ok: true })
+  await settle()
+  for (const t of [main, c1, c2]) {
+    expect((await findDiscrepancies(t.db)).map((d) => d.kind), `${kind} is put right`).not.toContain(kind)
+  }
+  await expectSettled()
+}
+
 const shelf = (t: Till) => currentStock(t.db, product)
 
 // --- the scenarios ---------------------------------------------------------------------
@@ -250,6 +271,8 @@ describe('the main is off and both counters act on the same record', () => {
     // Both refunds stand; the shelf shows the item back twice, and the shop is told.
     expect(await shelf(main)).toBe(fromUnits(11))
     await expectSettled(['refunded_twice'])
+    await putRight('refunded_twice', 'cancel_return')
+    expect(await shelf(main), 'one item back, once').toBe(fromUnits(10))
   })
 
   it('3 refund on one counter, cancel on the other', async () => {
@@ -262,6 +285,12 @@ describe('the main is off and both counters act on the same record', () => {
     await settle()
     expect(await shelf(main)).toBe(fromUnits(11))
     await expectSettled(['refunded_and_cancelled'])
+    const both = (await findDiscrepancies(main.db)).find((d) => d.kind === 'refunded_and_cancelled')
+    expect(both?.remedies?.map((r) => r.act)).toEqual(['cancel_return'])
+    expect(await as(MAIN, () => applyRemedy(main.db, both!.remedies![0]!, fx.adminId))).toMatchObject({ ok: true })
+    await settle()
+    expect(await shelf(main), 'the cancel put it back; the return no longer does as well').toBe(fromUnits(10))
+    await expectSettled()
   })
 
   it('4 a credit bill paid in full on both counters', async () => {
@@ -279,6 +308,8 @@ describe('the main is off and both counters act on the same record', () => {
     // And it says whose account, so the screen can open it at the payment to cancel.
     const warning = (await findDiscrepancies(main.db)).find((d) => d.kind === 'paid_twice')
     expect(warning?.customerId).toBe(customer)
+    await putRight('paid_twice', 'cancel_payment')
+    expect(await customerOutstanding(main.db, customer), 'paid once').toBe(0)
   })
 
   it('5 one payment cancelled on both counters', async () => {
@@ -328,6 +359,12 @@ describe('the main is off and both counters act on the same record', () => {
     await settle()
     expect(await supplierOwed(main.db, supplier.supplierId)).toBe(-rupees(6000))
     await expectSettled(['supplier_overpaid'])
+    const over = (await findDiscrepancies(main.db)).find((d) => d.kind === 'supplier_overpaid')
+    expect(over?.remedies?.map((r) => r.act)).toEqual(['cancel_payment', 'cancel_payment'])
+    expect(await as(MAIN, () => applyRemedy(main.db, over!.remedies![1]!, fx.adminId))).toMatchObject({ ok: true })
+    await settle()
+    expect(await supplierOwed(main.db, supplier.supplierId), 'one payment left').toBe(-rupees(3000))
+    await expectSettled()
   })
 
   it('9 one price changed differently on both counters', async () => {
@@ -402,6 +439,7 @@ describe('the main is off and both counters act on the same record', () => {
     }
     await settle()
     await expectSettled(['order_billed_twice'])
+    await putRight('order_billed_twice', 'cancel_bill')
   })
 
   it('13 one bill amended on both counters', async () => {
@@ -427,6 +465,7 @@ describe('the main is off and both counters act on the same record', () => {
     expect(made).toEqual([expect.stringMatching(/^22 amended as /), expect.stringMatching(/^33 amended as /)])
     expect(standing.filter((b) => (b as { docstatus: number }).docstatus === 1)).toHaveLength(2)
     await expectSettled(['corrected_twice'])
+    await putRight('corrected_twice', 'cancel_bill')
   })
 
   it('14 one return cancelled on both counters', async () => {
@@ -622,6 +661,51 @@ describe('the main is off and both counters act on the same record', () => {
     // The last change wins everywhere, and every sale is on every till.
     for (const t of [main, c1, c2]) expect(await rate(t)).toBe(rupees(600))
     expect(await shelf(main)).toBe(fromUnits(7))
+    await expectSettled()
+  })
+
+  it('24 a bill made from an order, cancelled on another till, is cancelled on every till', async () => {
+    /* Not a thing done twice: one cancel. Cancelling deleted the bill's record
+       of what it took from the order, which is a line of a submitted bill, and
+       every other till refused the change -- so the bill stood everywhere but
+       the till that cancelled it, and the order stayed billed. */
+    const order = await as(MAIN, async () => {
+      const made = await createDocument(main.db, {
+        kind: 'sales_order', registerId: fx.seed.registerId, customerId: customer,
+        lines: [{ productId: product, qty: fromUnits(2) }], actorId: fx.adminId,
+      })
+      if (!made.ok) throw new Error(made.code)
+      await submitDocument(main.db, { documentId: made.documentId, actorId: fx.adminId })
+      return made.documentId
+    })
+    const billId = await as(MAIN, async () => {
+      const loaded = await documentToCart(main.db, { documentId: order })
+      if (!loaded.ok) throw new Error(loaded.code)
+      const d = await createBill(main.db, {
+        registerId: fx.seed.registerId, customerId: loaded.customerId, convertedFrom: loaded.documentId,
+        lines: loaded.lines.map((l) => ({
+          productId: l.productId, saleUnit: l.saleUnit, qty: l.qty,
+          resolved: { rate: l.rate, source: 'order_rate' as const, sourceId: loaded.documentId },
+        })),
+        actorId: fx.adminId,
+      })
+      if (!d.ok) throw new Error(d.code)
+      const paid = await submitBill(main.db, { billId: d.billId, payments: [{ method: 'cash', amount: d.grandTotal }], actorId: fx.adminId })
+      if (!paid.ok) throw new Error(paid.code)
+      return d.billId
+    })
+    await settle()
+
+    expect(await as(C1, () => cancelBill(c1.db, { billId, reason: 'wrong', actorId: fx.adminId }))).toMatchObject({ ok: true })
+    await settle()
+
+    for (const t of [main, c1, c2]) {
+      const bill = await t.db.get<{ docstatus: number }>(`SELECT docstatus FROM bills WHERE id = ?`, [billId])
+      expect(bill?.docstatus, `${t.id.slice(0, 2)} holds it cancelled`).toBe(2)
+      const line = await t.db.get<{ f: number }>(`SELECT fulfilled_qty AS f FROM document_items WHERE document_id = ?`, [order])
+      expect(line?.f, `${t.id.slice(0, 2)}: the order is open again`).toBe(0)
+    }
+    expect(await shelf(main)).toBe(fromUnits(10))
     await expectSettled()
   })
 })

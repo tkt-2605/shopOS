@@ -113,7 +113,9 @@ export async function applyBillFulfilment(
 }
 
 /**
- * Gives back what a cancelled bill had taken.
+ * Gives back what a cancelled bill had taken: the order's figure comes down,
+ * and the bill's own record of what it took stays, as a cancelled bill's other
+ * lines do.
  *
  * Reads the working rather than recomputing the share: this bill's rows say
  * exactly what it marked off, and they are the only answer that stays right
@@ -137,12 +139,26 @@ export async function reverseBillFulfilment(
     /* `MAX(0, ...)` and not a bare subtraction: two cancellations racing, or a
        row put back by hand, must not leave an order claiming a negative
        delivery. */
+    /* And never below what the bills still standing and the conversions add up
+       to: an order billed on two counters while apart holds what it ordered,
+       not twice that, and taking one bill's share off it read nought while the
+       other bill still stood -- parting this till from every till that heard
+       of the cancellation by merge. */
     await q(tx).update(schema.documentItems)
-      .set({ fulfilledQty: sql`MAX(0, ${schema.documentItems.fulfilledQty} - ${row.qty})` })
+      .set({
+        fulfilledQty: sql`MAX(0, ${schema.documentItems.fulfilledQty} - ${row.qty}, COALESCE((
+          SELECT SUM(bf.qty) FROM bill_fulfilments bf JOIN bills b ON b.id = bf.bill_id AND b.docstatus = 1
+           WHERE bf.document_item_id = ${schema.documentItems.id} AND bf.bill_id <> ${input.billId}), 0)
+          + COALESCE((SELECT SUM(df.qty) FROM document_fulfilments df
+           WHERE df.document_item_id = ${schema.documentItems.id}), 0))`,
+      })
       .where(eq(schema.documentItems.id, row.documentItemId))
   }
-  await q(tx).delete(schema.billFulfilments)
-    .where(eq(schema.billFulfilments.billId, input.billId))
+  /* The rows stay. They are lines of the bill, and a submitted document's
+     lines are frozen against the merge: a cancellation that deleted them was
+     refused by every other till ("different bill_fulfilments"), so a bill made
+     from an order and cancelled on one till stood on all the others for good.
+     Every count of what an order has had reads only bills still standing. */
 
   for (const documentId of new Set(taken.map((t) => t.documentId))) {
     await writeAudit(tx, { actorId: input.actorId }, {

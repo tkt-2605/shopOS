@@ -47,6 +47,23 @@ export interface Discrepancy {
    * then offers to open it, where the payment to cancel is.
    */
   customerId?: string | null
+  /**
+   * For a thing done twice: the documents to choose between, one of which
+   * should not stand. The screen offers to cancel each. See `remedies.ts`.
+   */
+  remedies?: Remedy[]
   /** When it last happened, when that is known. */
+  at: string | null
+}
+
+/** One document a person may cancel to put a warning right. */
+export interface Remedy {
+  act: 'cancel_payment' | 'cancel_return' | 'cancel_bill'
+  id: string
+  docNo: string
+  amount: Money | null
+  /** The counter it was done at, read off its number. */
+  where: string | null
+  /** When it was made. */
   at: string | null
 }

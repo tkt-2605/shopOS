@@ -222,17 +222,22 @@ describe('cancelling a bill that came from an order', () => {
     expect(await fulfilled(id)).toBe(4)
   })
 
-  it('leaves no working behind for a bill that was cancelled', async () => {
+  it('counts nothing for a bill that was cancelled, and keeps its record of what it took', async () => {
+    /* The record stays, as a cancelled bill's other lines do: it is a line of a
+       submitted bill, and deleting it made every other till refuse the
+       cancellation (`apartFromTheMain.test.ts`, 24). What it took is no
+       longer counted against the order. */
     const id = await order(10)
     const draft = await cart(id)
     if (!draft.ok) return
     await pay(draft)
     await cancelBill(fx.db, { billId: draft.billId, actorId: fx.adminId })
 
-    const left = await fx.db.get<{ n: number }>(
+    const kept = await fx.db.get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM bill_fulfilments WHERE bill_id = ?`, [draft.billId],
     )
-    expect(left?.n).toBe(0)
+    expect(kept?.n).toBeGreaterThan(0)
+    expect(await fulfilled(id)).toBe(0)
     expect((await loadDocument(fx.db, id))!.progress).toBe('open')
   })
 })
