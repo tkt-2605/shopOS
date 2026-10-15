@@ -151,6 +151,21 @@ The single biggest gap. Today the vendor sees a symptom and guesses.
 
 Size: 4 days, including the portal side and the decrypting tool.
 
+Built 16 Oct.
+- **Till** (`src-tauri/src/support_data.rs`, Settings → Help → Send my data to support):
+  - It needs the owner's password again, and writes an audit row.
+  - The copy is made with VACUUM INTO and scrubbed under `secure_delete`, with `sync_state.applying` set so the change feed does not move, then vacuumed. "Leave out customer details" is on by default and keeps each customer's placeholder the same everywhere they appear. Notes typed by staff stay; the card says so.
+  - It is sealed with `ring` to `SHOPOS_SUPPORT_PUBKEY`: X25519, HKDF-SHA256 and ChaCha20-Poly1305 in 64 KiB chunks, the last marked. A build without the key says so and offers nothing.
+  - It is sent in 768 KiB parts with the till's health key. A broken upload carries on where it stopped. "Save to a file instead" works with no line at all.
+- **Portal** (`data/`, `routes/data.ts`):
+  - It holds ciphertext under `SHOPOS_PORTAL_FILES`, checks the SHA-256 the till gave, and deletes a file 30 days after it arrives (7 if abandoned). The row stays.
+  - Downloading needs the `support` role and is logged.
+- **Vendor:**
+  - `tools/support/keygen.ts` makes the pair and refuses to write the private half inside the repository.
+  - `tools/support/open.ts` opens a file into `shop.db` and `manifest.json`.
+  - `tools/support/test/fixture.sod`, sealed by the Rust code, holds the two sides to one format.
+- **Checked by hand on till 4's own database:** sealed, uploaded through the real sender, opened by the tool. Integrity is ok and every table's row count is unchanged. No password hash is left, none of the real customer names or phones is in the file, and the books still balance.
+
 ### 5. The support workbench (reproduce)
 
 `tools/support`, a command-line tool on the vendor's machine:

@@ -75,6 +75,7 @@ export type {
   AvailableUpdate, UpdateSource, UpdateStage, CanInstall, InstallRefusal,
 } from '../services/update.js'
 export { releaseDecision, readTarget, shortShopId } from '../domain/updateTarget.js'
+export { noteDataForSupport } from '../services/support.js'
 export type { ReleaseTarget, ReleaseDecision } from '../domain/updateTarget.js'
 export { shopProgress, setupHidden, hideSetup } from '../services/setup.js'
 export type { ShopStep, ShopProgress } from '../services/setup.js'

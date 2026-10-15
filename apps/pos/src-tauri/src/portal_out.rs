@@ -109,11 +109,10 @@ fn flush_to(data: &Path, url: &str) -> Option<String> {
             remove(&dir, &id);
             continue;
         };
-        let key = std::fs::read_to_string(data.join(KEY_FILE)).ok().map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
-        match post(url, &dir.join(format!("{id}.payload")), &meta, key.as_deref()) {
+        match post(url, &dir.join(format!("{id}.payload")), &meta, key(data).as_deref()) {
             Ok(answer) => {
                 if let Some(new_key) = issued_key(&answer) {
-                    let _ = files::write_durably(&data.join(KEY_FILE), new_key.as_bytes());
+                    keep_key(data, &new_key);
                 }
                 remove(&dir, &id);
             }
@@ -121,6 +120,19 @@ fn flush_to(data: &Path, url: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The key this till proves itself to the portal with, once it has one.
+pub fn key(data: &Path) -> Option<String> {
+    std::fs::read_to_string(data.join(KEY_FILE)).ok().map(|k| k.trim().to_string()).filter(|k| !k.is_empty())
+}
+
+/// Keeps a key the portal gave, when it is shaped like one.
+pub fn keep_key(data: &Path, key: &str) {
+    let key = key.trim();
+    if !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        let _ = files::write_durably(&data.join(KEY_FILE), key.as_bytes());
+    }
 }
 
 /// The key in the portal's answer, when it gave one.
@@ -154,7 +166,7 @@ fn remove(dir: &Path, id: &str) {
 }
 
 /// Percent-encodes a path segment.
-fn segment(text: &str) -> String {
+pub fn segment(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),

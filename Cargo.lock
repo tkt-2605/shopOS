@@ -3184,8 +3184,10 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "crc32fast",
+ "flate2",
  "getrandom 0.3.4",
  "libc",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

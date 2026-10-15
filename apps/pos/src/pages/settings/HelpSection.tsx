@@ -3,6 +3,7 @@ import { getSetting, shortShopId } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { writeDiagnosticsBundle } from '../../core/diagnostics'
 import { spokenShop } from '../../core/support'
+import { SendDataCard } from './SendDataCard'
 import { appVersion, versionLine, shopLine, type AppVersion } from '../../core/version'
 import { Card, Alert } from '../../ui/components'
 import { Intro } from './parts'
@@ -90,6 +91,8 @@ export function HelpSection() {
         {error && <Alert>{error}</Alert>}
         {written && <Alert kind="ok">Saved to {written}</Alert>}
       </Card>
+
+      <SendDataCard />
     </>
   )
 }

@@ -6,6 +6,7 @@ import { issueLicence, currentLicence } from './licences.js'
 import { isTier } from '@shopos/core/licence'
 import { serve } from './server.js'
 import { runDigest, DIGEST_CHECK_MS } from './health/runDigest.js'
+import { sweepUploads } from './data/store.js'
 
 /**
  * The portal from a terminal.
@@ -117,10 +118,15 @@ switch (command) {
       `digest ${portal.digestBot === null ? 'off' : 'on'}\n`,
     )
     // The morning digest, asked about every few minutes; it goes once a day.
+    // Data sent to support is deleted on its date on the same beat.
     setInterval(() => {
       void runDigest(portal.db, portal.digestBot).then((r) => {
         if (!r.sent && r.why === 'failed') process.stderr.write(`[portal] digest: ${r.error}\n`)
       })
+      if (portal.filesDir) {
+        void sweepUploads(portal.db, portal.filesDir, new Date())
+          .catch((e: unknown) => process.stderr.write(`[portal] sweep: ${String(e)}\n`))
+      }
     }, DIGEST_CHECK_MS).unref()
     break
   }

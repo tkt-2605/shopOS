@@ -24,6 +24,7 @@ import type { DigestBot } from './health/digest.js'
  * | `SHOPOS_VENDOR_PHONES` | unset | who may use `/console`: `+91...:admin,+91...:view` |
  * | `SHOPOS_DIGEST_TOKEN` | unset | the bot that sends the morning digest |
  * | `SHOPOS_DIGEST_CHAT` | unset | the chat it goes to |
+ * | `SHOPOS_PORTAL_FILES` | `portal-files` | where data sent to support is kept, encrypted |
  *
  * **Every secret is unset by default and every unset secret disables its
  * feature rather than weakening it.** No signing key means the issuing route
@@ -76,6 +77,7 @@ export async function fromEnvironment(
     ...(exposeCodes ? { exposeCodes: true } : {}),
     throttle: new AddressThrottle(),
     vendors: parseVendors(env['SHOPOS_VENDOR_PHONES']),
+    filesDir: env['SHOPOS_PORTAL_FILES'] ?? 'portal-files',
     digestBot: env['SHOPOS_DIGEST_TOKEN'] && env['SHOPOS_DIGEST_CHAT']
       ? { token: env['SHOPOS_DIGEST_TOKEN'], chat: env['SHOPOS_DIGEST_CHAT'] }
       : null,

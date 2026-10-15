@@ -25,6 +25,9 @@ zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
 crc32fast = "1.5.2"
 sha2 = "0.10"
 base64 = "0.22"
+# X25519, HKDF and ChaCha20-Poly1305 for data sent to support (`support_data.rs`).
+ring = "0.17"
+flate2 = "1"
 shopos-net = { path = "../../../crates/shopos-net" }
 
 [target.'cfg(unix)'.dependencies]

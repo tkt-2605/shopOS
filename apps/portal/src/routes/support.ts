@@ -6,6 +6,7 @@ import { alertsFor } from '../health/alerts.js'
 import { receiveReport, latestPerTill, historyOf, reportBody, forgetKey, logSupport } from '../health/store.js'
 import { mayDo, type Role } from '../console/vendor.js'
 import { CONSOLE_PAGE } from '../console/page.js'
+import { uploadsOf, uploadById, readUpload } from '../data/store.js'
 
 /*
  * Health reports in from the tills, and the vendor's console over them.
@@ -71,7 +72,8 @@ export async function supportRoutes(
     const shopId = decoded(shop[1]!)
     if (shopId === null) return bad('a shop id is required')
     const tills = await latestPerTill(deps.db, shopId)
-    if (tills.length === 0) return { status: 404, body: { error: 'NO_REPORTS', shopId } }
+    const sent = await uploadsOf(deps.db, shopId)
+    if (tills.length === 0 && sent.length === 0) return { status: 404, body: { error: 'NO_REPORTS', shopId } }
     await logSupport(deps.db, { accountId, action: 'view_shop', shopId, now })
     return ok({
       shopId,
@@ -80,6 +82,7 @@ export async function supportRoutes(
       tills: await Promise.all(tills.map(async (t) => ({
         ...t, history: await historyOf(deps.db, shopId, t.deviceId),
       }))),
+      data: sent,
       log: await deps.db.query(
         'SELECT at, account_id AS accountId, action, detail FROM support_log WHERE shop_id = ? ORDER BY at DESC LIMIT 20',
         [shopId],
@@ -93,6 +96,25 @@ export async function supportRoutes(
     if (found === null) return { status: 404, body: { error: 'NO_REPORT' } }
     await logSupport(deps.db, { accountId, action: 'open_report', shopId: found.shopId, detail: report[1]!, now })
     return ok(JSON.parse(found.body))
+  }
+
+  const data = /^\/v1\/console\/data\/([0-9a-f]{32})$/.exec(path)
+  if (method === 'GET' && data) {
+    // Opening a shop's data is more than reading its health.
+    if (!mayDo(role, 'support')) return forbidden()
+    const upload = await uploadById(deps.db, data[1]!)
+    if (upload === null || upload.completedAt === null || upload.deletedAt !== null || !deps.filesDir) {
+      return { status: 404, body: { error: 'NO_DATA' } }
+    }
+    await logSupport(deps.db, { accountId, action: 'download_data', shopId: upload.shopId, detail: upload.id, now })
+    return {
+      status: 200,
+      body: readUpload(deps.filesDir, upload.id),
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="shopos-data-${upload.shopId.slice(0, 8)}-${upload.id.slice(0, 8)}.sod"`,
+      },
+    }
   }
 
   const forget = /^\/v1\/console\/shops\/([^/]+)\/tills\/([^/]+)\/forget-key$/.exec(path)

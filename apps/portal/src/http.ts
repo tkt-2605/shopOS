@@ -9,6 +9,7 @@ import { isTier } from '@shopos/core/licence'
 import type { AddressThrottle } from './auth/throttle.js'
 import { bearer, decoded, ok, bad, unauthorised } from './reply.js'
 import { supportRoutes } from './routes/support.js'
+import { dataRoutes } from './routes/data.js'
 import type { Role } from './console/vendor.js'
 
 /**
@@ -67,6 +68,8 @@ export interface PortalDeps {
   throttle?: AddressThrottle
   /** Phones that may use the console, and as what (`console/vendor.ts`). Absent: nobody. */
   vendors?: ReadonlyMap<string, Role>
+  /** Where data sent to support is kept (`data/`). Absent: uploads are refused. */
+  filesDir?: string | null
   now?: () => Date
 }
 
@@ -242,6 +245,8 @@ export async function handle(
   /* Health reports from tills, and the vendor's console (`routes/support.ts`). */
   const support = await supportRoutes(deps, request, now)
   if (support !== null) return support
+  const data = await dataRoutes(deps, request, now)
+  if (data !== null) return data
 
   return { status: 404, body: { error: 'NO_ROUTE', method, path } }
 }

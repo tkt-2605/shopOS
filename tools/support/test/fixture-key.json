@@ -1,0 +1,9 @@
+{
+  "note": "TEST ONLY. Seals the fixture made by support_data.rs; never a real support key.",
+  "jwk": {
+    "crv": "X25519",
+    "d": "YF7gdHKfOxMIwgRBDumHcawjItJKcUYT5ziZQfHA2Uw",
+    "x": "oQbthhgf3c9fCv-vE3cyoI_OrQqOYYEgy5_goTxYlmc",
+    "kty": "OKP"
+  }
+}

@@ -21,6 +21,7 @@ mod report_out;
 mod restore;
 mod shop_copy;
 mod support;
+mod support_data;
 mod sync_client;
 mod sync_server;
 mod updater;
@@ -231,6 +232,11 @@ pub fn run() {
             support::support_contact,
             support::support_whatsapp,
             support::start_remote_help,
+            support_data::support_data_make,
+            support_data::support_data_save,
+            support_data::support_data_send,
+            support_data::support_data_discard,
+            support_data::support_data_ready,
             version::app_version,
             version::shops_on_this_machine,
             updater::updates_enabled,

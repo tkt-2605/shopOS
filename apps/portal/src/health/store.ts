@@ -31,20 +31,9 @@ export async function receiveReport(
   input: { report: Report; body: string; key: string | null; now: Date },
 ): Promise<Received> {
   const { report, now } = input
-  const held = await db.get<{ key_hash: string }>(
-    'SELECT key_hash FROM health_keys WHERE shop_id = ? AND device_id = ?', [report.shopId, report.deviceId],
-  )
-
-  let issued: string | null = null
-  if (held === undefined) {
-    issued = randomBytes(32).toString('base64url')
-    await db.execute(
-      'INSERT INTO health_keys (shop_id, device_id, key_hash, created_at) VALUES (?, ?, ?, ?)',
-      [report.shopId, report.deviceId, hash(issued), now.toISOString()],
-    )
-  } else if (input.key === null || !same(hash(input.key), held.key_hash)) {
-    return { ok: false, code: 'BAD_KEY' }
-  }
+  const proved = await proveTill(db, { shopId: report.shopId, deviceId: report.deviceId, key: input.key, now })
+  if (!proved.ok) return proved
+  const issued = proved.key
 
   const id = randomBytes(16).toString('hex')
   await db.execute(
@@ -60,6 +49,29 @@ export async function receiveReport(
     [report.shopId, report.deviceId, report.shopId, report.deviceId, KEEP_PER_TILL],
   )
   return { ok: true, id, key: issued }
+}
+
+/**
+ * Whether this is the till it says it is: the key it was given, or -- the
+ * first time it is heard from -- a new key, returned to it once.
+ */
+export async function proveTill(
+  db: SqlDriver,
+  input: { shopId: string; deviceId: string; key: string | null; now: Date },
+): Promise<{ ok: true; key: string | null } | { ok: false; code: 'BAD_KEY' }> {
+  const held = await db.get<{ key_hash: string }>(
+    'SELECT key_hash FROM health_keys WHERE shop_id = ? AND device_id = ?', [input.shopId, input.deviceId],
+  )
+  if (held === undefined) {
+    const issued = randomBytes(32).toString('base64url')
+    await db.execute(
+      'INSERT INTO health_keys (shop_id, device_id, key_hash, created_at) VALUES (?, ?, ?, ?)',
+      [input.shopId, input.deviceId, hash(issued), input.now.toISOString()],
+    )
+    return { ok: true, key: issued }
+  }
+  if (input.key === null || !same(hash(input.key), held.key_hash)) return { ok: false, code: 'BAD_KEY' }
+  return { ok: true, key: null }
 }
 
 export interface TillRow extends TillLatest {

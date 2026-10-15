@@ -146,6 +146,27 @@ const SCHEMA: readonly string[] = [
      detail      TEXT
    )`,
   `CREATE INDEX idx_support_log_shop ON support_log(shop_id, at)`,
+
+  /* A shop's data, sent to support by its owner (`data/`). The file itself is
+     on disk under the portal's files folder, and it is ciphertext: only the
+     vendor's private key, which is not on this server, opens it. Deleted on
+     `delete_after`; the row stays, so "what was sent and when" still has an
+     answer after the data is gone. */
+  `CREATE TABLE data_uploads (
+     id            TEXT PRIMARY KEY,
+     shop_id       TEXT NOT NULL,
+     device_id     TEXT NOT NULL,
+     created_at    TEXT NOT NULL,
+     bytes         INTEGER NOT NULL,
+     sha256        TEXT NOT NULL,
+     received      INTEGER NOT NULL DEFAULT 0,
+     completed_at  TEXT,
+     delete_after  TEXT NOT NULL,
+     deleted_at    TEXT,
+     anonymised    INTEGER NOT NULL,
+     note          TEXT
+   )`,
+  `CREATE INDEX idx_data_uploads_shop ON data_uploads(shop_id, created_at)`,
 ]
 
 /** Brings a portal database up to date. Safe to run at every boot. */

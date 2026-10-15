@@ -179,12 +179,32 @@ async function shop(shopId) {
       el('details', {}, el('summary', {}, 'History'), el('div', { class: 'wrap' }, history)),
       el('p', {}, forget));
   });
+  const uploads = el('div', { class: 'card' }, el('h2', {}, 'Data sent to support'),
+    data.data.length === 0 ? el('p', { class: 'muted' }, 'None.') : el('table', {},
+      el('thead', {}, el('tr', {}, ['Sent', 'Size', 'Customers', 'Note', 'Deleted', ''].map((h) => el('th', {}, h)))),
+      el('tbody', {}, data.data.map((u) => el('tr', {},
+        el('td', {}, ago(u.createdAt)),
+        el('td', { class: 'num' }, (u.bytes / 1048576).toFixed(1) + ' MB' + (u.completedAt ? '' : ' (' + Math.round(100 * u.received / u.bytes) + '% arrived)')),
+        el('td', {}, u.anonymised ? 'left out' : 'included'),
+        el('td', {}, u.note || ''),
+        el('td', {}, u.deletedAt ? ago(u.deletedAt) : 'on ' + u.deleteAfter.slice(0, 10)),
+        el('td', {}, u.completedAt && !u.deletedAt ? el('button', { on: { click: () => download(u.id) } }, 'Download') : ''))))));
   const log = el('details', {}, el('summary', {}, 'Support log'),
     el('ul', {}, data.log.map((l) => el('li', {}, ago(l.at) + ' · ' + l.action + (l.detail ? ' · ' + l.detail : '')))));
   show(back,
     el('h2', {}, (data.shopName || 'Shop') + ' · ' + shopId.slice(0, 4) + ' ' + shopId.slice(4, 8)),
     el('div', { class: 'card' }, el('h2', {}, 'Alerts'), alertList(data.alerts, null)),
-    ...tills, el('div', { class: 'card' }, log));
+    ...tills, uploads, el('div', { class: 'card' }, log));
+}
+
+/* Ciphertext: it opens only with the vendor's private key, in tools/support. */
+async function download(id) {
+  const res = await fetch('/v1/console/data/' + id, { headers: { Authorization: 'Bearer ' + token } });
+  if (!res.ok) { alert('Could not download: HTTP ' + res.status); return; }
+  const url = URL.createObjectURL(await res.blob());
+  const a = el('a', { href: url, download: 'shopos-data-' + id.slice(0, 8) + '.sod' });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 async function openReport(id, shopId) {
