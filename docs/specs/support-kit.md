@@ -183,6 +183,21 @@ Built 16 Oct.
 
 Everything it does goes through core, so it gives the same answers as the till.
 
+Built 16 Oct, as `tools/support/support.ts`:
+- **`check`:**
+  - The database's integrity and foreign keys.
+  - The books, voucher by voucher.
+  - Every reconciler asked what it would change: stock, returned and billed quantities, loyalty, and stock reversed twice.
+  - Needs Attention, gaps in bill numbers, sync (peers, set-aside records, clashes, the feed by origin) and the counters' claims.
+  - It exits 2 when anything needs a look; `--json` gives the same for a ticket.
+- **`timeline`:** the record, its audit rows, feed rows, clashes, set-aside entries, book and stock postings, and the returns and payments against it, in time order.
+- **`diff`:** the soak's whole-row comparison (`virtual-till/src/books.ts`) pointed at two real files.
+- **Inputs:** each takes a `.sod`, a folder `open.ts` made, or a `shop.db`. It works on a copy brought up to the current schema, and the file given is never written to.
+
+Run on till 4's own database: every section ok, the file's hash unchanged after, and its first bill's history read back from creation to the books.
+
+Left out: `bench`. A shop's database seeded into several virtual tills needs each one given its own device identity and paired, which the virtual till cannot yet do from an existing file. Until then, a case that needs replaying is rebuilt on the bench by hand from what `timeline` shows.
+
 Size: 4 days.
 
 ### 6. Repair packs (repair)
