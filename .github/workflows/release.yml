@@ -124,6 +124,15 @@ jobs:
             target/release/bundle/nsis/latest.json
           if-no-files-found: error
 
+      # The maps that read a stack from a shop (vite.config.ts). Kept with the
+      # run, never published with the release: they are the source.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sourcemaps-${{ github.ref_name }}
+          path: apps/pos/sourcemaps/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: draft release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}

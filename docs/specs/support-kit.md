@@ -107,6 +107,15 @@ Size: 4–5 days. This is the piece that turns support from reacting to reports 
 
 Size: 3 days.
 
+Built 16 Oct, the till's side (`src-tauri/src/faults.rs`):
+- `faults.json` in the data folder counts each version's runs as started, clean, panicked or unclean. Unclean is a power cut or a killed process, counted apart from a crash because in a shop without a UPS it is not a bug.
+- Every error the log writes, from Rust or the webview, is counted by signature: the first line with numbers, ids and quoted values taken out, plus the top stack frame for the webview. The 100 kinds seen most recently are kept, with first and last time and a count. An error's own words are never kept, so a quoted customer name never reaches the report.
+- The health zip carries `faults.json`, and its caption gains a line such as `0.3.0: 12 run(s), 1 crash(es), 2 ended without closing, 3 kind(s) of error`.
+- An update marks its run clean before the installer closes the app.
+- Release builds make hidden source maps and move them to `apps/pos/sourcemaps/<version>/`; `release.yml` keeps them as a 90-day artefact of the run.
+
+Left for later: the page the user was on, the counted service refusals, and the release-health gate. The gate needs the portal (part 2), which is where versions are compared across shops.
+
 ### 4. Send my data to support (obtain)
 
 The single biggest gap. Today the vendor sees a symptom and guesses.

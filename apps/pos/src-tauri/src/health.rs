@@ -65,6 +65,8 @@ pub fn health_send(
     let name = format!("health {} {stamp}.zip", label.trim());
     let subject = format!("ShopOS health - {}", label.trim());
     // Names no customer, so the vendor's baked-in bot may carry it.
+    let (_, faults) = crate::faults::snapshot(&data);
+    let summary = if faults.is_empty() { summary } else { format!("{summary}\n{faults}") };
     let sent = report_out::send_out(&app, &name, &bytes, &subject, &summary, true)?;
     Ok(HealthSent {
         name,
@@ -121,6 +123,12 @@ pub fn health_zip(
     add(&mut zip, "checks.json", &pretty(&checks)?)?;
     if !extra.is_null() {
         add(&mut zip, "app.json", &pretty(extra)?)?;
+    }
+    // Runs and errors by kind (`faults.rs`): what says there is a problem
+    // before anybody reads the logs below.
+    let (faults, _) = crate::faults::snapshot(data);
+    if !faults.is_null() {
+        add(&mut zip, "faults.json", &pretty(&faults)?)?;
     }
     for path in crate::log::log_paths(data) {
         let Some(base) = path.file_name().and_then(|n| n.to_str()) else { continue };
@@ -339,6 +347,23 @@ mod tests {
         let (names, all) = everything_in(health_zip(&data, "2026-10-12T21:30:00Z", "0.2.20", None, &Json::Null).unwrap());
         assert!(names.iter().any(|n| n == "health.json"));
         assert!(all.contains("The database is not open"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn it_carries_the_runs_and_the_kinds_of_error() {
+        let data = scratch("faults");
+        let mut faults = crate::faults::Faults::default();
+        faults.begin("0.3.0", "2026-10-16T10:00:00Z");
+        faults.panicked();
+        faults.note("0.3.0", "promise", "No customer called 'Ravi Kumar' on bill 42", "2026-10-16T10:01:00Z");
+        std::fs::write(data.join("faults.json"), serde_json::to_vec(&faults).unwrap()).unwrap();
+
+        let (names, all) = everything_in(health_zip(&data, "2026-10-16T21:30:00Z", "0.3.0", None, &Json::Null).unwrap());
+        assert!(names.iter().any(|n| n == "faults.json"));
+        assert!(all.contains("\"panicked\": true"));
+        assert!(all.contains("No customer called '…' on bill N"));
+        assert!(!all.contains("Ravi"), "a quoted name never reaches the report");
         let _ = std::fs::remove_dir_all(&data);
     }
 }

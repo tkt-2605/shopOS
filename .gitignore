@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Release source maps, kept beside the installer by release.yml, never shipped.
+apps/pos/sourcemaps/
 *.tsbuildinfo
 *.db
 *.db-shm

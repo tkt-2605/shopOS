@@ -95,6 +95,9 @@ export function tauriUpdateSource(
     async install(): Promise<void> {
       if (pending === null) throw new Error('nothing downloaded to install')
       // Only here, which `apply` reaches after it has checked no bill is open.
+      /* The installer closes the app without the window's usual exit, and a
+         run that stops for an update is not a crash (`faults.rs`). */
+      try { await invoke('faults_ending') } catch { /* never in the way of an update */ }
       await pending.install()
       await relaunch()
     },

@@ -119,6 +119,9 @@ pub fn install_panic_hook() {
                 .unwrap_or_else(|| "unknown".into());
             let what = payload(info);
             let trace = std::backtrace::Backtrace::force_capture();
+            // First, and on its own: this run is now a crash, whatever the
+            // write below manages.
+            crate::faults::panicked();
             write("error", "panic", &format!("{what} at {where_}\n{trace}"));
             IN_PANIC.store(false, Ordering::SeqCst);
         }
@@ -142,6 +145,10 @@ fn payload(info: &std::panic::PanicHookInfo<'_>) -> String {
 /// `sync`, `webview` -- because the first question on a support call is which
 /// half of the product went wrong, and grepping one word answers it.
 pub fn write(level: &str, source: &str, message: &str) {
+    // Counted by kind as well as written, for the health report (`faults.rs`).
+    if level == "error" {
+        crate::faults::note(source, message);
+    }
     let line = format(now_unix(), level, source, message);
 
     let Ok(mut guard) = cell().lock() else { return };
@@ -227,13 +234,18 @@ fn format(secs: i64, level: &str, source: &str, message: &str) -> String {
     out
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         // A clock set before 1970 is a shop PC with a dead CMOS battery, which
         // happens. Zero is wrong and readable; panicking is wrong and silent.
         .unwrap_or(0)
+}
+
+/// Now, as `stamp` writes it.
+pub(crate) fn now_stamp() -> String {
+    stamp(now_unix())
 }
 
 /// `2026-09-16T14:22:01Z`, from a Unix timestamp, without a date library.

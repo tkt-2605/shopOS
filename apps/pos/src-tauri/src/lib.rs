@@ -6,6 +6,7 @@ mod device;
 mod diagnostics;
 mod discovery;
 mod exports;
+mod faults;
 mod files;
 mod health;
 mod hook;
@@ -81,6 +82,7 @@ pub fn run() {
             // The first thing that can write anything down, and therefore the
             // first thing done with a folder to write it in.
             log::open(&dir);
+            faults::open(&dir, &app.package_info().version.to_string());
             if let Ok(Some(shop)) = paths::shop_slug() {
                 log::write("info", "startup", &format!("running shop \"{shop}\""));
             }
@@ -171,6 +173,7 @@ pub fn run() {
             log::log_event,
             db::startup_status,
             diagnostics::diagnostics_bundle,
+            faults::faults_ending,
             db::sql_query,
             db::sql_query_values,
             db::sql_execute,
@@ -230,8 +233,14 @@ pub fn run() {
             version::shops_on_this_machine,
             updater::updates_enabled,
         ])
-        .run(context)
-        .expect("error while running shopos");
+        .build(context)
+        .expect("error while building shopos")
+        .run(|_app, event| {
+            // The window closed and the app is stopping as it should.
+            if let tauri::RunEvent::Exit = event {
+                faults::end_clean();
+            }
+        });
 }
 
 /// Starts the window without a database, carrying why.
