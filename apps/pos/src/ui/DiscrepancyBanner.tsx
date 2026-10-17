@@ -4,6 +4,7 @@ import { useCore } from '../core/CoreProvider'
 import { discrepancies, onDiscrepancies, watchDiscrepancies, type Found } from '../core/discrepancyWatch'
 import { goTo } from '../core/nav'
 import { Alert } from './components'
+import { useSwitchedOff } from '../core/switches'
 
 /**
  * Something in the shop's records does not add up, and nobody here has seen it.
@@ -16,12 +17,14 @@ import { Alert } from './components'
 export function DiscrepancyBanner({ canReview }: { canReview: boolean }) {
   const { db } = useCore()
   const [found, setFound] = useState<Found[]>(discrepancies)
+  // The vendor can take the banner down at a shop where it misbehaves; Needs Attention keeps the list.
+  const bannerOff = useSwitchedOff('needs_attention_banner')
 
   useEffect(() => onDiscrepancies(setFound), [])
   useEffect(() => { watchDiscrepancies(db) }, [db])
 
   const unseen = found.filter((d) => !d.seen)
-  if (!canReview || unseen.length === 0) return null
+  if (!canReview || unseen.length === 0 || bannerOff) return null
 
   const money = unseen.reduce((sum, d) => sum + (d.area === 'money' ? d.amount ?? 0 : 0), 0)
   return (

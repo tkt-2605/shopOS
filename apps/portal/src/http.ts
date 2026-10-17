@@ -10,6 +10,8 @@ import type { AddressThrottle } from './auth/throttle.js'
 import { bearer, decoded, ok, bad, unauthorised } from './reply.js'
 import { supportRoutes } from './routes/support.js'
 import { dataRoutes } from './routes/data.js'
+import { switchRoutes } from './routes/switches.js'
+import { releaseHealth } from './health/releases.js'
 import type { Role } from './console/vendor.js'
 
 /**
@@ -242,11 +244,22 @@ export async function handle(
     return ok({ shopId, tillsSeen: await tillsSeen(deps.db, shopId, thirtyDaysAgo) })
   }
 
+  /* Each release's crash figures, for `tools/release.ts target` on the
+     vendor's machine before it widens a rollout. Behind the admin token, as
+     issuing is: a script asks, not a person. */
+  if (method === 'GET' && path === '/v1/releases') {
+    if (deps.adminToken === null) return { status: 404, body: { error: 'ADMIN_TOKEN_NOT_SET' } }
+    if (!sameSecret(bearer(request), deps.adminToken)) return unauthorised()
+    return ok({ releases: await releaseHealth(deps.db) })
+  }
+
   /* Health reports from tills, and the vendor's console (`routes/support.ts`). */
   const support = await supportRoutes(deps, request, now)
   if (support !== null) return support
   const data = await dataRoutes(deps, request, now)
   if (data !== null) return data
+  const switches = await switchRoutes(deps, request)
+  if (switches !== null) return switches
 
   return { status: 404, body: { error: 'NO_ROUTE', method, path } }
 }

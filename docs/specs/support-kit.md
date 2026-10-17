@@ -279,6 +279,16 @@ Already planned in `update-rollout.md`. The kit adds:
 
 Size: 2 days.
 
+Built 18 Oct, with three changes from the plan above:
+- **Switches, not manifest flags.** The updater plugin hands over `latest.json` only when there is a newer version, so a shop already up to date would never see a flag. Instead:
+  - A switch board (`core/domain/switches.ts`) is signed with the repair key by `tools/support/switches.ts` and put out with `cli.ts switches`. The portal serves it at `GET /v1/switches`.
+  - Tills fetch it at start and every half hour (`portal_out.rs`), check it against `REPAIR_KEYS`, keep it on the machine, and take only a newer one.
+  - What can be switched off: the catching-up screen, the weekly stock recount, the evening report pack, and the Needs Attention banner. A board naming billing, payments, returns, cash, sign-in or sync is refused whole.
+- **Crash gate.** `release.ts target` will not widen a rollout while the release's crash-free share is more than 2 points below the release before it, once at least 20 runs have ended. It reads the figures from the portal's `GET /v1/releases` (admin token). Power cuts are left out of the figures. `--despite-crashes` overrides it. Narrowing and halting are never held up.
+- **Hotfix and soak.**
+  - `release.ts hotfix vX.Y.Z --shops <id>` checks the tag is the next patch, cut from the release it fixes, then tags it with its shops in the message. `release.yml` reads them, so the build goes first to those shops only.
+  - The soak (500 steps) and catch-up (1,000 sales) now run in `release.yml` before the build, which waits on them.
+
 ### 9. Running support (process)
 
 Not code, and just as much a part of the kit:

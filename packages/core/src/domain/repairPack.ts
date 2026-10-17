@@ -1,4 +1,5 @@
-import { describeCause, fromBase64Url, verifyEd25519, type SigningKey } from './licence.js'
+import type { SigningKey } from './licence.js'
+import { verifySigned, readUnverified, type SignedFailure } from './signed.js'
 
 /*
  * A repair pack: a fix support made for one shop, signed so a till can tell
@@ -48,8 +49,7 @@ export interface Pack {
   repairs: Repair[]
 }
 
-export type PackFailure =
-  | 'MALFORMED' | 'NOT_CONFIGURED' | 'UNKNOWN_KEY' | 'BAD_SIGNATURE' | 'WRONG_SHOP' | 'EXPIRED'
+export type PackFailure = SignedFailure | 'WRONG_SHOP' | 'EXPIRED'
 
 export type PackResult =
   | { ok: true; pack: Pack }
@@ -60,30 +60,12 @@ export async function verifyPack(
   keys: readonly SigningKey[],
   expect: { shopId: string | null; now: Date },
 ): Promise<PackResult> {
-  const [encoded, sig, ...extra] = raw.trim().split('.')
-  if (!encoded || !sig || extra.length > 0) return { ok: false, code: 'MALFORMED' }
-
-  let pack: Pack | null
-  let signature: Uint8Array
-  try {
-    pack = parsePack(new TextDecoder().decode(fromBase64Url(encoded)))
-    signature = fromBase64Url(sig)
-  } catch {
-    return { ok: false, code: 'MALFORMED' }
-  }
+  // Read before the signature is checked, so a pack this build cannot read says MALFORMED first.
+  if (readPackUnverified(raw) === null) return { ok: false, code: 'MALFORMED' }
+  const signed = await verifySigned(raw, keys, 'config/repairs.ts')
+  if (!signed.ok) return signed
+  const pack = parsePack(signed.payload)
   if (pack === null) return { ok: false, code: 'MALFORMED' }
-
-  if (keys.length === 0) return { ok: false, code: 'NOT_CONFIGURED', cause: 'no repair keys in config/repairs.ts' }
-  const key = keys.find((k) => k.kid === pack!.kid)
-  if (key === undefined) return { ok: false, code: 'UNKNOWN_KEY' }
-
-  let good: boolean
-  try {
-    good = await verifyEd25519(new TextEncoder().encode(encoded), signature, key.publicKey)
-  } catch (e) {
-    return { ok: false, code: 'NOT_CONFIGURED', cause: describeCause(e) }
-  }
-  if (!good) return { ok: false, code: 'BAD_SIGNATURE' }
 
   // Checked only once the pack is known to be the vendor's: an unsigned one says nothing true.
   if (expect.shopId === null || pack.shopId !== expect.shopId) return { ok: false, code: 'WRONG_SHOP' }
@@ -93,15 +75,11 @@ export async function verifyPack(
 
 /** The pack without checking it, for saying why one was refused. */
 export function readPackUnverified(raw: string): Pack | null {
-  try {
-    return parsePack(new TextDecoder().decode(fromBase64Url(raw.trim().split('.')[0] ?? '')))
-  } catch {
-    return null
-  }
+  const payload = readUnverified(raw)
+  return payload === null ? null : parsePack(payload)
 }
 
-function parsePack(text: string): Pack | null {
-  const v = JSON.parse(text) as Record<string, unknown>
+function parsePack(v: Record<string, unknown>): Pack | null {
   const str = (k: string) => (typeof v[k] === 'string' && v[k] !== '' ? v[k] as string : null)
   if (v['format'] !== PACK_FORMAT) return null
   const id = str('id'); const kid = str('kid'); const shopId = str('shopId')

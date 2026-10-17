@@ -4,6 +4,7 @@ import {
 import { deviceSetting, setDeviceSetting } from './device'
 import { msUntilHour, DAILY_BACKUP_HOUR } from './backup'
 import { logEvent } from './log'
+import { isOff } from './switches'
 
 /**
  * The slow checks, on a timer, because they are too slow to do on a screen.
@@ -92,6 +93,11 @@ export async function runStockCheck(
 ): Promise<StockCheck | null> {
   const now = opts.now ?? new Date()
   if (!opts.force && !stockCheckIsDue(now)) return null
+  // Switched off by the vendor at this shop (`switches.ts`): not due, as far as anyone here is concerned.
+  if (!opts.force && isOff('stock_check', now)) {
+    logEvent('info', 'maintenance', 'Stock replay switched off by the vendor; not run')
+    return null
+  }
 
   const started = Date.now()
   const drift = await recomputeStock(db)

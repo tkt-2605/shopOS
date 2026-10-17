@@ -81,9 +81,40 @@ jobs:
     needs: preflight
     uses: ./.github/workflows/ci.yml
 
+  # Three tills in network namespaces selling, syncing and losing their cables
+  # and power at random, then checked to the row (`tools/netns-bench/`): the
+  # same run as `soak-nightly.yml`, shorter, and here a gate rather than a
+  # finding. A release that splits the books between tills does not get built.
+  soak:
+    name: soak and catch-up
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: cargo build --release --manifest-path crates/shopos-net/Cargo.toml
+      - name: the run
+        run: |
+          sudo env STEPS=500 SALES=1000 NIGHTLY_DIR=/var/tmp/shopos-release tools/netns-bench/nightly.sh | tee summary.txt
+          status=${PIPESTATUS[0]}
+          { echo '### Soak before release'; echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: keep the evidence of a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-soak-evidence
+          path: /var/tmp/shopos-release
+          retention-days: 30
+
   build:
     name: installer, signature and latest.json
-    needs: ci
+    needs: [ci, soak]
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -110,6 +141,17 @@ jobs:
           SHOPOS_TG_TOKEN: ${{ secrets.SHOPOS_TG_TOKEN }}
           SHOPOS_TG_CHAT: ${{ secrets.SHOPOS_TG_CHAT }}
         run: npx tauri build --config src-tauri/tauri.release.json
+
+      # A hotfix tag names its first shops in its message (`release.ts hotfix`).
+      - name: the tag's message
+        shell: bash
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          {
+            echo 'TAG_MESSAGE<<SHOPOS_EOF'
+            git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)'
+            echo 'SHOPOS_EOF'
+          } >> "$GITHUB_ENV"
 
       - run: npx tsx tools/release.ts manifest "$GITHUB_REF_NAME"
         env:

@@ -206,6 +206,97 @@ export function retarget(m: Manifest, target: ReleaseTarget | null): Manifest {
   return target === null ? rest : { ...rest, shops: target }
 }
 
+// ---------------------------------------------------------------- safety
+
+/**
+ * Whether `next` offers a release to more shops than `was`. Narrowing and
+ * halting are never held up: they are what a bad release needs most.
+ */
+export function widens(was: ReleaseTarget | null, next: ReleaseTarget | null): boolean {
+  if (next === null) return was !== null
+  if (was === null) return false
+  const reach = (t: ReleaseTarget) => t.only === undefined ? (t.percent ?? 100) : t.only.length > 0 ? 0.5 + t.only.length / 1000 : 0
+  if (was.only !== undefined && next.only === undefined && (next.percent ?? 100) > 0) return true
+  if ((next.only?.length ?? 0) > (was.only?.length ?? 0)) return true
+  if ((was.hold?.length ?? 0) > (next.hold?.length ?? 0)) return true
+  return reach(next) > reach(was)
+}
+
+/** What the portal says of one release (`apps/portal/src/health/releases.ts`). */
+export interface ReleaseFigures {
+  version: string
+  tills: number
+  clean: number
+  panicked: number
+  crashFree: number | null
+}
+
+/** Runs that must have ended before a release is judged; fewer is not a reason to stop. */
+export const RUNS_TO_JUDGE = 20
+/** How much worse than the release before it, in crash-free share, holds a rollout. */
+export const CRASH_SLACK = 0.02
+
+/**
+ * Whether a release may go to more shops: not when it crashes noticeably
+ * more often than the release before it did. Power cuts are already out of
+ * these figures.
+ */
+export function crashGate(figures: readonly ReleaseFigures[], version: string): { ok: boolean; said: string } {
+  const pct = (n: number) => `${(100 * n).toFixed(1)}%`
+  const mine = figures.find((f) => f.version === version)
+  if (mine === undefined || mine.crashFree === null || mine.clean + mine.panicked < RUNS_TO_JUDGE) {
+    const runs = mine ? mine.clean + mine.panicked : 0
+    return { ok: true, said: `${version} has ${runs} finished run(s) reported, too few to judge (${RUNS_TO_JUDGE} needed)` }
+  }
+  const before = figures
+    .filter((f) => f.version !== version && f.crashFree !== null && compareVersions(f.version, version) < 0)
+    .sort((a, b) => compareVersions(b.version, a.version))[0]
+  if (before === undefined) return { ok: true, said: `${version} is ${pct(mine.crashFree)} crash-free; nothing earlier to compare with` }
+  const ok = mine.crashFree >= before.crashFree! - CRASH_SLACK
+  return {
+    ok,
+    said: `${version} is ${pct(mine.crashFree)} crash-free over ${mine.tills} till(s), against ${pct(before.crashFree!)} for ${before.version}`,
+  }
+}
+
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(/[.-]/).map(Number)
+  const pb = b.split(/[.-]/).map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (Number.isNaN(pa[i]) ? 0 : pa[i] ?? 0) - (Number.isNaN(pb[i]) ? 0 : pb[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+/**
+ * A hotfix: the next patch after a release that is out, cut from that
+ * release and nothing newer, so it carries the one fix and nothing else
+ * that has not been through a rollout.
+ */
+export function hotfixProblems(input: {
+  tag: string; tags: readonly string[]; packageVersion: string; fromAncestor: (tag: string) => boolean; shops: readonly string[]
+}): string[] {
+  const problems: string[] = []
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(input.tag)
+  if (m === null) return [`"${input.tag}" is not a release tag like v0.3.1`]
+  const patch = Number(m[3])
+  const previous = `v${m[1]}.${m[2]}.${patch - 1}`
+  if (patch === 0) problems.push(`${input.tag} is not a patch: a hotfix is vX.Y.Z with Z above 0`)
+  else if (!input.tags.includes(previous)) problems.push(`${previous} has no tag here; a hotfix follows a release that is out`)
+  else if (!input.fromAncestor(previous)) problems.push(`this branch is not cut from ${previous}`)
+  if (input.tags.includes(input.tag)) problems.push(`${input.tag} is already tagged`)
+  if (input.packageVersion !== input.tag.slice(1)) problems.push(`apps/pos/package.json says ${input.packageVersion}; bump it to ${input.tag.slice(1)} first`)
+  if (input.shops.length === 0) problems.push('name the shop or shops it is for first: --shops <id>,<id>')
+  return problems
+}
+
+/** A hotfix tag carries its first shops in its message, as `shops: a, b`. */
+export function shopsFromTagMessage(message: string | undefined): ReleaseTarget | null {
+  const line = (message ?? '').split('\n').find((l) => /^shops:/i.test(l.trim()))
+  return line === undefined ? null : firstShops(line.trim().slice('shops:'.length))
+}
+
 /** A sentence for the person who ran it. */
 export function describeTarget(version: string, target: ReleaseTarget | null): string {
   if (target === null) return `${version} is for every shop`
@@ -259,7 +350,8 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.
   } else if (step === 'manifest') {
     const found = findInstaller(BUNDLE_DIR, tag.replace(/^v/, ''))
     const out = join(BUNDLE_DIR, 'latest.json')
-    const shops = firstShops(env.RELEASE_FIRST_SHOPS)
+    // A hotfix tag names its own first shops; anything else starts where the repository says.
+    const shops = shopsFromTagMessage(env.TAG_MESSAGE) ?? firstShops(env.RELEASE_FIRST_SHOPS)
     writeFileSync(out, `${JSON.stringify(manifest({ tag, releaseRepo, ...found, shops }), null, 2)}\n`)
     process.stdout.write(`${describeTarget(tag, shops)}\n`)
     process.stdout.write(`${out}\n`)
@@ -270,18 +362,58 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.
        to RELEASE_REPO. */
     if (!/^v\d+\.\d+\.\d+/.test(tag)) fail([`"${tag}" is not a release tag like v0.2.20`])
     if (!/^[\w.-]+\/[\w.-]+$/.test(releaseRepo)) fail(['set RELEASE_REPO to the owner/repo tills update from'])
-    const chosen = targetFromArgs(process.argv.slice(4))
+    const options = process.argv.slice(4)
+    const despite = options.includes('--despite-crashes')
+    const chosen = targetFromArgs(options.filter((o) => o !== '--despite-crashes'))
     if ('problems' in chosen) fail(chosen.problems)
     const dir = mkdtempSync(join(tmpdir(), 'shopos-target-'))
     execFileSync('gh', ['release', 'download', tag, '--repo', releaseRepo, '--pattern', 'latest.json', '--dir', dir], { stdio: 'inherit' })
     const path = join(dir, 'latest.json')
     const current = JSON.parse(readFileSync(path, 'utf8')) as Manifest
     const was = readTarget(current.shops)
+    if (widens(was, chosen.target)) {
+      /* Wider: only if the release is not crashing more than the one before
+         it, by the portal's figures. A portal not set up here is said, not
+         taken as a pass in silence. */
+      const portal = env.SHOPOS_PORTAL_URL
+      const token = env.SHOPOS_ADMIN_TOKEN
+      if (!portal || !token) {
+        process.stderr.write('::warning::crash figures not checked: set SHOPOS_PORTAL_URL and SHOPOS_ADMIN_TOKEN\n')
+      } else {
+        const res = await fetch(`${portal.replace(/\/$/, '')}/v1/releases`, { headers: { Authorization: `Bearer ${token}` } })
+        if (!res.ok) fail([`the portal would not give crash figures: HTTP ${res.status}`])
+        const gate = crashGate(((await res.json()) as { releases: ReleaseFigures[] }).releases, current.version)
+        process.stdout.write(`${gate.said}\n`)
+        if (!gate.ok && !despite) fail([`not widening ${current.version}: it crashes more than the release before it. Add --despite-crashes to go ahead anyway.`])
+      }
+    }
     const next = retarget(current, chosen.target)
     writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`)
     execFileSync('gh', ['release', 'upload', tag, path, '--repo', releaseRepo, '--clobber'], { stdio: 'inherit' })
     process.stdout.write(`was: ${describeTarget(current.version, was)}\nnow: ${describeTarget(next.version, chosen.target)}\n`)
+  } else if (step === 'hotfix') {
+    /* Tags a hotfix that goes first to the shops it is for. The tag's message
+       carries them, and the manifest step reads it, so the fix reaches the
+       shop that rang without reaching every shop the same hour. */
+    const at = process.argv.indexOf('--shops')
+    const shops = (at >= 0 ? process.argv[at + 1] ?? '' : '').split(',').map((s) => s.trim()).filter(Boolean)
+    const git = (...a: string[]) => execFileSync('git', a, { cwd: root, encoding: 'utf8' }).trim()
+    const problems = hotfixProblems({
+      tag,
+      tags: git('tag', '--list', 'v*').split('\n').filter(Boolean),
+      packageVersion: readReleaseInputs(tag).packageVersion,
+      fromAncestor: (t) => { try { git('merge-base', '--is-ancestor', t, 'HEAD'); return true } catch { return false } },
+      shops,
+    })
+    if (problems.length > 0) fail(problems)
+    git('tag', '-a', tag, '-m', `hotfix ${tag}\n\nshops: ${shops.map(shortShopId).join(', ')}`)
+    process.stdout.write([
+      `tagged ${tag}, first to ${shops.map(shortShopId).join(', ')}.`,
+      `push it to build: git push origin ${tag}`,
+      `then, after a day with no crashes: npx tsx tools/release.ts target ${tag} --all`,
+      '',
+    ].join('\n'))
   } else {
-    fail([`unknown step "${step ?? ''}"; expected check, config, manifest or target`])
+    fail([`unknown step "${step ?? ''}"; expected check, config, manifest, target or hotfix`])
   }
 }

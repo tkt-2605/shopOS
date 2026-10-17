@@ -1,5 +1,5 @@
 import { createPrivateKey, generateKeyPairSync, randomBytes, sign } from 'node:crypto'
-import { readPackUnverified, type Pack, type Repair } from '@shopos/core'
+import { readPackUnverified, verifyBoard, type Pack, type Repair } from '@shopos/core'
 
 /*
  * Repair packs, made and signed on the vendor's machine
@@ -58,4 +58,27 @@ export function makePack(
   const pack = readPackUnverified(raw)
   if (pack === null) throw new Error('That pack would be refused: a repair kind or one of its fields is not one the tills know.')
   return { raw, pack }
+}
+
+/** `startup_sync` or `stock_check:shops=0192f4a1,until=2026-10-20T00:00:00Z`, from the command line. */
+export function parseOffSpec(spec: string, why: string): Record<string, unknown> {
+  const [feature, rest = ''] = spec.split(/:(.*)/s)
+  const entry: Record<string, unknown> = { feature, why }
+  for (const pair of rest.split(/,(?=\w+=)/).filter(Boolean)) {
+    const [k, v = ''] = pair.split(/=(.*)/s)
+    if (k === 'shops') entry['shops'] = v.split(/[ ,]+/).filter(Boolean)
+    else if (k === 'until') entry['until'] = new Date(v).toISOString()
+  }
+  return entry
+}
+
+/** A switch board, signed with the repair key. Read back with the tills' own checks before it is handed over. */
+export async function makeBoard(key: RepairKey, off: Record<string, unknown>[], now = new Date()): Promise<string> {
+  const payload = { format: 1, kind: 'switches', kid: key.kid, issuedAt: now.toISOString(), off }
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  const signature = sign(null, Buffer.from(encoded), createPrivateKey({ key: key.jwk, format: 'jwk' }))
+  const raw = `${encoded}.${signature.toString('base64url')}`
+  const read = await verifyBoard(raw, [publicEntry(key)])
+  if (!read.ok) throw new Error('That board would be refused: a feature is not one that can be switched, or a field is wrong.')
+  return raw
 }

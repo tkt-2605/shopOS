@@ -25,6 +25,7 @@ vi.mock('../src/core/syncLoop', () => ({ onSyncRound: () => () => {}, runOnce: (
 /* One core per test, and the same object on every render, as the app's is. */
 let core = { db: {}, status: { phase: 'ready' } }
 vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core }))
+vi.mock('../src/core/switches', () => ({ isOff: () => false }))
 
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString()
 

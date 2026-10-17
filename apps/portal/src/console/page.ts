@@ -135,11 +135,30 @@ async function fleet() {
   find.addEventListener('input', fill);
   fill();
   const urgent = data.alerts.filter((a) => a.severity !== 'P3');
+  let rel = { releases: [], switches: null };
+  try { rel = await api('/v1/console/releases'); } catch (err) {}
+  const releases = el('div', { class: 'card' }, el('h2', {}, 'Releases'),
+    rel.releases.length === 0 ? el('p', { class: 'muted' }, 'No reports yet.') : el('div', { class: 'wrap' }, el('table', {},
+      el('thead', {}, el('tr', {}, ['Version', 'Tills', 'Runs', 'Crashed', 'Ended without closing', 'Crash-free'].map((h) => el('th', {}, h)))),
+      el('tbody', {}, rel.releases.map((r) => el('tr', {},
+        el('td', { class: 'num' }, r.version), el('td', { class: 'num' }, r.tills), el('td', { class: 'num' }, r.started),
+        el('td', { class: 'num' + (r.panicked ? ' P2' : '') }, r.panicked), el('td', { class: 'num' }, r.unclean),
+        el('td', { class: 'num' }, r.crashFree === null ? '-' : (100 * r.crashFree).toFixed(1) + '%')))))),
+    el('p', { class: 'muted' }, rel.switches ? 'Switch board out since ' + rel.switches.issuedAt + ': ' + switchesSaid(rel.switches.token) : 'No switch board: every feature is on.'));
   show(
     el('div', { class: 'card' }, el('h2', {}, 'To look at (' + urgent.length + ')'), alertList(urgent, names)),
+    releases,
     el('p', {}, find, ' ', el('span', { class: 'muted' }, data.shops.length + ' shop(s)')),
     el('div', { class: 'wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['Shop', 'Code', 'Tills', 'Version', 'Last report', 'Alerts'].map((h) => el('th', {}, h)))), body)),
   );
+}
+
+/* What a board switches off, read without checking it: the tills check it. */
+function switchesSaid(token) {
+  try {
+    const b = JSON.parse(atob(token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')));
+    return b.off.length === 0 ? 'everything on.' : b.off.map((o) => o.feature + (o.shops ? ' at ' + o.shops.join(', ') : ' everywhere') + (o.until ? ' until ' + o.until.slice(0, 10) : '')).join('; ');
+  } catch (e) { return 'unreadable.'; }
 }
 
 function fact(label, value, cls) {

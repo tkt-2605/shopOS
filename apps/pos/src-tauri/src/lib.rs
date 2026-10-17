@@ -206,6 +206,7 @@ pub fn run() {
             report_out::report_telegram_chats,
             report_out::report_telegram_builtin,
             report_out::report_health_daily,
+            portal_out::switches_fetch,
             health::health_send,
             backup::backup_list,
             backup::backup_path,

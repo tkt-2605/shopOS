@@ -1,5 +1,6 @@
 #!/usr/bin/env -S npx tsx
 
+import { existsSync, readFileSync } from 'node:fs'
 import { generateKeypair } from './keys.js'
 import { fromEnvironment } from './config.js'
 import { issueLicence, currentLicence } from './licences.js'
@@ -7,6 +8,7 @@ import { isTier } from '@shopos/core/licence'
 import { serve } from './server.js'
 import { runDigest, DIGEST_CHECK_MS } from './health/runDigest.js'
 import { sweepUploads } from './data/store.js'
+import { setBoard } from './routes/switches.js'
 
 /**
  * The portal from a terminal.
@@ -131,6 +133,22 @@ switch (command) {
     break
   }
 
+  case 'switches': {
+    // A board made by tools/support/switches.ts, from a file or pasted.
+    const given = args[1]
+    if (!given) {
+      process.stderr.write('switches <file or token>: a board from tools/support/switches.ts\n')
+      process.exit(1)
+    }
+    const token = existsSync(given) ? readFileSync(given, 'utf8').trim() : given
+    const portal = await fromEnvironment()
+    const set = await setBoard(portal.db, token, 'cli', new Date())
+    process.stdout.write(set.ok ? `board of ${set.issuedAt} is out; tills pick it up within half an hour\n` : `not set: ${set.detail}\n`)
+    await portal.close()
+    if (!set.ok) process.exit(1)
+    break
+  }
+
   case 'digest': {
     const portal = await fromEnvironment()
     const result = await runDigest(portal.db, portal.digestBot, { force: true })
@@ -150,6 +168,7 @@ switch (command) {
       '  show --shop <id>                            the shop\'s current licence',
       '  serve [--port 8787]                         run the HTTP service',
       '  digest                                      send the morning digest now',
+      '  switches <file|token>                       put out a switch board',
       '',
       'Run it directly, not through `npm run portal --`: npm swallows every',
       '--flag and passes only the values, so a correct command line arrives',

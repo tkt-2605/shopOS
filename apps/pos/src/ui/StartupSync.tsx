@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { listPeers, tillRole, type PeerHealth } from '@shopos/core'
 import { useCore } from '../core/CoreProvider'
 import { onSyncRound, runOnce } from '../core/syncLoop'
+import { isOff } from '../core/switches'
 
 /**
  * A till just switched on catches up with the shop before anybody uses it.
@@ -55,6 +56,8 @@ export function StartupSync() {
 
     const check = async (): Promise<void> => {
       if (over) return
+      // Switched off by the vendor where it misbehaves (`switches.ts`): the till opens as it did before it.
+      if (isOff('startup_sync')) { finish(); return }
       const peers = (await listPeers(db)).filter((p) => !p.needsPairing && recent(p))
       if (peers.length === 0) { finish(); return }
       // Caught up: heard from since this start, with nothing it said it had still to come.

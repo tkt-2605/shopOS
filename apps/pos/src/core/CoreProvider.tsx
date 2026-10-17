@@ -17,6 +17,7 @@ import { serveIfPaired, servingOn } from './syncHost'
 import { syncFetch } from './syncFetch'
 import { startSyncLoop, stopSyncLoop, runOnce, nudgeSync } from './syncLoop'
 import { startReportSchedule } from './reportOut'
+import { startSwitches } from './switches'
 import { watchForTillsAhead } from './outOfDate'
 import { nudgingDriver } from './nudgingDriver'
 import { serializingDriver } from './writeLock'
@@ -255,7 +256,8 @@ export function CoreProvider({ children }: { children: ReactNode }) {
            gets its turn on Monday rather than waiting another week. */
         void runStockCheck(db)
         stopMaintenance = startMaintenanceTimer(db, () => {})
-        stopReports = startReportSchedule(db)
+        const [reports, switches] = [startReportSchedule(db), startSwitches(db)]
+        stopReports = () => { reports(); switches() }
       } catch (err) {
         if (!cancelled) setStatus({ phase: 'failed', error: describe(err), kind: kindOf(err) })
       }

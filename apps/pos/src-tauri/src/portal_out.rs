@@ -232,6 +232,52 @@ fn post(_: &str, _: &Path, _: &Queued, _: Option<&str>) -> Result<String, String
     Err("Sending to the portal is only available on Windows.".into())
 }
 
+/// The portal's latest switch board, as text, for the webview to check
+/// against the repair key it was built with (`core/domain/switches.ts`).
+/// None when this build has no portal, the portal has no board, or the line
+/// is down -- all of which leave every feature as it was.
+#[tauri::command(async)]
+pub fn switches_fetch(app: tauri::AppHandle) -> Option<String> {
+    let data = paths::data_dir(&app).ok()?;
+    let url = portal_url(&data).ok()??;
+    fetch_board(&url)
+}
+
+#[cfg(windows)]
+const SWITCHES_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+try {
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  $r = Invoke-RestMethod -Uri $env:SHOPOS_SWITCHES_URL -TimeoutSec 30
+  [Console]::Out.Write($r.token)
+} catch {
+  [Console]::Error.WriteLine($_.Exception.GetBaseException().Message)
+  exit 1
+}
+"#;
+
+#[cfg(windows)]
+fn fetch_board(url: &str) -> Option<String> {
+    let token = crate::report_out::run_powershell(
+        SWITCHES_SCRIPT,
+        &[("SHOPOS_SWITCHES_URL", format!("{url}/v1/switches"))],
+        "The portal did not answer.",
+    )
+    .ok()?;
+    let token = token.trim().to_string();
+    // A board is base64url, one dot, base64url; anything else is not one.
+    let shaped = !token.is_empty()
+        && token.len() < 64 * 1024
+        && token.matches('.').count() == 1
+        && token.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    shaped.then_some(token)
+}
+
+#[cfg(not(windows))]
+fn fetch_board(_: &str) -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

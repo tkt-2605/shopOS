@@ -130,6 +130,7 @@ fn portal_payload(
 
 /// The zip, from paths rather than a running app, so a test can open it and
 /// look for what must never be there.
+#[cfg(test)]
 pub fn health_zip(
     data: &Path,
     now: &str,

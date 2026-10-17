@@ -7,6 +7,8 @@ import { receiveReport, latestPerTill, historyOf, reportBody, forgetKey, logSupp
 import { mayDo, type Role } from '../console/vendor.js'
 import { CONSOLE_PAGE } from '../console/page.js'
 import { uploadsOf, uploadById, readUpload } from '../data/store.js'
+import { setBoard, boardFrom, latestBoard } from './switches.js'
+import { releaseHealth } from '../health/releases.js'
 
 /*
  * Health reports in from the tills, and the vendor's console over them.
@@ -115,6 +117,20 @@ export async function supportRoutes(
         'Content-Disposition': `attachment; filename="shopos-data-${upload.shopId.slice(0, 8)}-${upload.id.slice(0, 8)}.sod"`,
       },
     }
+  }
+
+  if (method === 'GET' && path === '/v1/console/releases') {
+    return ok({ releases: await releaseHealth(deps.db), switches: await latestBoard(deps.db) })
+  }
+
+  if (method === 'POST' && path === '/v1/console/switches') {
+    if (!mayDo(role, 'admin')) return forbidden()
+    const token = boardFrom(request.body)
+    if (token === null) return bad('token is the board tools/support/switches.ts printed')
+    const set = await setBoard(deps.db, token, accountId, now)
+    if (!set.ok) return { status: 409, body: { error: 'NOT_SET', detail: set.detail } }
+    await logSupport(deps.db, { accountId, action: 'set_switches', shopId: null, detail: set.issuedAt, now })
+    return ok({ issuedAt: set.issuedAt })
   }
 
   const forget = /^\/v1\/console\/shops\/([^/]+)\/tills\/([^/]+)\/forget-key$/.exec(path)

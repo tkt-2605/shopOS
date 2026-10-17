@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { Money, Reports as R, businessDate, getSetting, loadShopProfile, type DateRange, type SqlDriver } from '@shopos/core'
 import { deviceSetting, setDeviceSetting } from './device'
 import { logEvent } from './log'
+import { isOff } from './switches'
 import { EVERYTHING } from '../pages/reports/LedgerTable'
 import { gstDetailCsv, loadReportData } from '../pages/reports/loadData'
 import { TABS_IN_PACK, describe, tableFor } from '../pages/reports/tableFor'
@@ -200,7 +201,8 @@ export function startReportSchedule(db: SqlDriver): () => void {
         const due = now.getHours() * 60 + now.getMinutes() >= (h ?? 21) * 60 + (m ?? 30)
         if (due && deviceSetting(LAST_DAY) !== today) {
           const month: DateRange = { from: businessDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: today }
-          if (auto) await deliverPack(db, month)
+          // The pack can be switched off by the vendor; the health report still goes.
+          if (auto && !isOff('daily_reports', now)) await deliverPack(db, month)
           await setDeviceSetting(LAST_DAY, today)
           // The shop's health goes with it: why a sync or a licence failed.
           // Loaded here rather than imported, because it reads this module.

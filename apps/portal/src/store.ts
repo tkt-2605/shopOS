@@ -167,6 +167,18 @@ const SCHEMA: readonly string[] = [
      note          TEXT
    )`,
   `CREATE INDEX idx_data_uploads_shop ON data_uploads(shop_id, created_at)`,
+
+  /* Switch boards (`core/domain/switches.ts`): signed on the vendor's
+     machine with the repair key, kept here, handed to every till that asks.
+     All of them, not the latest only, so "what was switched off in March" has
+     an answer. The portal cannot sign one, which is the point. */
+  `CREATE TABLE switch_boards (
+     id          TEXT PRIMARY KEY,
+     issued_at   TEXT NOT NULL,
+     token       TEXT NOT NULL,
+     set_by      TEXT NOT NULL,
+     set_at      TEXT NOT NULL
+   )`,
 ]
 
 /** Brings a portal database up to date. Safe to run at every boot. */
