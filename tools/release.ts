@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readTarget, shortShopId, type ReleaseTarget } from '../packages/core/src/domain/updateTarget'
+import { notesFor } from '../apps/pos/src/help/releaseNotes'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const RELEASE_CONFIG = join(root, 'apps/pos/src-tauri/tauri.release.json')
@@ -337,6 +338,8 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.
 
   if (step === 'check') {
     const problems = releaseProblems(readReleaseInputs(tag))
+    // Every till shows what changed once it updates (`ui/WhatsNew.tsx`); a release that says nothing is not one.
+    if (notesFor(tag.replace(/^v/, '')) === null) problems.push(`${tag} has no release notes: add them to apps/pos/src/help/releaseNotes.ts`)
     if (problems.length > 0) fail(problems)
     process.stdout.write(`${tag} matches apps/pos/package.json\n`)
   } else if (step === 'config') {

@@ -15,6 +15,7 @@ import { PageErrorBoundary } from './ui/ErrorBoundary'
 import { BackupDot } from './ui/BackupDot'
 import { ChangePassword } from './ui/ChangePassword'
 import { GetHelp } from './ui/GetHelp'
+import { WhatsNew } from './ui/WhatsNew'
 import { onRepeat } from './core/repeat'
 import { onGoTo } from './core/nav'
 import { appVersion, shopLine, type AppVersion } from './core/version'
@@ -383,6 +384,7 @@ function Shell() {
 
       {changingPassword && <ChangePassword onClose={() => setChangingPassword(false)} />}
       {gettingHelp && <GetHelp onClose={() => setGettingHelp(false)} />}
+      <WhatsNew />
 
       <main className="main">
         <div className="topbar">

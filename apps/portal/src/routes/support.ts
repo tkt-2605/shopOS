@@ -6,6 +6,7 @@ import { alertsFor } from '../health/alerts.js'
 import { receiveReport, latestPerTill, historyOf, reportBody, forgetKey, logSupport } from '../health/store.js'
 import { mayDo, type Role } from '../console/vendor.js'
 import { CONSOLE_PAGE } from '../console/page.js'
+import { privacyPage } from '../legal/privacy.js'
 import { uploadsOf, uploadById, readUpload } from '../data/store.js'
 import { setBoard, boardFrom, latestBoard } from './switches.js'
 import { releaseHealth } from '../health/releases.js'
@@ -43,6 +44,7 @@ export async function supportRoutes(
   }
 
   if (method === 'GET' && (path === '/console' || path === '/console/')) return html(CONSOLE_PAGE)
+  if (method === 'GET' && path === '/privacy') return html(privacyPage())
 
   if (!path.startsWith('/v1/console/')) return null
 

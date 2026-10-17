@@ -340,6 +340,17 @@ Not code, and just as much a part of the kit:
   - A rotation plan: the till accepts two signing keys, the current and the next.
 - **A second person:** console roles (view, open data, make packs) exist from the start, so hiring help is a setting and not a rewrite.
 
+Parts 9 and 10 built 18 Oct:
+- **Help articles** (`apps/pos/src/help/articles.ts`, on the Get help screen): nine short how-tos in English and Tamil, bundled so they open with the line down. Five of them name the runbook for the same problem, and a test holds the two languages step for step. The Tamil is a first draft, to be read by a native speaker before release.
+- **Release notes** (`help/releaseNotes.ts`) are shown once on each till after it updates (`ui/WhatsNew.tsx`), never after a fresh install. `release.ts check` refuses a tag whose version has none.
+- **Ready for a bad day** (Settings → Help) ticks off, from the shop's own settings: a recovery code, backups off the PC, support hearing of faults, and the support key in the build. It shows the number to save in the shop's phone.
+- **Process** (`docs/support/README.md`): where cases come in, P1–P4 with response targets (left to the owner to promise), the tools, the install checklist, and an incident template.
+- **Privacy** (`apps/portal/src/legal/privacy.ts`, served at `/privacy`, and `docs/legal/privacy-notice.md` generated from it) and a processing agreement (`docs/legal/data-processing.md`), both drafts for a lawyer. A test holds every period they state to the code's own constants.
+- **Changes from the plan:**
+  - Health history is kept as 60 reports per till (about two months), not 12 months: enough for a support case, and less to hold.
+  - The support log and the 30-day deletion were built in parts 3 and 4.
+  - Accepting the agreement when an owner registers waits for the owner-facing portal pages, which come with Cloud.
+
 ## Order
 
 | Stage | What | Days | Why this order |

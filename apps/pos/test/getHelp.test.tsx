@@ -17,7 +17,7 @@ const core: { db: SqlDriver | null } = { db: null }
 vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core }))
 
 let registerId = ''
-vi.mock('../src/core/device', () => ({ chosenRegister: () => registerId }))
+vi.mock('../src/core/device', () => ({ chosenRegister: () => registerId, deviceSetting: () => null, setDeviceSetting: async () => true }))
 vi.mock('../src/core/version', () => ({ appVersion: async () => ({ version: '0.3.0', schema: 72, shop: null }) }))
 
 const rust: {

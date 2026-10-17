@@ -9,6 +9,7 @@ import {
   type SupportCode, type SupportContact, type RemoteHelp,
 } from '../core/support'
 import { Modal, Alert } from './components'
+import { HelpArticles } from './HelpArticles'
 
 /**
  * Getting help, from anybody signed in.
@@ -64,6 +65,7 @@ export function GetHelp({ onClose }: { onClose: () => void }) {
   return (
     <Modal
       title="Get help"
+      wide
       onClose={onClose}
       footer={<button className="btn primary" onClick={onClose}>Close</button>}
     >
@@ -124,6 +126,8 @@ export function GetHelp({ onClose }: { onClose: () => void }) {
           )}
           {remote?.outcome === 'failed' && <Alert>{remote.error}</Alert>}
         </section>
+
+        <HelpArticles />
       </div>
     </Modal>
   )

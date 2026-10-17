@@ -5,6 +5,7 @@ import { writeDiagnosticsBundle } from '../../core/diagnostics'
 import { spokenShop } from '../../core/support'
 import { SendDataCard } from './SendDataCard'
 import { ApplyFixCard } from './ApplyFixCard'
+import { ReadyCard } from './ReadyCard'
 import { appVersion, versionLine, shopLine, type AppVersion } from '../../core/version'
 import { Card, Alert } from '../../ui/components'
 import { Intro } from './parts'
@@ -50,6 +51,8 @@ export function HelpSection() {
   return (
     <>
       <Intro>For the day something goes wrong, and for whoever is helping you put it right.</Intro>
+
+      <ReadyCard />
 
       <Card title="This copy of ShopOS">
         <div className="about-line">
