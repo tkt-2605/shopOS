@@ -24,9 +24,9 @@ vi.mock('@shopos/core', async (load) => {
   const real = await load<typeof import('@shopos/core')>()
   return {
     ...real,
-    checkPack: (db: SqlDriver, raw: string) => repair.checkPack(db, raw, keys.useTest ? { keys: KEYS } : {}),
+    checkPack: (db: SqlDriver, raw: string) => repair.checkPack(db, raw, { keys: keys.useTest ? KEYS : [] }),
     applyPack: (db: SqlDriver, input: { raw: string; actorId: string }) =>
-      repair.applyPack(db, { ...input, ...(keys.useTest ? { keys: KEYS } : {}) }),
+      repair.applyPack(db, { ...input, keys: keys.useTest ? KEYS : [] }),
   }
 })
 

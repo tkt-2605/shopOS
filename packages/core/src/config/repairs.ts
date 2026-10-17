@@ -18,4 +18,6 @@ import type { SigningKey } from '../domain/licence.js'
  * Raw Ed25519, 32 bytes, base64url. A list, so a new key can ship before the
  * old one is retired.
  */
-export const REPAIR_KEYS: readonly SigningKey[] = []
+export const REPAIR_KEYS: readonly SigningKey[] = [
+  { kid: 'shopos-repair-2026', publicKey: 'pIPKdXy9IsCkBE2UW2vcKrarTLO3u_Wn6nr9nmP982g' },
+]
