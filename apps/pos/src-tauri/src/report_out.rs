@@ -1005,8 +1005,15 @@ mod tests {
     #[test]
     fn the_vendors_bot_carries_the_health_report_and_never_a_pack() {
         let bot = |token: &str| Telegram { token: token.into(), chat: "1".into(), api: String::new() };
-        let (_, pack) = sandbox("who-carries");
-        let health = Queued { vendor: true, ..sandbox("who-carries-health").1 };
+        let queued = |vendor: bool| Queued {
+            channel: "telegram".into(),
+            to: Vec::new(),
+            subject: "s".into(),
+            body: "b".into(),
+            attach_name: "a.zip".into(),
+            vendor,
+        };
+        let (pack, health) = (queued(false), queued(true));
 
         let vendor_only = Settings { mail: None, telegram: None, vendor: Some(bot("1:vendor")) };
         assert!(vendor_only.bot_for(&pack).is_none(), "a pack names customers");
