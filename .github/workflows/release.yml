@@ -14,6 +14,14 @@
 #                               optional: short shop ids, comma separated. A new
 #                               release goes to these shops only; widen it later
 #                               with `tools/release.ts target vX.Y.Z --all`.
+#              SHOPOS_SUPPORT_PHONE, SHOPOS_SUPPORT_WHATSAPP
+#                               the number on the Get help screen
+#              SHOPOS_SUPPORT_PUBKEY
+#                               the public half from tools/support/keygen.ts;
+#                               without it a till offers no data sending
+#              SHOPOS_PORTAL_URL
+#                               https only; leave unset until the portal is
+#                               hosted, and health goes by Telegram alone
 #              WINDOWS_SIGN_COMMAND
 #                               optional, once there is a certificate: the CA's
 #                               command, with %1 for the file. Its credentials
@@ -140,6 +148,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           SHOPOS_TG_TOKEN: ${{ secrets.SHOPOS_TG_TOKEN }}
           SHOPOS_TG_CHAT: ${{ secrets.SHOPOS_TG_CHAT }}
+          SHOPOS_SUPPORT_PHONE: ${{ vars.SHOPOS_SUPPORT_PHONE }}
+          SHOPOS_SUPPORT_WHATSAPP: ${{ vars.SHOPOS_SUPPORT_WHATSAPP }}
+          SHOPOS_SUPPORT_PUBKEY: ${{ vars.SHOPOS_SUPPORT_PUBKEY }}
+          SHOPOS_PORTAL_URL: ${{ vars.SHOPOS_PORTAL_URL }}
         run: npx tauri build --config src-tauri/tauri.release.json
 
       # A hotfix tag names its first shops in its message (`release.ts hotfix`).
