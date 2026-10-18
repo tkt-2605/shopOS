@@ -17,6 +17,15 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.3.1': {
+    title: 'Bills emailed to the customers you choose',
+    points: [
+      'Tick "Email every bill to this customer" on a customer, and the main till emails them each bill as the A4 invoice in a PDF.',
+      'A bill shows whether it was emailed, and if it could not be, says why and has a Try again button.',
+      'The "Short by" warnings that stayed on the tills after a sync are gone; they were counting a till\'s own changes coming back to it.',
+      'A customer file with an email that is not one plain address is refused on that row, like a wrong GSTIN.',
+    ],
+  },
   '0.3.0': {
     title: 'One main till, and help when something goes wrong',
     points: [
