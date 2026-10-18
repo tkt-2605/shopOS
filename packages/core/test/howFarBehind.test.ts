@@ -159,6 +159,36 @@ describe('what this till is short of', () => {
     ).toBe(0)
   })
 
+  /**
+   * Found on the three-till bench, 18 October: every screen said "Short by 2
+   * changes" with all three tills open and synced. The newest entries in the
+   * other till's feed were this till's own changes, relayed back. They are
+   * never sent to the till they came from, so the batch came back empty, the
+   * cursor never moved past them, and the head stayed two ahead for good.
+   */
+  it('is zero when all the other till has left is this till\'s own changes', async () => {
+    await as(a, () => makeProduct(a.db, { name: 'Notebook' }))
+    await as(b, () => syncWith(b.db, transportToA(), null))
+    // B changes something; A takes it, and it is the newest entry in A's feed.
+    await as(b, () => b.db.execute(`UPDATE products SET name = 'Notebook A5' WHERE name = 'Notebook'`))
+    await as(b, () => syncWith(b.db, transportToA(), null))
+    await as(b, () => syncWith(b.db, transportToA(), null))
+
+    expect(await behindOnB(), 'nothing A could send B is still to come').toBe(0)
+
+    /* And the other way: A's change, relayed into B's feed, is all B has left
+       for A. B offers an empty batch so A's cursor moves past it. */
+    await a.db.execute(
+      `INSERT OR IGNORE INTO sync_peers (device_id, label, created_at) VALUES (?, 'B', ?)`,
+      [TILL_B, new Date().toISOString()],
+    )
+    await as(a, () => a.db.execute(`UPDATE products SET name = 'Notebook A4' WHERE name = 'Notebook A5'`))
+    await as(b, () => syncWith(b.db, transportToA(), null))
+    await as(b, () => syncWith(b.db, transportToA(), null))
+    const onA = await a.db.get<{ c: number }>(`SELECT their_cursor AS c FROM sync_peers WHERE device_id = ?`, [TILL_B])
+    expect(onA?.c, 'A has read B\'s feed to its end').toBe(await feedHead(b.db))
+  })
+
   it('never reports a negative, however the two numbers cross', async () => {
     /* A head recorded at a handshake, then overtaken by rows this till pulled
        in the same pass. Owing somebody minus four bills is not a sentence. */

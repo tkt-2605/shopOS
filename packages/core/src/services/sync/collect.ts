@@ -2,7 +2,7 @@ import type { Row, SqlDriver } from '../../db/driver.js'
 import { EXPECTED_SCHEMA_VERSION } from '../../db/schemaVersion.js'
 import { deviceId } from '../../device.js'
 import { shapeOf, type ChangeBatch, type ChangeRecord } from '../../domain/replicaShape.js'
-import { changesSince, prunedThrough, seedFeedWithEverything } from '../changefeed.js'
+import { changesSince, feedHead, prunedThrough, seedFeedWithEverything } from '../changefeed.js'
 
 /*
  * What leaves this till: the records a peer has not seen, read as they stand,
@@ -26,6 +26,10 @@ export async function collectChanges(
   forPeer: string | null = null,
 ): Promise<ChangeBatch> {
   await catchUpFromBelowTheFloor(db, cursor, forPeer)
+  /* Read before the entries, so a row written in between lies above it and is
+     still sent next time. Everything at or below it that the batch leaves out
+     is the peer's own, which it is never sent: see `upTo` below. */
+  const head = await feedHead(db)
   const entries = await changesSince(db, cursor, limit + 1, forPeer)
   const complete = entries.length <= limit
   const batch = complete ? entries : entries.slice(0, limit)
@@ -78,7 +82,14 @@ export async function collectChanges(
     fromDevice: deviceId(),
     schemaVersion: EXPECTED_SCHEMA_VERSION,
     records,
-    upTo: batch.length > 0 ? batch[batch.length - 1]!.seq : cursor,
+    /* A complete batch has given the peer everything it will ever get up to
+       `head`, including the entries left out because they were its own. Stopping
+       at the last one sent left the peer's cursor short of its own relayed
+       changes for good, and every screen saying "short by 2" with nothing to
+       come -- the three-till bench, 18 October. */
+    upTo: complete
+      ? Math.max(cursor, head, batch.at(-1)?.seq ?? cursor)
+      : batch.at(-1)!.seq,
     complete,
   }
 }

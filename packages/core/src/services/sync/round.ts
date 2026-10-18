@@ -131,7 +131,9 @@ export async function syncWith(
   const { applied, contested, ignoredColumns, ignoredTables, quarantined, cachesHeld } =
     await applyBatch(db, incoming, mineChanged)
 
-  if (incoming.records.length > 0) {
+  /* Moved by an empty batch too: one that skipped only this till's own changes,
+     relayed back, has still been read up to there (`collectChanges`). */
+  if (incoming.records.length > 0 || incoming.upTo > peer.theirCursor) {
     await q(db).update(schema.syncPeers)
       .set({ theirCursor: incoming.upTo })
       .where(eq(schema.syncPeers.deviceId, hello.deviceId))
@@ -140,7 +142,10 @@ export async function syncWith(
   // ── push ────────────────────────────────────────────────────────────────
   const outgoing = await collectChanges(db, hello.yourCursorWithThem, BATCH, hello.deviceId)
   let sent = 0
-  if (outgoing.records.length > 0) {
+  /* Offered empty when it only moves their cursor past their own changes,
+     relayed back: otherwise they never hear it and show this till as short of
+     records that are never coming. */
+  if (outgoing.records.length > 0 || outgoing.upTo > hello.yourCursorWithThem) {
     const ack = await transport.offer(outgoing)
     /* Their word, not our hope. A batch that left here and never landed has to
        be sent again, and a cursor moved because we posted it is a row lost with
