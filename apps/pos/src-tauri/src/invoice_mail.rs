@@ -106,7 +106,10 @@ fn render_pdf(app: &tauri::AppHandle, html: &str) -> Result<Vec<u8>, String> {
     let work = data.join("pdf-work").join(report_out::stamp());
     std::fs::create_dir_all(&work).map_err(|e| format!("Could not create {}: {e}", work.display()))?;
     let result = render_in(&edge, &data.join("pdf-browser"), &work, html);
-    let _ = std::fs::remove_dir_all(&work);
+    // Kept when it failed: the page and Edge's log are what explain it.
+    if result.is_ok() {
+        let _ = std::fs::remove_dir_all(&work);
+    }
     result
 }
 
@@ -116,17 +119,25 @@ fn render_in(edge: &Path, profile: &Path, work: &Path, html: &str) -> Result<Vec
     let out = work.join("invoice.pdf");
     files::write_durably(&page, html.as_bytes())?;
     let url = format!("file:///{}", page.to_string_lossy().replace('\\', "/"));
-    let ended = run(edge, &[
+    let log = work.join("edge.log");
+    let ended = run(edge, &log, &[
         "--headless=new".into(),
         "--disable-gpu".into(),
         "--no-first-run".into(),
         "--no-pdf-header-footer".into(),
+        // Edge's own account of itself, read back into the error when no PDF comes.
+        "--enable-logging=stderr".into(),
         // Its own profile: never the shop's browser, its sign-ins or its history.
         format!("--user-data-dir={}", profile.display()),
         format!("--print-to-pdf={}", out.display()),
         url,
     ])?;
-    let pdf = settled(&out, PDF_WAIT).ok_or_else(|| format!("Edge did not produce the PDF ({ended})."))?;
+    let pdf = settled(&out, PDF_WAIT).ok_or_else(|| {
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        let tail: String = said.lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+        let tail: String = tail.chars().take(400).collect();
+        format!("Edge did not produce the PDF ({ended}){}", if tail.is_empty() { String::new() } else { format!(": {tail}") })
+    })?;
     if !pdf.starts_with(b"%PDF") || pdf.len() > MAX_PDF_BYTES {
         return Err("The PDF Edge produced is not usable.".into());
     }
@@ -162,14 +173,16 @@ fn settled(path: &Path, wait: Duration) -> Option<Vec<u8>> {
 
 /// Runs Edge and says how it ended, for an error that has to explain itself.
 #[cfg(windows)]
-fn run(program: &Path, args: &[String]) -> Result<String, String> {
+fn run(program: &Path, log: &Path, args: &[String]) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
+    // A file rather than a pipe: a pipe nobody reads fills, and Edge stops.
+    let err = std::fs::File::create(log).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(err)
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .spawn()
         .map_err(|e| format!("Could not start Edge to make the PDF: {e}"))?;
@@ -188,7 +201,7 @@ fn run(program: &Path, args: &[String]) -> Result<String, String> {
 }
 
 #[cfg(not(windows))]
-fn run(_: &Path, _: &[String]) -> Result<String, String> {
+fn run(_: &Path, _: &Path, _: &[String]) -> Result<String, String> {
     Err("Bills are emailed from a Windows till.".into())
 }
 
