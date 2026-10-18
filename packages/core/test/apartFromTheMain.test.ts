@@ -532,6 +532,29 @@ describe('the main is off and both counters act on the same record', () => {
     await expectSettled(['advance_spent_twice'])
   })
 
+  /* The release soak's seed 942573511. The main spent the advance too, and its
+     payment reached the counter before the counter's own had left. The union
+     kept the counter's allocation, but the counter then filed the payment as
+     the main's, and a till never sends a row back where it came from: the
+     main never heard of the third bill, and was never told. */
+  it('18b one advance spent on the main and a counter, the main heard first', async () => {
+    const paid = await as(MAIN, () => recordPayment(main.db, {
+      customerId: customer, amount: rupees(1000), method: 'cash', registerId: fx.seed.registerId, actorId: fx.adminId,
+    }))
+    if (!paid.ok) throw new Error(paid.code)
+    await settle()
+    for (const t of [main, main, c1]) {
+      const bill = await sell(t, 1, { credit: true })
+      const used = await as(t.id, () => applyAdvance(t.db, { customerId: customer, billId: bill.billId, actorId: fx.adminId }))
+      expect(used).toMatchObject({ ok: true })
+    }
+    await settle()
+    const allocations = (t: Till) =>
+      t.db.query(`SELECT bill_id FROM payment_allocations WHERE payment_id = ? ORDER BY bill_id`, [paid.paymentId])
+    expect(await allocations(main), 'the main holds the counter\'s allocation too').toHaveLength(3)
+    await expectSettled(['advance_spent_twice'])
+  })
+
   it('19 part of one bill taken back on each counter', async () => {
     // Three sold. One back on each counter is two of three: nothing wrong.
     const sale = await sell(main, 3)

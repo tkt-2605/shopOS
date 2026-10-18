@@ -119,11 +119,21 @@ export async function applyRecord(
      revision by one -- with different lines under them. */
   const joined = record.op === 'upsert' && mine !== undefined
     ? await unionLines(tx, shape, record)
-    : 0
+    : { changed: 0, senderLacks: false }
+  /* A union that changed anything, or left this till holding a line the sender
+     lacks, is passed on as this till's -- so it reaches every other till, the
+     sender included. Filed as the sender's, it would never go back to the one
+     till missing it: the release soak's seed 942573511, where a counter's own
+     unsent allocation was relabelled the main's and the main never heard. */
+  const relay = joined.changed > 0 || joined.senderLacks
+  const passOn = async () => {
+    if (relay) await feedApplied(tx, shape.table, record.rowId, 'upsert', deviceId())
+  }
 
   if (record.op === 'upsert' && record.row !== null && mine !== undefined
       && same(known(record.row, columns).row, mine, shape.incidental)) {
-    return joined > 0 ? { ...NOTHING, applied: 1 } : NOTHING
+    await passOn()
+    return joined.changed > 0 ? { ...NOTHING, applied: 1 } : NOTHING
   }
 
   if (record.op === 'delete') {
@@ -227,7 +237,10 @@ export async function applyRecord(
     }
     // Keeping what is here writes nothing at all, which is always the safer
     // of two answers — and leaves this machine's feed exactly as it was.
-    if (call.winner === 'mine') return { ...NOTHING, contested }
+    if (call.winner === 'mine') {
+      await passOn()
+      return { ...NOTHING, contested }
+    }
 
     /* A submitted document is immutable, and until now the merge was the one
        write path that did not know it. `assertEditable` guards every write into
@@ -241,6 +254,7 @@ export async function applyRecord(
     const refusal = refusedAsSubmitted(shape.table, mine, record.row)
       ?? await linesRefused(tx, shape, record, mine)
     if (refusal !== null) {
+      await passOn()
       return {
         ...NOTHING,
         contested: [{
@@ -272,7 +286,7 @@ export async function applyRecord(
   const trimmed = known(record.row, columns)
   ignoredColumns += trimmed.dropped
   await upsert(tx, shape.table, shape.key, trimmed.row)
-  await feedApplied(tx, shape.table, record.rowId, 'upsert', origin(record, batch))
+  await feedApplied(tx, shape.table, record.rowId, 'upsert', relay ? deviceId() : origin(record, batch))
 
   for (const line of shape.lines) {
     // Already merged above, by union, for a document this till held.
@@ -346,19 +360,33 @@ async function linesRefused(
  */
 const UNION_LINES: ReadonlyMap<string, string> = new Map([['payment_allocations', 'bill_id']])
 
-/** Adds the arriving union lines this till does not hold. Returns how many changed. */
+/**
+ * Adds the arriving union lines this till does not hold. Says how many
+ * changed, and whether this till holds one the sender lacks -- in which case
+ * the record must go back out as this till's, or the sender never gets it.
+ */
 async function unionLines(
   tx: SqlDriver,
   shape: NonNullable<ReturnType<typeof shapeOf>>,
   record: ChangeRecord,
-): Promise<number> {
+): Promise<{ changed: number; senderLacks: boolean }> {
   let changed = 0
+  let senderLacks = false
   for (const line of shape.lines) {
     const pair = UNION_LINES.get(line.table)
     if (pair === undefined) continue
     const lineColumns = await localColumns(tx, line.table)
     if (lineColumns === null) continue
-    for (const raw of record.lines?.[line.table] ?? []) {
+    const arriving = record.lines?.[line.table]
+    if (arriving !== undefined) {
+      const theirs = new Set(arriving.map((r) => String(r[pair] ?? null)))
+      // raw: `UNION_LINES`' names, which come from this file and never the wire.
+      const mine = await tx.query<Row>(
+        `SELECT "${pair}" AS v FROM "${line.table}" WHERE "${line.parentKey}" = ?`, [record.rowId],
+      )
+      if (mine.some((r) => !theirs.has(String(r['v'] ?? null)))) senderLacks = true
+    }
+    for (const raw of arriving ?? []) {
       const row = known(raw, lineColumns).row
       if (String(row[line.parentKey]) !== record.rowId) {
         throw new Error(`${line.table} line under ${record.rowId} belongs to ${String(row[line.parentKey])}`)
@@ -379,10 +407,7 @@ async function unionLines(
       }
     }
   }
-  /* Passed on as this till's, so it reaches every other till -- the sender
-     included, which is the one missing what this till held. */
-  if (changed > 0) await feedApplied(tx, shape.table, record.rowId, 'upsert', deviceId())
-  return changed
+  return { changed, senderLacks }
 }
 
 /**
