@@ -116,7 +116,7 @@ fn render_in(edge: &Path, profile: &Path, work: &Path, html: &str) -> Result<Vec
     let out = work.join("invoice.pdf");
     files::write_durably(&page, html.as_bytes())?;
     let url = format!("file:///{}", page.to_string_lossy().replace('\\', "/"));
-    run(edge, &[
+    let ended = run(edge, &[
         "--headless=new".into(),
         "--disable-gpu".into(),
         "--no-first-run".into(),
@@ -126,15 +126,43 @@ fn render_in(edge: &Path, profile: &Path, work: &Path, html: &str) -> Result<Vec
         format!("--print-to-pdf={}", out.display()),
         url,
     ])?;
-    let pdf = std::fs::read(&out).map_err(|_| "Edge did not produce the PDF.".to_string())?;
+    let pdf = settled(&out, PDF_WAIT).ok_or_else(|| format!("Edge did not produce the PDF ({ended})."))?;
     if !pdf.starts_with(b"%PDF") || pdf.len() > MAX_PDF_BYTES {
         return Err("The PDF Edge produced is not usable.".into());
     }
     Ok(pdf)
 }
 
+/// How long the PDF may take to appear after the Edge that was started exits.
+const PDF_WAIT: Duration = Duration::from_secs(20);
+
+/// The file once it is there and has stopped growing, or `None` after `wait`.
+///
+/// The `msedge.exe` this starts is not always the one that prints. With a
+/// browser folder it has not used before -- the first bill a till ever emails
+/// -- Edge hands the work to a process of its own and the first one exits at
+/// once. Reading the file then found nothing, and the shop's first two emailed
+/// bills on till 1 failed with "Edge did not produce the PDF" while every test,
+/// which waited on the whole process tree, passed.
+fn settled(path: &Path, wait: Duration) -> Option<Vec<u8>> {
+    let started = std::time::Instant::now();
+    let mut last: Option<u64> = None;
+    loop {
+        let size = std::fs::metadata(path).ok().map(|m| m.len()).filter(|&n| n > 0);
+        if size.is_some() && size == last {
+            return std::fs::read(path).ok();
+        }
+        if started.elapsed() > wait {
+            return None;
+        }
+        last = size;
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Runs Edge and says how it ended, for an error that has to explain itself.
 #[cfg(windows)]
-fn run(program: &Path, args: &[String]) -> Result<(), String> {
+fn run(program: &Path, args: &[String]) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     let mut child = Command::new(program)
@@ -148,7 +176,7 @@ fn run(program: &Path, args: &[String]) -> Result<(), String> {
     let started = std::time::Instant::now();
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
-            Some(_) => return Ok(()),
+            Some(status) => return Ok(format!("Edge ended with {status}")),
             None if started.elapsed() > RENDER_DEADLINE => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -160,7 +188,7 @@ fn run(program: &Path, args: &[String]) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn run(_: &Path, _: &[String]) -> Result<(), String> {
+fn run(_: &Path, _: &[String]) -> Result<String, String> {
     Err("Bills are emailed from a Windows till.".into())
 }
 
@@ -173,6 +201,25 @@ mod tests {
         assert_eq!(attach_name("BMR/2627/00012"), "BMR-2627-00012.pdf");
         assert_eq!(attach_name("  ../x  "), "x.pdf");
         assert_eq!(attach_name("///"), "invoice.pdf");
+    }
+
+    /// Edge's own process can write the PDF after the one started has exited.
+    #[test]
+    fn a_pdf_written_late_is_waited_for() {
+        let dir = std::env::temp_dir().join(format!("shopos-late-{}", report_out::stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("invoice.pdf");
+        let writer = {
+            let out = out.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(700));
+                std::fs::write(&out, b"%PDF-1.4 late").unwrap();
+            })
+        };
+        assert_eq!(settled(&out, Duration::from_secs(5)).as_deref(), Some(&b"%PDF-1.4 late"[..]));
+        writer.join().unwrap();
+        assert!(settled(&dir.join("never.pdf"), Duration::from_millis(600)).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The real thing, on a machine with Edge: the rupee sign and Tamil reach the
