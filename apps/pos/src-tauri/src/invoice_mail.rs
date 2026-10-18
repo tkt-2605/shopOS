@@ -25,6 +25,7 @@ use crate::{files, paths, report_out};
 
 /// One PDF at a time: each is a browser process.
 static RENDERING: Mutex<()> = Mutex::new(());
+#[cfg_attr(not(windows), allow(dead_code))]
 const RENDER_DEADLINE: Duration = Duration::from_secs(60);
 /// What a bill's PDF can reasonably come to, logo and all.
 const MAX_PDF_BYTES: usize = 10 * 1024 * 1024;
