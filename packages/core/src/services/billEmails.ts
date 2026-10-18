@@ -90,6 +90,29 @@ export async function noteBillEmail(
     })
 }
 
+/**
+ * The address a bill is due to go to, when it is due and this till has not
+ * queued it: a ticked customer's bill, rung since the tick. Null otherwise.
+ * For saying on the bill why it has not gone yet.
+ */
+export async function billDueForEmail(db: SqlDriver, billId: string): Promise<string | null> {
+  const [row] = await q(db)
+    .select({ to: schema.customers.email })
+    .from(schema.bills)
+    .innerJoin(schema.customers, eq(schema.customers.id, schema.bills.customerId))
+    .leftJoin(schema.billEmails, eq(schema.billEmails.billId, schema.bills.id))
+    .where(and(
+      eq(schema.bills.id, billId),
+      eq(schema.bills.docstatus, SUBMITTED),
+      eq(schema.bills.kind, 'sale'),
+      isNotNull(schema.customers.email),
+      isNotNull(schema.customers.emailBillsSince),
+      gte(schema.bills.createdAt, schema.customers.emailBillsSince),
+      isNull(schema.billEmails.billId),
+    ))
+  return row?.to ?? null
+}
+
 export interface BillEmailNote { to: string; at: string; error: string | null }
 
 /** What this till did with one bill's email, or null when nothing. */

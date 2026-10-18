@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createBill, submitBill } from '../src/services/billing.js'
 import { createCustomer, updateCustomer, isEmail } from '../src/services/customers.js'
-import { billsToEmail, noteBillEmail, billEmailNote, retryBillEmail, sendsBillEmails } from '../src/services/billEmails.js'
+import { billsToEmail, billDueForEmail, noteBillEmail, billEmailNote, retryBillEmail, sendsBillEmails } from '../src/services/billEmails.js'
 import { loadCustomer } from '../src/repos/catalog/customers.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
@@ -78,6 +78,15 @@ describe('which bills are emailed', () => {
     await updateCustomer(fx.db, ctx(), ravi, { name: 'Ravi', emailBills: false })
     await sell(ravi)
     expect(await billsToEmail(fx.db)).toEqual([])
+  })
+
+  it('says a bill is still due, so the bill can say what it waits for', async () => {
+    const due = await sell(await customer({ email: 'ravi@example.com', emailBills: true }))
+    const notTicked = await sell(await customer({ email: 'asha@example.com' }))
+    expect(await billDueForEmail(fx.db, due)).toBe('ravi@example.com')
+    expect(await billDueForEmail(fx.db, notTicked)).toBeNull()
+    await noteBillEmail(fx.db, { billId: due, to: 'ravi@example.com' })
+    expect(await billDueForEmail(fx.db, due), 'not once it is queued').toBeNull()
   })
 
   it('is sent by a till on its own', async () => {

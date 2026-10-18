@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Permissions, searchCustomers, createCustomer, updateCustomer, customerByPhone,
   type CustomerOrder,
-  archiveCustomer, restoreCustomer,
+  archiveCustomer, restoreCustomer, sendsBillEmails,
   loadCustomer, STATES, stateName, stateFromGstin,
   type CustomerListItem, type CustomerConflict, type SaveCustomerResult,
 } from '@shopos/core'
@@ -12,6 +12,7 @@ import { CustomerWorth } from '../ui/CustomerWorth'
 import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
 import { CustomerFile } from '../ui/CustomerFile'
+import { billMailReady } from '../core/billMail'
 
 /**
  * Who the shop sells to.
@@ -67,6 +68,17 @@ export default function Customers() {
   const [order, setOrder] = useState<CustomerOrder>('name')
   /** Who already answers to the number being typed, said before the save. */
   const [clash, setClash] = useState<CustomerConflict | null>(null)
+  /** Why this till, the one that sends, cannot email bills. Null when it can, or when it does not send. */
+  const [mailProblem, setMailProblem] = useState<string | null>(null)
+  const editing = draft !== null
+  useEffect(() => {
+    if (!editing) return
+    let live = true
+    void sendsBillEmails(db)
+      .then((sends) => (sends ? billMailReady() : null))
+      .then((problem) => { if (live) setMailProblem(problem) })
+    return () => { live = false }
+  }, [db, editing])
   /** Off by default: an archived customer is one the shop has finished with. */
   const [showArchived, setShowArchived] = useState(false)
 
@@ -378,7 +390,9 @@ export default function Customers() {
               <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)' }}>
                 {draft.email.trim() === ''
                   ? 'Add their email first.'
-                  : 'Each bill from now on goes as a PDF, from the shop’s email set up in Settings.'}
+                  : mailProblem
+                    ? `This till cannot send them yet: ${mailProblem}`
+                    : 'Each bill from now on goes as a PDF, from the shop’s email set up in Settings.'}
               </span>
             </span>
           </label>
