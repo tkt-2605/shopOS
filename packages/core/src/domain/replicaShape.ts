@@ -196,6 +196,7 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
   sync_quarantine: 'a record this machine could not apply. The till that sent it applied it fine',
   discrepancies_seen: 'which discrepancies somebody at this till has been told about. The other till tells its own people',
+  bill_emails: 'which bills the main has handed to its own outbox. Only the main sends, and the outbox is on its disk',
 }
 
 /** One record as it crosses between two tills. */

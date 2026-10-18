@@ -17,4 +17,4 @@
  *
  * **Raise this in the same commit as a new migration file.**
  */
-export const EXPECTED_SCHEMA_VERSION = 72
+export const EXPECTED_SCHEMA_VERSION = 73

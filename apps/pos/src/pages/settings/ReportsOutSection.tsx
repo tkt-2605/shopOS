@@ -137,7 +137,7 @@ export function ReportsOutSection() {
             onChange={(e) => setTo(e.target.value)} onBlur={() => save(MAIL_TO, to)}
           />
         </Field>
-        <Field label="Send from (Gmail address)" hint="The account that sends. It can be the same address.">
+        <Field label="Send from (Gmail address)" hint="The account that sends. It can be the same address. On the main till it also sends bills to the customers ticked for them.">
           <input
             className="input" id="mail-user" type="text" value={user}
             onChange={(e) => setUser(e.target.value)} onBlur={() => save(MAIL_USER, user)}

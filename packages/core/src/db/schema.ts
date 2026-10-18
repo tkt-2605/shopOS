@@ -262,6 +262,8 @@ export const customers = sqliteTable('customers', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
+  /** When "Email every bill" was ticked; null when it is not (073). */
+  emailBillsSince: text('email_bills_since'),
 }, (table) => [
   index('idx_customers_name').on(table.name),
   index('idx_customers_phone').on(table.phone),
@@ -971,6 +973,14 @@ export const discrepanciesSeen = sqliteTable('discrepancies_seen', {
   key: text().primaryKey(),
   seenAt: text('seen_at').notNull(),
   seenBy: text('seen_by'),
+})
+
+/** Which bills the main has handed to its outbox for the customer. Migration 073. */
+export const billEmails = sqliteTable('bill_emails', {
+  billId: text('bill_id').primaryKey().references(() => bills.id),
+  toAddress: text('to_address').notNull(),
+  queuedAt: text('queued_at').notNull(),
+  error: text(),
 })
 
 export const syncState = sqliteTable('sync_state', {

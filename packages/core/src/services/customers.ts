@@ -53,6 +53,12 @@ export interface CustomerInput {
   creditLimit?: Money
   creditEnforcement?: CreditEnforcement
   isActive?: boolean
+  /**
+   * Every bill rung for them is emailed to `email` by the main till (073).
+   * Left out, it stays as it was; turned on, it counts from now, so no old
+   * bill is sent.
+   */
+  emailBills?: boolean
 }
 
 export interface CustomerConflict {
@@ -85,6 +91,10 @@ export type SaveCustomerResult =
    * a return.
    */
   | { ok: false; code: 'GSTIN_STATE_MISMATCH'; gstinState: string; chosenState: string }
+  /** One plain address, `name@host.tld`, with nothing that could add a second. */
+  | { ok: false; code: 'BAD_EMAIL' }
+  /** "Email every bill" with nowhere to send them. */
+  | { ok: false; code: 'EMAIL_REQUIRED' }
 
 export async function createCustomer(
   db: SqlDriver,
@@ -284,10 +294,25 @@ async function save(
         credit_limit: schema.customers.creditLimit,
         credit_enforcement: schema.customers.creditEnforcement,
         is_active: schema.customers.isActive,
+        email_bills_since: schema.customers.emailBillsSince,
       })
       .from(schema.customers)
       .where(eq(schema.customers.id, customerId))
     : [null]
+
+  /* Kept when the form does not carry it. The Customers screen had no email
+     field, and every save there wrote the address as empty -- so editing a
+     customer who came in by the CSV import erased where their bills go. */
+  const email = input.email === undefined
+    ? before?.email ?? null
+    : input.email?.trim().toLowerCase() || null
+  if (email !== null && !isEmail(email)) return { ok: false, code: 'BAD_EMAIL' }
+
+  const wasSince = before?.email_bills_since ?? null
+  const emailBillsSince = input.emailBills === undefined
+    ? (email === null ? null : wasSince)
+    : input.emailBills ? (wasSince ?? now) : null
+  if (input.emailBills === true && email === null) return { ok: false, code: 'EMAIL_REQUIRED' }
 
   const id = customerId ?? newId()
   const code = wanted ?? before?.code ?? await nextCustomerCode(db)
@@ -299,7 +324,8 @@ async function save(
     code,
     name,
     phone,
-    email: input.email?.trim() || null,
+    email,
+    emailBillsSince,
     gstin,
     address: input.address?.trim() || null,
     stateCode,
@@ -324,7 +350,8 @@ async function save(
       action: customerId ? 'update' : 'create',
       before: before ?? {},
       after: {
-        code, name, phone,
+        code, name, phone, email,
+        email_bills_since: emailBillsSince,
         gstin, state_code: stateCode,
         credit_limit: limit,
         credit_enforcement: enforcement,
@@ -334,6 +361,22 @@ async function save(
   })
 
   return { ok: true, customerId: id, code }
+}
+
+/**
+ * One plain address. The same shape `report_out.rs` lets through to the mail
+ * server, so an address this accepts is one the main can send to: no spaces,
+ * no angle brackets or quotes that could name a second recipient, one `@`, and
+ * a dot in the host.
+ */
+export function isEmail(raw: string): boolean {
+  const a = raw.trim()
+  if (a.length === 0 || a.length > 254) return false
+  if (/[\s<>"(),;]/u.test(a) || /\p{Cc}/u.test(a)) return false
+  const at = a.split('@')
+  if (at.length !== 2 || at[0] === '' || at[1] === '') return false
+  const host = at[1]!
+  return host.includes('.') && !host.startsWith('.') && !host.endsWith('.')
 }
 
 /**

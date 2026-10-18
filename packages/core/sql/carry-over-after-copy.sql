@@ -27,6 +27,8 @@ DELETE FROM main.sync_quarantine;
 INSERT INTO main.sync_quarantine SELECT * FROM prev.sync_quarantine;
 DELETE FROM main.discrepancies_seen;
 INSERT INTO main.discrepancies_seen SELECT * FROM prev.discrepancies_seen;
+-- A joining till does not send bills, so it starts with none noted.
+DELETE FROM main.bill_emails;
 DELETE FROM main.doc_sequences;
 INSERT INTO main.doc_sequences SELECT * FROM prev.doc_sequences;
 INSERT INTO main.audit_log

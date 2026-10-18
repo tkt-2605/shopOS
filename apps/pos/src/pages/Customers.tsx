@@ -35,11 +35,14 @@ interface Draft {
   stateCode: string
   creditLimit: string
   enforcement: 'none' | 'soft' | 'hard'
+  email: string
+  /** Every bill rung for them is emailed by the main till. */
+  emailBills: boolean
 }
 
 const BLANK: Draft = {
   id: null, code: '', name: '', phone: '', gstin: '', address: '', stateCode: '',
-  creditLimit: '0', enforcement: 'hard',
+  creditLimit: '0', enforcement: 'hard', email: '', emailBills: false,
 }
 
 export default function Customers() {
@@ -152,6 +155,7 @@ export default function Customers() {
       gstin: full.gstin ?? '', address: full.address ?? '',
       stateCode: full.stateCode ?? '',
       creditLimit: Money.format(full.creditLimit), enforcement: full.creditEnforcement,
+      email: full.email ?? '', emailBills: full.emailBillsSince !== null,
     })
   }
 
@@ -184,6 +188,8 @@ export default function Customers() {
       stateCode: draft.stateCode || null,
       creditLimit: (Money.parseMoney(draft.creditLimit) ?? 0) as never,
       creditEnforcement: draft.enforcement,
+      email: draft.email.trim() || null,
+      emailBills: draft.emailBills && draft.email.trim() !== '',
     }
 
     const result: SaveCustomerResult = draft.id
@@ -353,6 +359,30 @@ export default function Customers() {
               onChange={(e) => setDraft({ ...draft, address: e.target.value })} />
           </Field>
 
+          <Field label="Email">
+            <input className="input" id="c-email" type="email" value={draft.email}
+              placeholder="name@example.com"
+              onChange={(e) => setDraft({ ...draft, email: e.target.value })} />
+          </Field>
+          {/* Sent by the main till from the shop's own email, as the A4 invoice
+              in a PDF. From the moment of the tick: no old bill is sent. */}
+          <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 13, marginTop: -4 }}>
+            <input
+              type="checkbox" id="c-email-bills"
+              checked={draft.emailBills && draft.email.trim() !== ''}
+              disabled={draft.email.trim() === ''}
+              onChange={(e) => setDraft({ ...draft, emailBills: e.target.checked })}
+            />
+            <span>
+              Email every bill to this customer
+              <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)' }}>
+                {draft.email.trim() === ''
+                  ? 'Add their email first.'
+                  : 'Each bill from now on goes as a PDF, from the shop’s email set up in Settings.'}
+              </span>
+            </span>
+          </label>
+
           <Field
             label="State"
             hint={
@@ -408,5 +438,9 @@ function describe(result: Extract<SaveCustomerResult, { ok: false }>): string {
       return `The GSTIN is registered in ${stateName(result.gstinState) ?? result.gstinState}`
         + ` but the state says ${stateName(result.chosenState) ?? result.chosenState}.`
         + ' The GSTIN is the registered fact, so clear the state or correct the number.'
+    case 'BAD_EMAIL':
+      return 'That is not an email address. One address, like name@example.com.'
+    case 'EMAIL_REQUIRED':
+      return 'Add their email to send them their bills.'
   }
 }

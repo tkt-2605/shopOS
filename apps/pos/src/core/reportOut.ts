@@ -222,8 +222,11 @@ export function startReportSchedule(db: SqlDriver): () => void {
 
   let stopWatching: (() => void) | null = null
   void import('./health').then(({ watchSyncForHealth }) => { stopWatching = watchSyncForHealth() })
+  // Bills emailed to the customers the shop chose go out of the same outbox.
+  let stopBillMail: (() => void) | null = null
+  void import('./billMail').then(({ startBillMail }) => { stopBillMail = startBillMail(db) })
 
   const first = setTimeout(() => void tick(), 60_000)
   const every = setInterval(() => void tick(), 10 * 60_000)
-  return () => { clearTimeout(first); clearInterval(every); stopWatching?.() }
+  return () => { clearTimeout(first); clearInterval(every); stopWatching?.(); stopBillMail?.() }
 }

@@ -12,6 +12,7 @@ mod health;
 mod hook;
 mod ids;
 mod instance;
+mod invoice_mail;
 mod log;
 mod paths;
 mod portal_out;
@@ -206,6 +207,8 @@ pub fn run() {
             report_out::report_telegram_chats,
             report_out::report_telegram_builtin,
             report_out::report_health_daily,
+            invoice_mail::bill_mail_ready,
+            invoice_mail::bill_mail,
             portal_out::switches_fetch,
             health::health_send,
             backup::backup_list,

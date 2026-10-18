@@ -44,6 +44,9 @@ export interface CustomerDetail extends CustomerListItem {
   stateCode: string | null
   creditEnforcement: 'none' | 'soft' | 'hard'
   isActive: boolean
+  email: string | null
+  /** When "Email every bill" was ticked; null when it is not. */
+  emailBillsSince: string | null
 }
 
 export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerDetail | null> {
@@ -63,6 +66,8 @@ export async function loadCustomer(db: SqlDriver, id: string): Promise<CustomerD
       creditEnforcement: schema.customers.creditEnforcement,
       isActive: schema.customers.isActive,
       deletedAt: schema.customers.deletedAt,
+      email: schema.customers.email,
+      emailBillsSince: schema.customers.emailBillsSince,
     })
     .from(schema.customers)
     .where(eq(schema.customers.id, id))

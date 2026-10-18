@@ -1,6 +1,7 @@
 import { Money, Quantity, type BillDetail, type ReturnListItem } from '@shopos/core'
 import { Alert, Rupees, DocStatusBadge } from '../../ui/components'
 import { Attachments } from '../../ui/Attachments'
+import { BillEmailLine } from '../../ui/BillEmailLine'
 
 /**
  * One bill as it was issued: its lines, its totals, how it was paid, the goods
@@ -27,6 +28,7 @@ export function BillBody({
         <span style={{ color: 'var(--ink-3)' }}>{bill.postingDate}</span>
         <span>{bill.customerName ?? 'Walk-in'}</span>
       </div>
+      <BillEmailLine billId={bill.id} />
 
       {bill.cancelReason && <Alert kind="warn">Cancelled: {bill.cancelReason}</Alert>}
 

@@ -26,6 +26,7 @@ DELETE FROM change_feed;
 DELETE FROM sync_conflicts;
 DELETE FROM sync_quarantine;
 DELETE FROM discrepancies_seen;
+DELETE FROM bill_emails;
 DELETE FROM doc_sequences;
 UPDATE sync_state
    SET applying = 0, pruned_through = 0, main_device = NULL, main_epoch = 0

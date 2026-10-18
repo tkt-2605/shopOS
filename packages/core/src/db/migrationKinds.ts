@@ -163,6 +163,8 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* Two columns on `sync_state`, which never travels. */
   [71, '071_one_main_till.sql', 'additive'],
   [72, '072_a_claim_says_when_it_was_granted.sql', 'additive'],
+  /* A nullable column read by nothing that bills, and a table that never travels. */
+  [73, '073_bills_emailed_to_chosen_customers.sql', 'additive'],
 ]
 
 /**

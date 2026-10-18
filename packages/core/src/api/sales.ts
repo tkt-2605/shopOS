@@ -73,8 +73,12 @@ export { buildInvoiceHtml } from '../domain/invoiceHtml.js'
 export type { InvoiceHtmlOptions } from '../domain/invoiceHtml.js'
 export {
   createCustomer, updateCustomer, customerByPhone, nextCustomerCode, backfillCustomerCodes,
-  archiveCustomer, restoreCustomer,
+  archiveCustomer, restoreCustomer, isEmail,
 } from '../services/customers.js'
+export {
+  sendsBillEmails, billsToEmail, noteBillEmail, billEmailNote, retryBillEmail,
+} from '../services/billEmails.js'
+export type { BillToEmail, BillEmailNote } from '../services/billEmails.js'
 export type { ArchiveCustomerResult } from '../services/customers.js'
 export type { CustomerInput, CustomerConflict, SaveCustomerResult } from '../services/customers.js'
 export {

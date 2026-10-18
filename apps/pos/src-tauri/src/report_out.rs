@@ -134,7 +134,7 @@ fn clean(name: &str, ext: &str) -> Result<String, String> {
 /// Addresses from the setting: separated by commas, semicolons or lines, each
 /// one plain `name@host` with nothing that could add a second recipient or a
 /// header.
-fn recipients(raw: &str) -> Result<Vec<String>, String> {
+pub(crate) fn recipients(raw: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for part in raw.split([',', ';', '\n', '\r']) {
         let a = part.trim();
@@ -185,7 +185,7 @@ fn outbox_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-struct Mail {
+pub(crate) struct Mail {
     to: Vec<String>,
     user: String,
     password: String,
@@ -219,6 +219,30 @@ fn mail_settings(app: &tauri::AppHandle) -> Result<Option<Mail>, String> {
     // Gmail shows app passwords in groups of four with spaces.
     let password: String = password.chars().filter(|c| !c.is_whitespace()).collect();
     Ok(Some(Mail { to, user, password, host, port }))
+}
+
+/// The shop's mail login without the report pack's recipients: what a bill
+/// emailed to a customer is sent with (`invoice_mail.rs`). `None` when this
+/// machine has no login. The customer's address travels with each message.
+pub(crate) fn sender_settings(app: &tauri::AppHandle) -> Result<Option<Mail>, String> {
+    let data = paths::data_dir(app)?;
+    let (Some(user), Some(password)) = (device::setting(&data, USER)?, device::setting(&data, PASSWORD)?) else {
+        return Ok(None);
+    };
+    if user.trim().is_empty() || password.trim().is_empty() {
+        return Ok(None);
+    }
+    recipients(&user)?;
+    let host = device::setting(&data, HOST)?.unwrap_or_else(|| "smtp.gmail.com".into());
+    if host.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '.' || c == '-')) {
+        return Err(format!("\"{host}\" is not a mail server name"));
+    }
+    let port = match device::setting(&data, PORT)? {
+        Some(p) => p.parse::<u16>().map_err(|_| format!("\"{p}\" is not a port number"))?,
+        None => 587,
+    };
+    let password: String = password.chars().filter(|c| !c.is_whitespace()).collect();
+    Ok(Some(Mail { to: Vec::new(), user: user.trim().to_string(), password, host, port }))
 }
 
 struct Telegram {
@@ -297,6 +321,21 @@ struct Settings {
     /// The vendor's baked-in bot, for what is queued with `vendor` and only
     /// when the shop has no bot of its own.
     vendor: Option<Telegram>,
+    /// The shop's mail login alone, for bills emailed to customers.
+    sender: Option<Mail>,
+}
+
+impl Settings {
+    /// Everything set up on this machine. A setting that is wrong is read as
+    /// not set up, and its channel waits.
+    fn all(app: &tauri::AppHandle) -> Self {
+        Settings {
+            mail: mail_settings(app).unwrap_or(None),
+            telegram: telegram_settings(app).unwrap_or(None),
+            vendor: vendor_settings(app).unwrap_or(None),
+            sender: sender_settings(app).unwrap_or(None),
+        }
+    }
 }
 
 impl Settings {
@@ -306,7 +345,7 @@ impl Settings {
     }
 }
 
-fn stamp() -> String {
+pub(crate) fn stamp() -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     format!("{now:016}")
 }
@@ -412,7 +451,7 @@ pub(crate) fn send_out(
         Ok(id)
     };
 
-    let mut settings = Settings { mail: None, telegram: None, vendor: None };
+    let mut settings = Settings { mail: None, telegram: None, vendor: None, sender: None };
     let (mut mail, mut mail_error) = ("off", None);
     let (mut telegram, mut telegram_error) = ("off", None);
     let (mut mail_id, mut telegram_id) = (None, None);
@@ -469,16 +508,55 @@ pub(crate) fn send_out(
     Ok(Sent { mail, mail_error, telegram, telegram_error })
 }
 
+/// The outbox channel for a bill emailed to its customer. Never trimmed:
+/// `trim_queue` drops stale report packs, and a customer's invoice is not stale.
+pub(crate) const INVOICE: &str = "invoice";
+
+/// Queues one bill's PDF for one customer, from the shop's mail login, and
+/// tries it at once. `to` is checked to be a single plain address: the
+/// customer's, which the webview read from the customer record.
+pub(crate) fn queue_invoice(
+    app: &tauri::AppHandle,
+    to: &str,
+    subject: &str,
+    body: &str,
+    attach_name: &str,
+    pdf: &[u8],
+) -> Result<(&'static str, Option<String>), String> {
+    let to = recipients(to)?;
+    if to.len() != 1 {
+        return Err("A bill is emailed to one address.".into());
+    }
+    let attach_name = clean(attach_name, "pdf")?;
+    let subject: String = subject.chars().filter(|c| !c.is_control()).take(200).collect();
+    let outbox = outbox_dir(app)?;
+    let id = format!("{}-{INVOICE}", stamp());
+    let queued = Queued {
+        channel: INVOICE.into(),
+        to,
+        subject,
+        body: body.to_string(),
+        attach_name,
+        vendor: false,
+    };
+    // The attachment keeps the outbox's one file name; `with_named_copy` gives
+    // it the bill's name for the send.
+    files::write_durably(&outbox.join(format!("{id}.zip")), pdf)?;
+    files::write_durably(&outbox.join(format!("{id}.json")), &serde_json::to_vec(&queued).map_err(|e| e.to_string())?)?;
+
+    let state = flush(&outbox, &Settings::all(app));
+    if outbox.join(format!("{id}.json")).exists() {
+        Ok(("queued", state.errors.get(INVOICE).cloned()))
+    } else {
+        Ok(("sent", None))
+    }
+}
+
 /// Tries whatever is waiting. Called on a timer, and again by the person.
 #[tauri::command(async)]
 pub fn report_outbox(app: tauri::AppHandle) -> Result<OutboxState, String> {
     let outbox = outbox_dir(&app)?;
-    let settings = Settings {
-        mail: mail_settings(&app).unwrap_or(None),
-        telegram: telegram_settings(&app).unwrap_or(None),
-        vendor: vendor_settings(&app).unwrap_or(None),
-    };
-    let state = flush(&outbox, &settings);
+    let state = flush(&outbox, &Settings::all(&app));
     // The portal's queue retries on the same beat (`portal_out.rs`).
     if let Some(e) = crate::portal_out::flush(&app) {
         crate::log::write("warn", "portal", &e);
@@ -543,6 +621,10 @@ fn flush(outbox: &Path, settings: &Settings) -> Flushed {
         let result = match queued.channel.as_str() {
             "telegram" => match settings.bot_for(&queued) {
                 Some(t) => send_telegram(outbox, &id, &queued, t),
+                None => continue,
+            },
+            INVOICE => match &settings.sender {
+                Some(m) => send_mail(outbox, &id, &queued, m),
                 None => continue,
             },
             _ => match &settings.mail {
@@ -835,6 +917,41 @@ fn send_telegram(_: &Path, _: &str, _: &Queued, _: &Telegram) -> Result<(), Stri
 mod tests {
     use super::*;
 
+    fn queue_raw(outbox: &Path, id: &str, channel: &str) {
+        let queued = Queued {
+            channel: channel.into(), to: vec!["ravi@example.com".into()], subject: "s".into(),
+            body: "b".into(), attach_name: "BMR-1.pdf".into(), vendor: false,
+        };
+        std::fs::write(outbox.join(format!("{id}.zip")), b"%PDF-1.4").unwrap();
+        std::fs::write(outbox.join(format!("{id}.json")), serde_json::to_vec(&queued).unwrap()).unwrap();
+    }
+
+    /// A customer's invoice is not a stale report: however many wait, none is dropped.
+    #[test]
+    fn invoices_are_never_trimmed_away() {
+        let outbox = std::env::temp_dir().join(format!("shopos-outbox-trim-{}", stamp()));
+        std::fs::create_dir_all(&outbox).unwrap();
+        for i in 0..KEEP_QUEUED + 5 {
+            queue_raw(&outbox, &format!("{i:016}-{INVOICE}"), INVOICE);
+        }
+        trim_queue(&outbox);
+        assert_eq!(waiting(&outbox).len(), KEEP_QUEUED + 5);
+        let _ = std::fs::remove_dir_all(&outbox);
+    }
+
+    /// With no mail login an invoice waits in the outbox rather than failing or vanishing.
+    #[test]
+    fn an_invoice_waits_for_a_mail_login() {
+        let outbox = std::env::temp_dir().join(format!("shopos-outbox-wait-{}", stamp()));
+        std::fs::create_dir_all(&outbox).unwrap();
+        queue_raw(&outbox, &format!("{}-{INVOICE}", stamp()), INVOICE);
+        let none = Settings { mail: None, telegram: None, vendor: None, sender: None };
+        let state = flush(&outbox, &none);
+        assert_eq!((state.waiting, state.sent), (1, 0));
+        assert!(state.errors.is_empty(), "nothing set up is not a failure");
+        let _ = std::fs::remove_dir_all(&outbox);
+    }
+
     #[test]
     fn addresses_are_plain_and_only_plain() {
         assert_eq!(recipients("a@b.com; c@d.in,\n e@f.org").unwrap(), vec!["a@b.com", "c@d.in", "e@f.org"]);
@@ -1015,11 +1132,11 @@ mod tests {
         };
         let (pack, health) = (queued(false), queued(true));
 
-        let vendor_only = Settings { mail: None, telegram: None, vendor: Some(bot("1:vendor")) };
+        let vendor_only = Settings { mail: None, telegram: None, vendor: Some(bot("1:vendor")), sender: None };
         assert!(vendor_only.bot_for(&pack).is_none(), "a pack names customers");
         assert_eq!(vendor_only.bot_for(&health).map(|t| t.token.as_str()), Some("1:vendor"));
 
-        let own = Settings { mail: None, telegram: Some(bot("2:own")), vendor: Some(bot("1:vendor")) };
+        let own = Settings { mail: None, telegram: Some(bot("2:own")), vendor: Some(bot("1:vendor")), sender: None };
         assert_eq!(own.bot_for(&pack).map(|t| t.token.as_str()), Some("2:own"));
         assert_eq!(own.bot_for(&health).map(|t| t.token.as_str()), Some("2:own"), "the shop's own bot wins");
 
