@@ -87,9 +87,11 @@ first: it carries the findings and the arguments, not only the state.
 
 Phases 0, 1, 2 and 3 are done and merged; nothing is released. Phase 4 is
 code complete: `ci.yml`, `release.yml` (`tools/release.ts` does its steps), the
-updater plugin, licensing and the portal. What is left is the owner's: the
-updater key, a public release repository, and the repository settings
-`release.yml` lists at its top. The code-signing certificate is deferred.
+updater plugin, licensing and the portal. Releases ship: the updater key and
+repository settings are set, and tills update from the public
+`tkt-2605/shopos-releases` (0.2.20 was the first published through it). A tag
+`vX.Y.Z` pushed from `phase-2-foundations` makes a draft; the owner publishes
+it. The code-signing certificate is deferred.
 
 ## Design canvas
 
