@@ -17,6 +17,15 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.3.2': {
+    title: 'Bills emailed to your customers, and simpler report settings',
+    points: [
+      'Tick "Email every bill to this customer" on a customer, and the main till emails them each bill as the A4 invoice in a PDF. The bill shows whether it went.',
+      'The shop\'s email is now set up once, under Settings, Shop details, with a button that sends a test so you know it works.',
+      'Send reports no longer asks for a bot token, a chat id or a mail server. It shows where reports go, has a send button for each, and lists anything still waiting and why.',
+      'The "Short by" warnings that stayed on the tills after a sync are gone.',
+    ],
+  },
   '0.3.1': {
     title: 'Bills emailed to the customers you choose',
     points: [
