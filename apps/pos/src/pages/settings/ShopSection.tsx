@@ -3,6 +3,7 @@ import { saveShopProfile, stateName, STATES, type ShopProfile } from '@shopos/co
 import { useCore, useUser } from '../../core/CoreProvider'
 import { Card, Field, Alert } from '../../ui/components'
 import { Intro } from './parts'
+import { ShopMailCard } from './ShopMailCard'
 
 /**
  * Who the shop is, on every document it prints.
@@ -136,6 +137,8 @@ export function ShopSection({ onOpenFormat }: { onOpenFormat: (() => void) | nul
           Signed in as <strong>{user.username}</strong> ({user.roleName}).
         </div>
       </Card>
+
+      <ShopMailCard shopEmail={shop.email} />
     </>
   )
 }

@@ -51,8 +51,8 @@ export function ReadyCard() {
         },
         {
           label: 'Support hears when something goes wrong',
-          done: reports || deviceSetting('tg_token') !== null || deviceSetting('mail_to') !== null,
-          fix: 'This copy sends no daily health report. Set up Telegram or email on Reports, or ask for an updated copy.',
+          done: reports || deviceSetting('mail_user') !== null,
+          fix: 'This copy sends no daily health report. Add the shop’s email login under Shop details, or ask for an updated copy.',
         },
         {
           label: 'The shop\'s records can be sent to support safely',

@@ -77,6 +77,7 @@ export {
 } from '../services/customers.js'
 export {
   sendsBillEmails, billsToEmail, billDueForEmail, noteBillEmail, billEmailNote, retryBillEmail,
+  billEmailCustomers,
 } from '../services/billEmails.js'
 export type { BillToEmail, BillEmailNote } from '../services/billEmails.js'
 export type { ArchiveCustomerResult } from '../services/customers.js'

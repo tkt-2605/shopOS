@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, isNotNull, isNull } from 'drizzle-orm'
+import { and, asc, count, eq, gte, isNotNull, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import type { Money } from '../money.js'
@@ -127,4 +127,17 @@ export async function billEmailNote(db: SqlDriver, billId: string): Promise<Bill
 /** Takes a bill's note away, so the main tries it again on its next pass. */
 export async function retryBillEmail(db: SqlDriver, billId: string): Promise<void> {
   await q(db).delete(schema.billEmails).where(eq(schema.billEmails.billId, billId))
+}
+
+/** How many customers have their bills emailed, for Settings to say. */
+export async function billEmailCustomers(db: SqlDriver): Promise<number> {
+  const [row] = await q(db)
+    .select({ n: count() })
+    .from(schema.customers)
+    .where(and(
+      isNotNull(schema.customers.email),
+      isNotNull(schema.customers.emailBillsSince),
+      isNull(schema.customers.deletedAt),
+    ))
+  return row?.n ?? 0
 }

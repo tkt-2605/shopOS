@@ -141,13 +141,17 @@ export default function Settings({ initial }: { initial?: SettingsSection } = {}
 
       <section className="settings-body" aria-label={labelOf(chosen)}>
         <h2 className="settings-title">{labelOf(chosen)}</h2>
-        {body(chosen, canFormat ? () => open('format') : null)}
+        {body(chosen, canFormat ? () => open('format') : null, open)}
       </section>
     </div>
   )
 }
 
-function body(section: SettingsSection, openFormat: (() => void) | null): ReactNode {
+function body(
+  section: SettingsSection,
+  openFormat: (() => void) | null,
+  open: (section: SettingsSection) => void,
+): ReactNode {
   switch (section) {
     case 'shop': return <ShopSection onOpenFormat={openFormat} />
     case 'tax': return <TaxSection />
@@ -177,7 +181,7 @@ function body(section: SettingsSection, openFormat: (() => void) | null): ReactN
       </>
     )
     case 'backups': return <BackupsSection />
-    case 'reportsOut': return <ReportsOutSection />
+    case 'reportsOut': return <ReportsOutSection onOpenShop={() => open('shop')} />
     case 'appearance': return <AppearanceSection />
     case 'help': return <HelpSection />
   }

@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createBill, submitBill } from '../src/services/billing.js'
 import { createCustomer, updateCustomer, isEmail } from '../src/services/customers.js'
-import { billsToEmail, billDueForEmail, noteBillEmail, billEmailNote, retryBillEmail, sendsBillEmails } from '../src/services/billEmails.js'
+import {
+  billsToEmail, billDueForEmail, noteBillEmail, billEmailNote, retryBillEmail, sendsBillEmails, billEmailCustomers,
+} from '../src/services/billEmails.js'
 import { loadCustomer } from '../src/repos/catalog/customers.js'
 import { rupees, type Money } from '../src/money.js'
 import { fromUnits } from '../src/quantity.js'
@@ -91,6 +93,12 @@ describe('which bills are emailed', () => {
 
   it('is sent by a till on its own', async () => {
     expect(await sendsBillEmails(fx.db)).toBe(true)
+  })
+
+  it('counts the customers ticked, for Settings to say', async () => {
+    await customer({ email: 'ravi@example.com', emailBills: true })
+    await customer({ email: 'asha@example.com' })
+    expect(await billEmailCustomers(fx.db)).toBe(1)
   })
 })
 

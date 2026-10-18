@@ -1,261 +1,237 @@
-import { useEffect, useState } from 'react'
-import { businessDate } from '@shopos/core'
+import { useEffect, useState, type ReactNode } from 'react'
+import { billEmailCustomers, businessDate, sendsBillEmails } from '@shopos/core'
 import { deviceSetting, setDeviceSetting } from '../../core/device'
 import { useCore } from '../../core/CoreProvider'
+import { goTo } from '../../core/nav'
 import {
-  AUTO, AUTO_AT, DEFAULT_AT, MAIL_HOST, MAIL_PASSWORD, MAIL_PORT, MAIL_TO, MAIL_USER, TG_CHAT, TG_TOKEN,
-  deliverPack, findTelegramChats, flushOutbox, telegramBuiltIn, lastPackRun, say, type ChatSeen, type PackRun,
+  AUTO, AUTO_AT, DEFAULT_AT,
+  deliverPack, destinations, flushOutbox, lastPackRun, outboxList, say,
+  type Destinations, type PackRun, type Waiting,
 } from '../../core/reportOut'
-import { Alert, Card, Field, rangePreset } from '../../ui/components'
+import { Alert, Card, rangePreset } from '../../ui/components'
 import { sendHealth } from '../../core/health'
 import { Intro, whenWas } from './parts'
+import { MailStatus } from './ShopMailCard'
 
 /*
- * Where this shop's reports go, with no server of ours in between.
+ * What this till sends, where it goes, and what is still waiting.
  *
- * Everything on this screen is a setting of this computer, not of the shop: the
- * mail password in particular must never be written to the shop's database,
- * which is copied to every other till and into every backup.
+ * Nothing to type here. The shop's mail login is under Shop details; the
+ * Telegram chat, the mail server and any other address come with the build
+ * (`report_out.rs`), so they change in an update. What is left is a row per
+ * kind of message -- when it goes, where, and a button to send it now -- and
+ * the outbox, with each message that has not gone and why.
  */
 
-export function ReportsOutSection() {
+export function ReportsOutSection({ onOpenShop }: { onOpenShop: () => void }) {
   const { db } = useCore()
-  const [to, setTo] = useState(() => deviceSetting(MAIL_TO) ?? '')
-  const [user, setUser] = useState(() => deviceSetting(MAIL_USER) ?? '')
-  const [password, setPassword] = useState(() => deviceSetting(MAIL_PASSWORD) ?? '')
-  const [host, setHost] = useState(() => deviceSetting(MAIL_HOST) ?? '')
-  const [port, setPort] = useState(() => deviceSetting(MAIL_PORT) ?? '')
-  const [tgToken, setTgToken] = useState(() => deviceSetting(TG_TOKEN) ?? '')
-  const [tgChat, setTgChat] = useState(() => deviceSetting(TG_CHAT) ?? '')
-  const [chats, setChats] = useState<ChatSeen[] | null>(null)
-  const [builtIn, setBuiltIn] = useState(false)
+  const [where, setWhere] = useState<Destinations | null>(null)
   // Off until somebody here switches it on: the reports name customers.
   const [auto, setAuto] = useState(() => deviceSetting(AUTO) === '1')
   const [at, setAt] = useState(() => deviceSetting(AUTO_AT) ?? DEFAULT_AT)
   const [busy, setBusy] = useState(false)
   const [run, setRun] = useState<PackRun | null>(lastPackRun)
-  const [error, setError] = useState<string | null>(null)
-  const [note, setNote] = useState<string | null>(null)
-  const [waiting, setWaiting] = useState<number | null>(null)
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [waiting, setWaiting] = useState<Waiting[]>([])
+  const [stuck, setStuck] = useState<Record<string, string>>({})
+  const [bills, setBills] = useState<{ sender: boolean; customers: number } | null>(null)
 
-  useEffect(() => { void telegramBuiltIn().then(setBuiltIn) }, [])
-  useEffect(() => { void flushOutbox().then((s) => setWaiting(s.waiting), () => undefined) }, [])
+  async function refresh() {
+    const [d, list] = await Promise.all([destinations(), outboxList()])
+    setWhere(d)
+    setWaiting(list)
+  }
 
-  const save = (key: string, value: string) => void setDeviceSetting(key, value.trim() === '' ? null : value.trim())
+  useEffect(() => {
+    let live = true
+    void refresh().catch(() => undefined)
+    void Promise.all([sendsBillEmails(db), billEmailCustomers(db)])
+      .then(([sender, customers]) => { if (live) setBills({ sender, customers }) })
+    return () => { live = false }
+  }, [db])
 
-  async function sendNow(which: 'today' | 'month') {
+  async function doing(work: () => Promise<{ ok: boolean; text: string }>) {
     setBusy(true)
-    setError(null)
-    setNote(null)
+    setMessage(null)
     try {
-      const range = which === 'today' ? { from: businessDate(), to: businessDate() } : rangePreset('month')
-      const delivery = await deliverPack(db, range)
-      setRun(lastPackRun())
-      const text = say(delivery)
-      if (delivery.mailError || delivery.folderError) setError(text)
-      else setNote(text)
-      void flushOutbox().then((s) => setWaiting(s.waiting), () => undefined)
+      setMessage(await work())
     } catch (err) {
-      setError(`The reports could not be sent: ${err instanceof Error ? err.message : String(err)}`)
+      setMessage({ ok: false, text: typeof err === 'string' ? err : err instanceof Error ? err.message : String(err) })
     } finally {
       setBusy(false)
+      void refresh().catch(() => undefined)
     }
   }
 
-  async function findChats() {
-    setBusy(true)
-    setError(null)
-    setNote(null)
-    try {
-      // The token is read by the other side from this machine's settings, so
-      // it has to be saved before the question is asked.
-      await setDeviceSetting(TG_TOKEN, tgToken.trim() === '' ? null : tgToken.trim())
-      setChats(await findTelegramChats())
-    } catch (err) {
-      setChats(null)
-      setError(typeof err === 'string' ? err : err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
+  const sendPack = (which: 'today' | 'month') => doing(async () => {
+    const range = which === 'today' ? { from: businessDate(), to: businessDate() } : rangePreset('month')
+    const delivery = await deliverPack(db, range)
+    setRun(lastPackRun())
+    return { ok: !delivery.mailError && !delivery.folderError && !delivery.telegramError, text: say(delivery) }
+  })
+
+  const sendHealthNow = () => doing(async () => {
+    const sent = await sendHealth(db)
+    const problem = sent.telegramError ?? sent.mailError ?? sent.portalError
+    if (problem) return { ok: false, text: `Health report: ${problem}` }
+    const went = [
+      sent.telegram === 'sent' && 'to Telegram',
+      sent.mail === 'sent' && 'by email',
+      sent.portal === 'sent' && 'to support',
+    ].filter(Boolean).join(', ')
+    return { ok: true, text: went ? `Health report sent ${went}.` : 'Health report made and waiting to go.' }
+  })
+
+  const tryAgain = () => doing(async () => {
+    const state = await flushOutbox()
+    setStuck(state.errors)
+    if (state.error) return { ok: false, text: state.error }
+    return { ok: true, text: state.sent > 0 ? `${state.sent} sent.` : 'Nothing was waiting.' }
+  })
+
+  function switchAuto(on: boolean) {
+    setAuto(on)
+    void setDeviceSetting(AUTO, on ? '1' : '0')
   }
 
-  function chooseChat(id: string) {
-    setTgChat(id)
-    save(TG_CHAT, id)
-    setChats(null)
+  function changeAt(value: string) {
+    setAt(value)
+    if (value !== '') void setDeviceSetting(AUTO_AT, value)
   }
 
-  async function healthNow() {
-    setBusy(true)
-    setError(null)
-    setNote(null)
-    try {
-      const sent = await sendHealth(db)
-      const where = [
-        sent.telegram === 'sent' ? 'sent to Telegram' : sent.telegram === 'queued' ? 'Telegram waiting for the line' : null,
-        sent.mail === 'sent' ? 'emailed' : sent.mail === 'queued' ? 'email waiting for the line' : null,
-        sent.portal === 'sent' ? 'sent to support' : sent.portal === 'queued' ? 'support copy waiting for the line' : null,
-      ].filter(Boolean).join(', ')
-      const problem = sent.telegramError ?? sent.mailError ?? sent.portalError
-      if (problem) setError(`Health report: ${problem}`)
-      else setNote(where ? `Health report ${where}.` : 'Health report made, but no Telegram or email is set up to send it.')
-    } catch (err) {
-      setError(`The health report could not be made: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function retry() {
-    setBusy(true)
-    setError(null)
-    try {
-      const state = await flushOutbox()
-      setWaiting(state.waiting)
-      if (state.error) setError(state.error)
-      else setNote(state.sent > 0 ? `${state.sent} sent.` : 'Nothing was waiting.')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const mailTo = where?.reportsTo.length ? where.reportsTo.join(', ') : null
 
   return (
     <>
       <Intro>
-        Every report — sales by day, products, profit, GST, payments, staff, drawer, books and the
-        ledger — as one zip of CSV files, sent to the address you give, to a Telegram chat, and copied into
-        the backup folder. The shop’s name and id are in every file name, so reports from several shops can
-        share one inbox or one Drive folder.
+        What this till sends and where. The shop’s email is set up under Shop details; everything
+        else comes with ShopOS.
       </Intro>
 
-      <Card title="Email">
-        <Field label="Send reports to" hint="One or more addresses, separated by commas.">
-          <input
-            className="input" id="mail-to" type="text" value={to}
-            onChange={(e) => setTo(e.target.value)} onBlur={() => save(MAIL_TO, to)}
-          />
-        </Field>
-        <Field label="Send from (Gmail address)" hint="The account that sends. It can be the same address. On the main till it also sends bills to the customers ticked for them.">
-          <input
-            className="input" id="mail-user" type="text" value={user}
-            onChange={(e) => setUser(e.target.value)} onBlur={() => save(MAIL_USER, user)}
-          />
-        </Field>
-        <Field
-          label="App password"
-          hint="Not the Gmail password. In the Google account: Security, 2-Step Verification, App passwords. Kept on this computer only."
-        >
-          <input
-            className="input" id="mail-password" type="password" value={password} autoComplete="off"
-            onChange={(e) => setPassword(e.target.value)} onBlur={() => save(MAIL_PASSWORD, password)}
-          />
-        </Field>
-        <Field label="Mail server" hint="Leave both empty for Gmail (smtp.gmail.com, port 587).">
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              className="input" id="mail-host" type="text" value={host} placeholder="smtp.gmail.com"
-              onChange={(e) => setHost(e.target.value)} onBlur={() => save(MAIL_HOST, host)}
-            />
-            <input
-              className="input" id="mail-port" type="text" value={port} placeholder="587" style={{ maxWidth: 90 }}
-              onChange={(e) => setPort(e.target.value)} onBlur={() => save(MAIL_PORT, port)}
-            />
-          </div>
-        </Field>
-        <div className="settings-group-why">
-          Reports are queued and sent when the connection allows, so a slow or dropped line delays them
-          and never loses them. The folder copy uses the folder chosen under Backups &amp; restore.
-        </div>
+      <Card title="Where it goes">
+        <Line label="Email">
+          {mailTo ? <>To {mailTo}</> : <MailStatus where={where} />}
+          <button type="button" className="link-btn" onClick={onOpenShop}>
+            {where?.sender ? 'Change under Shop details' : 'Set up under Shop details'} →
+          </button>
+        </Line>
+        <Line label="Telegram">
+          {where?.telegram
+            ? <>To the ShopOS support chat</>
+            : <span className="badge mute">Not in this copy of ShopOS</span>}
+        </Line>
+        <Line label="Folder">
+          {deviceSetting('backup_folder')
+            ? <>A copy in the backup folder, under reports</>
+            : <span className="badge mute">No folder — choose one under Backups &amp; restore</span>}
+        </Line>
       </Card>
 
-      <Card title="Telegram">
-        {builtIn && (
-          <div className="settings-group-why" style={{ marginBottom: 11 }}>
-            This copy of ShopOS sends its daily health report to its supplier’s Telegram chat. Reports
-            go only to a bot and chat entered here, which then take the health report as well.
-          </div>
-        )}
-        <Field
-          label="Bot token"
-          hint="From BotFather, when you make the bot. Kept on this computer only. Use a bot made for the shops, not one that does anything else."
-        >
-          <input
-            className="input" id="tg-token" type="password" value={tgToken} autoComplete="off"
-            onChange={(e) => setTgToken(e.target.value)} onBlur={() => save(TG_TOKEN, tgToken)}
-          />
-        </Field>
-        <Field
-          label="Chat id"
-          hint="The chat the reports go to: your own id, or a group's (starts with -100). Send the bot a message first, or add it to the group."
-        >
-          <input
-            className="input" id="tg-chat" type="text" value={tgChat}
-            onChange={(e) => setTgChat(e.target.value)} onBlur={() => save(TG_CHAT, tgChat)}
-          />
-        </Field>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 11 }}>
-          <button className="btn sm" disabled={busy || tgToken.trim() === ''} onClick={() => void findChats()}>
-            Find my chat id
-          </button>
-        </div>
-        {chats !== null && chats.length === 0 && (
-          <div style={{ marginBottom: 11 }}>
-            <Alert>
-              No chat has messaged this bot yet. Open the bot in Telegram, press Start, send it any word,
-              and try again.
-            </Alert>
-          </div>
-        )}
-        {chats !== null && chats.length > 0 && (
-          <div style={{ marginBottom: 11 }}>
-            <div className="settings-group-why">Choose where the reports should go:</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {chats.map((c) => (
-                <button key={c.id} className="btn sm" onClick={() => chooseChat(c.id)}>
-                  {c.name || c.id} ({c.kind}) {c.id}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+      <Card title="What is sent">
+        {message && <div style={{ marginBottom: 11 }}><Alert kind={message.ok ? 'ok' : 'bad'}>{message.text}</Alert></div>}
+
+        <Row
+          title="Daily reports"
+          what="Sales, products, profit, GST, payments, staff, drawer and the books for the month so far, as one zip of CSV files."
+          when={
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input type="checkbox" checked={auto} onChange={(e) => switchAuto(e.target.checked)} />
+              Every day at
+              <input
+                className="input" id="report-at" type="time" value={at} style={{ maxWidth: 120 }}
+                disabled={!auto} onChange={(e) => changeAt(e.target.value)}
+              />
+            </label>
+          }
+          last={run ? `Last sent ${whenWas(run.at)}: ${run.text}` : 'Not sent from this till yet.'}
+          actions={<>
+            <button className="btn sm" disabled={busy} onClick={() => void sendPack('today')}>Send today’s</button>
+            <button className="btn sm" disabled={busy} onClick={() => void sendPack('month')}>Send this month’s</button>
+          </>}
+        />
+
+        <Row
+          title="Customers’ bills"
+          what="Each bill for a customer ticked for it, as the A4 invoice in a PDF, to the customer’s own email."
+          when={bills === null ? null : bills.sender
+            ? <>Within two minutes of the bill, from this till</>
+            : <>Sent by the main till, not this one</>}
+          last={bills === null ? null : bills.customers === 0
+            ? 'No customer is ticked yet.'
+            : `${bills.customers} customer${bills.customers === 1 ? '' : 's'} ticked.`}
+          actions={
+            <button className="btn sm" onClick={() => goTo('customers')}>Choose customers</button>
+          }
+        />
+
+        <Row
+          title="Health report"
+          what="How sync, the licence, backups and the books are doing, with the app’s logs, for support. No customer, amount or password."
+          when={<>Every day, with the daily reports</>}
+          actions={<button className="btn sm" disabled={busy} onClick={() => void sendHealthNow()}>Send now</button>}
+        />
       </Card>
 
-      <Card title="Send">
-        <Field label="Every day">
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input
-              type="checkbox" checked={auto}
-              onChange={(e) => { setAuto(e.target.checked); save(AUTO, e.target.checked ? '1' : '0') }}
-            />
-            Send this month’s reports once a day, at
-            <input
-              className="input" id="report-at" type="time" value={at} style={{ maxWidth: 120 }}
-              onChange={(e) => { setAt(e.target.value); save(AUTO_AT, e.target.value) }}
-            />
-          </label>
-        </Field>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 11 }}>
-          <button className="btn primary sm" disabled={busy} onClick={() => void sendNow('today')}>Send today’s now</button>
-          <button className="btn sm" disabled={busy} onClick={() => void sendNow('month')}>Send this month’s now</button>
-          <button className="btn sm" disabled={busy} onClick={() => void healthNow()}>Send health report</button>
-          <button className="btn sm" disabled={busy} onClick={() => void retry()}>
-            Try waiting emails{waiting ? ` (${waiting})` : ''}
+      <Card
+        title="Waiting to send"
+        actions={
+          <button className="btn sm" disabled={busy} onClick={() => void tryAgain()}>
+            {busy ? 'Sending…' : 'Try again now'}
           </button>
-        </div>
-        <div className="settings-group-why" style={{ marginBottom: 11 }}>
-          The health report goes once a day{builtIn ? '' : ' with the daily reports'}. It says how sync, the licence, backups and the
-          books are doing, with the app’s logs. It carries no customer, no amount and no password.
-        </div>
-        {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
-        {note && <div style={{ marginBottom: 11 }}><Alert kind="ok">{note}</Alert></div>}
-        {run && (
-          <div className="settings-group-why">
-            Last send {whenWas(run.at)}: {run.text}
-          </div>
-        )}
+        }
+      >
+        {waiting.length === 0
+          ? <div className="settings-group-why">Nothing is waiting. Anything that cannot go — the line is down, the
+              password was changed — waits here and goes by itself when it can.</div>
+          : (
+            <table>
+              <thead><tr><th>What</th><th>To</th><th>Since</th><th>Why it waits</th></tr></thead>
+              <tbody>
+                {waiting.map((w) => (
+                  <tr key={`${w.at}-${w.channel}`}>
+                    <td>{w.subject}</td>
+                    <td>{w.channel === 'telegram' ? 'Telegram' : w.to.join(', ')}</td>
+                    <td>{whenWas(new Date(w.at).toISOString())}</td>
+                    <td style={{ color: 'var(--warn)' }}>{stuck[w.channel] ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
       </Card>
     </>
+  )
+}
+
+/** One destination, label then where. */
+function Line({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', padding: '6px 0', flexWrap: 'wrap' }}>
+      <div style={{ width: 80, color: 'var(--ink-3)', fontSize: 12.5 }}>{label}</div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', flexWrap: 'wrap' }}>{children}</div>
+    </div>
+  )
+}
+
+/** One kind of message: what it is, when it goes, how it last went, and Send now. */
+function Row({
+  title, what, when, last, actions,
+}: {
+  title: string
+  what: string
+  when?: ReactNode
+  last?: string | null
+  actions?: ReactNode
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 16, padding: '12px 0', borderTop: '1px solid var(--rule-soft)', flexWrap: 'wrap' }}>
+      <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+        <div className="settings-option-title">{title}</div>
+        <div className="settings-option-note">{what}</div>
+        {when && <div style={{ marginTop: 6 }}>{when}</div>}
+        {last && <div className="settings-group-why" style={{ marginTop: 6, marginBottom: 0 }}>{last}</div>}
+      </div>
+      {actions && <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>{actions}</div>}
+    </div>
   )
 }

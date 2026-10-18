@@ -68,10 +68,10 @@ pub fn health_send(
         .collect();
     let name = format!("health {} {stamp}.zip", label.trim());
     let subject = format!("ShopOS health - {}", label.trim());
-    // Names no customer, so the vendor's baked-in bot may carry it.
+    // By mail to the shop and by the vendor's bot, like the reports.
     let (_, faults) = crate::faults::snapshot(&data);
     let summary = if faults.is_empty() { summary } else { format!("{summary}\n{faults}") };
-    let sent = report_out::send_out(&app, &name, &bytes, &subject, &summary, true)?;
+    let sent = report_out::send_out(&app, &name, &bytes, &subject, &summary)?;
 
     // To the portal as well, as JSON and without the logs, when this till knows its shop.
     let shop = extra.get("shopId").and_then(Json::as_str).map(str::to_string);

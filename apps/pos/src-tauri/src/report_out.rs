@@ -19,6 +19,16 @@
 /// Telegram goes the same way, through .NET's `HttpClient`, with the bot token
 /// in an environment variable and scrubbed from any error before it is shown.
 ///
+/// ## What the shop sets up, and what comes with the build
+///
+/// The shop gives one thing: its mail login (Shop details), which sends the
+/// reports to the shop's own address and the bills to the customers ticked
+/// for them. Everything else comes with the build, from `.env` through
+/// `build.rs`, so a new value reaches the shops in an update and nobody types
+/// a token: the vendor's bot and chat, which take every report and the health
+/// report (decided 19 Oct: the vendor receives the shops' reports), the mail
+/// server for shops not on Gmail, and any address every pack is copied to.
+///
 /// ## Why there is an outbox
 ///
 /// The shop's line is poor. A message is written to `outbox/` first and
@@ -41,17 +51,16 @@ const MAX_PACK_BYTES: usize = 20 * 1024 * 1024;
 const SEND_DEADLINE: Duration = Duration::from_secs(120);
 
 /// Device settings, on this machine only. Must match `core/reportOut.ts`.
-const TO: &str = "mail_to";
 const USER: &str = "mail_user";
 const PASSWORD: &str = "mail_password";
-const HOST: &str = "mail_host";
-const PORT: &str = "mail_port";
-const TG_TOKEN: &str = "tg_token";
-const TG_CHAT: &str = "tg_chat";
 /// The vendor's bot and chat, baked in by `build.rs` from a git-ignored `.env`.
-/// A token or chat typed in Settings on this machine wins over these.
 const BUILT_TOKEN: Option<&str> = option_env!("SHOPOS_TG_TOKEN");
 const BUILT_CHAT: Option<&str> = option_env!("SHOPOS_TG_CHAT");
+/// The mail server, when the shops are not on Gmail. Baked in the same way.
+const BUILT_MAIL_HOST: Option<&str> = option_env!("SHOPOS_MAIL_HOST");
+const BUILT_MAIL_PORT: Option<&str> = option_env!("SHOPOS_MAIL_PORT");
+/// Addresses every report pack is also copied to, besides the shop's own.
+const BUILT_REPORTS_TO: Option<&str> = option_env!("SHOPOS_REPORTS_TO");
 /// For a test against a stand-in server. Anything but https or this machine is refused.
 const TG_API: &str = "tg_api";
 
@@ -86,6 +95,8 @@ pub struct OutboxState {
     waiting: usize,
     sent: usize,
     error: Option<String>,
+    /// Why each channel is stuck, by channel: `mail`, `telegram`, `invoice`.
+    errors: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -99,12 +110,8 @@ struct Queued {
     body: String,
     /// The zip's name as the recipient will see it.
     attach_name: String,
-    /// Whether the vendor's baked-in bot may carry it when this machine has no
-    /// bot of its own. Only the health report, which names no customer: the
-    /// baked-in token is in every copy of the program, so anything sent to that
-    /// chat can be read back by whoever lifts it. Absent reads as no.
-    #[serde(default)]
-    vendor: bool,
+    // Anything queued by 0.3.1 or before also carries `vendor`, which is now
+    // ignored: every Telegram message goes by the vendor's bot.
 }
 
 fn mail_channel() -> String {
@@ -193,32 +200,20 @@ pub(crate) struct Mail {
     port: u16,
 }
 
-/// `None` when this machine has not been set up to send mail.
+/// Where the report pack goes: the shop's own address, the one it sends from,
+/// and whatever the build copies every pack to. `None` with no mail login.
 fn mail_settings(app: &tauri::AppHandle) -> Result<Option<Mail>, String> {
-    let data = paths::data_dir(app)?;
-    let (Some(to), Some(user), Some(password)) = (
-        device::setting(&data, TO)?,
-        device::setting(&data, USER)?,
-        device::setting(&data, PASSWORD)?,
-    ) else {
+    let Some(mut mail) = sender_settings(app)? else {
         return Ok(None);
     };
-    let to = recipients(&to)?;
-    if to.is_empty() {
-        return Ok(None);
+    let mut to = vec![mail.user.clone()];
+    for extra in recipients(BUILT_REPORTS_TO.unwrap_or(""))? {
+        if !to.iter().any(|t| t.eq_ignore_ascii_case(&extra)) {
+            to.push(extra);
+        }
     }
-    recipients(&user)?;
-    let host = device::setting(&data, HOST)?.unwrap_or_else(|| "smtp.gmail.com".into());
-    if host.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '.' || c == '-')) {
-        return Err(format!("\"{host}\" is not a mail server name"));
-    }
-    let port = match device::setting(&data, PORT)? {
-        Some(p) => p.parse::<u16>().map_err(|_| format!("\"{p}\" is not a port number"))?,
-        None => 587,
-    };
-    // Gmail shows app passwords in groups of four with spaces.
-    let password: String = password.chars().filter(|c| !c.is_whitespace()).collect();
-    Ok(Some(Mail { to, user, password, host, port }))
+    mail.to = to;
+    Ok(Some(mail))
 }
 
 /// The shop's mail login without the report pack's recipients: what a bill
@@ -232,17 +227,27 @@ pub(crate) fn sender_settings(app: &tauri::AppHandle) -> Result<Option<Mail>, St
     if user.trim().is_empty() || password.trim().is_empty() {
         return Ok(None);
     }
-    recipients(&user)?;
-    let host = device::setting(&data, HOST)?.unwrap_or_else(|| "smtp.gmail.com".into());
+    let user = user.trim().to_string();
+    if recipients(&user)?.len() != 1 {
+        return Err("The shop's email should be one address.".into());
+    }
+    let (host, port) = mail_server(BUILT_MAIL_HOST, BUILT_MAIL_PORT)?;
+    // Gmail shows app passwords in groups of four with spaces.
+    let password: String = password.chars().filter(|c| !c.is_whitespace()).collect();
+    Ok(Some(Mail { to: Vec::new(), user, password, host, port }))
+}
+
+/// The server the build names, or Gmail's.
+fn mail_server(host: Option<&str>, port: Option<&str>) -> Result<(String, u16), String> {
+    let host = host.map(str::trim).filter(|h| !h.is_empty()).unwrap_or("smtp.gmail.com");
     if host.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '.' || c == '-')) {
         return Err(format!("\"{host}\" is not a mail server name"));
     }
-    let port = match device::setting(&data, PORT)? {
+    let port = match port.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => p.parse::<u16>().map_err(|_| format!("\"{p}\" is not a port number"))?,
         None => 587,
     };
-    let password: String = password.chars().filter(|c| !c.is_whitespace()).collect();
-    Ok(Some(Mail { to: Vec::new(), user: user.trim().to_string(), password, host, port }))
+    Ok((host.to_string(), port))
 }
 
 struct Telegram {
@@ -261,20 +266,9 @@ fn token_shape(token: &str) -> bool {
     })
 }
 
-/// The shop's own bot and chat, typed on this machine. `None` when there is none.
-///
-/// Never the vendor's: see `vendor_settings`, and `Queued::vendor` for why the
-/// two are kept apart.
+/// The vendor's bot and chat baked into this build, or `None`. It carries
+/// every Telegram message: the report packs and the health report.
 fn telegram_settings(app: &tauri::AppHandle) -> Result<Option<Telegram>, String> {
-    let data = paths::data_dir(app)?;
-    let token = device::setting(&data, TG_TOKEN)?.filter(|t| !t.trim().is_empty());
-    let chat = device::setting(&data, TG_CHAT)?.filter(|c| !c.trim().is_empty());
-    telegram_of(&data, token, chat)
-}
-
-/// The vendor's bot and chat baked into this build, or `None`. For the health
-/// report only.
-fn vendor_settings(app: &tauri::AppHandle) -> Result<Option<Telegram>, String> {
     if !report_telegram_builtin() {
         return Ok(None);
     }
@@ -289,14 +283,14 @@ fn telegram_of(data: &Path, token: Option<String>, chat: Option<String>) -> Resu
     let token: String = token.chars().filter(|c| !c.is_whitespace()).collect();
     let shape = token_shape(&token);
     if !shape {
-        return Err("The Telegram bot token does not look right. It is the long code BotFather gave you.".into());
+        return Err("The Telegram bot token this copy was built with does not look right.".into());
     }
     let chat = chat.trim().to_string();
     let chat_ok = !chat.is_empty()
         && chat.len() <= 40
         && chat.chars().enumerate().all(|(i, c)| c.is_ascii_digit() || (i == 0 && c == '-') || (i == 0 && c == '@') || (c.is_ascii_alphanumeric() || c == '_'));
     if !chat_ok {
-        return Err("The Telegram chat id should be a number like 123456789, or -100… for a group.".into());
+        return Err("The Telegram chat id this copy was built with should be a number like 123456789, or -100… for a group.".into());
     }
     let api = telegram_api(data)?;
     Ok(Some(Telegram { token, chat, api }))
@@ -315,12 +309,10 @@ fn telegram_api(data: &Path) -> Result<String, String> {
 
 /// What is set up on this machine, read once per call.
 struct Settings {
+    /// The shop's login, to the shop's own address and the build's copies.
     mail: Option<Mail>,
-    /// The shop's own bot, for everything.
+    /// The vendor's baked-in bot.
     telegram: Option<Telegram>,
-    /// The vendor's baked-in bot, for what is queued with `vendor` and only
-    /// when the shop has no bot of its own.
-    vendor: Option<Telegram>,
     /// The shop's mail login alone, for bills emailed to customers.
     sender: Option<Mail>,
 }
@@ -332,16 +324,8 @@ impl Settings {
         Settings {
             mail: mail_settings(app).unwrap_or(None),
             telegram: telegram_settings(app).unwrap_or(None),
-            vendor: vendor_settings(app).unwrap_or(None),
             sender: sender_settings(app).unwrap_or(None),
         }
-    }
-}
-
-impl Settings {
-    /// The bot that carries `queued`, if any may.
-    fn bot_for(&self, queued: &Queued) -> Option<&Telegram> {
-        self.telegram.as_ref().or(if queued.vendor { self.vendor.as_ref() } else { None })
     }
 }
 
@@ -389,8 +373,7 @@ pub fn report_deliver(
         Err(e) => (None, Some(e)),
     };
 
-    // A pack names customers: never to the vendor's bot, only to the shop's own.
-    let sent = send_out(&app, &name, &bytes, &subject, &body, false)?;
+    let sent = send_out(&app, &name, &bytes, &subject, &body)?;
     Ok(Delivery {
         zip: zip.to_string_lossy().to_string(),
         folder,
@@ -415,15 +398,13 @@ const TELEGRAM_MAX_BYTES: usize = 49 * 1024 * 1024;
 
 /// Queues one zip for every channel set up on this machine and tries them.
 /// Shared by the report pack and the health report; who receives it is read
-/// here, never passed in. `to_vendor` says only whether the vendor's baked-in
-/// bot may carry it when the shop has none of its own (`Queued::vendor`).
+/// here, never passed in.
 pub(crate) fn send_out(
     app: &tauri::AppHandle,
     name: &str,
     bytes: &[u8],
     subject: &str,
     body: &str,
-    to_vendor: bool,
 ) -> Result<Sent, String> {
     let name = clean(name, "zip")?;
     let subject: String = subject.chars().filter(|c| !c.is_control()).take(200).collect();
@@ -443,7 +424,6 @@ pub(crate) fn send_out(
             subject: subject.clone(),
             body: if channel == "telegram" { caption.clone() } else { body.clone() },
             attach_name: name.clone(),
-            vendor: to_vendor,
         };
         let meta = serde_json::to_vec(&queued).map_err(|e| e.to_string())?;
         files::write_durably(&outbox.join(format!("{id}.zip")), &bytes)?;
@@ -451,7 +431,7 @@ pub(crate) fn send_out(
         Ok(id)
     };
 
-    let mut settings = Settings { mail: None, telegram: None, vendor: None, sender: None };
+    let mut settings = Settings { mail: None, telegram: None, sender: None };
     let (mut mail, mut mail_error) = ("off", None);
     let (mut telegram, mut telegram_error) = ("off", None);
     let (mut mail_id, mut telegram_id) = (None, None);
@@ -464,11 +444,7 @@ pub(crate) fn send_out(
             settings.mail = Some(m);
         }
     }
-    let bot = match telegram_settings(&app) {
-        Ok(None) if to_vendor => vendor_settings(&app).map(|v| v.map(|v| (v, true))),
-        other => other.map(|t| t.map(|t| (t, false))),
-    };
-    match bot {
+    match telegram_settings(&app) {
         Err(e) => telegram_error = Some(e),
         Ok(None) => {}
         Ok(Some(_)) if bytes.len() > TELEGRAM_MAX_BYTES => {
@@ -477,13 +453,9 @@ pub(crate) fn send_out(
                 bytes.len() / (1024 * 1024)
             ));
         }
-        Ok(Some((t, vendor))) => {
+        Ok(Some(t)) => {
             telegram_id = Some(queue("telegram", Vec::new())?);
-            if vendor {
-                settings.vendor = Some(t);
-            } else {
-                settings.telegram = Some(t);
-            }
+            settings.telegram = Some(t);
         }
     }
     trim_queue(&outbox);
@@ -537,7 +509,6 @@ pub(crate) fn queue_invoice(
         subject,
         body: body.to_string(),
         attach_name,
-        vendor: false,
     };
     // The attachment keeps the outbox's one file name; `with_named_copy` gives
     // it the bill's name for the send.
@@ -565,7 +536,98 @@ pub fn report_outbox(app: tauri::AppHandle) -> Result<OutboxState, String> {
         waiting: state.waiting,
         sent: state.sent,
         error: state.errors.values().next().cloned(),
+        errors: state.errors,
     })
+}
+
+/// One message waiting in the outbox, for Settings to list.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Waiting {
+    channel: String,
+    subject: String,
+    /// The addresses, for mail; empty for Telegram.
+    to: Vec<String>,
+    /// When it was queued, in milliseconds since 1970.
+    at: u64,
+}
+
+/// What is waiting, oldest first, without trying to send any of it.
+#[tauri::command(async)]
+pub fn report_outbox_list(app: tauri::AppHandle) -> Result<Vec<Waiting>, String> {
+    let outbox = outbox_dir(&app)?;
+    Ok(listed(&outbox))
+}
+
+fn listed(outbox: &Path) -> Vec<Waiting> {
+    waiting(outbox)
+        .into_iter()
+        .filter_map(|id| {
+            let raw = std::fs::read(outbox.join(format!("{id}.json"))).ok()?;
+            let q: Queued = serde_json::from_slice(&raw).ok()?;
+            let at = id.split('-').next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+            Some(Waiting { channel: q.channel, subject: q.subject, to: q.to, at })
+        })
+        .collect()
+}
+
+/// Where things go from this machine, for Settings to say in words.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Destinations {
+    /// The shop's login, when there is one.
+    sender: Option<String>,
+    /// Where a report pack is emailed: the shop's own address and the build's copies.
+    reports_to: Vec<String>,
+    /// Why mail cannot go, when the login or the build's settings are wrong.
+    mail_error: Option<String>,
+    /// Whether the vendor's bot is in this build.
+    telegram: bool,
+}
+
+#[tauri::command(async)]
+pub fn report_destinations(app: tauri::AppHandle) -> Destinations {
+    let (sender, reports_to, mail_error) = match mail_settings(&app) {
+        Ok(Some(m)) => (Some(m.user), m.to, None),
+        Ok(None) => (None, Vec::new(), None),
+        Err(e) => (None, Vec::new(), Some(e)),
+    };
+    Destinations { sender, reports_to, mail_error, telegram: report_telegram_builtin() }
+}
+
+/// Sends the shop's own address one short email from its own login, at once
+/// and not through the outbox, so the person setting it up sees the server's
+/// answer. Returns the address it went to.
+#[tauri::command(async)]
+pub fn report_mail_test(app: tauri::AppHandle) -> Result<String, String> {
+    let mail = sender_settings(&app)?.ok_or("Enter the shop's email and its app password first.")?;
+    let _only_one = SENDING.lock().unwrap_or_else(|e| e.into_inner());
+    test_mail(&mail)?;
+    Ok(mail.user)
+}
+
+#[cfg(windows)]
+fn test_mail(mail: &Mail) -> Result<(), String> {
+    run_powershell(
+        MAIL_SCRIPT,
+        &[
+            ("SHOPOS_MAIL_HOST", mail.host.clone()),
+            ("SHOPOS_MAIL_PORT", mail.port.to_string()),
+            ("SHOPOS_MAIL_USER", mail.user.clone()),
+            ("SHOPOS_MAIL_PASS", mail.password.clone()),
+            ("SHOPOS_MAIL_TO", mail.user.clone()),
+            ("SHOPOS_MAIL_SUBJECT", "ShopOS can send from this address".into()),
+            ("SHOPOS_MAIL_BODY", "A test from ShopOS. Reports and bills will be sent from this address.".into()),
+            ("SHOPOS_MAIL_ATTACH", String::new()),
+        ],
+        "The mail server did not accept the message.",
+    )
+    .map(|_| ())
+}
+
+#[cfg(not(windows))]
+fn test_mail(_: &Mail) -> Result<(), String> {
+    Err("Sending mail is only available on Windows.".into())
 }
 
 fn waiting(outbox: &Path) -> Vec<String> {
@@ -619,7 +681,7 @@ fn flush(outbox: &Path, settings: &Settings) -> Flushed {
             continue;
         }
         let result = match queued.channel.as_str() {
-            "telegram" => match settings.bot_for(&queued) {
+            "telegram" => match &settings.telegram {
                 Some(t) => send_telegram(outbox, &id, &queued, t),
                 None => continue,
             },
@@ -639,10 +701,10 @@ fn flush(outbox: &Path, settings: &Settings) -> Flushed {
                 sent += 1;
             }
             Err(e) => {
-                let e = [&settings.telegram, &settings.vendor]
-                    .into_iter()
-                    .flatten()
-                    .fold(e, |e, t| e.replace(&t.token, "..."));
+                let e = match &settings.telegram {
+                    Some(t) => e.replace(&t.token, "..."),
+                    None => e,
+                };
                 errors.insert(queued.channel.clone(), e);
             }
         }
@@ -662,7 +724,7 @@ try {
   $m.Body = $env:SHOPOS_MAIL_BODY
   $m.SubjectEncoding = [Text.Encoding]::UTF8
   $m.BodyEncoding = [Text.Encoding]::UTF8
-  $m.Attachments.Add((New-Object System.Net.Mail.Attachment($env:SHOPOS_MAIL_ATTACH)))
+  if ($env:SHOPOS_MAIL_ATTACH) { $m.Attachments.Add((New-Object System.Net.Mail.Attachment($env:SHOPOS_MAIL_ATTACH))) }
   $c = New-Object System.Net.Mail.SmtpClient($env:SHOPOS_MAIL_HOST, [int]$env:SHOPOS_MAIL_PORT)
   $c.EnableSsl = $true
   $c.Timeout = 90000
@@ -758,62 +820,8 @@ pub(crate) fn run_powershell(script: &str, env: &[(&str, String)], quiet: &str) 
     }
 }
 
-/// Which chats have messaged this bot lately, so nobody has to dig a chat id
-/// out of a URL. Telegram only reports messages not yet confirmed and from the
-/// last day, so the person sends the bot a message first.
-#[cfg(windows)]
-const TELEGRAM_CHATS_SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-try {
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-  $r = Invoke-RestMethod -Uri $env:SHOPOS_TG_URL -TimeoutSec 60
-  if (-not $r.ok) { throw ('Telegram said: ' + $r.description) }
-  $seen = @{}
-  foreach ($u in $r.result) {
-    $m = $u.message
-    if (-not $m) { $m = $u.channel_post }
-    if (-not $m) { $m = $u.my_chat_member }
-    if ($m -and $m.chat) {
-      $c = $m.chat
-      $name = @($c.title, $c.first_name, $c.username) | Where-Object { $_ } | Select-Object -First 1
-      $seen[[string]$c.id] = [pscustomobject]@{ id = [string]$c.id; kind = [string]$c.type; name = [string]$name }
-    }
-  }
-  [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @($seen.Values)))
-} catch {
-  [Console]::Error.WriteLine($_.Exception.GetBaseException().Message)
-  exit 1
-}
-"#;
-
-#[derive(Serialize, Deserialize)]
-pub struct ChatSeen {
-    id: String,
-    kind: String,
-    name: String,
-}
-
-#[cfg(windows)]
-fn chats_seen(api: &str, token: &str) -> Result<Vec<ChatSeen>, String> {
-    let out = run_powershell(
-        TELEGRAM_CHATS_SCRIPT,
-        &[("SHOPOS_TG_URL", format!("{api}/bot{token}/getUpdates"))],
-        "Telegram did not answer.",
-    )
-    .map_err(|e| e.replace(token, "..."))?;
-    if out.is_empty() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_str(&out).map_err(|e| format!("Telegram's answer was not understood: {e}"))
-}
-
-#[cfg(not(windows))]
-fn chats_seen(_: &str, _: &str) -> Result<Vec<ChatSeen>, String> {
-    Err("Only available on Windows.".into())
-}
-
-/// Whether this build carries the vendor's bot, so Settings can say so rather
-/// than ask the shop for a token. Says yes or no and never the token itself.
+/// Whether this build carries the vendor's bot, so Settings can say where the
+/// reports go. Says yes or no and never the token itself.
 #[tauri::command]
 pub fn report_telegram_builtin() -> bool {
     BUILT_TOKEN.is_some_and(token_shape) && BUILT_CHAT.is_some_and(|c| !c.trim().is_empty())
@@ -825,25 +833,6 @@ pub fn report_telegram_builtin() -> bool {
 #[tauri::command]
 pub fn report_health_daily() -> bool {
     report_telegram_builtin() || crate::portal_out::built_in()
-}
-
-/// Reads the token from this machine's settings, never from the request.
-#[tauri::command(async)]
-pub fn report_telegram_chats(app: tauri::AppHandle) -> Result<Vec<ChatSeen>, String> {
-    let data = paths::data_dir(&app)?;
-    /* The shop's own bot only. Asked of the vendor's, this listed every chat
-       that had ever written to it -- other shops' owners among them. */
-    let token: String = device::setting(&data, TG_TOKEN)?
-        .filter(|t| !t.trim().is_empty())
-        .ok_or_else(|| "Enter the bot token first.".to_string())?
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    if !token_shape(&token) {
-        return Err("The Telegram bot token does not look right. It is the long code BotFather gave you.".into());
-    }
-    let api = telegram_api(&data)?;
-    chats_seen(&api, &token)
 }
 
 /// The attachment is shown to the recipient under its file name, so it is
@@ -920,7 +909,7 @@ mod tests {
     fn queue_raw(outbox: &Path, id: &str, channel: &str) {
         let queued = Queued {
             channel: channel.into(), to: vec!["ravi@example.com".into()], subject: "s".into(),
-            body: "b".into(), attach_name: "BMR-1.pdf".into(), vendor: false,
+            body: "b".into(), attach_name: "BMR-1.pdf".into(),
         };
         std::fs::write(outbox.join(format!("{id}.zip")), b"%PDF-1.4").unwrap();
         std::fs::write(outbox.join(format!("{id}.json")), serde_json::to_vec(&queued).unwrap()).unwrap();
@@ -945,7 +934,7 @@ mod tests {
         let outbox = std::env::temp_dir().join(format!("shopos-outbox-wait-{}", stamp()));
         std::fs::create_dir_all(&outbox).unwrap();
         queue_raw(&outbox, &format!("{}-{INVOICE}", stamp()), INVOICE);
-        let none = Settings { mail: None, telegram: None, vendor: None, sender: None };
+        let none = Settings { mail: None, telegram: None, sender: None };
         let state = flush(&outbox, &none);
         assert_eq!((state.waiting, state.sent), (1, 0));
         assert!(state.errors.is_empty(), "nothing set up is not a failure");
@@ -1030,7 +1019,6 @@ mod tests {
             subject: "s".into(),
             body: "Shop: Test \u{20b9}".into(),
             attach_name: "Test (ab12cd34) 2026-10-11.zip".into(),
-            vendor: false,
         };
         (dir, queued)
     }
@@ -1071,44 +1059,6 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn the_chats_that_messaged_the_bot_are_listed_once_each() {
-        use std::io::Read;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let api = format!("http://{}", listener.local_addr().unwrap());
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-            let mut seen = Vec::new();
-            let mut buf = [0u8; 4096];
-            while !String::from_utf8_lossy(&seen).contains("\r\n\r\n") {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => seen.extend_from_slice(&buf[..n]),
-                }
-            }
-            let body = r#"{"ok":true,"result":[
-                {"update_id":1,"message":{"chat":{"id":93372553,"type":"private","first_name":"Asha"}}},
-                {"update_id":2,"message":{"chat":{"id":93372553,"type":"private","first_name":"Asha"}}},
-                {"update_id":3,"message":{"chat":{"id":-1001234,"type":"supergroup","title":"Shop reports"}}}]}"#;
-            let reply = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(reply.as_bytes()).unwrap();
-            String::from_utf8_lossy(&seen).to_string()
-        });
-
-        let chats = chats_seen(&api, "123456:ABC-def_ghi").unwrap();
-        let request = server.join().unwrap();
-
-        assert!(request.starts_with("GET /bot123456:ABC-def_ghi/getUpdates "), "{request}");
-        assert_eq!(chats.len(), 2);
-        assert!(chats.iter().any(|c| c.id == "93372553" && c.name == "Asha" && c.kind == "private"));
-        assert!(chats.iter().any(|c| c.id == "-1001234" && c.name == "Shop reports"));
-    }
-
     /// A build made with a `.env` carries a usable bot; one made without carries none.
     #[test]
     fn a_baked_in_bot_is_whole_or_absent() {
@@ -1119,32 +1069,36 @@ mod tests {
         }
     }
 
+    /// A pack queued by 0.3.1 or before, marked for the shop's own bot, still
+    /// reads, and goes by the vendor's now.
     #[test]
-    fn the_vendors_bot_carries_the_health_report_and_never_a_pack() {
-        let bot = |token: &str| Telegram { token: token.into(), chat: "1".into(), api: String::new() };
-        let queued = |vendor: bool| Queued {
-            channel: "telegram".into(),
-            to: Vec::new(),
-            subject: "s".into(),
-            body: "b".into(),
-            attach_name: "a.zip".into(),
-            vendor,
-        };
-        let (pack, health) = (queued(false), queued(true));
-
-        let vendor_only = Settings { mail: None, telegram: None, vendor: Some(bot("1:vendor")), sender: None };
-        assert!(vendor_only.bot_for(&pack).is_none(), "a pack names customers");
-        assert_eq!(vendor_only.bot_for(&health).map(|t| t.token.as_str()), Some("1:vendor"));
-
-        let own = Settings { mail: None, telegram: Some(bot("2:own")), vendor: Some(bot("1:vendor")), sender: None };
-        assert_eq!(own.bot_for(&pack).map(|t| t.token.as_str()), Some("2:own"));
-        assert_eq!(own.bot_for(&health).map(|t| t.token.as_str()), Some("2:own"), "the shop's own bot wins");
-
+    fn a_message_queued_before_carries_on() {
         let queued_before: Queued = serde_json::from_str(
-            r#"{"channel":"telegram","subject":"s","body":"b","attach_name":"a.zip"}"#,
+            r#"{"channel":"telegram","subject":"s","body":"b","attach_name":"a.zip","vendor":false}"#,
         )
         .unwrap();
-        assert!(!queued_before.vendor, "anything queued before this was a pack as far as anyone knows");
+        assert_eq!(queued_before.channel, "telegram");
+    }
+
+    #[test]
+    fn the_mail_server_is_gmail_unless_the_build_names_one() {
+        assert_eq!(mail_server(None, None).unwrap(), ("smtp.gmail.com".to_string(), 587));
+        assert_eq!(mail_server(Some(" "), Some("")).unwrap(), ("smtp.gmail.com".to_string(), 587));
+        assert_eq!(mail_server(Some("smtp.zoho.in"), Some("465")).unwrap(), ("smtp.zoho.in".to_string(), 465));
+        assert!(mail_server(Some("smtp.x.com; rm"), None).is_err());
+        assert!(mail_server(None, Some("port")).is_err());
+    }
+
+    #[test]
+    fn the_outbox_lists_what_waits_with_when_it_was_queued() {
+        let outbox = std::env::temp_dir().join(format!("shopos-outbox-list-{}", stamp()));
+        std::fs::create_dir_all(&outbox).unwrap();
+        queue_raw(&outbox, "0001760000000000-invoice", INVOICE);
+        let list = listed(&outbox);
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].channel.as_str(), list[0].at), (INVOICE, 1_760_000_000_000));
+        assert_eq!(list[0].to, vec!["ravi@example.com".to_string()]);
+        let _ = std::fs::remove_dir_all(&outbox);
     }
 
     #[test]

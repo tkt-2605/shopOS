@@ -19,14 +19,13 @@ import { TABS_IN_PACK, describe, tableFor } from '../pages/reports/tableFor'
  * file chooses a recipient.
  */
 
-/** Device settings. Must match `report_out.rs`. */
-export const MAIL_TO = 'mail_to'
+/**
+ * Device settings. Must match `report_out.rs`. The shop's mail login is the
+ * only part of sending the shop sets up; where a pack goes besides the shop's
+ * own address, the mail server and the Telegram bot come with the build.
+ */
 export const MAIL_USER = 'mail_user'
 export const MAIL_PASSWORD = 'mail_password'
-export const MAIL_HOST = 'mail_host'
-export const MAIL_PORT = 'mail_port'
-export const TG_TOKEN = 'tg_token'
-export const TG_CHAT = 'tg_chat'
 /** `1` when the pack goes out by itself once a day, `0` when switched off. Unset follows the build. */
 export const AUTO = 'report_auto'
 /** `HH:MM`, local time. */
@@ -46,7 +45,28 @@ export interface Delivery {
   telegramError: string | null
 }
 
-export interface OutboxState { waiting: number; sent: number; error: string | null }
+export interface OutboxState {
+  waiting: number
+  sent: number
+  error: string | null
+  /** Why each channel is stuck: `mail`, `telegram`, `invoice`. */
+  errors: Record<string, string>
+}
+
+/** One message in the outbox. */
+export interface Waiting { channel: string; subject: string; to: string[]; at: number }
+
+/** Where things go from this machine. */
+export interface Destinations {
+  /** The shop's login, when there is one. */
+  sender: string | null
+  /** Where a report pack is emailed. */
+  reportsTo: string[]
+  /** Why mail cannot go, when something is wrong with the login. */
+  mailError: string | null
+  /** Whether this build carries the vendor's Telegram bot. */
+  telegram: boolean
+}
 
 export interface PackRun {
   at: string
@@ -153,11 +173,18 @@ async function record(d: Delivery): Promise<void> {
   logEvent(ok ? 'info' : 'warn', 'reports', run.text)
 }
 
-export interface ChatSeen { id: string; kind: string; name: string }
+export function destinations(): Promise<Destinations> {
+  return invoke<Destinations>('report_destinations')
+}
 
-/** The chats that have messaged this machine's bot, for picking a chat id from. */
-export function findTelegramChats(): Promise<ChatSeen[]> {
-  return invoke<ChatSeen[]>('report_telegram_chats')
+/** Sends the shop's own address a test email at once. Resolves to that address. */
+export function sendTestMail(): Promise<string> {
+  return invoke<string>('report_mail_test')
+}
+
+/** What is waiting in the outbox, oldest first. Sends nothing. */
+export function outboxList(): Promise<Waiting[]> {
+  return invoke<Waiting[]>('report_outbox_list')
 }
 
 /** True when this build was made with the vendor's bot in it. */
