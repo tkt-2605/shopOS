@@ -9,6 +9,7 @@ import { isGstin, stateFromGstin } from '../domain/gstin.js'
 import { isStateCode } from '../domain/states.js'
 import type { ImportAction, ImportResult } from './import.js'
 import { requirePermission } from '../integrity/permissions.js'
+import { isEmail } from './customers.js'
 
 /**
  * The customer book, in and out of a spreadsheet.
@@ -41,6 +42,8 @@ export const CUSTOMER_COLUMNS = [
 export type CustomerRowProblem =
   | 'NO_NAME'
   | 'BAD_GSTIN'
+  /** Not one plain address, so the main could not mail their bills to it (073). */
+  | 'BAD_EMAIL'
   | 'BAD_STATE'
   | 'BAD_LIMIT'
   | 'BAD_OPENING'
@@ -121,7 +124,7 @@ export async function planCustomerImport(db: SqlDriver, text: string): Promise<C
     const name = (row['name'] ?? '').trim()
     const code = (row['code'] ?? '').trim() || null
     const phone = (row['phone'] ?? '').trim() || null
-    const email = (row['email'] ?? '').trim() || null
+    const email = (row['email'] ?? '').trim().toLowerCase() || null
     const gstin = ((row['gstin'] ?? '').trim().toUpperCase()) || null
     const address = (row['address'] ?? '').trim() || null
     const state = (row['state'] ?? '').trim() || null
@@ -136,6 +139,7 @@ export async function planCustomerImport(db: SqlDriver, text: string): Promise<C
 
     if (name === '') { refuse('NO_NAME'); return }
     if (gstin !== null && !isGstin(gstin)) { refuse('BAD_GSTIN'); return }
+    if (email !== null && !isEmail(email)) { refuse('BAD_EMAIL'); return }
     if (state !== null && !isStateCode(state)) { refuse('BAD_STATE'); return }
 
     const creditLimit = money(row['creditlimit'])

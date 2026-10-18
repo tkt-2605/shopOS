@@ -103,6 +103,14 @@ describe('the customer\'s address', () => {
     expect(saved?.emailBillsSince).not.toBeNull()
   })
 
+  it('a bad one stored before it was checked does not stop the rest being saved', async () => {
+    const ravi = await customer()
+    await fx.db.execute('UPDATE customers SET email = ? WHERE id = ?', ['not an address', ravi])
+    expect(await updateCustomer(fx.db, ctx(), ravi, { name: 'Ravi K' })).toMatchObject({ ok: true })
+    expect(await updateCustomer(fx.db, ctx(), ravi, { name: 'Ravi K', emailBills: true }))
+      .toEqual({ ok: false, code: 'BAD_EMAIL' })
+  })
+
   it('is needed before bills can be emailed', async () => {
     expect(await createCustomer(fx.db, ctx(), { name: 'Ravi', emailBills: true }))
       .toEqual({ ok: false, code: 'EMAIL_REQUIRED' })

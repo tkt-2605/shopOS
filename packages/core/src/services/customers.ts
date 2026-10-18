@@ -306,7 +306,10 @@ async function save(
   const email = input.email === undefined
     ? before?.email ?? null
     : input.email?.trim().toLowerCase() || null
-  if (email !== null && !isEmail(email)) return { ok: false, code: 'BAD_EMAIL' }
+  /* Checked when this save gives it or ticks it, not on every save: an address
+     the import let in before it checked one stays editable around. */
+  const checkEmail = input.email !== undefined || input.emailBills === true
+  if (checkEmail && email !== null && !isEmail(email)) return { ok: false, code: 'BAD_EMAIL' }
 
   const wasSince = before?.email_bills_since ?? null
   const emailBillsSince = input.emailBills === undefined

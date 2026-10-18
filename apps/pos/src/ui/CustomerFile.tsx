@@ -10,6 +10,7 @@ import { Modal, Alert, Empty } from './components'
 const WHY_CUSTOMER: Record<CustomerRowProblem, string> = {
   NO_NAME: 'No name',
   BAD_GSTIN: 'That is not a GSTIN',
+  BAD_EMAIL: 'That is not one email address',
   BAD_STATE: 'That is not a state code',
   BAD_LIMIT: 'The credit limit is not a number',
   BAD_OPENING: 'The opening balance is not a number',

@@ -78,6 +78,13 @@ describe('planning', () => {
     expect(states.rows.map((r) => r.problem)).toEqual([null, 'BAD_STATE'])
   })
 
+  it('checks an email, since the main may mail bills to it', async () => {
+    const plan = await planCustomerImport(fx.db,
+      'name,email\r\nGood,Ravi@Example.com\r\nBad,"a@x.com, b@y.com"\r\n')
+    expect(plan.rows.map((r) => r.problem)).toEqual([null, 'BAD_EMAIL'])
+    expect(plan.rows[0]?.email).toBe('ravi@example.com')
+  })
+
   it('takes a negative opening balance, which a price column would refuse', async () => {
     const plan = await planCustomerImport(fx.db, 'name,opening\r\nA,5000\r\nB,-1200\r\n')
     expect(plan.rows.map((r) => r.opening)).toEqual([rupees(5000), -rupees(1200)])
