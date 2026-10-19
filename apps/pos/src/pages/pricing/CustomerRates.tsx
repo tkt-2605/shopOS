@@ -7,6 +7,8 @@ import {
 } from '@shopos/core'
 import { useCore, useDb, useUser } from '../../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../../ui/components'
+import { useConfirm } from '../../ui/useConfirm'
+import { belowCostMessage, retryBelowCost } from '../../ui/belowCost'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../../ui/LadderEditor'
 import { usePickList, Results } from '../../ui/PickList'
 import { useSearch } from '../../ui/useSearch'
@@ -19,6 +21,7 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
   const breaks = useCore().features.tieredPricing
   const user = useUser()
   const [term, setTerm] = useState('')
+  const [confirmUi, ask] = useConfirm()
   const [chosen, setChosen] = useState<CustomerListItem | null>(null)
   const [lists, setLists] = useState<PriceList[]>([])
   const [onList, setOnList] = useState('')
@@ -93,11 +96,16 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
       return
     }
 
-    const result = await setCustomerLadder(db, { actorId: user.id }, {
+    const write = (allowBelowCost: boolean) => setCustomerLadder(db, { actorId: user.id }, {
       customerId: chosen.id, productId: picked.product.id, saleUnit, rungs: parsed.rungs,
+      ...(allowBelowCost ? { allowBelowCost } : {}),
     })
+    // Below cost: asked of somebody who may go ahead, refused with the reason for anyone else.
+    const result = await retryBelowCost(write, ask, setError)
+    if (result === null) return
     if (!result.ok) {
-      setError(result.code === 'BAD_DATES' ? 'The last day is before the first.' : `That item does not sell in ${saleUnit}.`)
+      setError(result.code === 'BELOW_COST' ? belowCostMessage(result)
+        : result.code === 'BAD_DATES' ? 'The last day is before the first.' : `That item does not sell in ${saleUnit}.`)
       return
     }
     setError(null)
@@ -161,6 +169,7 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
   return (
     <>
       {scanChoice.dialog}
+      {confirmUi}
       <Card title="Which customer">
         <input className="input" ref={box} placeholder="Search a customer by name or phone"
           value={term} onChange={(e) => setTerm(e.target.value)}

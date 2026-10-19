@@ -10,6 +10,7 @@ import { recordStockCheck } from '../core/maintenance'
 import { Modal, Empty, Alert, Rupees } from '../ui/components'
 import { ProductHistory } from '../ui/ProductHistory'
 import { useConfirm } from '../ui/useConfirm'
+import { belowCostMessage, retryBelowCost } from '../ui/belowCost'
 import { describeRowsProblem } from '../ui/LadderEditor'
 import { useShopChanged } from '../core/useShopChanged'
 import { CatalogueFile } from '../ui/CatalogueFile'
@@ -94,7 +95,7 @@ export default function Inventory() {
     // Through the core, which checks the figures and writes the change to the
     // history. The barcode column is not written here: setBarcodes owns the pair
     // of products.barcode and the product_barcodes rows.
-    const saved = await saveProductDetails(db, { actorId: user.id }, {
+    const details = (allowBelowCost: boolean) => saveProductDetails(db, { actorId: user.id }, {
       id: draft.id,
       name: draft.name,
       brand: draft.brand,
@@ -112,10 +113,15 @@ export default function Inventory() {
       costPrice: cost,
       reorderLevel: levelOf(draft.reorderLevel),
       reorderQty: levelOf(draft.reorderQty),
+      ...(allowBelowCost ? { allowBelowCost } : {}),
     })
+    // A selling rate below cost: see `ui/belowCost.ts`.
+    const saved = await retryBelowCost(details, ask, setNotice)
+    if (saved === null) return
     if (!saved.ok) {
       setNotice(
-        saved.code === 'BAD_TAX' ? 'GST is between 0 and 100 per cent, and cess between 0 and 300. Nothing was saved.'
+        saved.code === 'BELOW_COST' ? belowCostMessage(saved)
+        : saved.code === 'BAD_TAX' ? 'GST is between 0 and 100 per cent, and cess between 0 and 300. Nothing was saved.'
         : saved.code === 'BAD_COST' ? 'The cost price cannot be below zero. Nothing was saved.'
         : saved.code === 'BAD_LEVEL' ? 'The reorder figures have to be quantities, zero or more. Nothing was saved.'
         : saved.code === 'UNKNOWN_PRODUCT' ? 'This item is no longer in the catalogue.'
@@ -149,10 +155,17 @@ export default function Inventory() {
       return
     }
     if (priceListId) {
-      const written = await setLadder(db, { actorId: user.id }, {
+      const ladder = (allowBelowCost: boolean) => setLadder(db, { actorId: user.id }, {
         productId, priceListId, saleUnit: draft.baseUnit, rungs: parsed.rungs,
+        ...(allowBelowCost ? { allowBelowCost } : {}),
       })
-      if (!written.ok) setNotice('The ladder could not be saved against this item.')
+      const written = await retryBelowCost(ladder, ask, setNotice)
+      if (written !== null && !written.ok) {
+        // A refused ladder leaves the old one as it was: every rung is asked before any is written.
+        setNotice(written.code === 'BELOW_COST'
+          ? `The item was saved; its price breaks were not. ${belowCostMessage(written)}`
+          : 'The ladder could not be saved against this item.')
+      }
     }
 
     await setProductCategory(db, { actorId: user.id }, productId, draft.categoryId || null)

@@ -3,6 +3,7 @@ import type { Qty } from '../../quantity.js'
 import type { PriceSource } from '../../domain/pricing.js'
 import type { StockShortfall } from '../stock.js'
 import type { PeriodClosed } from '../books.js'
+import type { BelowCostRefusal } from '../belowCost.js'
 
 /*
  * What a bill is asked for with, and what it answers.
@@ -101,6 +102,11 @@ export interface SubmitBillInput {
    * expiry first; see `allocate` in domain/batches.ts.
    */
   batchPicks?: Readonly<Record<number, string>>
+  /**
+   * Go ahead with lines that sell below cost. Honoured only for a role allowed
+   * to (`below_cost`), and recorded when it is; see `services/belowCost.ts`.
+   */
+  allowBelowCost?: boolean
   actorId: string
   now?: Date
 }
@@ -143,6 +149,8 @@ export type SubmitBillResult =
       shortfalls: StockShortfall[]
     }
   | { ok: false; code: 'INSUFFICIENT_STOCK'; shortfalls: StockShortfall[] }
+  /** A line sells for less than it cost (`services/belowCost.ts`). */
+  | BelowCostRefusal
   | { ok: false; code: 'CREDIT_LIMIT_EXCEEDED'; limit: Money; projected: Money; excess: Money }
   | { ok: false; code: 'PAYMENT_MISMATCH'; expected: Money; received: Money }
   /**

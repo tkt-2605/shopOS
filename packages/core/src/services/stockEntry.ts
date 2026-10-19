@@ -9,7 +9,9 @@ import { writeAudit } from '../integrity/audit.js'
 import { recheckDocStatus } from '../integrity/transition.js'
 import { businessDate } from '../dates.js'
 import { postMovement, reverseVoucher, currentStock } from './stock.js'
-import { checkBatch, ensureBatch, findBatch, moveBatch, reverseBatches, incomingPrice } from './batches.js'
+import {
+  checkBatch, ensureBatch, findBatch, moveBatch, reverseBatches, incomingPrice, ownPriceUnderCost, type BelowCostRefusal,
+} from './batches.js'
 import { nextDocNo, seriesPrefix } from './numbering.js'
 import { closedFor, type PeriodClosed } from './books.js'
 import { purchaseTaxes, inputTaxClaimable } from './purchases.js'
@@ -68,6 +70,8 @@ export interface CreateStockEntryInput {
   supplierInvoiceDate?: string | null
   /** On a purchase: the supplier's rounding, signed, so the total matches their bill. */
   roundOff?: Money
+  /** Give a batch a price below what it cost anyway: for a role allowed to, and recorded (`belowCost.ts`). */
+  allowBelowCost?: boolean
   actorId: string
   now?: Date
 }
@@ -84,6 +88,8 @@ export type CreateStockEntryResult =
   | { ok: false; code: 'EXPIRY_MISMATCH'; productId: string; batchNo: string; recorded: string }
   /** Goods going out of a batch this shop has never received. */
   | { ok: false; code: 'UNKNOWN_BATCH'; productId: string; batchNo: string }
+  /** A price given to a batch is below what this delivery cost (`ownPriceUnderCost`). Nothing was written. */
+  | BelowCostRefusal
 
 export type SubmitStockEntryResult =
   | { ok: true; entryId: string; docNo: string }
@@ -184,6 +190,16 @@ export async function createStockEntry(
   }
 
   const entryId = newId()
+  /* Asked before anything is written, like the batches, and only of a price
+     the person gave these goods: see `ownPriceUnderCost`. */
+  const ownPriced = input.lines.flatMap((line, i) => {
+    const rate = batchOf[i]?.rate
+    return rate == null ? [] : [{ productId: line.productId, rate, unitCost: line.unitCost ?? ZERO }]
+  })
+  const under = await ownPriceUnderCost(db, { actorId: input.actorId }, ownPriced, {
+    allow: input.allowBelowCost === true, entityId: entryId,
+  })
+  if (under) return under
   const nowIso = now.toISOString()
   // The shop's day. The UTC one filed a delivery booked in at 00:30 against yesterday.
   const postingDate = input.postingDate ?? businessDate(now)

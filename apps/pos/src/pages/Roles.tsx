@@ -25,6 +25,7 @@ const RESOURCE_LABELS: Record<Resource, { name: string; note: string }> = {
   report: { name: 'Reports', note: 'Sales and tax figures' },
   settings: { name: 'Settings', note: 'Shop-wide configuration' },
   document: { name: 'Orders & quotations', note: 'Quotations, sales orders, purchase orders' },
+  below_cost: { name: 'Sell below cost', note: 'Edit lets them sell or price under cost, after confirming' },
 }
 
 const CAPABILITY_LABELS: Record<Capability, string> = {

@@ -1,4 +1,4 @@
-import { Quantity, Totals } from '@shopos/core'
+import { CostFloor, Quantity, Totals, type UnderCost } from '@shopos/core'
 import type { CartLine } from '../../core/useBillTabs'
 
 /*
@@ -61,6 +61,30 @@ export function shortOf(lines: CartLine[]): Map<string, ShortLine> {
   }
   for (const [id, w] of wanted) if (w.want <= w.have) wanted.delete(id)
   return wanted
+}
+
+/**
+ * Lines that would sell below cost as the bill stands now, after their share
+ * of the discount: said while the discount is being typed, so it is not first
+ * heard about at Pay. A warning; `submitBill` refuses for real, and asks the
+ * one person who may go ahead (`services/belowCost.ts`).
+ *
+ * `taxable` is each line's value before GST from the screen's own totals, in
+ * line order; `floors` the cost per base unit, from `costFloors`.
+ */
+export function underCostOf(
+  lines: CartLine[], taxable: readonly number[], floors: ReadonlyMap<string, number>,
+): UnderCost[] {
+  const under: UnderCost[] = []
+  lines.forEach((line, i) => {
+    const cost = floors.get(line.product.id)
+    const factor = line.units.find((u) => u.saleUnit === line.saleUnit)?.baseUnits ?? Quantity.fromUnits(1)
+    const baseQty = Math.round(Quantity.fromUnits(line.qty) * factor / Quantity.QTY_SCALE)
+    const sellsAt = CostFloor.soldPerBase((taxable[i] ?? 0) as never, baseQty as never)
+    if (cost === undefined || sellsAt === null || sellsAt <= 0 || sellsAt >= cost) return
+    under.push({ productId: line.product.id, name: line.product.name, sellsAt, cost: cost as never })
+  })
+  return under
 }
 
 /** Each line's picked batch, by position as the bill stores it: the first line is 1. */

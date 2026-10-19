@@ -259,7 +259,8 @@ export interface ResolvedLinePrice extends ResolvedPrice {
 }
 
 /** Whether a list quotes with tax in. A list that is gone, or none, is a shelf price. */
-async function listIncludesTax(db: SqlDriver, priceListId: string | null): Promise<boolean> {
+/** Whether a price list's rates have GST in them. No list is the shelf, which does. */
+export async function listIncludesTax(db: SqlDriver, priceListId: string | null): Promise<boolean> {
   if (!priceListId) return true
   const [row] = await q(db)
     .select({ ratesIncludeTax: schema.priceLists.ratesIncludeTax })

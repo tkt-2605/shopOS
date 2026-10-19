@@ -6,6 +6,8 @@ import {
 } from '@shopos/core'
 import { useCore, useDb, useUser } from '../../core/CoreProvider'
 import { Card, Field, Empty, Alert, Rupees } from '../../ui/components'
+import { useConfirm } from '../../ui/useConfirm'
+import { belowCostMessage, retryBelowCost } from '../../ui/belowCost'
 import { usePickList, Results } from '../../ui/PickList'
 import { useSearch } from '../../ui/useSearch'
 import { useScanChoice } from '../../ui/ScanChoice'
@@ -22,6 +24,7 @@ export function ItemPrices({ canWrite }: { canWrite: boolean }) {
   const [lists, setLists] = useState<PriceList[]>([])
   const [prices, setPrices] = useState<ItemPrice[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [confirmUi, ask] = useConfirm()
   /**
    * Every rate in the shop, so the tab answers "what have we set" without
    * being told which item to look at first. Before this, the only way to find
@@ -65,7 +68,7 @@ export function ItemPrices({ canWrite }: { canWrite: boolean }) {
     const rate = Money.parseMoney(row.rate)
     if (rate === null) { setError('That rate is not a number.'); return }
 
-    const result = await setItemPrice(db, { actorId: user.id }, {
+    const write = (allowBelowCost: boolean) => setItemPrice(db, { actorId: user.id }, {
       productId: chosen.id,
       priceListId: row.priceListId,
       saleUnit: row.saleUnit,
@@ -73,10 +76,15 @@ export function ItemPrices({ canWrite }: { canWrite: boolean }) {
       rate,
       validFrom: row.from || null,
       validTo: row.to || null,
+      ...(allowBelowCost ? { allowBelowCost } : {}),
     })
+    // Below cost: asked of somebody who may go ahead, refused with the reason for anyone else.
+    const result = await retryBelowCost(write, ask, setError)
+    if (result === null) return
     if (!result.ok) {
       setError(
-        result.code === 'BAD_DATES'
+        result.code === 'BELOW_COST' ? belowCostMessage(result)
+        : result.code === 'BAD_DATES'
           ? 'The last day is before the first.'
           : `This item does not sell in ${row.saleUnit}. Add the unit on the Inventory screen first.`,
       )
@@ -138,6 +146,7 @@ export function ItemPrices({ canWrite }: { canWrite: boolean }) {
   return (
     <>
       {scanChoice.dialog}
+      {confirmUi}
       <Card title="Which item">
         <input className="input" id="price-search" autoFocus ref={box}
           placeholder="Search an item by name, code or barcode"

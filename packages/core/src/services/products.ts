@@ -6,6 +6,7 @@ import { newId } from '../ids.js'
 import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
 import { requirePermission } from '../integrity/permissions.js'
+import { belowCostRefusal, priceToCheck, type BelowCostRefusal } from './belowCost.js'
 
 /**
  * Taking a product out of use without taking it out of history.
@@ -108,11 +109,45 @@ export interface ProductDetails {
   costPrice?: Money | null
   reorderLevel: Qty | null
   reorderQty: Qty | null
+  /** Save a selling rate below cost anyway: for a role allowed to, and recorded (`belowCost.ts`). */
+  allowBelowCost?: boolean
 }
 
 export type SaveProductResult =
   | { ok: true; productId: string; created: boolean }
   | { ok: false; code: 'NO_NAME' | 'BAD_RATE' | 'BAD_MRP' | 'BAD_COST' | 'BAD_TAX' | 'BAD_LEVEL' | 'UNKNOWN_PRODUCT' }
+  /** The selling rate, without its GST, is below what the item costs. Nothing was saved. */
+  | BelowCostRefusal
+
+/** Thrown inside the save's transaction to take it back, and caught as the refusal it carries. */
+class UnderCost extends Error {
+  constructor(readonly refusal: BelowCostRefusal) { super('below cost') }
+}
+
+/**
+ * Whether the item, as it now stands in this transaction, sells below what it
+ * costs. After the write, so a cost price typed in the same save is the one
+ * asked about. A loose item is priced at the counter, where the bill is asked
+ * instead, and a rate of nothing is no price at all.
+ */
+async function rateUnderCost(
+  tx: SqlDriver, ctx: AuditContext, productId: string, allow: boolean,
+): Promise<void> {
+  const [row] = await q(tx)
+    .select({
+      name: schema.products.name, baseRate: schema.products.baseRate, openPrice: schema.products.openPrice,
+      taxRateBp: schema.products.taxRateBp, cessRateBp: schema.products.cessRateBp,
+    })
+    .from(schema.products)
+    .where(eq(schema.products.id, productId))
+  if (!row || row.openPrice === 1) return
+  const price = await priceToCheck(tx, {
+    productId, name: row.name, rate: row.baseRate, includesTax: true,
+    taxRateBp: row.taxRateBp, cessRateBp: row.cessRateBp,
+  })
+  const refusal = await belowCostRefusal(tx, ctx, [price], { allow, entity: 'products', entityId: productId })
+  if (refusal) throw new UnderCost(refusal)
+}
 
 /**
  * An item's own details, written in one place and put on the audit trail.
@@ -166,7 +201,15 @@ export async function saveProductDetails(
     reorderQty: input.reorderQty,
   }
 
-  return db.transaction(async (tx): Promise<SaveProductResult> => {
+  try {
+    return await db.transaction(async (tx) => write(tx))
+  } catch (err) {
+    if (err instanceof UnderCost) return err.refusal
+    throw err
+  }
+
+  async function write(tx: SqlDriver): Promise<SaveProductResult> {
+    const allow = input.allowBelowCost === true
     if (!input.id) {
       const productId = newId()
       const costed = fields.costPrice !== undefined && fields.costPrice !== null
@@ -182,6 +225,7 @@ export async function saveProductDetails(
           ...(costed ? { cost_price: fields.costPrice } : {}),
         },
       })
+      await rateUnderCost(tx, ctx, productId, allow)
       return { ok: true, productId, created: true }
     }
 
@@ -223,6 +267,13 @@ export async function saveProductDetails(
     await writeAudit(tx, ctx, {
       entity: 'products', entityId: input.id, action: 'update', before: was, after: is,
     })
+    /* Only when this save moves what the answer depends on. An item already
+       under cost -- a dearer delivery came in after its price was set -- can
+       still be renamed; its price is asked about the next time it is changed,
+       and every sale of it at the counter. */
+    if (['base_rate', 'tax_rate_bp', 'cess_rate_bp', 'cost_price', 'open_price'].some((c) => c in is)) {
+      await rateUnderCost(tx, ctx, input.id, allow)
+    }
     return { ok: true, productId: input.id, created: false }
-  })
+  }
 }

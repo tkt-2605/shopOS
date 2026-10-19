@@ -7,6 +7,8 @@ import { removeCustomerPrice, setCustomerPrice } from './customerPrices.js'
 import { removeItemPrice, setItemPrice } from './itemPrices.js'
 import { unitExists } from './units.js'
 import { requirePermission } from '../../integrity/permissions.js'
+import { listIncludesTax } from '../../repos/pricing.js'
+import { rateRefusal, type BelowCostRefusal } from '../belowCost.js'
 
 /*
  * Quantity breaks: the rate that applies from each quantity up, for a
@@ -17,6 +19,33 @@ export type SetLadderResult =
   | { ok: true; rungs: number; removed: number }
   | { ok: false; code: 'UNKNOWN_UNIT'; saleUnit: string }
   | { ok: false; code: 'BAD_DATES' }
+  /** A rung is below cost. Every rung was asked before any was written, so nothing was. */
+  | BelowCostRefusal
+
+/**
+ * Every rung of a ladder held against the cost before any is written, so a
+ * rung below cost refuses the whole ladder rather than leaving half of one.
+ * Null when they all clear, or when this person may go below and said so --
+ * each rung then records its own when it is written.
+ */
+async function ladderUnderCost(
+  db: SqlDriver,
+  ctx: AuditContext,
+  input: { productId: string; saleUnit: string; rungs: Rung[]; includesTax: boolean; allow: boolean },
+): Promise<BelowCostRefusal | null> {
+  const refusals: BelowCostRefusal[] = []
+  for (const rung of input.rungs) {
+    const refused = await rateRefusal(db, ctx, {
+      productId: input.productId, saleUnit: input.saleUnit, rate: rung.rate, includesTax: input.includesTax,
+      allow: false, entity: 'item_prices', entityId: input.productId,
+    })
+    if (refused) refusals.push(refused)
+  }
+  if (refusals.length === 0) return null
+  const mayAllow = refusals[0]!.mayAllow
+  if (mayAllow && input.allow) return null
+  return { ok: false, code: 'BELOW_COST', lines: refusals.flatMap((r) => r.lines), mayAllow }
+}
 
 /**
  * A whole quantity ladder in one go.
@@ -29,12 +58,18 @@ export type SetLadderResult =
 export async function setLadder(
   db: SqlDriver,
   ctx: AuditContext & { actorId: string },
-  input: { productId: string; priceListId: string; saleUnit: string; rungs: Rung[] },
+  input: { productId: string; priceListId: string; saleUnit: string; rungs: Rung[]; allowBelowCost?: boolean },
 ): Promise<SetLadderResult> {
   await requirePermission(db, ctx.actorId, 'price_list', 'write')
   if (!(await unitExists(db, input.productId, input.saleUnit))) {
     return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
   }
+  const allow = input.allowBelowCost === true
+  const under = await ladderUnderCost(db, ctx, {
+    productId: input.productId, saleUnit: input.saleUnit, rungs: input.rungs,
+    includesTax: await listIncludesTax(db, input.priceListId), allow,
+  })
+  if (under) return under
 
   const existing = await q(db)
     .select({ id: schema.itemPrices.id, minQty: schema.itemPrices.minQty })
@@ -54,6 +89,7 @@ export async function setLadder(
       saleUnit: input.saleUnit,
       minQty: rung.minQty,
       rate: rung.rate,
+      allowBelowCost: allow,
     })
     if (!written.ok) return written
   }
@@ -69,12 +105,22 @@ export async function setLadder(
 export async function setCustomerLadder(
   db: SqlDriver,
   ctx: AuditContext & { actorId: string },
-  input: { customerId: string; productId: string; saleUnit: string; rungs: Rung[] },
+  input: { customerId: string; productId: string; saleUnit: string; rungs: Rung[]; allowBelowCost?: boolean },
 ): Promise<SetLadderResult> {
   await requirePermission(db, ctx.actorId, 'price_list', 'write')
   if (!(await unitExists(db, input.productId, input.saleUnit))) {
     return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
   }
+  const allow = input.allowBelowCost === true
+  const [customer] = await q(db)
+    .select({ priceListId: schema.customers.priceListId })
+    .from(schema.customers)
+    .where(eq(schema.customers.id, input.customerId))
+  const under = await ladderUnderCost(db, ctx, {
+    productId: input.productId, saleUnit: input.saleUnit, rungs: input.rungs,
+    includesTax: await listIncludesTax(db, customer?.priceListId ?? null), allow,
+  })
+  if (under) return under
 
   const existing = await q(db)
     .select({ id: schema.customerItemPrices.id, minQty: schema.customerItemPrices.minQty })
@@ -94,6 +140,7 @@ export async function setCustomerLadder(
       saleUnit: input.saleUnit,
       minQty: rung.minQty,
       rate: rung.rate,
+      allowBelowCost: allow,
     })
     if (!written.ok) return written
   }

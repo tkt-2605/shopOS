@@ -1,5 +1,7 @@
 import type { SqlDriver } from '../db/driver.js'
 import type { Money } from '../money.js'
+import { QTY_SCALE } from '../quantity.js'
+import { addTax } from '../domain/tax.js'
 
 /**
  * What an item costs the shop, for somebody about to type a cost: on Stock In,
@@ -26,6 +28,13 @@ export interface CostHint {
   postedOn: string | null
   /** Who supplied it, when a delivery recorded a supplier. */
   supplierName: string | null
+  /**
+   * The GST and cess paid on one unit at that cost: off the supplier's bill
+   * for a delivery, nothing for opening stock, and the item's own rates on its
+   * cost price. Only a shop that cannot claim input tax counts it as cost
+   * (`domain/costFloor.ts`).
+   */
+  taxPerUnit: Money
 }
 
 /** The cost to suggest for each of these items, where there is one. An item with neither is left out. */
@@ -45,13 +54,16 @@ export async function costHints(db: SqlDriver, productIds: readonly string[]): P
     product_id: string; unit_cost: number | null; posting_date: string | null
     entry_type: 'purchase' | 'opening' | null; supplier_name: string | null; entered_at: string | null
     cost_price: number | null; cost_price_at: string | null
+    tax_rate_bp: number; cess_rate_bp: number; line_tax: number | null; line_qty: number | null
   }>(
-    `SELECT p.id AS product_id, p.cost_price, p.cost_price_at,
+    `SELECT p.id AS product_id, p.cost_price, p.cost_price_at, p.tax_rate_bp, p.cess_rate_bp,
+            last_buy.line_tax, last_buy.qty AS line_qty,
             last_buy.unit_cost, last_buy.posting_date, last_buy.entry_type, last_buy.supplier_name,
             last_buy.created_at AS entered_at
        FROM products p
        LEFT JOIN (
          SELECT sei.product_id, sei.unit_cost, se.posting_date, se.entry_type, se.supplier_name, se.created_at,
+                sei.qty, sei.cgst_amount + sei.sgst_amount + sei.igst_amount + sei.cess_amount AS line_tax,
                 ROW_NUMBER() OVER (
                   PARTITION BY sei.product_id ORDER BY se.posting_date DESC, se.created_at DESC
                 ) AS rn
@@ -79,10 +91,12 @@ export async function costHints(db: SqlDriver, productIds: readonly string[]): P
         source: r.entry_type as 'purchase' | 'opening',
         postedOn: r.posting_date,
         supplierName: r.supplier_name,
+        taxPerUnit: (r.line_qty && r.line_tax ? Math.round((r.line_tax * QTY_SCALE) / r.line_qty) : 0) as Money,
       })
     } else if (r.cost_price !== null) {
       hints.set(r.product_id, {
         productId: r.product_id, unitCost: r.cost_price as Money, source: 'item', postedOn: null, supplierName: null,
+        taxPerUnit: addTax(r.cost_price as Money, r.tax_rate_bp, 'intra_state', r.cess_rate_bp).taxTotal,
       })
     }
   }

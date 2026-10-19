@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { Money, RULE_46F_THRESHOLD, type Totals } from '@shopos/core'
+import { Money, RULE_46F_THRESHOLD, type Totals, type UnderCost } from '@shopos/core'
+import { belowCostLines } from '../../ui/belowCost'
 import type { Cart, CartLine } from '../../core/useBillTabs'
 import { Field, Alert, Rupees } from '../../ui/components'
 
@@ -8,7 +9,8 @@ import { Field, Alert, Rupees } from '../../ui/components'
  * and the button that takes the money.
  */
 export function TotalsPanel({
-  cart, totals, blocked, needsRecipient, loyaltyMonth, empty, unfinished, repricing = false, onPickCustomer, onDiscount, onPay, quote,
+  cart, totals, blocked, needsRecipient, loyaltyMonth, empty, unfinished, repricing = false, onPickCustomer, onDiscount,
+  onDiscountPercent, underCost = [], onPay, quote,
 }: {
   cart: Cart
   totals: Totals.ComputedTotals
@@ -23,6 +25,10 @@ export function TotalsPanel({
   repricing?: boolean
   onPickCustomer: () => void
   onDiscount: (typed: string) => void
+  /** Whether the discount box takes rupees or a percentage. */
+  onDiscountPercent: (percent: boolean) => void
+  /** Lines the discount would take below cost, as the bill stands (`underCostOf`). */
+  underCost?: UnderCost[]
   onPay: () => void
   /** Saving the bill as a quotation instead. Absent for someone who may not make one. */
   quote?: { open: () => void; dialog: ReactNode }
@@ -72,12 +78,31 @@ export function TotalsPanel({
         </div>
         <div className="total-line">
           <span>Discount</span>
-          <input
-            className="qty-input num" style={{ width: 110 }}
-            placeholder="0.00" value={cart.discount}
-            onChange={(e) => onDiscount(e.target.value)}
-          />
+          {/* Rupees or a percentage of what can be discounted, on a switch rather
+              than a guess from what was typed: "10" means one or the other. */}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span className="segment segment-sm" role="group" aria-label="Discount in" style={{ marginTop: 0 }}>
+              <button type="button" aria-pressed={!cart.discountPercent} onClick={() => onDiscountPercent(false)}>₹</button>
+              <button type="button" aria-pressed={cart.discountPercent} onClick={() => onDiscountPercent(true)}>%</button>
+            </span>
+            <input
+              className="qty-input num" style={{ width: 90 }} aria-label="Discount"
+              placeholder={cart.discountPercent ? '0' : '0.00'} value={cart.discount}
+              onChange={(e) => onDiscount(e.target.value)}
+            />
+          </span>
         </div>
+        {cart.discountPercent && totals.discount > 0 && (
+          <div style={{ fontSize: 11.5, color: 'var(--ink-3)', margin: '-4px 0 8px', textAlign: 'right' }}>
+            <Rupees value={totals.discount} /> off
+          </div>
+        )}
+        {/* Said while typing; Pay refuses it, and asks the one person who may go ahead. */}
+        {underCost.length > 0 && (
+          <div style={{ marginBottom: 8 }}>
+            <Alert>Below cost: {belowCostLines(underCost)} (before GST, per unit).</Alert>
+          </div>
+        )}
         {blocked.length > 0 && (
           <div style={{ fontSize: 11.5, color: 'var(--ink-3)', margin: '-4px 0 8px' }}>
             {blocked.length === 1

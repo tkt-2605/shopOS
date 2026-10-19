@@ -1,4 +1,6 @@
-import { Batches, Money, Quantity, businessDate, type BatchRow, type CostHint, type ProductListItem } from '@shopos/core'
+import {
+  Batches, CostFloor, Money, Quantity, Tax, businessDate, type BatchRow, type CostHint, type ProductListItem,
+} from '@shopos/core'
 import { bpOf, pairOf, type Side } from '../../ui/gstPair'
 
 /*
@@ -114,6 +116,26 @@ export function costOf(line: Line, outgoing: boolean): string {
   return outgoing && line.costFilled ? '' : costPair(line).before
 }
 
+/**
+ * What the line's Sell at comes to against its own cost, per unit and before
+ * GST, when it is below: said under the price as it is typed. A price set for
+ * these goods is refused at posting (`ownPriceUnderCost`); the item's usual
+ * price going in under a dearer delivery is only said, and the counter
+ * refuses the sale. `cost` is the line's cost before GST, as it will post.
+ */
+export function sellsBelowCost(line: Line, cost: string, charges: boolean): string | null {
+  const sellAt = Money.parseMoney(line.sellAt)
+  const paid = Money.parseMoney(cost)
+  if (sellAt === null || sellAt <= 0 || paid === null || paid <= 0) return null
+  const rateBp = bpOf(line.gst)
+  const cessBp = bpOf(line.cess)
+  const net = CostFloor.netPerBase({
+    rate: sellAt, includesTax: true, taxRateBp: rateBp, cessRateBp: cessBp, baseUnits: Quantity.fromUnits(1), charges,
+  })
+  const floor = CostFloor.floorOf(paid, Tax.addTax(paid, rateBp, 'intra_state', cessBp).taxTotal, charges)
+  return net < floor ? `below this cost (₹${Money.format(floor)})` : null
+}
+
 /** The price a line gives its goods, sent only when it is not the item's own. See `incomingPrice`. */
 export function ownPrice(line: Line): { mrp?: Money.Money; saleRate?: Money.Money } {
   const mrp = Money.parseMoney(line.mrp)
@@ -129,9 +151,11 @@ export function ownPrice(line: Line): { mrp?: Money.Money; saleRate?: Money.Mone
  * are ordinary stock; changed, they are kept apart at that price, and the
  * counter asks which when a scan finds both on the shelf.
  */
-export function PriceCells({ line, onChange }: {
+export function PriceCells({ line, onChange, belowCost = null }: {
   line: Line
   onChange: (change: Partial<Line>) => void
+  /** Said under Sell at when it is below what these goods cost. */
+  belowCost?: string | null
 }) {
   const changed = Object.keys(ownPrice(line)).length > 0
   return (
@@ -144,6 +168,7 @@ export function PriceCells({ line, onChange }: {
       <td className="r">
         <input className="qty-input num" placeholder="0.00" value={line.sellAt} aria-label="Sell at"
           onChange={(e) => onChange({ sellAt: e.target.value })} />
+        {belowCost && <div className="src warn-note">{belowCost}</div>}
       </td>
     </>
   )

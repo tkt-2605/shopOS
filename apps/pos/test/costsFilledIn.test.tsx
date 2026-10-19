@@ -68,6 +68,7 @@ beforeEach(async () => {
   core = {
     db,
     features: await loadFeatures(db),
+    taxScheme: 'regular',
     user: {
       id: adminId, username: 'admin', fullName: 'Administrator', roleId, roleName: 'Admin',
       permissions: await loadPermissions(db, roleId),
@@ -146,6 +147,17 @@ describe('stock in', () => {
     fireEvent.click(screen.getByText('Excl. GST'))
     await waitFor(() => expect(screen.getByText('Amount excl. GST')).toBeTruthy())
     expect(screen.getByText(/on hand 0 → 1 piece/)).toBeTruthy()
+  })
+
+  it('says when the price to sell at is below what this delivery cost', async () => {
+    await boughtAt(28500)
+    render(<StockIn />)
+    await addPaper()
+    await screen.findByText(/last paid ₹285\.00/)
+    // ₹340 with 18% in it is ₹288.14 of paper, above ₹285: nothing to say.
+    expect(screen.queryByText(/below this cost/)).toBeNull()
+    fireEvent.change(screen.getByLabelText('Sell at'), { target: { value: '300' } })
+    await waitFor(() => expect(screen.getByText('below this cost (₹285.00)')).toBeTruthy())
   })
 
   it('posts the cost before GST when it was typed with GST', async () => {
@@ -253,7 +265,7 @@ describe('the item form', () => {
   it('asks for a cost price, and shows the last price paid beside it', async () => {
     const draft = { ...BLANK, id: paper, name: 'A4', costPrice: '280.00' }
     render(<Form draft={draft} lastCost={{
-      productId: paper, unitCost: 28500 as never, source: 'purchase', postedOn: '2026-10-15', supplierName: 'Sakthi Agencies',
+      productId: paper, unitCost: 28500 as never, source: 'purchase', postedOn: '2026-10-15', supplierName: 'Sakthi Agencies', taxPerUnit: 0 as never,
     }} />)
     expect((document.getElementById('p-cost') as HTMLInputElement).value).toBe('280.00')
     expect(screen.getByText(/Latest: last paid ₹285\.00 on 15 Oct 2026 · Sakthi Agencies/)).toBeTruthy()

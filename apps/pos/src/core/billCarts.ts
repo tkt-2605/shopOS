@@ -56,7 +56,9 @@ export interface Cart {
   billId: string | null
   lines: CartLine[]
   customer: CustomerListItem | null
+  /** The bill discount as typed: rupees, or a percentage when `discountPercent` (`discountAmount`). */
   discount: string
+  discountPercent: boolean
   error: string | null
   /**
    * The order this cart is billing, if it came from one. Saved with the draft,
@@ -80,10 +82,26 @@ export function emptyCart(): Cart {
     lines: [],
     customer: null,
     discount: '',
+    discountPercent: false,
     error: null,
     fromOrder: null,
     hydrating: false,
   }
+}
+
+/**
+ * The bill discount as an amount. In rupees as typed, or a percentage of the
+ * part of the bill that may be discounted -- `discountable`, the subtotal less
+ * the items that take no discount -- so 10% off is 10% of what can come off,
+ * not of a figure the bill can never reach. Anything that is not an amount, or
+ * a percentage past 100, is nothing and all of it respectively.
+ */
+export function discountAmount(cart: Pick<Cart, 'discount' | 'discountPercent'>, discountable: number): number {
+  const typed = cart.discount.trim()
+  if (!cart.discountPercent) return Money.parseMoney(typed) ?? 0
+  const percent = Number(typed)
+  if (!Number.isFinite(percent) || percent <= 0) return 0
+  return Math.round((discountable * Math.min(percent, 100)) / 100)
 }
 
 /**
@@ -184,15 +202,17 @@ export function snapshotOf(
   // than the part of the bill that may carry it, and a rejected autosave is
   // invisible — the cashier would go on billing against a draft that stopped
   // saving. The screen shows the clamp; this sends what the screen shows.
+  const forTotals = cart.lines.map((l) => ({
+    qty: Quantity.fromUnits(l.qty),
+    rate: l.rate as never,
+    taxRateBp: l.product.taxRateBp,
+    rateIncludesTax: l.includesTax !== false,
+    discountBlocked: l.product.discountBlocked,
+  }))
+  const discountable = Totals.computeTotals(forTotals, 0 as never).discountableSubtotal
   const totals = Totals.computeTotals(
-    cart.lines.map((l) => ({
-      qty: Quantity.fromUnits(l.qty),
-      rate: l.rate as never,
-      taxRateBp: l.product.taxRateBp,
-      rateIncludesTax: l.includesTax !== false,
-      discountBlocked: l.product.discountBlocked,
-    })),
-    (Money.parseMoney(cart.discount) ?? 0) as never,
+    forTotals,
+    discountAmount(cart, discountable) as never,
     // No rounding rule: the only figure taken from here is the clamped
     // discount, which the last few paise of the total cannot change.
   )
@@ -245,7 +265,9 @@ export async function cartFromDraft(db: SqlDriver, detail: DraftDetail): Promise
        held at until somebody changes a line. */
     lines: lines.map((l) => ({ ...l, pricedFor: pricedForOf(l, customer?.id ?? null) })),
     customer,
+    // Held as the amount it came to: a percentage is a way of typing one.
     discount: detail.billDiscount > 0 ? Money.format(detail.billDiscount) : '',
+    discountPercent: false,
     error: null,
     fromOrder: detail.fromOrder,
     hydrating: false,

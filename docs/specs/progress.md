@@ -1369,6 +1369,34 @@ Open: the installer cannot add a firewall rule while it installs per-user;
 stage 7 (the cloud as main, the home till, the grace window on the cloud)
 waits for the cloud peer.
 
+## Nothing sells below cost; a discount can be a percentage (20 October)
+
+Asked for by the owner: never let a selling price or a sale go below cost,
+warn when a discount does it, and let the discount be typed as a percentage.
+
+- **One guard, `services/belowCost.ts`,** asked at every place a selling
+  price is set or a sale is made: a bill at Pay (after every discount, so a
+  bill discount typed last is counted), an item's selling rate, price-list and
+  customer rates (a ladder is asked whole, before any rung is written), the
+  price a delivery gives its own batch, and each row of a catalogue file.
+- **What "below cost" means** (`domain/costFloor.ts`): the price without the
+  GST it carries, per base unit, against the latest cost before GST -- with
+  the supplier's GST added for a shop that cannot claim it back. An item with
+  no cost known has no floor and is never refused.
+- **Refused for everybody; the owner can go ahead.** A new permission,
+  `below_cost` `write` (Admin's by default, granted through the role templates
+  by `applyUpgrades`, no migration), lets a role confirm and carry on. Each time
+  is written to the audit log with the prices and costs. Chosen by the owner
+  over "block always" and "warn only".
+- **Two deliberate softenings.** An item already under cost (a dearer delivery
+  came in) can still be renamed; its price is asked about when it changes. And
+  a delivery that costs more than the item sells for is recorded as it came --
+  a stock entry that refuses is a shelf that goes uncounted -- with a note
+  under Sell at; the counter refuses the sale.
+- **The counter says it as it is typed**: the totals show the lines a discount
+  takes under cost, and Pay asks or explains. The discount box has a ₹ | %
+  switch; a percentage is of the part of the bill that can be discounted.
+
 ## A cost price, the last cost shown, and No GST (20 October)
 
 Asked for by the owner: a cost price on the item, the latest cost shown on

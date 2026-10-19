@@ -8,6 +8,8 @@ import { writeAudit, type AuditContext } from '../../integrity/audit.js'
 import type { ItemPriceResult } from './itemPrices.js'
 import { unitExists } from './units.js'
 import { requirePermission } from '../../integrity/permissions.js'
+import { listIncludesTax } from '../../repos/pricing.js'
+import { rateRefusal } from '../belowCost.js'
 
 /*
  * A price agreed with one customer, and the list a customer buys from.
@@ -66,6 +68,8 @@ export async function setCustomerPrice(
   input: {
     customerId: string; productId: string; saleUnit: string; rate: Money
     minQty?: Qty; validFrom?: string | null; validTo?: string | null
+    /** Write a rate below cost anyway: for a role allowed to, and recorded (`belowCost.ts`). */
+    allowBelowCost?: boolean
   },
 ): Promise<ItemPriceResult> {
   await requirePermission(db, ctx.actorId, 'price_list', 'write')
@@ -75,6 +79,18 @@ export async function setCustomerPrice(
   if (!(await unitExists(db, input.productId, input.saleUnit))) {
     return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
   }
+  /* Read the way the counter reads a customer's own rate: as their list
+     quotes, with GST in it unless their list says otherwise. */
+  const [customer] = await q(db)
+    .select({ priceListId: schema.customers.priceListId })
+    .from(schema.customers)
+    .where(eq(schema.customers.id, input.customerId))
+  const under = await rateRefusal(db, ctx, {
+    productId: input.productId, saleUnit: input.saleUnit, rate: input.rate,
+    includesTax: await listIncludesTax(db, customer?.priceListId ?? null),
+    allow: input.allowBelowCost === true, entity: 'customer_item_prices', entityId: input.productId,
+  })
+  if (under) return under
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   const minQty = input.minQty ?? qty(0)

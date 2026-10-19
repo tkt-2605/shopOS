@@ -11,6 +11,7 @@ import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
 import { addPrimaryBarcode } from './barcodes.js'
 import { requirePermission } from '../integrity/permissions.js'
+import { importRowsUnderCost } from './belowCost.js'
 
 /**
  * Getting a shop's catalogue in, from the spreadsheet it already has.
@@ -90,6 +91,12 @@ export type RowProblem =
   | 'NAME_AMBIGUOUS'
   /** The barcode is on several items here (069), and the row names none of them. */
   | 'BARCODE_SHARED'
+  /**
+   * The selling rate, without its GST, is below what the item costs: the file's
+   * own cost for a new item, the latest recorded for one already here
+   * (`services/belowCost.ts`). Set it from the item, where an owner can allow it.
+   */
+  | 'BELOW_COST'
 
 export interface PlannedRow {
   /** 1-based, counting the header, so it matches what Excel shows. */
@@ -283,6 +290,13 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
       openingQty: openingQty === null ? null : openingQty,
     })
   })
+
+  /* After matching, which says whose cost applies: the file's, for a new item. */
+  const under = await importRowsUnderCost(db, planned.filter((r) => r.problem === null).map((r) => ({
+    key: r.line, name: r.name, productId: r.action === 'update' ? r.productId : null,
+    rate: r.rate, cost: r.cost, taxRateBp: r.taxRateBp,
+  })))
+  for (const row of planned) if (under.has(row.line)) { row.problem = 'BELOW_COST'; row.action = null }
 
   return {
     headers,

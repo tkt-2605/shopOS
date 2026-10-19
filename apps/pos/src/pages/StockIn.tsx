@@ -3,16 +3,18 @@ import {
   Money, Quantity, Permissions,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
   directionOf, signedQty, noCostBasis, costHint, batchesOf, Batches, periodClosedMessage,
-  type ProductListItem, type StockEntryType, type Supplier, Tax,
+  type ProductListItem, type StockEntryType, type Supplier, Tax, chargesTax,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
+import { useConfirm } from '../ui/useConfirm'
+import { belowCostMessage, retryBelowCost } from '../ui/belowCost'
 import { useAction } from '../core/useAction'
 import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
 import { useSearch } from '../ui/useSearch'
 import { useScanChoice } from '../ui/ScanChoice'
-import { BatchCells, PriceCells, costOf, costPair, ownPrice, type Line } from './stockIn/cells'
+import { BatchCells, PriceCells, costOf, costPair, ownPrice, sellsBelowCost, type Line } from './stockIn/cells'
 import type { Side } from '../ui/gstPair'
 import { GstSwitch, useGstMode } from '../ui/GstSwitch'
 import { costNote } from '../ui/costNote'
@@ -29,7 +31,8 @@ const TYPES: { id: StockEntryType; name: string; note: string }[] = [
 ]
 
 export default function StockIn() {
-  const { db, features } = useCore()
+  const { db, features, taxScheme } = useCore()
+  const [confirmUi, ask] = useConfirm()
   const user = useUser()
   /* The Stock In page used to check nothing, so unticking "submit" on a role
      changed nothing here. The service refuses it now; the button says so first. */
@@ -167,7 +170,7 @@ export default function StockIn() {
       setError('The round-off is not an amount. Put a minus in front of it if the bill was rounded down.')
       return
     }
-    const entry = await createStockEntry(db, {
+    const create = (allowBelowCost: boolean) => createStockEntry(db, {
       entryType,
       supplierId: supplierId || null,
       supplierName: suppliers.find((x) => x.id === supplierId)?.name ?? null,
@@ -187,12 +190,17 @@ export default function StockIn() {
         ...ownPrice(l),
         ...(purchase ? { taxRateBp: pct(l.gst), cessRateBp: pct(l.cess) } : {}),
       })),
+      ...(allowBelowCost ? { allowBelowCost } : {}),
       actorId: user.id,
     })
+    // A price given to these goods below what they cost: see `ui/belowCost.ts`.
+    const entry = await retryBelowCost(create, ask, setError)
+    if (entry === null) return
 
     if (!entry.ok) {
       setError(
-        entry.code === 'NO_LINES' ? 'Add at least one item.'
+        entry.code === 'BELOW_COST' ? belowCostMessage(entry)
+        : entry.code === 'NO_LINES' ? 'Add at least one item.'
         : entry.code === 'ZERO_QTY' ? 'Every line needs a quantity that is not zero.'
         : entry.code === 'INFLOW_NEEDS_POSITIVE_QTY' ? 'A purchase or opening entry cannot be negative. Use Adjustment instead.'
         : entry.code === 'BAD_BATCH_NO' ? 'A batch number is too long. Forty letters and digits at most.'
@@ -244,6 +252,7 @@ export default function StockIn() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 900 }}>
       {scanChoice.dialog}
+      {confirmUi}
       {error && <Alert>{error}</Alert>}
       {done && (
         <div>
@@ -383,7 +392,7 @@ export default function StockIn() {
                   </td>
                   {batched && <BatchCells line={l} outgoing={outgoing(l)}
                     onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
-                  {incoming && <PriceCells line={l}
+                  {incoming && <PriceCells line={l} belowCost={sellsBelowCost(l, costText(l), chargesTax(taxScheme))}
                     onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
                   <td className="r">
                     {/* One box, read the way the switch in the header says. Flip

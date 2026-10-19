@@ -10,6 +10,10 @@ import {
 } from '../domain/batches.js'
 import type { Money } from '../money.js'
 import { currentStock } from './stock.js'
+import type { AuditContext } from '../integrity/audit.js'
+import { addTax } from '../domain/tax.js'
+import { belowCostRefusal, floorAt, priceToCheck, type BelowCostRefusal, type PriceToCheck } from './belowCost.js'
+export type { BelowCostRefusal } from './belowCost.js'
 
 /**
  * Batches: which batch each unit of stock belongs to, beside the stock ledger.
@@ -535,4 +539,41 @@ export async function incomingPrice(
 function hasOwnPrice(pool: readonly BatchRow[], batchId: string): boolean {
   const batch = pool.find((b) => b.batchId === batchId)
   return batch !== undefined && (batch.mrp !== null || batch.rate !== null)
+}
+
+/**
+ * Whether a price a delivery gives its own batch (070) sells below what that
+ * delivery cost. Held against the cost on the line being entered, not the last
+ * one recorded: once it is posted this is the last one. A line with no cost
+ * typed falls back to the last recorded. See `services/belowCost.ts`.
+ *
+ * Only a price the person set. A delivery that simply costs more than the
+ * item usually sells for is recorded as it came -- a stock entry that refuses
+ * is a shelf that goes uncounted -- and the counter refuses the sale instead.
+ */
+export async function ownPriceUnderCost(
+  db: SqlDriver,
+  ctx: AuditContext,
+  lines: readonly { productId: string; rate: Money; unitCost: Money }[],
+  opts: { allow: boolean; entityId: string },
+): Promise<BelowCostRefusal | null> {
+  if (lines.length === 0) return null
+  const prices: PriceToCheck[] = []
+  const known = new Map<string, Money>()
+  for (const line of lines) {
+    const [item] = await q(db)
+      .select({ name: schema.products.name, taxRateBp: schema.products.taxRateBp, cessRateBp: schema.products.cessRateBp })
+      .from(schema.products)
+      .where(eq(schema.products.id, line.productId))
+    if (!item) continue
+    prices.push(await priceToCheck(db, {
+      productId: line.productId, name: item.name, rate: line.rate, includesTax: true,
+      taxRateBp: item.taxRateBp, cessRateBp: item.cessRateBp,
+    }))
+    if (line.unitCost > 0) {
+      const tax = addTax(line.unitCost, item.taxRateBp, 'intra_state', item.cessRateBp).taxTotal
+      known.set(line.productId, await floorAt(db, line.unitCost, tax))
+    }
+  }
+  return belowCostRefusal(db, ctx, prices, { allow: opts.allow, entity: 'stock_entries', entityId: opts.entityId, known })
 }

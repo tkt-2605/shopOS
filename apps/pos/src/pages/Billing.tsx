@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Batches, Money, Quantity, Totals, Loyalty, Permissions, searchProducts, saleUnitsFor,
+  Batches, Money, Quantity, Loyalty, Permissions, searchProducts, saleUnitsFor,
   loadLoyaltyProgram, monthToDateSpend, businessDate, submitBill, pricingContextFor, resolveLinePrice, chargesTax,
   RULE_46F_THRESHOLD, type ProductListItem, type CustomerListItem,
 } from '@shopos/core'
@@ -9,13 +9,15 @@ import { printBill } from '../core/print'
 import { SheetPreview } from '../ui/SheetPreview'
 import { useBillTabs, MAX_TABS, type Cart, type CartLine } from '../core/useBillTabs'
 import { pricedForOf, pricingBatch } from '../core/billCarts'
+import { useCartTotals } from './billing/useCartTotals'
 import { useRepricing } from '../core/useRepricing'
 import { useShortcuts } from '../core/useShortcuts'
 import { Empty, Rupees } from '../ui/components'
 import { usePickList, Results } from '../ui/PickList'
 import { useSearch, productMatches } from '../ui/useSearch'
 import { useConfirm } from '../ui/useConfirm'
-import { totalsLinesOf, shortOf, picksOf } from './billing/cart'
+import { retryBelowCost } from '../ui/belowCost'
+import { shortOf, picksOf } from './billing/cart'
 import { submitMessage, unsavedMessage } from './billing/submitMessage'
 import { restoreHold, restoreHoldMessage } from '../core/restoreHold'
 import { TabStrip } from './billing/TabStrip'
@@ -65,19 +67,7 @@ export default function Billing() {
   const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 40 }), { browse: true, matches: productMatches })
   const results = search.rows
 
-  /* The shop's rounding rule, applied here as well as in the service. The
-     cashier is looking at this number while the customer hands over the money,
-     so it has to be the number the bill will carry — not a near miss the
-     receipt then corrects. */
-  const totals = useMemo(
-    () => Totals.computeTotals(
-      totalsLinesOf(active.lines, chargesTax(taxScheme)),
-      (Money.parseMoney(active.discount) ?? 0) as never,
-      'intra_state',
-      rounding,
-    ),
-    [active.lines, active.discount, rounding, taxScheme],
-  )
+  const { totals, underCost } = useCartTotals(db, active, taxScheme, rounding)
   const quote = useQuote(active, totals.grandTotal, () => setPickingCustomer(true), () => tabs.close(active.tabId))
 
   /* Lines the shop sells at a few rupees a unit. The discount box has to say so,
@@ -310,13 +300,17 @@ export default function Billing() {
       }
       billId = saved.billId
 
-      result = await submitBill(db, {
+      // Below cost: asked of somebody who may go ahead, refused with the reason for anyone else.
+      const tried = await retryBelowCost((allowBelowCost) => submitBill(db, {
         billId,
         payments: due > 0 ? [{ method, amount: due, ...(method === 'cash' && tendered ? { tendered } : {}) }] : [],
         ...(redeemPoints > 0 ? { redeemPoints } : {}),
         batchPicks: picksOf(active.lines),
+        ...(allowBelowCost ? { allowBelowCost } : {}),
         actorId: user.id,
-      })
+      }), ask, fail)
+      if (tried === null) return
+      result = tried
     } catch (err) {
       fail(`The bill could not be completed: ${err instanceof Error ? err.message : String(err)}`)
       return
@@ -340,7 +334,7 @@ export default function Billing() {
     tabs.released()
     setTerm('')
     focusScan()
-  }, [db, user.id, active.lines, tabs, totals.grandTotal, due, redeemPoints, focusScan, repricing])
+  }, [db, user.id, active.lines, tabs, totals.grandTotal, due, redeemPoints, focusScan, repricing, ask])
 
   /* The counter should not need the mouse. Only bound keys are advertised.
      Every one of these now stands down while a dialog is open — the payment
@@ -440,6 +434,8 @@ export default function Billing() {
         repricing={repricing}
         onPickCustomer={() => setPickingCustomer(true)}
         onDiscount={(discount) => tabs.patch((cart) => ({ ...cart, discount }))}
+        onDiscountPercent={(discountPercent) => tabs.patch((cart) => ({ ...cart, discountPercent }))}
+        underCost={underCost}
         onPay={() => setPaying(true)}
         {...(Permissions.can(user.permissions, 'document', 'create') ? { quote } : {})}
       />

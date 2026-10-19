@@ -1,4 +1,5 @@
 import { Money, Quantity, type SubmitBillResult } from '@shopos/core'
+import { belowCostLines, belowCostMessage } from '../../ui/belowCost'
 
 /** What the cashier is told when a bill cannot be taken, and what to do about it. */
 export function submitMessage(result: Extract<SubmitBillResult, { ok: false }>): string {
@@ -37,6 +38,11 @@ export function submitMessage(result: Extract<SubmitBillResult, { ok: false }>):
       return `A bill of ${Money.formatWithSymbol(result.threshold)} or more has to carry the customer’s `
         + `name and address — this one is ${Money.formatWithSymbol(result.grandTotal)}. `
         + 'Choose a customer, or add them, and take the payment again.'
+    case 'BELOW_COST':
+      // Reached by somebody who may not go ahead, or who said no; see `ui/belowCost.ts`.
+      return result.mayAllow
+        ? `Not taken: ${belowCostLines(result.lines)}. Take the discount off, or go ahead when asked.`
+        : belowCostMessage(result)
     default:
       return 'The bill could not be completed.'
   }

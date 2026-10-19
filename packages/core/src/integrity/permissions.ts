@@ -14,6 +14,11 @@ export const RESOURCES = [
      somebody trusted to ring up a sale is not automatically somebody trusted to
      do that. */
   'document',
+  /* Selling or pricing anything below what it cost (`services/belowCost.ts`).
+     Its own row, because the person trusted to ring up a bill or set a price
+     is not by that alone trusted to give goods away under cost. Only `write`
+     is read: "may go ahead after confirming". Admin's by default. */
+  'below_cost',
 ] as const
 export type Resource = (typeof RESOURCES)[number]
 
@@ -67,6 +72,7 @@ export const ENFORCED: Record<Resource, readonly Capability[]> = {
   report: [],
   settings: ['write'],
   document: ['create', 'cancel'],
+  below_cost: ['write'],
 }
 
 /** Whether ticking this box would change anything. */

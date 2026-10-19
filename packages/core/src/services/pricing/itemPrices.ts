@@ -6,7 +6,8 @@ import type { Money } from '../../money.js'
 import { type Qty, qty } from '../../quantity.js'
 import { writeAudit, type AuditContext } from '../../integrity/audit.js'
 import { unitExists } from './units.js'
-import { defaultPriceListId } from '../../repos/pricing.js'
+import { defaultPriceListId, listIncludesTax } from '../../repos/pricing.js'
+import { rateRefusal, type BelowCostRefusal } from '../belowCost.js'
 import { requirePermission } from '../../integrity/permissions.js'
 
 /*
@@ -35,12 +36,16 @@ export interface ItemPriceInput {
   rate: Money
   validFrom?: string | null
   validTo?: string | null
+  /** Write a rate below cost anyway: for a role allowed to, and recorded (`belowCost.ts`). */
+  allowBelowCost?: boolean
 }
 
 export type ItemPriceResult =
   | { ok: true; itemPriceId: string }
   | { ok: false; code: 'BAD_DATES' }
   | { ok: false; code: 'UNKNOWN_UNIT'; saleUnit: string }
+  /** The rate, without its GST, is below what the item costs. Nothing was written. */
+  | BelowCostRefusal
 
 export async function listItemPrices(
   db: SqlDriver,
@@ -99,6 +104,12 @@ export async function setItemPrice(
   if (!(await unitExists(db, input.productId, input.saleUnit))) {
     return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: input.saleUnit }
   }
+  const under = await rateRefusal(db, ctx, {
+    productId: input.productId, saleUnit: input.saleUnit, rate: input.rate,
+    includesTax: await listIncludesTax(db, input.priceListId),
+    allow: input.allowBelowCost === true, entity: 'item_prices', entityId: input.productId,
+  })
+  if (under) return under
 
   const minQty = input.minQty ?? qty(0)
   const now = (ctx.now ?? (() => new Date().toISOString()))()

@@ -10,6 +10,9 @@ import { loadOpenBills } from '../payments/outstanding.js'
 import { RULE_46F_THRESHOLD, type SubmitBillResult } from './types.js'
 import { shortfallsOf, type BillStockLine } from './stock.js'
 import type { StockShortfall } from '../stock.js'
+import type { Qty } from '../../quantity.js'
+import { soldPerBase } from '../../domain/costFloor.js'
+import { belowCostRefusal } from '../belowCost.js'
 export { assertCounterIsMine } from '../registers/claims.js'
 
 /*
@@ -87,4 +90,23 @@ export async function shelfFor(
     return { refusal: { ok: false, code: 'INSUFFICIENT_STOCK', shortfalls }, shortfalls }
   }
   return { refusal: null, shortfalls }
+}
+
+/**
+ * Whether any line sells for less than it cost, after every discount on it
+ * and its share of the bill's. Asked at submit, when the price is final, so a
+ * discount typed after the last item went in is counted too. See
+ * `services/belowCost.ts`; an allowed one is recorded against the bill.
+ */
+export async function refusedBelowCost(
+  db: SqlDriver,
+  bill: { id: string; actorId: string; allow: boolean },
+  lines: readonly { productId: string; productName: string; taxableValue: Money; baseQty: Qty }[],
+): Promise<Refusal | null> {
+  return belowCostRefusal(
+    db,
+    { actorId: bill.actorId },
+    lines.map((l) => ({ productId: l.productId, name: l.productName, perBase: soldPerBase(l.taxableValue, l.baseQty) ?? (0 as Money) })),
+    { allow: bill.allow, entity: 'bills', entityId: bill.id },
+  )
 }

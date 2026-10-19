@@ -11,7 +11,7 @@ import { nextDocNo } from '../numbering.js'
 import { applyBillFulfilment } from '../documents.js'
 import { loadBill, loadLoyaltyEntries, loadLoyaltyProgram, monthToDateSpend, recipientSnapshot } from './load.js'
 import type { SubmitBillInput, SubmitBillResult } from './types.js'
-import { assertCounterIsMine, refusedAsInvoice, refusedOnCredit, shelfFor } from './guards.js'
+import { assertCounterIsMine, refusedAsInvoice, refusedBelowCost, refusedOnCredit, shelfFor } from './guards.js'
 import { postTenders } from './tender.js'
 import { takeOffShelf } from './stock.js'
 import { postVoucherGl } from '../ledger.js'
@@ -79,6 +79,7 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
         baseQty: schema.billItems.baseQty,
         batchId: schema.billItems.batchId,
         lineTotal: schema.billItems.lineTotal,
+        taxableValue: schema.billItems.taxableValue,
         loyaltyBlocked: schema.billItems.loyaltyBlocked,
       })
       .from(schema.billItems)
@@ -120,6 +121,11 @@ export async function submitBill(db: SqlDriver, input: SubmitBillInput): Promise
 
     const { refusal: short, shortfalls } = await shelfFor(tx, lines)
     if (short) return short
+
+    const underCost = await refusedBelowCost(
+      tx, { id: input.billId, actorId: input.actorId, allow: input.allowBelowCost === true }, lines,
+    )
+    if (underCost) return underCost
 
     // Read off the line's own flag rather than the product's, so a bill earns on
     // the rules that were in force when it was rung up.
