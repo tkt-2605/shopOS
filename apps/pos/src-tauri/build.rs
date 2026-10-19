@@ -1,13 +1,13 @@
-/// The vendor's Telegram bot and support number, baked into the build so a
-/// shop pastes nothing.
+/// The vendor's support number, portal and report address, baked into the
+/// build so a shop pastes nothing.
 ///
 /// Read from `src-tauri/.env` (git-ignored, see `.env.example` beside it) or
 /// from the build's environment, which is how CI passes a secret. Never from a
-/// file in git: the token is a key to the vendor's chat.
-const BAKED: [&str; 9] = [
-    "SHOPOS_TG_TOKEN", "SHOPOS_TG_CHAT", "SHOPOS_SUPPORT_PHONE", "SHOPOS_SUPPORT_WHATSAPP", "SHOPOS_PORTAL_URL",
+/// file in git: a build made from a fork should not mail its reports to us.
+const BAKED: [&str; 7] = [
+    "SHOPOS_SUPPORT_PHONE", "SHOPOS_SUPPORT_WHATSAPP", "SHOPOS_PORTAL_URL",
     "SHOPOS_SUPPORT_PUBKEY",
-    // Mail: a server for shops not on Gmail, and addresses every report pack is copied to.
+    // Mail: a server for shops not on Gmail, and the vendor's addresses every report is copied to.
     "SHOPOS_MAIL_HOST", "SHOPOS_MAIL_PORT", "SHOPOS_REPORTS_TO",
 ];
 

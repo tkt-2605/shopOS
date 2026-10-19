@@ -1369,6 +1369,20 @@ Open: the installer cannot add a firewall rule while it installs per-user;
 stage 7 (the cloud as main, the home till, the grace window on the cloud)
 waits for the cloud peer.
 
+## Reports by mail rather than Telegram (19 October)
+
+The vendor's Telegram bot is gone from the till. Every report pack and the
+health report are mailed from the shop's own Gmail login to the shop and to
+`SHOPOS_REPORTS_TO`, which `release.yml` now passes to the build (it did not
+before, so no CI build carried it). A shop with no login sends the vendor
+nothing by mail; the health report still reaches the portal once one is
+hosted. Anything still queued for the bot is dropped at the next flush. The
+token is in every 0.3.x installer, so it should be revoked at BotFather.
+
+The portal's morning digest (`SHOPOS_DIGEST_TOKEN`) still goes by Telegram:
+it is the vendor's own server talking to the vendor, with no token in any
+installer, and the portal has no mail sender.
+
 ## Not committed
 
 `docs/specs.zip` — a redundant archive of `docs/specs/`. Left untracked

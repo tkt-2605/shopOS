@@ -47,7 +47,7 @@ On Settings → Help, the "Ready for a bad day" card should show every item tick
 
 - [ ] the recovery code written down, and the paper kept away from the till;
 - [ ] backups going to a pen drive or a Drive folder;
-- [ ] support hearing about problems (a build with the portal, or Telegram or email set up);
+- [ ] support hearing about problems (a build with the portal, or `SHOPOS_REPORTS_TO` and the shop's email set up);
 - [ ] the support number saved in the shop's phone.
 
 ## After a P1

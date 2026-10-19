@@ -12,7 +12,7 @@ same five parts:
 First, always:
 
 1. Get the support code from the shop. The shopkeeper reads it off sidebar → Get help, e.g. `0192 f4a1 · FC · 0.3.0`. The first part is the short shop id used in reports and in `tools/release.ts target --only`.
-2. Find that shop's latest health report (Telegram, the shop's mail, or later the portal console).
+2. Find that shop's latest health report (your mail, from `SHOPOS_REPORTS_TO`, or later the portal console).
 3. Ask whether billing works on at least one counter. If it does, this is not a P1, however it sounds.
 
 | # | Runbook | Usual severity |

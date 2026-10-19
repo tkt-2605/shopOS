@@ -207,7 +207,6 @@ pub fn run() {
             report_out::report_outbox_list,
             report_out::report_destinations,
             report_out::report_mail_test,
-            report_out::report_telegram_builtin,
             report_out::report_health_daily,
             invoice_mail::bill_mail_ready,
             invoice_mail::bill_mail,

@@ -37,8 +37,6 @@ pub struct HealthSent {
     bytes: usize,
     mail: &'static str,
     mail_error: Option<String>,
-    telegram: &'static str,
-    telegram_error: Option<String>,
     /// The vendor's portal: `off` when this build has none, `sent` or `queued`.
     portal: &'static str,
     portal_error: Option<String>,
@@ -68,7 +66,7 @@ pub fn health_send(
         .collect();
     let name = format!("health {} {stamp}.zip", label.trim());
     let subject = format!("ShopOS health - {}", label.trim());
-    // By mail to the shop and by the vendor's bot, like the reports.
+    // By mail to the shop and the vendor, like the reports.
     let (_, faults) = crate::faults::snapshot(&data);
     let summary = if faults.is_empty() { summary } else { format!("{summary}\n{faults}") };
     let sent = report_out::send_out(&app, &name, &bytes, &subject, &summary)?;
@@ -92,8 +90,6 @@ pub fn health_send(
         bytes: bytes.len(),
         mail: sent.mail,
         mail_error: sent.mail_error,
-        telegram: sent.telegram,
-        telegram_error: sent.telegram_error,
         portal,
         portal_error,
     })

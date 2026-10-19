@@ -26,7 +26,7 @@ outline of this spec:
 Already built, and the base for everything below:
 
 - **Logs.** `src-tauri/src/log.rs`: a rotating log (5 × 1 MB) with a panic hook, and no secrets in it.
-- **Health report.** `health.rs` and `core/health.ts`: a daily report that carries no customer, no money and no credential. It holds sync peers, set-aside records, conflicts, integrity, counters, licence state and the kinds of discrepancy found. It goes out by the shop's mail or Telegram, or by the vendor's baked-in bot (@shp0s_bot).
+- **Health report.** `health.rs` and `core/health.ts`: a daily report that carries no customer, no money and no credential. It holds sync peers, set-aside records, conflicts, integrity, counters, licence state and the kinds of discrepancy found. It goes out by mail from the shop's own Gmail login, to the shop and to the vendor's address the build names (`SHOPOS_REPORTS_TO`), and to the portal. Until 19 Oct 2026 it also went by the vendor's baked-in Telegram bot; that bot was removed, because its token was in every installer and anyone holding it could pull every pack out of the chat.
 - **Diagnostics bundle.** `diagnostics.rs`: a richer zip, redacted on an allowlist. The shopkeeper saves it and sends it by hand. The Help card (`HelpSection.tsx`) says plainly that nothing is uploaded.
 - **Fixes the shop can make itself.** Needs Attention, with a remedy for each double entry (`discrepancies/remedies.ts`). Reconcilers for the cached figures. Records that cannot land are set aside rather than lost. A recovery code for a forgotten password. A till restored from an old backup is detected.
 - **Copying a shop's database.** `tools/pull-shop-db.mjs` takes a VACUUM INTO copy of a database.
@@ -62,12 +62,12 @@ Size: 1 day.
 
 ### 2. Fleet health on the portal (monitor)
 
-The health report also goes to the portal, not only to Telegram.
+The health report also goes to the portal, not only by mail.
 
 - **On the portal:**
   - `POST /v1/shops/:id/health`, signed with the till's licence identity. It takes the same zip, with no customer, money or credential in it.
   - The portal keeps the latest report per till, and a short history of the numbers: sync lag, set-aside count, conflicts, discrepancy kinds, version, integrity result.
-- **Fallback:** queued in Rust and retried, like mail. When the portal cannot be reached, Telegram still carries it.
+- **Fallback:** queued in Rust and retried, like mail. When the portal cannot be reached, the mail still carries it.
 - **Alert rules,** in portal code with tests:
 
 | Signal | Rule | Severity |
@@ -367,7 +367,7 @@ About five to six weeks of building in all. S1–S3 are worth doing before the f
 
 ## Verification
 
-- [ ] The health report reaches the portal from a till behind a dropped line, once the line returns, and Telegram carries it while the portal is down
+- [ ] The health report reaches the portal from a till behind a dropped line, once the line returns, and the mail carries it while the portal is down
 - [ ] Each alert rule fires on a fixture made to break it, and stays silent on a healthy shop
 - [ ] A webview error and a Rust panic both appear in the next health report with the same signature as on the console
 - [ ] A data upload interrupted at 60% resumes and decrypts, and the portal holds only ciphertext

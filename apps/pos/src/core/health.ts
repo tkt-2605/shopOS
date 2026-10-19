@@ -23,8 +23,6 @@ export interface HealthSent {
   bytes: number
   mail: 'off' | 'sent' | 'queued'
   mailError: string | null
-  telegram: 'off' | 'sent' | 'queued'
-  telegramError: string | null
   /** The vendor's portal (`portal_out.rs`): `off` when this build has none. */
   portal: 'off' | 'sent' | 'queued'
   portalError: string | null

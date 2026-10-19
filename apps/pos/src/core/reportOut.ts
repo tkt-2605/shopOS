@@ -22,7 +22,7 @@ import { TABS_IN_PACK, describe, tableFor } from '../pages/reports/tableFor'
 /**
  * Device settings. Must match `report_out.rs`. The shop's mail login is the
  * only part of sending the shop sets up; where a pack goes besides the shop's
- * own address, the mail server and the Telegram bot come with the build.
+ * own address (the vendor's) and the mail server come with the build.
  */
 export const MAIL_USER = 'mail_user'
 export const MAIL_PASSWORD = 'mail_password'
@@ -41,15 +41,13 @@ export interface Delivery {
   folderError: string | null
   mail: 'off' | 'sent' | 'queued'
   mailError: string | null
-  telegram: 'off' | 'sent' | 'queued'
-  telegramError: string | null
 }
 
 export interface OutboxState {
   waiting: number
   sent: number
   error: string | null
-  /** Why each channel is stuck: `mail`, `telegram`, `invoice`. */
+  /** Why each channel is stuck: `mail`, `invoice`. */
   errors: Record<string, string>
 }
 
@@ -64,8 +62,6 @@ export interface Destinations {
   reportsTo: string[]
   /** Why mail cannot go, when something is wrong with the login. */
   mailError: string | null
-  /** Whether this build carries the vendor's Telegram bot. */
-  telegram: boolean
 }
 
 export interface PackRun {
@@ -160,14 +156,11 @@ export function say(d: Delivery): string {
   if (d.mail === 'sent') parts.push('emailed')
   else if (d.mail === 'queued') parts.push(`email waiting for the line${d.mailError ? ` (${d.mailError})` : ''}`)
   else if (d.mailError) parts.push(`email not sent: ${d.mailError}`)
-  if (d.telegram === 'sent') parts.push('sent to Telegram')
-  else if (d.telegram === 'queued') parts.push(`Telegram waiting for the line${d.telegramError ? ` (${d.telegramError})` : ''}`)
-  else if (d.telegramError) parts.push(`Telegram not sent: ${d.telegramError}`)
   return parts.join('; ')
 }
 
 async function record(d: Delivery): Promise<void> {
-  const ok = d.mailError === null && d.folderError === null && d.telegramError === null
+  const ok = d.mailError === null && d.folderError === null
   const run: PackRun = { at: new Date().toISOString(), ok, text: say(d) }
   await setDeviceSetting(LAST_RUN, JSON.stringify(run))
   logEvent(ok ? 'info' : 'warn', 'reports', run.text)
@@ -187,12 +180,7 @@ export function outboxList(): Promise<Waiting[]> {
   return invoke<Waiting[]>('report_outbox_list')
 }
 
-/** True when this build was made with the vendor's bot in it. */
-export function telegramBuiltIn(): Promise<boolean> {
-  return invoke<boolean>('report_telegram_builtin').catch(() => false)
-}
-
-/** True when this build sends the health report daily by itself: it carries the vendor's bot or portal. */
+/** True when this build sends the health report daily by itself: it names the vendor's address or portal. */
 export function healthGoesDaily(): Promise<boolean> {
   return invoke<boolean>('report_health_daily').catch(() => false)
 }

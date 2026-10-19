@@ -17,7 +17,7 @@ import { MailStatus } from './ShopMailCard'
  * What this till sends, where it goes, and what is still waiting.
  *
  * Nothing to type here. The shop's mail login is under Shop details; the
- * Telegram chat, the mail server and any other address come with the build
+ * vendor's address and the mail server come with the build
  * (`report_out.rs`), so they change in an update. What is left is a row per
  * kind of message -- when it goes, where, and a button to send it now -- and
  * the outbox, with each message that has not gone and why.
@@ -67,15 +67,14 @@ export function ReportsOutSection({ onOpenShop }: { onOpenShop: () => void }) {
     const range = which === 'today' ? { from: businessDate(), to: businessDate() } : rangePreset('month')
     const delivery = await deliverPack(db, range)
     setRun(lastPackRun())
-    return { ok: !delivery.mailError && !delivery.folderError && !delivery.telegramError, text: say(delivery) }
+    return { ok: !delivery.mailError && !delivery.folderError, text: say(delivery) }
   })
 
   const sendHealthNow = () => doing(async () => {
     const sent = await sendHealth(db)
-    const problem = sent.telegramError ?? sent.mailError ?? sent.portalError
+    const problem = sent.mailError ?? sent.portalError
     if (problem) return { ok: false, text: `Health report: ${problem}` }
     const went = [
-      sent.telegram === 'sent' && 'to Telegram',
       sent.mail === 'sent' && 'by email',
       sent.portal === 'sent' && 'to support',
     ].filter(Boolean).join(', ')
@@ -114,11 +113,6 @@ export function ReportsOutSection({ onOpenShop }: { onOpenShop: () => void }) {
           <button type="button" className="link-btn" onClick={onOpenShop}>
             {where?.sender ? 'Change under Shop details' : 'Set up under Shop details'} →
           </button>
-        </Line>
-        <Line label="Telegram">
-          {where?.telegram
-            ? <>To the ShopOS support chat</>
-            : <span className="badge mute">Not in this copy of ShopOS</span>}
         </Line>
         <Line label="Folder">
           {deviceSetting('backup_folder')
@@ -190,7 +184,7 @@ export function ReportsOutSection({ onOpenShop }: { onOpenShop: () => void }) {
                 {waiting.map((w) => (
                   <tr key={`${w.at}-${w.channel}`}>
                     <td>{w.subject}</td>
-                    <td>{w.channel === 'telegram' ? 'Telegram' : w.to.join(', ')}</td>
+                    <td>{w.to.join(', ')}</td>
                     <td>{whenWas(new Date(w.at).toISOString())}</td>
                     <td style={{ color: 'var(--warn)' }}>{stuck[w.channel] ?? '—'}</td>
                   </tr>

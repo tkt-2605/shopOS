@@ -21,16 +21,18 @@
 #                               without it a till offers no data sending
 #              SHOPOS_PORTAL_URL
 #                               https only; leave unset until the portal is
-#                               hosted, and health goes by Telegram alone
+#                               hosted, and health goes by mail alone
+#              SHOPOS_REPORTS_TO
+#                               the vendor's address(es), comma separated: every
+#                               report pack and the health report are mailed
+#                               there too, from the shop's own Gmail login
+#              SHOPOS_MAIL_HOST, SHOPOS_MAIL_PORT
+#                               optional: a mail server for shops not on Gmail
 #              WINDOWS_SIGN_COMMAND
 #                               optional, once there is a certificate: the CA's
 #                               command, with %1 for the file. Its credentials
 #                               go in secrets and in the build step's env.
 #   secrets    TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-#              SHOPOS_TG_TOKEN, SHOPOS_TG_CHAT
-#                               optional: the vendor's Telegram bot and chat,
-#                               baked in so shops send reports with nothing to
-#                               paste (see apps/pos/src-tauri/.env.example)
 #              RELEASE_TOKEN    a fine-grained token with Contents: write on
 #                               RELEASE_REPO only
 #
@@ -146,12 +148,13 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          SHOPOS_TG_TOKEN: ${{ secrets.SHOPOS_TG_TOKEN }}
-          SHOPOS_TG_CHAT: ${{ secrets.SHOPOS_TG_CHAT }}
           SHOPOS_SUPPORT_PHONE: ${{ vars.SHOPOS_SUPPORT_PHONE }}
           SHOPOS_SUPPORT_WHATSAPP: ${{ vars.SHOPOS_SUPPORT_WHATSAPP }}
           SHOPOS_SUPPORT_PUBKEY: ${{ vars.SHOPOS_SUPPORT_PUBKEY }}
           SHOPOS_PORTAL_URL: ${{ vars.SHOPOS_PORTAL_URL }}
+          SHOPOS_REPORTS_TO: ${{ vars.SHOPOS_REPORTS_TO }}
+          SHOPOS_MAIL_HOST: ${{ vars.SHOPOS_MAIL_HOST }}
+          SHOPOS_MAIL_PORT: ${{ vars.SHOPOS_MAIL_PORT }}
         run: npx tauri build --config src-tauri/tauri.release.json
 
       # A hotfix tag names its first shops in its message (`release.ts hotfix`).
