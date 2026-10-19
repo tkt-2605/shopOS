@@ -3,7 +3,7 @@ import {
   Money, Quantity, Tax, Permissions, searchProducts, recomputeStock, listBarcodes, setBarcodes,
   listUnits, setUnits, listCategories, createCategory, renameCategory, removeCategory,
   setProductCategory, setVariantOf, setLadder, laddersFor, defaultPriceListId, Ladder,
-  setProductActive, saveProductDetails, type Category, type ProductListItem,
+  setProductActive, saveProductDetails, costHint, type Category, type ProductListItem, type CostHint,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { recordStockCheck } from '../core/maintenance'
@@ -37,6 +37,8 @@ export default function Inventory() {
   const [browsing, setBrowsing] = useState('')
   const [ladders, setLadders] = useState<Map<string, Ladder.Rung[]>>(new Map())
   const [priceListId, setPriceListId] = useState('')
+  /** The last price paid for the item being edited, shown beside its cost price. */
+  const [lastCost, setLastCost] = useState<CostHint | null>(null)
 
   const canWrite = Permissions.can(user.permissions, 'product', 'write')
 
@@ -78,9 +80,15 @@ export default function Inventory() {
     const mrp = draft.mrp.trim() === '' ? null : Money.parseMoney(draft.mrp)
     if (mrp !== null && mrp < 0) { setNotice('The MRP cannot be below zero. Nothing was saved.'); return }
     if (draft.mrp.trim() !== '' && mrp === null) { setNotice('The MRP is not an amount. Nothing was saved.'); return }
-    const percent = draft.taxPercent.trim() === '' ? 0 : Number(draft.taxPercent)
+    const cost = draft.costPrice.trim() === '' ? null : Money.parseMoney(draft.costPrice)
+    if (draft.costPrice.trim() !== '' && (cost === null || cost < 0)) {
+      setNotice('The cost price is not an amount. Nothing was saved.')
+      return
+    }
+    // No GST is a rate of nothing and no cess, whatever the hidden boxes still hold.
+    const percent = draft.noGst || draft.taxPercent.trim() === '' ? 0 : Number(draft.taxPercent)
     if (!Number.isFinite(percent)) { setNotice('The tax rate is not a number. Nothing was saved.'); return }
-    const cessPercent = draft.cessPercent.trim() === '' ? 0 : Number(draft.cessPercent)
+    const cessPercent = draft.noGst || draft.cessPercent.trim() === '' ? 0 : Number(draft.cessPercent)
     if (!Number.isFinite(cessPercent)) { setNotice('The cess rate is not a number. Nothing was saved.'); return }
 
     // Through the core, which checks the figures and writes the change to the
@@ -101,12 +109,14 @@ export default function Inventory() {
       returnBlocked: draft.returnBlocked,
       isStockTracked: draft.stockTracked,
       openPrice: draft.openPrice,
+      costPrice: cost,
       reorderLevel: levelOf(draft.reorderLevel),
       reorderQty: levelOf(draft.reorderQty),
     })
     if (!saved.ok) {
       setNotice(
         saved.code === 'BAD_TAX' ? 'GST is between 0 and 100 per cent, and cess between 0 and 300. Nothing was saved.'
+        : saved.code === 'BAD_COST' ? 'The cost price cannot be below zero. Nothing was saved.'
         : saved.code === 'BAD_LEVEL' ? 'The reorder figures have to be quantities, zero or more. Nothing was saved.'
         : saved.code === 'UNKNOWN_PRODUCT' ? 'This item is no longer in the catalogue.'
         : 'The item could not be saved. Check its name and price.',
@@ -236,7 +246,9 @@ export default function Inventory() {
   }
 
   async function edit(p: ProductListItem) {
-    const [codes, units] = await Promise.all([listBarcodes(db, p.id), listUnits(db, p.id)])
+    const [codes, units, cost] = await Promise.all([listBarcodes(db, p.id), listUnits(db, p.id), costHint(db, p.id)])
+    // Only a price actually paid: the item's own cost price is already in the box.
+    setLastCost(cost !== null && cost.source !== 'item' ? cost : null)
     setDraft({
       id: p.id, name: p.name, brand: p.brand ?? '',
       barcodes: codes.length > 0
@@ -249,7 +261,9 @@ export default function Inventory() {
       variantLabel: p.variantLabel ?? '',
       hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
       cessPercent: p.cessRateBp === 0 ? '' : String(Tax.bpToPercent(p.cessRateBp)),
+      noGst: p.taxRateBp === 0 && p.cessRateBp === 0,
       baseRate: Money.format(p.baseRate), mrp: p.mrp === null ? '' : Money.format(p.mrp),
+      costPrice: p.costPrice === null ? '' : Money.format(p.costPrice),
       baseUnit: p.baseUnit,
       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
       returnBlocked: p.returnBlocked, stockTracked: p.isStockTracked, openPrice: p.openPrice,
@@ -334,7 +348,7 @@ export default function Inventory() {
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>
         {canWrite && <CatalogueFile onDone={refresh} />}
-        {canWrite && <button className="btn primary" onClick={() => setDraft({ ...BLANK })}>New product</button>}
+        {canWrite && <button className="btn primary" onClick={() => { setLastCost(null); setDraft({ ...BLANK }) }}>New product</button>}
       </div>
 
       {features.batchExpiry && <ExpiringCard />}
@@ -423,6 +437,7 @@ export default function Inventory() {
             onAddCategory={() => void addCategory()}
             parentName={rows.find((r) => r.id === draft.parentProductId)?.name}
             parent={parent}
+            lastCost={draft.id ? lastCost : null}
           />
         </Modal>
       )}

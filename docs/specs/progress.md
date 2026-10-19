@@ -1369,6 +1369,29 @@ Open: the installer cannot add a firewall rule while it installs per-user;
 stage 7 (the cloud as main, the home till, the grace window on the cloud)
 waits for the cloud peer.
 
+## A cost price, the last cost shown, and No GST (20 October)
+
+Asked for by the owner: a cost price on the item, the latest cost shown on
+Stock In and the item, a way to take an item out of GST, and purchase-order
+rates typed before or after GST with the last cost filled in.
+
+- **The cost price is a default, never a valuation** (074, additive). It fills
+  in a cost for somebody typing; stock is still valued from what each movement
+  carried, and nothing that posts reads it. `valuation.ts` records why a cost
+  on the item was the design it replaced, and that is the line it keeps to.
+- **The latest cost** is `costHints`: the last submitted purchase or opening
+  stock, over the item's cost price. Stock In fills each new line with it and
+  says where it came from. On goods going out a filled-in cost is dropped, so
+  wastage still leaves at what the shelf holds.
+- **A real bug fixed on the way:** a purchase order's blank rate was filled
+  from the *selling* price list, tax included, and receiving it posted the
+  goods in at that. It is the last cost now, or zero with a warning.
+  Receiving a rate typed with GST posts the price before it.
+- **No GST** is a tick on the item that saves a 0% rate and no cess, which
+  bills, returns and GSTR-1 read exactly as they read a 0% item. The owner
+  chose this over a nil-rated / exempt / non-GST split, knowing GSTR-1 then
+  reports these under 0% rather than in its own exempt section.
+
 ## Reports by mail rather than Telegram (19 October)
 
 The vendor's Telegram bot is gone from the till. Every report pack and the

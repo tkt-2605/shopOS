@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Permissions,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
-  directionOf, signedQty, noCostBasis, batchesOf, Batches, periodClosedMessage,
+  directionOf, signedQty, noCostBasis, costHint, batchesOf, Batches, periodClosedMessage,
   type ProductListItem, type StockEntryType, type Supplier, Tax,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -12,7 +12,8 @@ import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
 import { useSearch } from '../ui/useSearch'
 import { useScanChoice } from '../ui/ScanChoice'
-import { BatchCells, PriceCells, ownPrice, type Line } from './stockIn/cells'
+import { BatchCells, PriceCells, costOf, ownPrice, type Line } from './stockIn/cells'
+import { costNote } from '../ui/costNote'
 
 /* Each note says which way the shelf moves, because that is what the list is
    choosing between. It used to ask for the direction back: “Wastage.
@@ -86,12 +87,17 @@ export default function StockIn() {
     setTerm('')
     // One delivery can carry two batches of one item, so with batches on the
     // same item may be added again, once per batch.
-    const held = batched ? await batchesOf(db, product.id, { inStockOnly: true }) : []
+    const [held, hint] = await Promise.all([
+      batched ? batchesOf(db, product.id, { inStockOnly: true }) : Promise.resolve([]),
+      // The last price paid, or the item's cost price: typed in for the person, who can change it.
+      costHint(db, product.id),
+    ])
     setLines((prev) =>
       !batched && prev.some((l) => l.product.id === product.id)
         ? prev
         : [...prev, {
-            key: `${product.id}-${Date.now()}`, product, qty: '1', cost: '', held,
+            key: `${product.id}-${Date.now()}`, product, qty: '1', held,
+            cost: hint ? Money.format(hint.unitCost) : '', hint, costFilled: hint !== null,
             batchNo: '', expiry: '',
             mrp: product.mrp !== null ? Money.format(product.mrp) : '',
             sellAt: Money.format(product.baseRate),
@@ -102,10 +108,12 @@ export default function StockIn() {
 
   /** Whether this line takes stock off, once the kind of entry and its sign have had their say. */
   const outgoing = (l: Line) => signedQty(entryType, Quantity.fromUnits(Number(l.qty) || 0)) < 0
+  /** The cost the line will be posted with -- see `costOf`. */
+  const costText = (l: Line) => costOf(l, outgoing(l))
 
   const totalCost = lines.reduce((sum, l) => {
     const qty = Number(l.qty) || 0
-    const cost = Money.parseMoney(l.cost) ?? 0
+    const cost = Money.parseMoney(costText(l)) ?? 0
     return sum + Math.round(qty * cost)
   }, 0)
 
@@ -115,7 +123,7 @@ export default function StockIn() {
   const pct = (typed: string) => Math.round((Number(typed) || 0) * 100)
   /** The tax on a line as the bill will carry it -- the same arithmetic as the service, CGST and SGST each rounded. */
   const taxOf = (l: Line) => Tax.addTax(
-    Math.round(Math.abs(Number(l.qty) || 0) * (Money.parseMoney(l.cost) ?? 0)) as never,
+    Math.round(Math.abs(Number(l.qty) || 0) * (Money.parseMoney(costText(l)) ?? 0)) as never,
     pct(l.gst), 'intra_state', pct(l.cess),
   ).taxTotal
   const totalTax = purchase ? lines.reduce((sum, l) => sum + taxOf(l), 0) : 0
@@ -128,7 +136,7 @@ export default function StockIn() {
 
   async function post() {
     setError(null)
-    if (lines.some((l) => (Money.parseMoney(l.cost) ?? 0) < 0)) {
+    if (lines.some((l) => (Money.parseMoney(costText(l)) ?? 0) < 0)) {
       setError('A cost cannot be below zero.')
       return
     }
@@ -165,7 +173,7 @@ export default function StockIn() {
         /* As typed. `createStockEntry` applies the direction, so this screen
            and any other way in agree without each having to remember it. */
         qty: Quantity.fromUnits(Number(l.qty) || 0),
-        unitCost: (Money.parseMoney(l.cost) ?? 0) as never,
+        unitCost: (Money.parseMoney(costText(l)) ?? 0) as never,
         ...ownPrice(l),
         ...(purchase ? { taxRateBp: pct(l.gst), cessRateBp: pct(l.cess) } : {}),
       })),
@@ -337,7 +345,7 @@ export default function StockIn() {
           <tbody>
             {lines.map((l) => {
               const typed = Number(l.qty) || 0
-              const value = Math.round(Math.abs(typed) * (Money.parseMoney(l.cost) ?? 0))
+              const value = Math.round(Math.abs(typed) * (Money.parseMoney(costText(l)) ?? 0))
               /* The answer rather than the convention. Whatever the sign rule
                  is, a shopkeeper can see what the shelf will say afterwards
                  before pressing save. */
@@ -356,8 +364,13 @@ export default function StockIn() {
                   {incoming && <PriceCells line={l}
                     onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
                   <td className="r">
-                    <input className="qty-input num" placeholder="0.00" value={l.cost}
-                      onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cost: e.target.value } : x))} />
+                    <input className="qty-input num" placeholder="0.00" value={costText(l)}
+                      onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cost: e.target.value, costFilled: false } : x))} />
+                    {/* Where the figure in the box came from, so a cost that was
+                        filled in is never mistaken for one that was typed. */}
+                    {l.hint && !outgoing(l) && (
+                      <div className="src">{l.costFilled ? '' : 'was '}{costNote(l.hint)}</div>
+                    )}
                     {/* Said, not enforced. A shopkeeper holding a delivery note
                         they cannot read must still be able to record the stock;
                         a save that refuses here is a shelf that goes uncounted.
@@ -368,7 +381,7 @@ export default function StockIn() {
                         enters at zero, and every sale of it reads as pure
                         profit for ever with nothing saying so. Those are two
                         different sentences and only one of them is alarming. */}
-                    {directionOf(entryType) === 'in' && Money.parseMoney(l.cost) === null && (
+                    {directionOf(entryType) === 'in' && Money.parseMoney(costText(l)) === null && (
                       <div className="src warn-note">
                         {unpriced.has(l.product.id)
                           ? 'no cost ever recorded — profit on this item will read as 100%'

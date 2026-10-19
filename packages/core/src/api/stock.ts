@@ -26,6 +26,8 @@ export type { BatchRow, SalePlan, ExpiringBatch, LineBatch } from '../services/b
 export { productValuation } from '../services/stock.js'
 export * as Valuation from '../domain/valuation.js'
 export { reorderList, bySupplier } from '../repos/reorder.js'
+export { costHints, costHint } from '../repos/costs.js'
+export type { CostHint } from '../repos/costs.js'
 export type { ReorderRow, ReorderOptions, SupplierGroup } from '../repos/reorder.js'
 export { listShortfalls, countShortfalls } from '../repos/shortfalls.js'
 export { lowStock } from '../repos/lowStock.js'

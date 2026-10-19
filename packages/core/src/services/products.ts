@@ -100,13 +100,19 @@ export interface ProductDetails {
    * item's setting as it is, and a new item's off, as cess does.
    */
   openPrice?: boolean
+  /**
+   * What it costs, per base unit before tax (074): a default for Stock In and
+   * purchase orders, never read by valuation. Absent leaves it as it is, as
+   * cess does; null clears it.
+   */
+  costPrice?: Money | null
   reorderLevel: Qty | null
   reorderQty: Qty | null
 }
 
 export type SaveProductResult =
   | { ok: true; productId: string; created: boolean }
-  | { ok: false; code: 'NO_NAME' | 'BAD_RATE' | 'BAD_MRP' | 'BAD_TAX' | 'BAD_LEVEL' | 'UNKNOWN_PRODUCT' }
+  | { ok: false; code: 'NO_NAME' | 'BAD_RATE' | 'BAD_MRP' | 'BAD_COST' | 'BAD_TAX' | 'BAD_LEVEL' | 'UNKNOWN_PRODUCT' }
 
 /**
  * An item's own details, written in one place and put on the audit trail.
@@ -126,6 +132,9 @@ export async function saveProductDetails(
   if (name === '') return { ok: false, code: 'NO_NAME' }
   if (!Number.isInteger(input.baseRate) || input.baseRate < 0) return { ok: false, code: 'BAD_RATE' }
   if (input.mrp !== null && (!Number.isInteger(input.mrp) || input.mrp < 0)) return { ok: false, code: 'BAD_MRP' }
+  if (input.costPrice != null && (!Number.isInteger(input.costPrice) || input.costPrice < 0)) {
+    return { ok: false, code: 'BAD_COST' }
+  }
   if (!Number.isInteger(input.taxRateBp) || input.taxRateBp < 0 || input.taxRateBp > 10_000) {
     return { ok: false, code: 'BAD_TAX' }
   }
@@ -152,6 +161,7 @@ export async function saveProductDetails(
     returnBlocked: input.returnBlocked ? 1 : 0,
     isStockTracked: input.isStockTracked ? 1 : 0,
     ...(input.openPrice !== undefined ? { openPrice: input.openPrice ? 1 : 0 } : {}),
+    ...(input.costPrice !== undefined ? { costPrice: input.costPrice } : {}),
     reorderLevel: input.reorderLevel,
     reorderQty: input.reorderQty,
   }
@@ -177,6 +187,7 @@ export async function saveProductDetails(
         name: schema.products.name, baseRate: schema.products.baseRate, mrp: schema.products.mrp,
         taxRateBp: schema.products.taxRateBp, hsnCode: schema.products.hsnCode,
         cessRateBp: schema.products.cessRateBp, openPrice: schema.products.openPrice,
+        costPrice: schema.products.costPrice,
       })
       .from(schema.products)
       .where(eq(schema.products.id, input.id))
@@ -198,6 +209,7 @@ export async function saveProductDetails(
       ['hsn_code', before.hsnCode, fields.hsnCode],
       // Who let any cashier price an item is as much a price change as a new rate.
       ['open_price', before.openPrice, fields.openPrice ?? before.openPrice],
+      ['cost_price', before.costPrice, fields.costPrice === undefined ? before.costPrice : fields.costPrice],
     ]
     for (const [column, old, next] of compare) {
       if (old !== next) { was[column] = old; is[column] = next }

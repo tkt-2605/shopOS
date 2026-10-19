@@ -1,4 +1,4 @@
-import type { ProductListItem, DocumentKind } from '@shopos/core'
+import type { ProductListItem, DocumentKind, CostHint } from '@shopos/core'
 
 export interface DeskConfig {
   /** The kinds this page offers, in the order the segment shows them. */
@@ -15,4 +15,11 @@ export interface Line {
   qty: string
   /** A rate somebody typed. Blank means "whatever the price list says today". */
   rate: string
+  /**
+   * On a purchase order: what the item last cost the shop (`costHints`), and
+   * whether the rate is still that figure rather than one somebody typed. A
+   * filled-in rate follows the before/after GST choice; a typed one is kept.
+   */
+  hint?: CostHint | null
+  rateFilled?: boolean
 }

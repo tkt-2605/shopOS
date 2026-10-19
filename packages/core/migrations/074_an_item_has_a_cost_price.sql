@@ -1,0 +1,21 @@
+-- What an item costs the shop, as the owner types it on the item.
+--
+-- `products.cost_price` is paise per base unit, before tax: the price a
+-- supplier quotes. It is a default and nothing more. It fills in the cost on
+-- Stock In and the rate on a purchase order for an item that has never been
+-- bought in; once one has, the last price actually paid is shown instead.
+--
+-- It is not a valuation. Stock is valued from what each movement carried
+-- (`domain/valuation.ts`, which records why a single editable cost on the
+-- item was the thing it replaced), and nothing that posts to the stock ledger
+-- or the books reads this column. So a wrong cost price can put a wrong
+-- figure in front of somebody typing, and never into the accounts.
+--
+-- No backfill: every item reads as having no cost price, which is what it has.
+--
+-- Additive: a nullable column on products, read by nothing that bills, prices,
+-- taxes or values. A product row that last came through a till below 074
+-- arrives without it and reads as none; the worst that does is a blank where a
+-- default would have been.
+
+ALTER TABLE products ADD COLUMN cost_price INTEGER CHECK (cost_price IS NULL OR cost_price >= 0);

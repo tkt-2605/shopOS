@@ -40,6 +40,7 @@ const productShape = {
   loyaltyBlocked: schema.products.loyaltyBlocked,
   returnBlocked: schema.products.returnBlocked,
   openPrice: schema.products.openPrice,
+  costPrice: schema.products.costPrice,
   reorderLevel: schema.products.reorderLevel,
   reorderQty: schema.products.reorderQty,
   categoryId: schema.products.categoryId,
@@ -84,6 +85,11 @@ export interface ProductListItem {
    * item standing in for whatever was bundled together (068).
    */
   openPrice: boolean
+  /**
+   * What it costs per base unit before tax, as typed on the item (074). A
+   * default for Stock In and purchase orders, never a valuation: see `costHints`.
+   */
+  costPrice: Money | null
   /** Null means the owner has not set one, which is not the same as zero. */
   reorderLevel: Qty | null
   reorderQty: Qty | null

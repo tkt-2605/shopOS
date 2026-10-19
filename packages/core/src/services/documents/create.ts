@@ -9,7 +9,7 @@ import { computeTotals } from '../../domain/billTotals.js'
 import { loadRounding, loadTaxScheme } from '../features.js'
 import { chargesTax } from '../../domain/taxScheme.js'
 import { DRAFT } from '../../integrity/docstatus.js'
-import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../../repos/pricing.js'
+import { resolveSaleUnit, pricingContextFor, resolveLinePrice, purchaseOrderRate } from '../../repos/pricing.js'
 import { nextDocNo, seriesPrefix } from '../numbering.js'
 import { writeAudit } from '../../integrity/audit.js'
 import type { CreateDocumentInput, CreateDocumentResult } from './types.js'
@@ -74,9 +74,11 @@ export async function createDocument(
     const unit = await resolveSaleUnit(db, line.productId, line.saleUnit ?? null)
     const resolved = line.rateOverride != null
       ? { rate: line.rateOverride, includesTax: line.rateIncludesTax ?? !forSupplier }
-      : await resolveLinePrice(
-        db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now,
-      )
+      : forSupplier
+        ? await purchaseOrderRate(db, line.productId, unit.baseUnits)
+        : await resolveLinePrice(
+          db, pricing, { productId: line.productId, saleUnit: unit.saleUnit, qty: line.qty }, now,
+        )
 
     priced.push({
       productId: product.id,

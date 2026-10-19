@@ -165,6 +165,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [72, '072_a_claim_says_when_it_was_granted.sql', 'additive'],
   /* A nullable column read by nothing that bills, and a table that never travels. */
   [73, '073_bills_emailed_to_chosen_customers.sql', 'additive'],
+  /* A nullable cost on products: a default for the person typing, read by
+     nothing that bills, prices, taxes or values stock. */
+  [74, '074_an_item_has_a_cost_price.sql', 'additive'],
 ]
 
 /**

@@ -181,6 +181,8 @@ export const products = sqliteTable('products', {
   cessRateBp: integer('cess_rate_bp').default(0).notNull(),
   /** Priced at the counter every time it is sold: the loose item (068). */
   openPrice: integer('open_price').default(0).notNull(),
+  /** What it costs, per base unit before tax, as typed: a default, never a valuation (074). */
+  costPrice: money('cost_price'),
 }, (table) => [
   index('idx_products_parent').on(table.parentProductId),
   index('idx_products_reorder').on(table.reorderLevel),

@@ -32,12 +32,23 @@ export interface Draft {
   /** One rung per row: buy this many or more, pay this each. */
   ladder: LadderRow[]
   hsnCode: string
+  /**
+   * No GST on this item at all. Saved as a rate of nothing and no cess -- the
+   * same as typing 0 -- so a bill, a return and the GST export read it exactly
+   * as they read a 0% item; the tick only spares the shop the two boxes.
+   */
+  noGst: boolean
   taxPercent: string
   /** GST compensation cess, as a percentage. Blank is none. */
   cessPercent: string
   baseRate: string
   /** The printed price on the packet. Blank when there is none. */
   mrp: string
+  /**
+   * What one costs, before tax, per base unit (074). Blank is none. A default
+   * for Stock In and purchase orders, never a valuation.
+   */
+  costPrice: string
   baseUnit: string
   discountBlocked: boolean
   loyaltyBlocked: boolean
@@ -65,8 +76,8 @@ export interface Draft {
 
 export const BLANK: Draft = {
   id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
-  categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', taxPercent: '12', cessPercent: '',
-  baseRate: '', mrp: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
+  categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', noGst: false, taxPercent: '12', cessPercent: '',
+  baseRate: '', mrp: '', costPrice: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   returnBlocked: false, stockTracked: true, openPrice: false,
   reorderLevel: '', reorderQty: '',
 }

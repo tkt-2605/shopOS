@@ -2,7 +2,7 @@ import { eq, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import type { Money } from '../money.js'
-import type { Qty } from '../quantity.js'
+import { QTY_SCALE, type Qty } from '../quantity.js'
 import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
 import { closedFor, type PeriodClosed } from './books.js'
@@ -218,7 +218,7 @@ export async function receivePurchaseOrder(
         lines: remaining.map((i) => ({
           productId: i.productId,
           qty: i.remainingQty,
-          unitCost: i.rate,
+          unitCost: receivedCost(i),
         })),
         ...(input.postingDate ? { postingDate: input.postingDate } : {}),
         actorId: input.actorId,
@@ -247,6 +247,20 @@ export async function receivePurchaseOrder(
 }
 
 /* ------------------------------------------------------------ private --- */
+
+/**
+ * What one unit of an order line goes into stock at: the price before tax.
+ *
+ * A rate typed before GST is that price already, and goes in as it always
+ * has. A rate typed with the GST in it does not -- the tax is the supplier's,
+ * claimed back, and never part of what the goods are worth -- so the line's
+ * own taxable value is spread over its quantity instead: the figure the order
+ * worked out when it was saved, not one worked out again here.
+ */
+function receivedCost(line: { rate: Money; rateIncludesTax: boolean; taxableValue: Money; qty: Qty }): Money {
+  if (!line.rateIncludesTax || line.qty <= 0) return line.rate
+  return Math.round((line.taxableValue * QTY_SCALE) / line.qty) as Money
+}
 
 /**
  * Marks off what the new document consumed, inside the caller's transaction.

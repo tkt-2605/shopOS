@@ -7,6 +7,7 @@ import { resolvePrice } from '../domain/pricing.js'
 import type { PriceCandidates, PriceTier, ResolvedPrice } from '../domain/pricing.js'
 import { isOn } from '../services/features.js'
 import { getSetting, DEFAULT_PRICE_LIST } from '../services/settings.js'
+import { costHint } from './costs.js'
 
 export interface PricingContext {
   productId: string
@@ -331,6 +332,24 @@ function includesTaxFor(source: ResolvedPrice['source'], ctx: BillPricingContext
     default:
       return true
   }
+}
+
+/**
+ * The rate a purchase order's line is given when none is typed: what the item
+ * last cost the shop, before tax, for the unit it is ordered in (`costHints`).
+ *
+ * Not `resolveLinePrice`, which is what the shop *sells* at, tax included. A
+ * purchase order used to take that, and receiving it then posted the goods in
+ * at the selling price, so a blank rate quietly booked the shelf price as the
+ * cost and every margin on the item read as nearly nothing. An item with no
+ * cost known anywhere is ordered at zero, which the screen says before it is
+ * saved.
+ */
+export async function purchaseOrderRate(
+  db: SqlDriver, productId: string, baseUnits: Qty,
+): Promise<{ rate: Money; includesTax: boolean }> {
+  const perBase = (await costHint(db, productId))?.unitCost ?? 0
+  return { rate: Math.round((perBase * baseUnits) / QTY_SCALE) as Money, includesTax: false }
 }
 
 export interface SaleUnitInfo {

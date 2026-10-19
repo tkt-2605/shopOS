@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Money, Quantity, searchProducts, searchCustomers, listSuppliers, createDocument, submitDocument,
+  Money, Quantity, Tax, searchProducts, searchCustomers, listSuppliers, createDocument, submitDocument, costHint,
   type ProductListItem, type CustomerListItem, type Supplier, type DocumentKind, pricingContextFor,
 } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
@@ -9,6 +9,7 @@ import { usePickList } from '../PickList'
 import { useSearch } from '../useSearch'
 import { useScanChoice } from '../ScanChoice'
 import type { DeskConfig, Line } from './types'
+import { costNote } from '../costNote'
 
 export function Draft({ config, kind, onClose, onDone, onError, registerId, userId }: {
   config: DeskConfig
@@ -28,6 +29,13 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
   const [term, setTerm] = useState('')
   const [lines, setLines] = useState<Line[]>([])
   const [busy, setBusy] = useState(false)
+  const forSupplier = config.party === 'supplier'
+  /**
+   * A purchase order's rates as the supplier's bill gives them: before GST,
+   * as a quote usually is, or with it in, as a printed bill often shows.
+   * Either way the goods go into stock at the price before the tax.
+   */
+  const [withTax, setWithTax] = useState(false)
 
   const label = config.labels[kind]!
 
@@ -39,11 +47,27 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
     else void searchCustomers(db, '', 200).then(setCustomers)
   }, [db, config.party])
 
-  function add(product: ProductListItem) {
+  async function add(product: ProductListItem) {
+    setTerm('')
+    // To a supplier, an item starts at what it last cost the shop, not empty.
+    const hint = forSupplier ? await costHint(db, product.id) : null
     setLines((prev) => prev.some((l) => l.product.id === product.id)
       ? prev
-      : [...prev, { key: `${product.id}-${Date.now()}`, product, qty: '1', rate: '' }])
-    setTerm('')
+      : [...prev, { key: `${product.id}-${Date.now()}`, product, qty: '1', rate: '', hint, rateFilled: hint !== null }])
+  }
+
+  /** The cost hint as the chosen basis reads it: before GST, or with the item's GST and cess on it. */
+  function hinted(l: Line): Money.Money | null {
+    if (!l.hint) return null
+    if (!withTax) return l.hint.unitCost
+    const tax = Tax.addTax(l.hint.unitCost, l.product.taxRateBp, 'intra_state', l.product.cessRateBp).taxTotal
+    return (l.hint.unitCost + tax) as Money.Money
+  }
+
+  /** What the rate box shows: the filled-in cost, on the chosen basis, or what was typed. */
+  function rateText(l: Line): string {
+    const filled = l.rateFilled ? hinted(l) : null
+    return filled === null ? l.rate : Money.format(filled)
   }
 
   const scanChoice = useScanChoice(add)
@@ -67,9 +91,11 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
      counter uses, and replaces this the moment the document is saved. */
   const rough = useMemo(() => lines.reduce((sum, l) => {
     const qty = Number(l.qty) || 0
-    const rate = Money.parseMoney(l.rate) ?? l.product.baseRate
+    /* To a supplier a blank is what the service will fill in -- the last cost,
+       or nothing -- never the shelf price, which is what the shop sells at. */
+    const rate = Money.parseMoney(rateText(l)) ?? (forSupplier ? 0 : l.product.baseRate)
     return sum + Math.round(qty * rate)
-  }, 0), [lines])
+  }, 0), [lines, withTax, forSupplier])
 
   async function save(issue: boolean) {
     if (!registerId) { onError('This machine is not set to a counter yet. Settings → Set up → Counters.'); return }
@@ -95,13 +121,21 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         ? { supplierId: partyId || null }
         : { customerId: partyId || null }),
       lines: lines.map((l) => {
+        const qty = Quantity.fromUnits(Number(l.qty) || 0)
+        /* A filled-in cost goes as the figure it was, before GST, whichever
+           way it is shown: putting the tax on for the screen and taking it off
+           again here could only lose a paisa. */
+        if (forSupplier && l.rateFilled && l.hint) {
+          return { productId: l.product.id, qty, rateOverride: l.hint.unitCost, rateIncludesTax: false }
+        }
         const typed = Money.parseMoney(l.rate)
         return {
           productId: l.product.id,
-          qty: Quantity.fromUnits(Number(l.qty) || 0),
+          qty,
           ...(typed === null ? {} : {
             rateOverride: typed as never,
-            ...(typedIncludesTax === undefined ? {} : { rateIncludesTax: typedIncludesTax }),
+            ...(forSupplier ? { rateIncludesTax: withTax }
+              : typedIncludesTax === undefined ? {} : { rateIncludesTax: typedIncludesTax }),
           }),
         }
       }),
@@ -157,6 +191,15 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
               : customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </Field>
+        {forSupplier && (
+          <Field label="Rates are" hint="As the supplier’s quote or bill gives them. Stock goes in at the price before GST either way.">
+            <select className="select" id="doc-rate-basis" value={withTax ? 'with' : 'before'}
+              onChange={(e) => setWithTax(e.target.value === 'with')}>
+              <option value="before">Before GST</option>
+              <option value="with">Including GST</option>
+            </select>
+          </Field>
+        )}
         {kind === 'quotation' && (
           <Field label="Valid until" hint="After this date the quoted price is no longer a promise.">
             <input className="input" id="doc-valid" type="date" value={validUntil}
@@ -204,8 +247,11 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
                     onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} />
                 </td>
                 <td className="r">
-                  <input className="qty-input num" placeholder="list price" value={l.rate}
-                    onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, rate: e.target.value } : x))} />
+                  <input className="qty-input num" placeholder={forSupplier ? '0.00' : 'list price'} value={rateText(l)}
+                    onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, rate: e.target.value, rateFilled: false } : x))} />
+                  {forSupplier && (l.hint
+                    ? <div className="src">{l.rateFilled ? '' : 'was '}{costNote(l.hint)}{withTax && l.rateFilled ? ', with GST' : ''}</div>
+                    : rateText(l).trim() === '' && <div className="src warn-note">no cost known — type the supplier’s rate</div>)}
                 </td>
                 <td className="r">
                   <button className="btn ghost sm" onClick={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}>✕</button>
@@ -221,9 +267,10 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Roughly</span>
         <Rupees value={rough} />
         <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
-          {config.party === 'supplier'
-            ? 'Rates are before GST, as a supplier quotes them. A blank rate is filled in when this is saved.'
-            : 'Rates are read the way this customer’s price list quotes them. A blank rate is filled in from that list when this is saved.'}
+          {forSupplier
+            ? (withTax ? 'Rates include GST.' : 'Rates are before GST.')
+              + ' Each item starts at what it last cost you; type over it to change it.'
+            :'Rates are read the way this customer’s price list quotes them. A blank rate is filled in from that list when this is saved.'}
         </span>
       </div>
     </Modal>

@@ -1,4 +1,4 @@
-import { Batches, Money, Quantity, businessDate, type BatchRow, type ProductListItem } from '@shopos/core'
+import { Batches, Money, Quantity, businessDate, type BatchRow, type CostHint, type ProductListItem } from '@shopos/core'
 
 /*
  * The cells of a stock-in line that need more than an input box: its batch
@@ -10,6 +10,18 @@ export interface Line {
   product: ProductListItem
   qty: string
   cost: string
+  /**
+   * Where the cost the line was given came from: the last price paid, or the
+   * item's cost price (`costHints`). Null when nothing was known.
+   */
+  hint: CostHint | null
+  /**
+   * The cost is still the one filled in, not one somebody typed. It only
+   * counts on goods coming in: on goods going out a cost values the loss at
+   * that figure instead of at what the shelf holds, so a filled-in one is
+   * dropped there (`costOf`).
+   */
+  costFilled: boolean
   /** Typed for goods coming in, chosen from `held` for goods going out. */
   batchNo: string
   expiry: string
@@ -78,6 +90,14 @@ export function BatchCells({ line, outgoing, onChange }: {
       </td>
     </>
   )
+}
+
+/**
+ * The cost a line carries, as typed: blank for goods going out whose cost was
+ * only ever filled in, so they leave at what the shelf holds, as they always have.
+ */
+export function costOf(line: Line, outgoing: boolean): string {
+  return outgoing && line.costFilled ? '' : line.cost
 }
 
 /** The price a line gives its goods, sent only when it is not the item's own. See `incomingPrice`. */
