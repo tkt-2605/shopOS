@@ -5,11 +5,13 @@ import type { Money } from '../money.js'
  * What an item costs the shop, for somebody about to type a cost: on Stock In,
  * on a purchase order, on the item itself.
  *
- * The last price actually paid, from the most recent submitted purchase or
- * opening-stock entry, wins. Only an item that has never been bought in falls
- * back to the cost price typed on it (074). Both are per base unit and before
- * tax, which is how a supplier quotes and how `stock_entry_items.unit_cost` is
- * kept.
+ * Two candidates, and the more recent wins: the last price actually paid,
+ * from the most recent submitted purchase or opening-stock entry, and the cost
+ * price typed on the item (074), by when it was set (075). A cost price typed
+ * after the last delivery is what the owner now means; a delivery after it is
+ * newer news. A cost price of unknown age loses to any price paid. Both are
+ * per base unit and before tax, which is how a supplier quotes and how
+ * `stock_entry_items.unit_cost` is kept.
  *
  * A suggestion for a person and never a valuation: stock is valued from what
  * each movement carried (`domain/valuation.ts`), and nothing that posts reads
@@ -41,14 +43,15 @@ export async function costHints(db: SqlDriver, productIds: readonly string[]): P
   const rows = await db.query<{
     // Null across the board for an item never bought in: the join found nothing.
     product_id: string; unit_cost: number | null; posting_date: string | null
-    entry_type: 'purchase' | 'opening' | null; supplier_name: string | null
-    cost_price: number | null
+    entry_type: 'purchase' | 'opening' | null; supplier_name: string | null; entered_at: string | null
+    cost_price: number | null; cost_price_at: string | null
   }>(
-    `SELECT p.id AS product_id, p.cost_price,
-            last_buy.unit_cost, last_buy.posting_date, last_buy.entry_type, last_buy.supplier_name
+    `SELECT p.id AS product_id, p.cost_price, p.cost_price_at,
+            last_buy.unit_cost, last_buy.posting_date, last_buy.entry_type, last_buy.supplier_name,
+            last_buy.created_at AS entered_at
        FROM products p
        LEFT JOIN (
-         SELECT sei.product_id, sei.unit_cost, se.posting_date, se.entry_type, se.supplier_name,
+         SELECT sei.product_id, sei.unit_cost, se.posting_date, se.entry_type, se.supplier_name, se.created_at,
                 ROW_NUMBER() OVER (
                   PARTITION BY sei.product_id ORDER BY se.posting_date DESC, se.created_at DESC
                 ) AS rn
@@ -63,11 +66,17 @@ export async function costHints(db: SqlDriver, productIds: readonly string[]): P
   )
 
   for (const r of rows) {
-    if (r.unit_cost !== null && r.posting_date !== null && r.entry_type !== null) {
+    const paid = r.unit_cost !== null && r.posting_date !== null && r.entry_type !== null
+    /* Instants, both ISO and both UTC, so they compare as strings. When the
+       delivery was entered, not its posting date: a bill typed in today for
+       last week is still the newest thing anyone has said about the cost. */
+    const typedSince = r.cost_price !== null && r.cost_price_at !== null
+      && (r.entered_at === null || r.cost_price_at > r.entered_at)
+    if (paid && !typedSince) {
       hints.set(r.product_id, {
         productId: r.product_id,
         unitCost: r.unit_cost as Money,
-        source: r.entry_type,
+        source: r.entry_type as 'purchase' | 'opening',
         postedOn: r.posting_date,
         supplierName: r.supplier_name,
       })

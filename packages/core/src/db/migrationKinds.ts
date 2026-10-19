@@ -168,6 +168,8 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* A nullable cost on products: a default for the person typing, read by
      nothing that bills, prices, taxes or values stock. */
   [74, '074_an_item_has_a_cost_price.sql', 'additive'],
+  /* When that cost was set, nullable: decides only which of two suggestions is shown. */
+  [75, '075_a_cost_price_says_when.sql', 'additive'],
 ]
 
 /**

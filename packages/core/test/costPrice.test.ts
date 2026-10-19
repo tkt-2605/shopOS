@@ -34,8 +34,8 @@ afterEach(async () => { await fx.db.close() })
 
 const ctx = () => ({ actorId: fx.adminId })
 
-async function details(costPrice: Money | null | undefined) {
-  return saveProductDetails(fx.db, ctx(), {
+async function details(costPrice: Money | null | undefined, at?: string) {
+  return saveProductDetails(fx.db, { ...ctx(), ...(at ? { now: () => at } : {}) }, {
     id: productId, name: 'Test Product', brand: null, hsnCode: null, taxRateBp: 1800,
     baseRate: rupees(100), mrp: null, baseUnit: 'piece', discountBlocked: false,
     loyaltyBlocked: false, returnBlocked: false, isStockTracked: true,
@@ -114,6 +114,36 @@ describe('the cost offered to the person typing one', () => {
     expect(await costHint(fx.db, productId)).toMatchObject({
       unitCost: rupees(61), source: 'purchase', postedOn: '2026-10-15', supplierName: 'Paper Mills',
     })
+  })
+
+  it('is the cost price once it is typed after the last delivery', async () => {
+    // The owner has heard the price has moved and says so before the next bill.
+    await receive('purchase', rupees(58))
+    await details(rupees(50), new Date(Date.now() + 60_000).toISOString())
+    expect(await costHint(fx.db, productId)).toMatchObject({ unitCost: rupees(50), source: 'item' })
+  })
+
+  it('goes back to the price paid when a delivery comes in after the cost price', async () => {
+    await details(rupees(50), new Date(Date.now() - 60_000).toISOString())
+    await receive('purchase', rupees(58))
+    expect(await costHint(fx.db, productId)).toMatchObject({ unitCost: rupees(58), source: 'purchase' })
+  })
+
+  it('stamps the cost price only when it moves, so saving the item again does not make it newer', async () => {
+    await details(rupees(50), '2026-10-01T00:00:00.000Z')
+    await details(rupees(50), '2026-10-20T00:00:00.000Z')
+    const row = await fx.db.get<{ cost_price_at: string }>('SELECT cost_price_at FROM products WHERE id = ?', [productId])
+    expect(row?.cost_price_at).toBe('2026-10-01T00:00:00.000Z')
+    await details(null, '2026-10-21T00:00:00.000Z')
+    expect((await fx.db.get<{ cost_price_at: string | null }>(
+      'SELECT cost_price_at FROM products WHERE id = ?', [productId]))?.cost_price_at).toBeNull()
+  })
+
+  it('treats a cost price of unknown age as older than any price paid', async () => {
+    await receive('purchase', rupees(58))
+    // As a row arrives from a till below 075: the cost, and no time for it.
+    await fx.db.execute('UPDATE products SET cost_price = ?, cost_price_at = NULL WHERE id = ?', [rupees(50), productId])
+    expect(await costHint(fx.db, productId)).toMatchObject({ unitCost: rupees(58), source: 'purchase' })
   })
 
   it('counts opening stock as bought, and passes over an adjustment and a zero', async () => {

@@ -1380,9 +1380,16 @@ rates typed before or after GST with the last cost filled in.
   carried, and nothing that posts reads it. `valuation.ts` records why a cost
   on the item was the design it replaced, and that is the line it keeps to.
 - **The latest cost** is `costHints`: the last submitted purchase or opening
-  stock, over the item's cost price. Stock In fills each new line with it and
-  says where it came from. On goods going out a filled-in cost is dropped, so
-  wastage still leaves at what the shelf holds.
+  stock, or the item's cost price if that was set more recently (075 keeps
+  when, on the row, because the audit trail stays on its own till and two
+  tills would otherwise suggest two costs). Stock In fills each new line with
+  it and says where it came from. On goods going out a filled-in cost is
+  dropped, so wastage still leaves at what the shelf holds.
+- **Before GST or with it, without choosing.** Stock In (on a purchase) and a
+  purchase order show two boxes per line; whichever is typed in is kept and
+  the other is worked out with core's own `addTax` / `splitTax`
+  (`ui/gstPair.ts`). Stock In posts the cost before GST; a purchase order
+  sends the typed side and lets the service take it apart.
 - **A real bug fixed on the way:** a purchase order's blank rate was filled
   from the *selling* price list, tax included, and receiving it posted the
   goods in at that. It is the last cost now, or zero with a warning.

@@ -10,6 +10,7 @@ import { useSearch } from '../useSearch'
 import { useScanChoice } from '../ScanChoice'
 import type { DeskConfig, Line } from './types'
 import { costNote } from '../costNote'
+import { pairOf, type Side } from '../gstPair'
 
 export function Draft({ config, kind, onClose, onDone, onError, registerId, userId }: {
   config: DeskConfig
@@ -30,12 +31,6 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
   const [lines, setLines] = useState<Line[]>([])
   const [busy, setBusy] = useState(false)
   const forSupplier = config.party === 'supplier'
-  /**
-   * A purchase order's rates as the supplier's bill gives them: before GST,
-   * as a quote usually is, or with it in, as a printed bill often shows.
-   * Either way the goods go into stock at the price before the tax.
-   */
-  const [withTax, setWithTax] = useState(false)
 
   const label = config.labels[kind]!
 
@@ -53,22 +48,18 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
     const hint = forSupplier ? await costHint(db, product.id) : null
     setLines((prev) => prev.some((l) => l.product.id === product.id)
       ? prev
-      : [...prev, { key: `${product.id}-${Date.now()}`, product, qty: '1', rate: '', hint, rateFilled: hint !== null }])
+      : [...prev, {
+          key: `${product.id}-${Date.now()}`, product, qty: '1',
+          rate: hint ? Money.format(hint.unitCost) : '', rateSide: 'before', hint, rateFilled: hint !== null,
+        }])
   }
 
-  /** The cost hint as the chosen basis reads it: before GST, or with the item's GST and cess on it. */
-  function hinted(l: Line): Money.Money | null {
-    if (!l.hint) return null
-    if (!withTax) return l.hint.unitCost
-    const tax = Tax.addTax(l.hint.unitCost, l.product.taxRateBp, 'intra_state', l.product.cessRateBp).taxTotal
-    return (l.hint.unitCost + tax) as Money.Money
-  }
+  /** A purchase order line's rate both ways, at the item's GST and cess (`gstPair.ts`). */
+  const ratePair = (l: Line) => pairOf(l.rate, l.rateSide ?? 'before', l.product.taxRateBp, l.product.cessRateBp)
 
-  /** What the rate box shows: the filled-in cost, on the chosen basis, or what was typed. */
-  function rateText(l: Line): string {
-    const filled = l.rateFilled ? hinted(l) : null
-    return filled === null ? l.rate : Money.format(filled)
-  }
+  /** A rate typed in one of the two boxes: kept as typed, on that side, and no longer the filled-in one. */
+  const typeRate = (l: Line, side: Side, text: string) => setLines((prev) => prev.map((x) =>
+    x.key === l.key ? { ...x, rate: text, rateSide: side, rateFilled: false } : x))
 
   const scanChoice = useScanChoice(add)
   const pick = usePickList({
@@ -91,11 +82,14 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
      counter uses, and replaces this the moment the document is saved. */
   const rough = useMemo(() => lines.reduce((sum, l) => {
     const qty = Number(l.qty) || 0
-    /* To a supplier a blank is what the service will fill in -- the last cost,
-       or nothing -- never the shelf price, which is what the shop sells at. */
-    const rate = Money.parseMoney(rateText(l)) ?? (forSupplier ? 0 : l.product.baseRate)
+    /* To a supplier, before GST whichever box was typed in, and a blank is what
+       the service will fill in -- the last cost, or nothing -- never the shelf
+       price, which is what the shop sells at. */
+    const rate = forSupplier
+      ? pairOf(l.rate, l.rateSide ?? 'before', l.product.taxRateBp, l.product.cessRateBp).beforeValue ?? 0
+      : Money.parseMoney(l.rate) ?? l.product.baseRate
     return sum + Math.round(qty * rate)
-  }, 0), [lines, withTax, forSupplier])
+  }, 0), [lines, forSupplier])
 
   async function save(issue: boolean) {
     if (!registerId) { onError('This machine is not set to a counter yet. Settings → Set up → Counters.'); return }
@@ -122,19 +116,17 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         : { customerId: partyId || null }),
       lines: lines.map((l) => {
         const qty = Quantity.fromUnits(Number(l.qty) || 0)
-        /* A filled-in cost goes as the figure it was, before GST, whichever
-           way it is shown: putting the tax on for the screen and taking it off
-           again here could only lose a paisa. */
-        if (forSupplier && l.rateFilled && l.hint) {
-          return { productId: l.product.id, qty, rateOverride: l.hint.unitCost, rateIncludesTax: false }
-        }
+        /* To a supplier, the figure in the box that was typed in, saying which
+           box it was: the service takes a with-GST rate apart itself, exactly,
+           so nothing is worked out twice and no paisa is lost. A filled-in cost
+           was typed in nobody's box, and goes as what it is, before GST. */
         const typed = Money.parseMoney(l.rate)
         return {
           productId: l.product.id,
           qty,
           ...(typed === null ? {} : {
             rateOverride: typed as never,
-            ...(forSupplier ? { rateIncludesTax: withTax }
+            ...(forSupplier ? { rateIncludesTax: l.rateSide === 'with' }
               : typedIncludesTax === undefined ? {} : { rateIncludesTax: typedIncludesTax }),
           }),
         }
@@ -191,15 +183,6 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
               : customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </Field>
-        {forSupplier && (
-          <Field label="Rates are" hint="As the supplier’s quote or bill gives them. Stock goes in at the price before GST either way.">
-            <select className="select" id="doc-rate-basis" value={withTax ? 'with' : 'before'}
-              onChange={(e) => setWithTax(e.target.value === 'with')}>
-              <option value="before">Before GST</option>
-              <option value="with">Including GST</option>
-            </select>
-          </Field>
-        )}
         {kind === 'quotation' && (
           <Field label="Valid until" hint="After this date the quoted price is no longer a promise.">
             <input className="input" id="doc-valid" type="date" value={validUntil}
@@ -236,7 +219,13 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
       <div className="card card-scroll" style={{ marginTop: 10 }}>
         <table>
           <thead>
-            <tr><th>Item</th><th className="r">Quantity</th><th className="r">Rate</th><th /></tr>
+            <tr>
+              <th>Item</th><th className="r">Quantity</th>
+              {forSupplier
+                ? <><th className="r">Rate before GST</th><th className="r">Rate with GST</th></>
+                : <th className="r">Rate</th>}
+              <th />
+            </tr>
           </thead>
           <tbody>
             {lines.map((l) => (
@@ -246,19 +235,35 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
                   <input className="qty-input num" value={l.qty}
                     onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} />
                 </td>
-                <td className="r">
-                  <input className="qty-input num" placeholder={forSupplier ? '0.00' : 'list price'} value={rateText(l)}
-                    onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, rate: e.target.value, rateFilled: false } : x))} />
-                  {forSupplier && (l.hint
-                    ? <div className="src">{l.rateFilled ? '' : 'was '}{costNote(l.hint)}{withTax && l.rateFilled ? ', with GST' : ''}</div>
-                    : rateText(l).trim() === '' && <div className="src warn-note">no cost known — type the supplier’s rate</div>)}
-                </td>
+                {forSupplier ? (<>
+                  {/* Type in whichever box the supplier's paper gives; the other
+                      follows at the item's GST. Stock goes in before GST either way. */}
+                  <td className="r">
+                    <input className="qty-input num" placeholder="0.00" aria-label="Rate before GST"
+                      value={ratePair(l).before} onChange={(e) => typeRate(l, 'before', e.target.value)} />
+                    {l.hint
+                      ? <div className="src">{l.rateFilled ? '' : 'was '}{costNote(l.hint)}</div>
+                      : l.rate.trim() === '' && <div className="src warn-note">no cost known — type the supplier’s rate</div>}
+                  </td>
+                  <td className="r">
+                    <input className="qty-input num" placeholder="0.00" aria-label="Rate with GST"
+                      value={ratePair(l).with} onChange={(e) => typeRate(l, 'with', e.target.value)} />
+                    <div className="src">{l.product.taxRateBp === 0 && l.product.cessRateBp === 0
+                      ? 'no GST on this item'
+                      : `GST ${Tax.bpToPercent(l.product.taxRateBp)}%${l.product.cessRateBp ? ` + cess ${Tax.bpToPercent(l.product.cessRateBp)}%` : ''}`}</div>
+                  </td>
+                </>) : (
+                  <td className="r">
+                    <input className="qty-input num" placeholder="list price" value={l.rate}
+                      onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, rate: e.target.value } : x))} />
+                  </td>
+                )}
                 <td className="r">
                   <button className="btn ghost sm" onClick={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}>✕</button>
                 </td>
               </tr>
             ))}
-            {lines.length === 0 && <tr><td colSpan={4}><Empty>Nothing added yet</Empty></td></tr>}
+            {lines.length === 0 && <tr><td colSpan={forSupplier ? 5 : 4}><Empty>Nothing added yet</Empty></td></tr>}
           </tbody>
         </table>
       </div>
@@ -268,8 +273,7 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         <Rupees value={rough} />
         <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
           {forSupplier
-            ? (withTax ? 'Rates include GST.' : 'Rates are before GST.')
-              + ' Each item starts at what it last cost you; type over it to change it.'
+            ? 'Before GST. Type a rate in either box, whichever the supplier gives; each item starts at what it last cost you.'
             :'Rates are read the way this customer’s price list quotes them. A blank rate is filled in from that list when this is saved.'}
         </span>
       </div>

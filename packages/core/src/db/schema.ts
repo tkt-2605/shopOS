@@ -183,6 +183,8 @@ export const products = sqliteTable('products', {
   openPrice: integer('open_price').default(0).notNull(),
   /** What it costs, per base unit before tax, as typed: a default, never a valuation (074). */
   costPrice: money('cost_price'),
+  /** When the cost price was last set: newer than the last purchase, it is the one suggested (075). */
+  costPriceAt: text('cost_price_at'),
 }, (table) => [
   index('idx_products_parent').on(table.parentProductId),
   index('idx_products_reorder').on(table.reorderLevel),

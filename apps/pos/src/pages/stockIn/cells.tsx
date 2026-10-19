@@ -1,4 +1,5 @@
 import { Batches, Money, Quantity, businessDate, type BatchRow, type CostHint, type ProductListItem } from '@shopos/core'
+import { bpOf, pairOf, type Side } from '../../ui/gstPair'
 
 /*
  * The cells of a stock-in line that need more than an input box: its batch
@@ -9,7 +10,14 @@ export interface Line {
   key: string
   product: ProductListItem
   qty: string
+  /** The unit cost as typed, on whichever side `costSide` says. */
   cost: string
+  /**
+   * Which box the cost was typed in: before GST, or with it, off a bill that
+   * prints it that way. The other box is worked out (`gstPair.ts`); what is
+   * posted is always the cost before GST.
+   */
+  costSide: Side
   /**
    * Where the cost the line was given came from: the last price paid, or the
    * item's cost price (`costHints`). Null when nothing was known.
@@ -92,12 +100,18 @@ export function BatchCells({ line, outgoing, onChange }: {
   )
 }
 
+/** The line's cost both ways, at its own GST and cess. */
+export function costPair(line: Line) {
+  return pairOf(line.cost, line.costSide, bpOf(line.gst), bpOf(line.cess))
+}
+
 /**
- * The cost a line carries, as typed: blank for goods going out whose cost was
- * only ever filled in, so they leave at what the shelf holds, as they always have.
+ * The cost a line carries before GST, which is what is posted: blank for goods
+ * going out whose cost was only ever filled in, so they leave at what the shelf
+ * holds, as they always have.
  */
 export function costOf(line: Line, outgoing: boolean): string {
-  return outgoing && line.costFilled ? '' : line.cost
+  return outgoing && line.costFilled ? '' : costPair(line).before
 }
 
 /** The price a line gives its goods, sent only when it is not the item's own. See `incomingPrice`. */

@@ -169,14 +169,17 @@ export async function saveProductDetails(
   return db.transaction(async (tx): Promise<SaveProductResult> => {
     if (!input.id) {
       const productId = newId()
+      const costed = fields.costPrice !== undefined && fields.costPrice !== null
       await q(tx).insert(schema.products).values({
         id: productId, ...fields, baseUnit: input.baseUnit || 'piece', createdAt: now, updatedAt: now,
+        ...(costed ? { costPriceAt: now } : {}),
       })
       await writeAudit(tx, ctx, {
         entity: 'products', entityId: productId, action: 'create',
         after: {
           name, base_rate: fields.baseRate, tax_rate_bp: fields.taxRateBp,
           ...(fields.openPrice === 1 ? { open_price: 1 } : {}),
+          ...(costed ? { cost_price: fields.costPrice } : {}),
         },
       })
       return { ok: true, productId, created: true }
@@ -193,8 +196,11 @@ export async function saveProductDetails(
       .where(eq(schema.products.id, input.id))
     if (!before) return { ok: false, code: 'UNKNOWN_PRODUCT' }
 
+    /* Stamped only when the figure moves, so saving the item for any other
+       reason does not make an old cost price look newer than a delivery. */
+    const costMoved = fields.costPrice !== undefined && fields.costPrice !== before.costPrice
     await q(tx).update(schema.products)
-      .set({ ...fields, updatedAt: now })
+      .set({ ...fields, updatedAt: now, ...(costMoved ? { costPriceAt: fields.costPrice === null ? null : now } : {}) })
       .where(eq(schema.products.id, input.id))
 
     // Only what moved, so a history of price changes reads as one.

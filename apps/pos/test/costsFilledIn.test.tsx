@@ -119,6 +119,29 @@ describe('stock in', () => {
     await waitFor(() => expect([...costBox()].some((i) => i.value === '285.00')).toBe(false))
   })
 
+  it('takes a cost typed with GST and works the one before it out, and back', async () => {
+    render(<StockIn />)
+    await addPaper()
+    const before = await screen.findByLabelText('Unit cost before GST') as HTMLInputElement
+    const withGst = screen.getByLabelText('Unit cost with GST') as HTMLInputElement
+    // ₹118 at 18% is ₹100 of paper.
+    fireEvent.change(withGst, { target: { value: '118' } })
+    await waitFor(() => expect(before.value).toBe('100.00'))
+    expect(withGst.value).toBe('118')
+    fireEvent.change(before, { target: { value: '200' } })
+    await waitFor(() => expect(withGst.value).toBe('236.00'))
+  })
+
+  it('posts the cost before GST when it was typed with GST', async () => {
+    render(<StockIn />)
+    await addPaper()
+    fireEvent.change(await screen.findByLabelText('Unit cost with GST'), { target: { value: '118' } })
+    fireEvent.click(screen.getByText('Post entry'))
+    await waitFor(() => expect(screen.getByText(/Stock updated/)).toBeTruthy())
+    const row = await db.get<{ unit_cost: number }>('SELECT unit_cost FROM stock_entry_items WHERE product_id = ?', [paper])
+    expect(row?.unit_cost).toBe(10000)
+  })
+
   it('leaves the box empty for an item with no cost known, and warns as it always has', async () => {
     render(<StockIn />)
     await addPaper()
@@ -147,7 +170,8 @@ describe('a purchase order', () => {
     fireEvent.keyDown(box, { key: 'Enter' })
   }
 
-  const rateBox = () => [...document.querySelectorAll<HTMLInputElement>('table input.qty-input')][1]!
+  const rateBox = () => screen.getByLabelText('Rate before GST') as HTMLInputElement
+  const withBox = () => screen.getByLabelText('Rate with GST') as HTMLInputElement
 
   it('starts each item at its last cost, never the selling price', async () => {
     await boughtAt(28500)
@@ -158,14 +182,13 @@ describe('a purchase order', () => {
     expect(screen.queryByText(/A blank rate is filled in/)).toBeNull()
   })
 
-  it('shows the same cost with GST when the rates are entered including it, and saves it before', async () => {
+  it('shows the filled-in cost both ways, and saves it before GST', async () => {
     await boughtAt(28500)
     const onDone = draft()
     await addToOrder()
     await waitFor(() => expect(rateBox().value).toBe('285.00'))
-    fireEvent.change(document.getElementById('doc-rate-basis')!, { target: { value: 'with' } })
     // ₹285 and 18%: ₹25.65 each of CGST and SGST.
-    await waitFor(() => expect(rateBox().value).toBe('336.30'))
+    expect(withBox().value).toBe('336.30')
 
     fireEvent.change(document.getElementById('doc-party')!, { target: { value: supplierId } })
     fireEvent.click(screen.getByText('Save as draft'))
@@ -175,12 +198,12 @@ describe('a purchase order', () => {
     expect(doc!.items[0]).toMatchObject({ rate: 28500, rateIncludesTax: false })
   })
 
-  it('keeps a typed rate including GST as typed, and says so on the line', async () => {
+  it('keeps a rate typed with GST as typed, and the service takes it apart', async () => {
     const onDone = draft()
     await addToOrder()
     await waitFor(() => expect(screen.getByText(/no cost known/)).toBeTruthy())
-    fireEvent.change(document.getElementById('doc-rate-basis')!, { target: { value: 'with' } })
-    fireEvent.change(rateBox(), { target: { value: '354' } })
+    fireEvent.change(withBox(), { target: { value: '354' } })
+    await waitFor(() => expect(rateBox().value).toBe('300.00'))
     fireEvent.change(document.getElementById('doc-party')!, { target: { value: supplierId } })
     fireEvent.click(screen.getByText('Save as draft'))
     await waitFor(() => expect(onDone).toHaveBeenCalled())
