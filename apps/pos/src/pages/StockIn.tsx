@@ -14,6 +14,7 @@ import { useSearch } from '../ui/useSearch'
 import { useScanChoice } from '../ui/ScanChoice'
 import { BatchCells, PriceCells, costOf, costPair, ownPrice, type Line } from './stockIn/cells'
 import type { Side } from '../ui/gstPair'
+import { GstSwitch, useGstMode } from '../ui/GstSwitch'
 import { costNote } from '../ui/costNote'
 
 /* Each note says which way the shelf moves, because that is what the list is
@@ -57,6 +58,7 @@ export default function StockIn() {
      it saves — and the difference it makes is which of two warnings is true,
      not whether to warn. */
   const [unpriced, setUnpriced] = useState<Set<string>>(new Set())
+  const [gstMode, setGstMode] = useGstMode()
 
   const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 25 }))
   const results = search.rows
@@ -111,7 +113,11 @@ export default function StockIn() {
   const outgoing = (l: Line) => signedQty(entryType, Quantity.fromUnits(Number(l.qty) || 0)) < 0
   /** The cost the line will be posted with, before GST -- see `costOf`. */
   const costText = (l: Line) => costOf(l, outgoing(l))
-  /** A cost typed in one of the two boxes: kept as typed, on that side, and no longer the filled-in one. */
+  /** How costs are typed and shown: the switch, on a purchase; before GST on anything else, which carries none. */
+  const costMode: Side = entryType === 'purchase' ? gstMode : 'before'
+  /** What the cost box shows: the line's cost the way the switch reads, blank where `costOf` drops it. */
+  const shownCost = (l: Line) => (outgoing(l) && l.costFilled ? '' : costPair(l)[costMode])
+  /** A cost typed in the box: kept as typed, on the side the switch is on, and no longer the filled-in one. */
   const typeCost = (l: Line, side: Side, text: string) => setLines((prev) => prev.map((x) =>
     x.key === l.key ? { ...x, cost: text, costSide: side, costFilled: false } : x))
 
@@ -339,9 +345,13 @@ export default function StockIn() {
               <th className="r">{directionOf(entryType) === 'out' ? 'Quantity lost' : 'Quantity'}</th>
               {batched && <><th>Batch</th><th>Expiry</th></>}
               {incoming && <><th className="r">MRP</th><th className="r">Sell at</th></>}
-              <th className="r">{purchase ? 'Unit cost before GST' : 'Unit cost'}</th>
-              {purchase && <th className="r">Unit cost with GST</th>}
-              <th className="r">Value</th>
+              <th className="r">
+                Unit cost
+                {purchase && <div><GstSwitch mode={gstMode} onChange={setGstMode} /></div>}
+              </th>
+              {/* Before GST whichever way the costs are typed, as the Tax and
+                  Bill total beside it are added to it. */}
+              <th className="r">{purchase ? 'Value excl. GST' : 'Value'}</th>
               {purchase && <th className="r">GST %</th>}
               {showCess && <th className="r">Cess %</th>}
               {purchase && <th className="r">Tax</th>}
@@ -370,8 +380,11 @@ export default function StockIn() {
                   {incoming && <PriceCells line={l}
                     onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
                   <td className="r">
-                    <input className="qty-input num" placeholder="0.00" value={costText(l)} aria-label="Unit cost before GST"
-                      onChange={(e) => typeCost(l, 'before', e.target.value)} />
+                    {/* One box, read the way the switch in the header says. Flip
+                        it and the same cost is shown the other way; only on a
+                        purchase, since nothing else carries GST. */}
+                    <input className="qty-input num" placeholder="0.00" aria-label="Unit cost"
+                      value={shownCost(l)} onChange={(e) => typeCost(l, costMode, e.target.value)} />
                     {/* Where the figure in the box came from, so a cost that was
                         filled in is never mistaken for one that was typed. */}
                     {l.hint && !outgoing(l) && (
@@ -395,16 +408,6 @@ export default function StockIn() {
                       </div>
                     )}
                   </td>
-                  {/* The same cost with GST in it, for a bill that prints it so.
-                      Type in either box; the other follows, and so does a change
-                      to the GST rate. Only on a purchase: nothing else carries GST. */}
-                  {purchase && (
-                    <td className="r">
-                      <input className="qty-input num" placeholder="0.00" aria-label="Unit cost with GST"
-                        value={outgoing(l) && l.costFilled ? '' : costPair(l).with}
-                        onChange={(e) => typeCost(l, 'with', e.target.value)} />
-                    </td>
-                  )}
                   <td className="r"><Rupees value={value} /></td>
                   {purchase && (
                     <td className="r">
@@ -427,7 +430,7 @@ export default function StockIn() {
               )
             })}
             {lines.length === 0 && (
-              <tr><td colSpan={(batched ? 8 : 6) + (incoming ? 2 : 0) + (purchase ? 3 : 0) + (showCess ? 1 : 0)}><Empty>Nothing added yet</Empty></td></tr>
+              <tr><td colSpan={(batched ? 8 : 6) + (incoming ? 2 : 0) + (purchase ? 2 : 0) + (showCess ? 1 : 0)}><Empty>Nothing added yet</Empty></td></tr>
             )}
           </tbody>
         </table>

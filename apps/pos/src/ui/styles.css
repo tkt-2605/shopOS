@@ -500,6 +500,9 @@ tbody tr:hover { background: var(--accent-soft); }
    aria-selected (a listbox option's state) and others a class nothing styled,
    so half the switches in the app never showed which side they were on. */
 .segment button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+/* Small enough to sit in a column header, which is set in capitals it does not want. */
+.segment-sm { margin-top: 5px; }
+.segment-sm button { padding: 2px 8px; font-size: 11px; letter-spacing: 0; text-transform: none; }
 
 /* ── permission grid ────────────────────────────────── */
 

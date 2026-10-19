@@ -1385,11 +1385,14 @@ rates typed before or after GST with the last cost filled in.
   tills would otherwise suggest two costs). Stock In fills each new line with
   it and says where it came from. On goods going out a filled-in cost is
   dropped, so wastage still leaves at what the shelf holds.
-- **Before GST or with it, without choosing.** Stock In (on a purchase) and a
-  purchase order show two boxes per line; whichever is typed in is kept and
-  the other is worked out with core's own `addTax` / `splitTax`
-  (`ui/gstPair.ts`). Stock In posts the cost before GST; a purchase order
-  sends the typed side and lets the service take it apart.
+- **Before GST or with it, on a switch.** Stock In (on a purchase) and a
+  purchase order have one cost box per line and an Excl. / Incl. GST switch
+  in the column header (`ui/GstSwitch.tsx`), remembered on the machine. Each
+  line keeps the side it was typed on; flipping shows the same cost the other
+  way, worked out with core's own `addTax` / `splitTax` (`ui/gstPair.ts`).
+  Two boxes side by side were tried first, and the owner found them harder to
+  read than one. Stock In posts the cost before GST; a purchase order sends
+  the typed side and lets the service take it apart.
 - **A real bug fixed on the way:** a purchase order's blank rate was filled
   from the *selling* price list, tax included, and receiving it posted the
   goods in at that. It is the last cost now, or zero with a warning.

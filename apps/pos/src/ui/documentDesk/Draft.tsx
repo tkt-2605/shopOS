@@ -11,6 +11,7 @@ import { useScanChoice } from '../ScanChoice'
 import type { DeskConfig, Line } from './types'
 import { costNote } from '../costNote'
 import { pairOf, type Side } from '../gstPair'
+import { GstSwitch, useGstMode } from '../GstSwitch'
 
 export function Draft({ config, kind, onClose, onDone, onError, registerId, userId }: {
   config: DeskConfig
@@ -31,6 +32,8 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
   const [lines, setLines] = useState<Line[]>([])
   const [busy, setBusy] = useState(false)
   const forSupplier = config.party === 'supplier'
+  /** How a purchase order's rates are typed and shown: before GST, or with it (`GstSwitch`). */
+  const [gstMode, setGstMode] = useGstMode()
 
   const label = config.labels[kind]!
 
@@ -221,9 +224,10 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
           <thead>
             <tr>
               <th>Item</th><th className="r">Quantity</th>
-              {forSupplier
-                ? <><th className="r">Rate before GST</th><th className="r">Rate with GST</th></>
-                : <th className="r">Rate</th>}
+              <th className="r">
+                Rate
+                {forSupplier && <div><GstSwitch mode={gstMode} onChange={setGstMode} /></div>}
+              </th>
               <th />
             </tr>
           </thead>
@@ -235,24 +239,23 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
                   <input className="qty-input num" value={l.qty}
                     onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} />
                 </td>
-                {forSupplier ? (<>
-                  {/* Type in whichever box the supplier's paper gives; the other
-                      follows at the item's GST. Stock goes in before GST either way. */}
+                {forSupplier ? (
+                  /* One box, read the way the switch in the header says; flip it
+                     and the same rate is shown the other way. Stock goes in at
+                     the price before GST whichever way it was typed. */
                   <td className="r">
-                    <input className="qty-input num" placeholder="0.00" aria-label="Rate before GST"
-                      value={ratePair(l).before} onChange={(e) => typeRate(l, 'before', e.target.value)} />
+                    <input className="qty-input num" placeholder="0.00" aria-label="Rate"
+                      value={ratePair(l)[gstMode]} onChange={(e) => typeRate(l, gstMode, e.target.value)} />
                     {l.hint
                       ? <div className="src">{l.rateFilled ? '' : 'was '}{costNote(l.hint)}</div>
                       : l.rate.trim() === '' && <div className="src warn-note">no cost known — type the supplier’s rate</div>}
+                    {gstMode === 'with' && (
+                      <div className="src">{l.product.taxRateBp === 0 && l.product.cessRateBp === 0
+                        ? 'no GST on this item'
+                        : `with GST at ${Tax.bpToPercent(l.product.taxRateBp)}%${l.product.cessRateBp ? ` and cess at ${Tax.bpToPercent(l.product.cessRateBp)}%` : ''}`}</div>
+                    )}
                   </td>
-                  <td className="r">
-                    <input className="qty-input num" placeholder="0.00" aria-label="Rate with GST"
-                      value={ratePair(l).with} onChange={(e) => typeRate(l, 'with', e.target.value)} />
-                    <div className="src">{l.product.taxRateBp === 0 && l.product.cessRateBp === 0
-                      ? 'no GST on this item'
-                      : `GST ${Tax.bpToPercent(l.product.taxRateBp)}%${l.product.cessRateBp ? ` + cess ${Tax.bpToPercent(l.product.cessRateBp)}%` : ''}`}</div>
-                  </td>
-                </>) : (
+                ) : (
                   <td className="r">
                     <input className="qty-input num" placeholder="list price" value={l.rate}
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, rate: e.target.value } : x))} />
@@ -263,7 +266,7 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
                 </td>
               </tr>
             ))}
-            {lines.length === 0 && <tr><td colSpan={forSupplier ? 5 : 4}><Empty>Nothing added yet</Empty></td></tr>}
+            {lines.length === 0 && <tr><td colSpan={4}><Empty>Nothing added yet</Empty></td></tr>}
           </tbody>
         </table>
       </div>
@@ -273,7 +276,7 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         <Rupees value={rough} />
         <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>
           {forSupplier
-            ? 'Before GST. Type a rate in either box, whichever the supplier gives; each item starts at what it last cost you.'
+            ? 'Before GST. Switch Excl./Incl. GST to type rates the way the supplier gives them; each item starts at what it last cost you.'
             :'Rates are read the way this customer’s price list quotes them. A blank rate is filled in from that list when this is saved.'}
         </span>
       </div>
