@@ -349,13 +349,13 @@ export default function StockIn() {
                 Unit cost
                 {purchase && <div><GstSwitch mode={gstMode} onChange={setGstMode} /></div>}
               </th>
-              {/* Before GST whichever way the costs are typed, as the Tax and
-                  Bill total beside it are added to it. */}
-              <th className="r">{purchase ? 'Value excl. GST' : 'Value'}</th>
               {purchase && <th className="r">GST %</th>}
               {showCess && <th className="r">Cess %</th>}
-              {purchase && <th className="r">Tax</th>}
-              <th className="r">On hand after</th><th />
+              {/* The line's amount the way the switch reads, so the column
+                  never says the same thing twice; the GST itself is in the
+                  totals below, once for the bill. */}
+              <th className="r">{!purchase ? 'Value' : costMode === 'with' ? 'Amount incl. GST' : 'Amount excl. GST'}</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -370,7 +370,13 @@ export default function StockIn() {
               )
               return (
                 <tr key={l.key}>
-                  <td>{l.product.name}<div className="src">on hand {Quantity.formatQty(l.product.qtyOnHand)} {l.product.baseUnit}</div></td>
+                  <td>
+                    {l.product.name}
+                    {/* What the shelf says now and after, in one line rather than a column of its own. */}
+                    <div className="src">
+                      on hand {Quantity.formatQty(l.product.qtyOnHand)} → {Quantity.formatQty(after)} {l.product.baseUnit}
+                    </div>
+                  </td>
                   <td className="r">
                     <input className="qty-input num" value={l.qty}
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} />
@@ -408,7 +414,6 @@ export default function StockIn() {
                       </div>
                     )}
                   </td>
-                  <td className="r"><Rupees value={value} /></td>
                   {purchase && (
                     <td className="r">
                       <input className="qty-input num" style={{ width: 56 }} value={l.gst}
@@ -421,8 +426,7 @@ export default function StockIn() {
                         onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cess: e.target.value } : x))} />
                     </td>
                   )}
-                  {purchase && <td className="r"><Rupees value={taxOf(l)} /></td>}
-                  <td className="r num">{Quantity.formatQty(after)} {l.product.baseUnit}</td>
+                  <td className="r"><Rupees value={purchase && costMode === 'with' ? value + taxOf(l) : value} /></td>
                   <td className="r">
                     <button className="btn ghost sm" onClick={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}>✕</button>
                   </td>
@@ -430,14 +434,14 @@ export default function StockIn() {
               )
             })}
             {lines.length === 0 && (
-              <tr><td colSpan={(batched ? 8 : 6) + (incoming ? 2 : 0) + (purchase ? 2 : 0) + (showCess ? 1 : 0)}><Empty>Nothing added yet</Empty></td></tr>
+              <tr><td colSpan={(batched ? 7 : 5) + (incoming ? 2 : 0) + (purchase ? 1 : 0) + (showCess ? 1 : 0)}><Empty>Nothing added yet</Empty></td></tr>
             )}
           </tbody>
         </table>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>Total value</span>
+        <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>{purchase ? 'Value excl. GST' : 'Total value'}</span>
         <Rupees value={totalCost} />
         {purchase ? (
           <>

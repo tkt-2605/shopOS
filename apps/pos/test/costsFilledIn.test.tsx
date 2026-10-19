@@ -134,6 +134,20 @@ describe('stock in', () => {
     expect(screen.queryByLabelText(/with GST/)).toBeNull()
   })
 
+  it('says each thing once: an amount that follows the switch, and the shelf under the item', async () => {
+    render(<StockIn />)
+    await addPaper()
+    fireEvent.click(await screen.findByText('Incl. GST'))
+    fireEvent.change(screen.getByLabelText('Unit cost'), { target: { value: '118' } })
+    await waitFor(() => expect(screen.getByText('Amount incl. GST')).toBeTruthy())
+    const heads = [...document.querySelectorAll('thead th')].map((th) => th.textContent ?? '')
+    expect(heads.some((h) => /^Tax$|On hand after|Value excl/.test(h))).toBe(false)
+    expect(screen.getAllByText('₹118.00').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByText('Excl. GST'))
+    await waitFor(() => expect(screen.getByText('Amount excl. GST')).toBeTruthy())
+    expect(screen.getByText(/on hand 0 → 1 piece/)).toBeTruthy()
+  })
+
   it('posts the cost before GST when it was typed with GST', async () => {
     render(<StockIn />)
     await addPaper()
