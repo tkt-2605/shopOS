@@ -96,11 +96,11 @@ export type { SaveDraftResult } from '../services/billing.js'
 export { listOpenDrafts, loadDraft, discardDraft, pruneEmptyDrafts } from '../services/drafts.js'
 export type { OpenDraft, DraftDetail, DraftLine } from '../services/drafts.js'
 export {
-  createDocument, submitDocument, cancelDocument, listDocuments, loadDocument,
+  createDocument, editDraftDocument, submitDocument, cancelDocument, listDocuments, loadDocument,
 } from '../services/documents.js'
 export type {
   DocumentKind, DocumentLineInput, CreateDocumentInput, CreateDocumentResult,
-  SubmitDocumentResult, CancelDocumentResult,
+  SubmitDocumentResult, CancelDocumentResult, EditDraftInput, EditDraftResult,
   DocumentListItem, DocumentFilter, DocumentDetail, DocumentItemRow, DocumentStatus,
 } from '../services/documents.js'
 export { quotationToSalesOrder, receivePurchaseOrder, documentToCart } from '../services/convert.js'

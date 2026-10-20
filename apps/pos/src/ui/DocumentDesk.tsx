@@ -45,6 +45,8 @@ export function DocumentDesk({ config }: { config: DeskConfig }) {
   const [rows, setRows] = useState<DocumentListItem[]>([])
   const [open, setOpen] = useState<DocumentDetail | null>(null)
   const [drafting, setDrafting] = useState(false)
+  /** A draft opened again in the form, to change it before it is issued. */
+  const [editing, setEditing] = useState<DocumentDetail | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -134,12 +136,14 @@ export function DocumentDesk({ config }: { config: DeskConfig }) {
         </table>
       </div>
 
-      {drafting && (
+      {(drafting || editing) && (
         <Draft
+          key={editing?.id ?? 'new'}
           config={config}
-          kind={kind}
-          onClose={() => setDrafting(false)}
-          onDone={(message) => { setDrafting(false); setNotice(message); void refresh() }}
+          kind={editing?.kind ?? kind}
+          editing={editing}
+          onClose={() => { setDrafting(false); setEditing(null) }}
+          onDone={(message) => { setDrafting(false); setEditing(null); setNotice(message); void refresh() }}
           onError={setError}
           registerId={registerId}
           userId={user.id}
@@ -156,6 +160,7 @@ export function DocumentDesk({ config }: { config: DeskConfig }) {
           onClose={() => setOpen(null)}
           onChanged={(message) => { setNotice(message); void reopen(open.id) }}
           onError={setError}
+          onEdit={() => { setEditing(open); setOpen(null); setError(null); setNotice(null) }}
           userId={user.id}
         />
       )}

@@ -14,6 +14,8 @@ export interface Line {
   key: string
   product: ProductListItem
   qty: string
+  /** The unit the line is in, for a draft opened again. Absent is the item's default. */
+  saleUnit?: string
   /** A rate somebody typed. Blank means "whatever the price list says today". */
   rate: string
   /**
@@ -25,4 +27,6 @@ export interface Line {
   rateFilled?: boolean
   /** On a purchase order: which box the rate was typed in, before GST or with it (`gstPair.ts`). */
   rateSide?: Side
+  /** On a customer's draft opened again: whether its rate was quoted with GST in it. */
+  includesTax?: boolean
 }

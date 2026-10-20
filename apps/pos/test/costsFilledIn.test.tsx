@@ -242,6 +242,36 @@ describe('a purchase order', () => {
     const doc = await loadDocument(db, order!.id)
     expect(doc!.items[0]).toMatchObject({ rate: 35400, rateIncludesTax: true, taxableValue: 30000 })
   })
+
+  it('opens a saved draft again as it was, and saves a change into the same draft', async () => {
+    const onDone = draft()
+    await addToOrder()
+    await waitFor(() => expect(screen.getByText(/no cost known/)).toBeTruthy())
+    fireEvent.change(rateBox(), { target: { value: '300' } })
+    fireEvent.change(document.getElementById('doc-party')!, { target: { value: supplierId } })
+    fireEvent.click(screen.getByText('Save as draft'))
+    await waitFor(() => expect(onDone).toHaveBeenCalled())
+    cleanup()
+
+    const [saved] = await listDocuments(db, { kind: 'purchase_order', status: 'draft' })
+    const editing = await loadDocument(db, saved!.id)
+    const done = vi.fn()
+    render(<Draft config={config} kind="purchase_order" editing={editing} onClose={vi.fn()} onDone={done}
+      onError={vi.fn()} registerId={seed.registerId} userId={adminId} />)
+    expect(screen.getByText(`Edit draft purchase order ${saved!.docNo}`)).toBeTruthy()
+    await waitFor(() => expect(rateBox().value).toBe('300.00'))
+    expect((document.getElementById('doc-party') as HTMLSelectElement).value).toBe(supplierId)
+
+    fireEvent.change(screen.getByDisplayValue('1'), { target: { value: '4' } })
+    fireEvent.click(screen.getByText('Save draft'))
+    await waitFor(() => expect(done).toHaveBeenCalledWith(`Draft ${saved!.docNo} saved. It is under Drafts until you issue it.`))
+
+    const drafts = await listDocuments(db, { kind: 'purchase_order', status: 'draft' })
+    expect(drafts.map((d) => d.id)).toEqual([saved!.id])
+    const doc = await loadDocument(db, saved!.id)
+    expect(doc!.items).toHaveLength(1)
+    expect(doc!.items[0]).toMatchObject({ qty: 40000, rate: 30000, rateIncludesTax: false })
+  })
 })
 
 describe('the item form', () => {

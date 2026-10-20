@@ -9,7 +9,7 @@ import { requestRepeat } from '../../core/repeat'
 import { Field, Modal, Alert, Rupees, DocStatusBadge } from '../components'
 import type { DeskConfig } from './types'
 
-export function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onChanged, onError, userId }: {
+export function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onChanged, onError, onEdit, userId }: {
   doc: DocumentDetail
   config: DeskConfig
   canCancel: boolean
@@ -18,6 +18,8 @@ export function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onC
   onClose: () => void
   onChanged: (message: string) => void
   onError: (message: string | null) => void
+  /** Opens this draft in the form again, to change it before it is issued. */
+  onEdit?: () => void
   userId: string
 }) {
   const { db } = useCore()
@@ -154,6 +156,9 @@ export function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onC
       footer={<>
         <button className="btn" onClick={onClose}>Close</button>
         <button className="btn" onClick={() => void print()}>Print</button>
+        {isDraft && canWrite && onEdit && (
+          <button className="btn" disabled={busy} onClick={onEdit}>Edit</button>
+        )}
         {isDraft && canWrite && (
           <button className="btn primary" disabled={busy} onClick={() => void issue()}>Issue</button>
         )}

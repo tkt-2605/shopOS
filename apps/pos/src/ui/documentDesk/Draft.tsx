@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Money, Quantity, Tax, searchProducts, searchCustomers, listSuppliers, createDocument, submitDocument, costHint,
-  type ProductListItem, type CustomerListItem, type Supplier, type DocumentKind, pricingContextFor,
+  Money, Quantity, Tax, searchProducts, searchCustomers, listSuppliers, createDocument, editDraftDocument,
+  submitDocument, costHint, productsByIds, pricingContextFor,
+  type ProductListItem, type CustomerListItem, type Supplier, type DocumentKind, type DocumentDetail,
 } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { Field, Modal, Empty, Rupees } from '../components'
@@ -13,9 +14,15 @@ import { costNote } from '../costNote'
 import { pairOf, type Side } from '../gstPair'
 import { GstSwitch, useGstMode } from '../GstSwitch'
 
-export function Draft({ config, kind, onClose, onDone, onError, registerId, userId }: {
+/**
+ * A new document, or -- given `editing` -- a draft opened again to change it.
+ * The same form either way, so a draft comes back exactly as it was saved:
+ * its party, its lines at their units and rates, its validity and its note.
+ */
+export function Draft({ config, kind, editing, onClose, onDone, onError, registerId, userId }: {
   config: DeskConfig
   kind: DocumentKind
+  editing?: DocumentDetail | null
   onClose: () => void
   onDone: (message: string) => void
   onError: (message: string | null) => void
@@ -23,11 +30,11 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
   userId: string
 }) {
   const { db } = useCore()
-  const [partyId, setPartyId] = useState('')
+  const [partyId, setPartyId] = useState(editing?.customerId ?? editing?.supplierId ?? '')
   const [customers, setCustomers] = useState<CustomerListItem[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [validUntil, setValidUntil] = useState('')
-  const [notes, setNotes] = useState('')
+  const [validUntil, setValidUntil] = useState(editing?.validUntil ?? '')
+  const [notes, setNotes] = useState(editing?.notes ?? '')
   const [term, setTerm] = useState('')
   const [lines, setLines] = useState<Line[]>([])
   const [busy, setBusy] = useState(false)
@@ -39,6 +46,29 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
 
   const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 25 }))
   const results = search.rows
+
+  /* A draft's lines, as saved: each at its unit and its rate, on the side of
+     GST it was quoted. Items since taken out of the catalogue are left out,
+     and saving would say nothing of them, so the form says so. */
+  useEffect(() => {
+    if (!editing) return
+    let live = true
+    void productsByIds(db, [...new Set(editing.items.map((i) => i.productId))]).then((products) => {
+      if (!live) return
+      const byId = new Map(products.map((p) => [p.id, p]))
+      const kept = editing.items.flatMap((item, i) => {
+        const product = byId.get(item.productId)
+        return product ? [{
+          key: `${item.productId}-${i}`, product, qty: Quantity.formatQty(item.qty), saleUnit: item.saleUnit,
+          rate: Money.format(item.rate), rateSide: (item.rateIncludesTax ? 'with' : 'before') as Side,
+          hint: null, rateFilled: false, includesTax: item.rateIncludesTax,
+        }] : []
+      })
+      setLines(kept)
+      if (kept.length < editing.items.length) onError('An item on this draft is no longer in the catalogue, and was left off.')
+    })
+    return () => { live = false }
+  }, [db, editing, onError])
 
   useEffect(() => {
     if (config.party === 'supplier') void listSuppliers(db).then(setSuppliers)
@@ -111,9 +141,7 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         : pricing.defaultListIncludesTax
     }
 
-    const made = await createDocument(db, {
-      kind,
-      registerId,
+    const fields = {
       ...(config.party === 'supplier'
         ? { supplierId: partyId || null }
         : { customerId: partyId || null }),
@@ -126,10 +154,14 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         const typed = Money.parseMoney(l.rate)
         return {
           productId: l.product.id,
+          ...(l.saleUnit ? { saleUnit: l.saleUnit } : {}),
           qty,
           ...(typed === null ? {} : {
             rateOverride: typed as never,
+            /* A line from a draft keeps the side of GST it was quoted on, though
+               the customer's list may have changed since. */
             ...(forSupplier ? { rateIncludesTax: l.rateSide === 'with' }
+              : l.includesTax !== undefined ? { rateIncludesTax: l.includesTax }
               : typedIncludesTax === undefined ? {} : { rateIncludesTax: typedIncludesTax }),
           }),
         }
@@ -137,7 +169,10 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
       ...(validUntil ? { validUntil } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
       actorId: userId,
-    })
+    }
+    const made = editing
+      ? await editDraftDocument(db, { ...fields, documentId: editing.id })
+      : await createDocument(db, { ...fields, kind, registerId })
 
     if (!made.ok) {
       setBusy(false)
@@ -145,13 +180,17 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
         made.code === 'NO_LINES' ? 'Add at least one item.'
         : made.code === 'INVALID_QTY' ? 'Every line needs a quantity above zero.'
         : made.code === 'PARTY_REQUIRED' ? `A ${config.party === 'supplier' ? 'purchase order needs a supplier' : 'document needs a customer'}.`
+        : made.code === 'NOT_A_DRAFT' ? 'This has been issued since it was opened, so it can no longer be changed.'
+        : made.code === 'UNKNOWN_DOCUMENT' ? 'This draft is no longer here.'
         : 'One of those items is no longer in the catalogue.',
       )
       return
     }
 
     if (!issue) {
-      onDone(`Saved as a draft, ${made.docNo}. It is under Drafts until you issue it.`)
+      onDone(editing
+        ? `Draft ${made.docNo} saved. It is under Drafts until you issue it.`
+        : `Saved as a draft, ${made.docNo}. It is under Drafts until you issue it.`)
       return
     }
 
@@ -164,13 +203,13 @@ export function Draft({ config, kind, onClose, onDone, onError, registerId, user
   return (<>
     {scanChoice.dialog}
     <Modal
-      title={`New ${label.name.toLowerCase()}`}
+      title={editing ? `Edit draft ${label.name.toLowerCase()} ${editing.docNo}` : `New ${label.name.toLowerCase()}`}
       wide
       onClose={onClose}
       footer={<>
         <button className="btn" onClick={onClose}>Cancel</button>
         <button className="btn" disabled={busy || lines.length === 0} onClick={() => void save(false)}>
-          Save as draft
+          {editing ? 'Save draft' : 'Save as draft'}
         </button>
         <button className="btn primary" disabled={busy || lines.length === 0} onClick={() => void save(true)}>
           Issue

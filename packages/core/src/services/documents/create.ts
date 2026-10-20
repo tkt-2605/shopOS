@@ -21,6 +21,66 @@ export async function createDocument(
   input: CreateDocumentInput,
 ): Promise<CreateDocumentResult> {
   await requirePermission(db, input.actorId, 'document', 'create')
+  const now = input.now ?? new Date()
+  const p = await priceDocument(db, input, now)
+  if (!p.ok) return p
+  const { priced, totals, party, forSupplier } = p
+  const nowIso = now.toISOString()
+  const postingDate = input.postingDate ?? businessDate(now)
+  const documentId = newId()
+  let docNo = ''
+
+  await db.transaction(async (tx) => {
+    const [register] = await q(tx)
+      .select({ prefix: schema.registers.prefix })
+      .from(schema.registers)
+      .where(eq(schema.registers.id, input.registerId))
+    docNo = await nextDocNo(tx, input.kind, register?.prefix ?? await seriesPrefix(tx, 'MR'), now)
+
+    await q(tx).insert(schema.documents).values({
+      id: documentId,
+      docNo,
+      kind: input.kind,
+      docstatus: DRAFT,
+      registerId: input.registerId,
+      ...partyColumns(forSupplier, input, party),
+      postingDate,
+      validUntil: input.validUntil ?? null,
+      ...totalsColumns(totals),
+      notes: input.notes ?? null,
+      terms: input.terms ?? null,
+      convertedFrom: input.convertedFrom ?? null,
+      createdBy: input.actorId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
+    await writeDocumentLines(tx, documentId, priced, totals)
+
+    await writeAudit(tx, { actorId: input.actorId }, {
+      entity: 'document',
+      entityId: documentId,
+      action: 'create',
+      after: { doc_no: docNo, kind: input.kind, grand_total: totals.grandTotal },
+      docstatusTo: 0,
+    })
+  })
+
+  return { ok: true, documentId, docNo, grandTotal: totals.grandTotal }
+}
+
+/** The party, the priced lines and the totals a document's input comes to -- for a new one and an edited draft alike. */
+export type PricedDocument =
+  | {
+      ok: true; priced: PricedLine[]; totals: ReturnType<typeof computeTotals>
+      party: { name: string; stateCode: string | null } | undefined; forSupplier: boolean
+    }
+  | Extract<CreateDocumentResult, { ok: false }>
+
+export async function priceDocument(
+  db: SqlDriver,
+  input: Pick<CreateDocumentInput, 'kind' | 'customerId' | 'supplierId' | 'lines'>,
+  now: Date,
+): Promise<PricedDocument> {
   if (input.lines.length === 0) return { ok: false, code: 'NO_LINES' }
 
   /* A purchase order with no supplier is an order placed with nobody, and a
@@ -29,10 +89,6 @@ export async function createDocument(
   const forSupplier = input.kind === 'purchase_order'
   if (forSupplier && !input.supplierId) return { ok: false, code: 'PARTY_REQUIRED' }
   if (!forSupplier && !input.customerId) return { ok: false, code: 'PARTY_REQUIRED' }
-
-  const now = input.now ?? new Date()
-  const nowIso = now.toISOString()
-  const postingDate = input.postingDate ?? businessDate(now)
 
   /* One shape for both, so the caller below does not have to know which table
      the name came out of. A supplier has no state code here: a purchase order
@@ -100,85 +156,70 @@ export async function createDocument(
      becomes a bill for ₹100 has quoted the wrong number, and the difference is
      the one a customer notices. */
   const totals = computeTotals(priced, ZERO, supply, await loadRounding(db))
-  const documentId = newId()
-  let docNo = ''
-
-  await db.transaction(async (tx) => {
-    const [register] = await q(tx)
-      .select({ prefix: schema.registers.prefix })
-      .from(schema.registers)
-      .where(eq(schema.registers.id, input.registerId))
-    docNo = await nextDocNo(tx, input.kind, register?.prefix ?? await seriesPrefix(tx, 'MR'), now)
-
-    await q(tx).insert(schema.documents).values({
-      id: documentId,
-      docNo,
-      kind: input.kind,
-      docstatus: DRAFT,
-      registerId: input.registerId,
-      customerId: forSupplier ? null : input.customerId ?? null,
-      customerName: forSupplier ? null : party?.name ?? null,
-      supplierId: forSupplier ? input.supplierId ?? null : null,
-      supplierName: forSupplier ? party?.name ?? null : null,
-      postingDate,
-      validUntil: input.validUntil ?? null,
-      subtotal: totals.subtotal,
-      discount: totals.discount,
-      taxableTotal: totals.taxableTotal,
-      taxTotal: totals.taxTotal,
-      roundOff: totals.roundOff,
-      grandTotal: totals.grandTotal,
-      // A state code, as on a bill -- not the supply type, which is derived from it.
-      placeOfSupply: forSupplier ? null : party?.stateCode ?? null,
-      notes: input.notes ?? null,
-      terms: input.terms ?? null,
-      convertedFrom: input.convertedFrom ?? null,
-      createdBy: input.actorId,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    })
-
-    for (const [i, line] of priced.entries()) {
-      const computed = totals.lines[i]!
-      await q(tx).insert(schema.documentItems).values({
-        id: newId(),
-        documentId,
-        idx: i,
-        productId: line.productId,
-        productName: line.productName,
-        hsnCode: line.hsnCode,
-        saleUnit: line.saleUnit,
-        qty: line.qty,
-        baseQty: line.baseQty,
-        rate: line.rate,
-        discount: line.discount,
-        /* What the line comes to with its tax, as on a bill. The same figure as
-           before for a shelf price, which is every line written before 063. */
-        lineTotal: computed.net,
-        taxableValue: computed.tax.taxableValue,
-        taxRateBp: line.taxRateBp,
-        cgstAmount: computed.tax.cgst,
-        sgstAmount: computed.tax.sgst,
-        igstAmount: computed.tax.igst,
-        cessRateBp: line.cessRateBp,
-        cessAmount: computed.tax.cess,
-        rateIncludesTax: line.rateIncludesTax ? 1 : 0,
-      })
-    }
-
-    await writeAudit(tx, { actorId: input.actorId }, {
-      entity: 'document',
-      entityId: documentId,
-      action: 'create',
-      after: { doc_no: docNo, kind: input.kind, grand_total: totals.grandTotal },
-      docstatusTo: 0,
-    })
-  })
-
-  return { ok: true, documentId, docNo, grandTotal: totals.grandTotal }
+  return { ok: true, priced, totals, party, forSupplier }
 }
 
-interface PricedLine {
+/** Who the document is to, in the columns both kinds of party use. */
+export function partyColumns(
+  forSupplier: boolean,
+  input: Pick<CreateDocumentInput, 'customerId' | 'supplierId'>,
+  party: { name: string; stateCode: string | null } | undefined,
+) {
+  return {
+    customerId: forSupplier ? null : input.customerId ?? null,
+    customerName: forSupplier ? null : party?.name ?? null,
+    supplierId: forSupplier ? input.supplierId ?? null : null,
+    supplierName: forSupplier ? party?.name ?? null : null,
+    // A state code, as on a bill -- not the supply type, which is derived from it.
+    placeOfSupply: forSupplier ? null : party?.stateCode ?? null,
+  }
+}
+
+export function totalsColumns(totals: ReturnType<typeof computeTotals>) {
+  return {
+    subtotal: totals.subtotal,
+    discount: totals.discount,
+    taxableTotal: totals.taxableTotal,
+    taxTotal: totals.taxTotal,
+    roundOff: totals.roundOff,
+    grandTotal: totals.grandTotal,
+  }
+}
+
+/** A document's lines, written in order. The caller has removed any it had. */
+export async function writeDocumentLines(
+  tx: SqlDriver, documentId: string, priced: readonly PricedLine[], totals: ReturnType<typeof computeTotals>,
+): Promise<void> {
+  for (const [i, line] of priced.entries()) {
+    const computed = totals.lines[i]!
+    await q(tx).insert(schema.documentItems).values({
+      id: newId(),
+      documentId,
+      idx: i,
+      productId: line.productId,
+      productName: line.productName,
+      hsnCode: line.hsnCode,
+      saleUnit: line.saleUnit,
+      qty: line.qty,
+      baseQty: line.baseQty,
+      rate: line.rate,
+      discount: line.discount,
+      /* What the line comes to with its tax, as on a bill. The same figure as
+         before for a shelf price, which is every line written before 063. */
+      lineTotal: computed.net,
+      taxableValue: computed.tax.taxableValue,
+      taxRateBp: line.taxRateBp,
+      cgstAmount: computed.tax.cgst,
+      sgstAmount: computed.tax.sgst,
+      igstAmount: computed.tax.igst,
+      cessRateBp: line.cessRateBp,
+      cessAmount: computed.tax.cess,
+      rateIncludesTax: line.rateIncludesTax ? 1 : 0,
+    })
+  }
+}
+
+export interface PricedLine {
   productId: string
   productName: string
   hsnCode: string | null
