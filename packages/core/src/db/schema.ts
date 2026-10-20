@@ -985,6 +985,8 @@ export const billEmails = sqliteTable('bill_emails', {
   toAddress: text('to_address').notNull(),
   queuedAt: text('queued_at').notNull(),
   error: text(),
+  rev: integer().notNull().default(1),
+  originId: text('origin_id'),
 })
 
 export const syncState = sqliteTable('sync_state', {
@@ -998,6 +1000,8 @@ export const syncState = sqliteTable('sync_state', {
   mainDevice: text('main_device'),
   /** Raised at every change of main; the highest heard wins. Migration 071. */
   mainEpoch: integer('main_epoch').default(0).notNull(),
+  /** When this till handed the main on (`handTheMainTo`); it answers until the new main has caught up. Migration 077. */
+  handedOverAt: text('handed_over_at'),
 })
 
 export const syncPeers = sqliteTable('sync_peers', {

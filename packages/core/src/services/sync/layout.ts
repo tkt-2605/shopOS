@@ -92,7 +92,28 @@ export async function listens(db: SqlDriver): Promise<boolean> {
   const peers = await peersWithSecrets(db)
   if (peers.length === 0) return false
   if (await tillRole(db) !== 'till') return true
-  return peers.some((p) => p.address === null)
+  return peers.some((p) => p.address === null) || await stillHandingOver(db)
+}
+
+/**
+ * Whether this till handed the main on and the new main has not caught up
+ * with it since (077). The new main learns it is the main only by dialling
+ * this one, so until it has, this one answers: in a shop paired before there
+ * was a main every till holds every address, and without this the two each
+ * waited for the other to answer, for ever.
+ */
+async function stillHandingOver(db: SqlDriver): Promise<boolean> {
+  const [state] = await q(db)
+    .select({ at: schema.syncState.handedOverAt, main: schema.syncState.mainDevice })
+    .from(schema.syncState)
+    .where(eq(schema.syncState.id, 1))
+  if (!state?.at || !state.main) return false
+  const [peer] = await q(db)
+    .select({ agreed: schema.syncPeers.lastAgreedAt })
+    .from(schema.syncPeers)
+    .where(eq(schema.syncPeers.deviceId, state.main))
+  if (!peer) return false
+  return peer.agreed === null || peer.agreed < state.at
 }
 
 export type LetIn = { ok: true } | { ok: false; main: string }
@@ -241,5 +262,8 @@ export async function handTheMainTo(
   if (!peers.some((p) => p.deviceId === to)) throw new Error('That till is not paired with this one')
   const next = { device: to, epoch: mine.epoch + 1 }
   await writeMain(db, next)
+  await q(db).update(schema.syncState)
+    .set({ handedOverAt: new Date().toISOString() })
+    .where(eq(schema.syncState.id, 1))
   return next
 }

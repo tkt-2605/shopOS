@@ -170,6 +170,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [74, '074_an_item_has_a_cost_price.sql', 'additive'],
   /* When that cost was set, nullable: decides only which of two suggestions is shown. */
   [75, '075_a_cost_price_says_when.sql', 'additive'],
+  // A new replicated record; a till below it skips the records as a table it has not got.
+  [76, '076_every_till_knows_which_bills_were_emailed.sql', 'additive'],
+  [77, '077_a_main_that_hands_over_keeps_answering.sql', 'additive'],
 ]
 
 /**
@@ -187,6 +190,9 @@ export const REVIEWED_DEFAULTS: Readonly<Record<string, string>> = {
     'Grant 0 is what every claim made by the old rule is. A till below 072 grants and relays '
     + 'claims with no number; a counter it sends arrives as grant 0, and two of those are settled '
     + 'by the rule they always were.',
+  '076_every_till_knows_which_bills_were_emailed.sql:bill_emails.rev':
+    'A revision, not a figure: 1 is what every note starts at, and no till below 076 replicates '
+    + 'bill_emails, so none can relay a note without it.',
 }
 
 /**

@@ -174,6 +174,11 @@ export const REPLICATED: readonly RecordShape[] = [
      and never lost to a merge of the document it marks (054). */
   { table: 'document_fulfilments', key: 'id', lines: [] },
   { table: 'attachments', key: 'id', lines: [] },
+  /* Which bills have been emailed (076): kept on every till, so a bill one
+     main has mailed is not mailed again by another -- two that each thought
+     they were the main, or a new main taking over. After `bills`, which it
+     points at. */
+  { table: 'bill_emails', key: 'bill_id', lines: [] },
 ]
 
 const BY_TABLE = new Map(REPLICATED.map((r) => [r.table, r]))
@@ -196,7 +201,6 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
   sync_quarantine: 'a record this machine could not apply. The till that sent it applied it fine',
   discrepancies_seen: 'which discrepancies somebody at this till has been told about. The other till tells its own people',
-  bill_emails: 'which bills the main has handed to its own outbox. Only the main sends, and the outbox is on its disk',
 }
 
 /** One record as it crosses between two tills. */

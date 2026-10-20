@@ -1369,6 +1369,33 @@ Open: the installer cannot add a firewall rule while it installs per-user;
 stage 7 (the cloud as main, the home till, the grace window on the cloud)
 waits for the cloud peer.
 
+## Fixes from a shop's first evening on 0.4.1 (21 October)
+
+TRT General Store moved from tills paired as equals to one main and hit four
+things in one evening; each is fixed, and a fifth found by asking about them.
+
+- **Handing the main on no longer stops the shop syncing** (077). The old main,
+  now a till, stopped answering at once: in a shop paired as equals every till
+  holds every address, so `listens` found nobody who dials without one. The
+  new main learns it is the main only by dialling the old one, so each waited
+  for the other. `sync_state.handed_over_at` keeps the old main answering
+  until the new main has caught up with it since.
+- **A bill is emailed once, whichever till sends it** (076). `bill_emails`
+  replicates now, with `rev` and the feed triggers, and the notes already on a
+  main are fed so they reach the others before any is made the main. Two mains
+  that cannot see each other can still each send a bill they both hold; what
+  is stopped is the second send once they meet, and every send after a change
+  of main.
+- **A wrong Gmail app password says so.** Gmail closes the connection on a
+  bad login, which Windows reports as `net_io_connectionclosed`; the shop read
+  it as a network fault. `explain_mail_error` says the app password is wrong,
+  where to make one, and names antivirus mail scanning as the other cause.
+- **Each till goes by its counter's name** on Other tills (`listPeers`), not
+  by what it says of itself, which is the shop's name on every till.
+- **The line under a bill says when nobody will email it**: a counter says
+  the main will, and a shop with no main is told nothing is being sent and
+  where to choose one. The note travels, so a counter also says when it went.
+
 ## Drafts can be changed; every stock entry in one list (21 October)
 
 - **A draft quotation, sales order or purchase order opens again in its form**

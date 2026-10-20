@@ -121,11 +121,14 @@ export async function listPeers(db: SqlDriver): Promise<PeerHealth[]> {
     .from(schema.syncPeers)
     .orderBy(schema.syncPeers.createdAt)
 
-  /* What a till is called when it has never said: the counter it sits at.
-     Behind a main the counters dial and the main is dialled, so the main
-     never hears a counter's own name, and every screen on it named the other
-     tills by the first eight characters of a device id. The counter's name is
-     the one the shop chose and can change, on every till alike. */
+  /* What a till is called: the counter it sits at, and what it said of itself
+     only where it sits at none. Behind a main the counters dial and the main
+     is dialled, so the main never hears a counter's own name, and every screen
+     on it named the other tills by the first eight characters of a device id.
+     And what a till says of itself is the shop's name, which is every till's:
+     two tills at one shop each listed the other as the shop (21 October). The
+     counter's name is the one the shop chose and can change, on every till
+     alike. */
   const seats = await q(db)
     .select({ device: schema.registers.claimedBy, name: schema.registers.name })
     .from(schema.registers)
@@ -137,7 +140,7 @@ export async function listPeers(db: SqlDriver): Promise<PeerHealth[]> {
     const { myCursor, theirCursor, theirHead, headSaidAt, secret, ...peer } = r
     out.push({
       ...peer,
-      label: peer.label ?? counterOf.get(peer.deviceId) ?? null,
+      label: counterOf.get(peer.deviceId) ?? peer.label ?? null,
       needsPairing: secret === null,
       waiting: await pendingCount(db, myCursor),
       /* Zero, not negative: a head from a handshake that has since been

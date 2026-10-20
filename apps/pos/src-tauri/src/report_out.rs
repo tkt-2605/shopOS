@@ -739,7 +739,35 @@ fn send_mail(outbox: &Path, id: &str, queued: &Queued, settings: &Mail) -> Resul
             "The mail server did not accept the message.",
         )
         .map(|_| ())
+        .map_err(|e| explain_mail_error(&e, &settings.host))
     })
+}
+
+/// What a refused login looks like to a person, rather than to .NET.
+///
+/// Gmail does not say "wrong password" to a client that sends one: it closes
+/// the connection, and Windows reports `net_io_connectionclosed` -- which a
+/// shop read as a network fault and spent an evening on (21 October). Every
+/// other message is passed through as the server gave it.
+pub(crate) fn explain_mail_error(raw: &str, host: &str) -> String {
+    let lower = raw.to_lowercase();
+    let refused_login = lower.contains("5.7.8")
+        || lower.contains("username and password not accepted")
+        || lower.contains("authentication required")
+        || lower.contains("authentication unsuccessful");
+    let hung_up = lower.contains("connectionclosed") || lower.contains("connection closed");
+    if !refused_login && !hung_up {
+        return raw.to_string();
+    }
+    if host.contains("gmail") {
+        let first = "Gmail refused the login: the app password is wrong or has been removed.             Make a new one at myaccount.google.com/apppasswords and paste it in.";
+        return if hung_up {
+            format!("{first} If a new one does not help, email scanning in this PC's antivirus may be in the way.")
+        } else {
+            first.to_string()
+        };
+    }
+    "The mail server refused the login: check the address and the password.".to_string()
 }
 
 #[cfg(not(windows))]
@@ -750,6 +778,18 @@ fn send_mail(_: &Path, _: &str, _: &Queued, _: &Mail) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closed_connection_from_gmail_is_said_as_a_refused_login() {
+        let said = explain_mail_error("Unable to read data from the transport connection: net_io_connectionclosed.", "smtp.gmail.com");
+        assert!(said.starts_with("Gmail refused the login"), "{said}");
+        assert!(said.contains("myaccount.google.com/apppasswords"));
+        assert!(said.contains("antivirus"));
+        let wrong = explain_mail_error("5.7.8 Username and Password not accepted", "smtp.gmail.com");
+        assert!(wrong.starts_with("Gmail refused the login") && !wrong.contains("antivirus"), "{wrong}");
+        assert!(explain_mail_error("5.7.8 Username and Password not accepted", "smtp.zoho.in").starts_with("The mail server refused"));
+        assert_eq!(explain_mail_error("Mailbox unavailable", "smtp.gmail.com"), "Mailbox unavailable");
+    }
 
     fn queue_raw(outbox: &Path, id: &str, channel: &str) {
         let queued = Queued {

@@ -128,8 +128,8 @@ describe('rev, on every replicated table', () => {
     const tables = await replicatedTables()
     // 020 added `settings`; 022 added `doc_formats`, which 021 had to feed
     // without anything to settle a tie with; 049 added `user_sessions`; 062
-    // added `batches`.
-    expect(tables.length).toBe(24)
+    // added `batches`; 076 `bill_emails`.
+    expect(tables.length).toBe(25)
 
     const triggers = new Set(
       (await fx.db.query<{ name: string }>(
