@@ -1369,6 +1369,23 @@ Open: the installer cannot add a firewall rule while it installs per-user;
 stage 7 (the cloud as main, the home till, the grace window on the cloud)
 waits for the cloud peer.
 
+## Drafts can be changed; every stock entry in one list (21 October)
+
+- **A draft quotation, sales order or purchase order opens again in its form**
+  (Edit, on a draft's detail) and saves into the same draft under the same
+  number (`documents/edit.ts`). It is priced as a new document is
+  (`priceDocument`, split out of `createDocument`), and refused once issued:
+  an issued document changes by being cancelled, as a bill does. Lines keep
+  their unit and the side of GST they were quoted on.
+- **Stock In has Past entries**: every stock entry, narrowed by dates, kind,
+  supplier, state and a word -- its number, the supplier's invoice, the
+  reference, the supplier or an item (`repos/stockEntries.ts`). The value is
+  what the stock ledger moved, not the costs typed. The entry form stays
+  mounted while the list is shown, so half-typed lines survive.
+- **A stock entry worth nothing is no longer "not in the books"**: one with no
+  stock value, bill, round off or tax posts no lines, and the check took that
+  for missing.
+
 ## One item per barcode, as a switch (20 October)
 
 Settings, Features gains **One item per barcode** (`uniqueBarcode`), off by

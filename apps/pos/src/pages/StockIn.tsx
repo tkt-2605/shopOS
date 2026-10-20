@@ -18,6 +18,7 @@ import { BatchCells, PriceCells, costOf, costPair, ownPrice, sellsBelowCost, typ
 import type { Side } from '../ui/gstPair'
 import { GstSwitch, useGstMode } from '../ui/GstSwitch'
 import { costNote } from '../ui/costNote'
+import { StockInViews } from './stockIn/PastEntries'
 
 /* Each note says which way the shelf moves, because that is what the list is
    choosing between. It used to ask for the direction back: “Wastage.
@@ -30,7 +31,12 @@ const TYPES: { id: StockEntryType; name: string; note: string }[] = [
   { id: 'wastage', name: 'Wastage', note: 'Damaged or expired. Stock goes down by what you enter.' },
 ]
 
+/** Stock In: a new entry, and every entry made (`stockIn/PastEntries.tsx`). */
 export default function StockIn() {
+  return <StockInViews newEntry={<NewEntry />} />
+}
+
+function NewEntry() {
   const { db, features, taxScheme } = useCore()
   const [confirmUi, ask] = useConfirm()
   const user = useUser()
