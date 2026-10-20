@@ -17,6 +17,13 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.4.1': {
+    title: 'The MRP on every line of the bill',
+    points: [
+      'The bill now has an MRP column beside the rate: the printed price for the unit being sold, or the batch\'s when you chose one.',
+      'A rate above the MRP shows in red, so it can be fixed before the bill is paid.',
+    ],
+  },
   '0.4.0': {
     title: 'Cost prices, and nothing sold below cost by mistake',
     points: [
