@@ -17,6 +17,17 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.4.2': {
+    title: 'Edit draft quotations, see every Stock In, and safer main till changes',
+    points: [
+      'A draft quotation, sales order or purchase order now has Edit: change it and press Save draft. It keeps its number until you issue it.',
+      'Stock In has a Past entries tab: every purchase, opening stock, adjustment and wastage, with filters for dates, kind, supplier and a search box. Click one to see its lines.',
+      'Changing which till is the main no longer leaves both tills waiting for each other, and a customer is never emailed the same invoice twice after the main changes.',
+      'Other tills now lists each till by its counter name, and the line under a bill says when the main till will email it, or that the shop has no main till yet.',
+      'A wrong Gmail app password now says so, with where to make a new one, instead of a connection error.',
+      'A Stock In saved with no cost is no longer reported as missing from the books.',
+    ],
+  },
   '0.4.1': {
     title: 'The MRP on every line of the bill',
     points: [
