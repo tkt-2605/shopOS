@@ -54,8 +54,17 @@ const MISSING: Record<VoucherType, string> = {
   payment: `SELECT 'payment' AS type, p.id, p.docstatus, p.posting_date AS at FROM payment_entries p
               WHERE NOT EXISTS (SELECT 1 FROM sales_returns r WHERE r.credit_note_id = p.id)
                 AND ${POSTED_OR_CANCELLED('p', 'payment')}`,
+  /* An entry worth nothing -- goods received with no cost, no bill and no tax --
+     has no lines to post (`postGl` writes none for an all-zero voucher), so it
+     is not missing from the books. The stock ledger says what it was worth, not
+     the cost typed: goods going out at no typed cost leave at the shelf's. */
   stock_entry: `SELECT 'stock_entry' AS type, e.id, e.docstatus, e.posting_date AS at FROM stock_entries e
-              WHERE ${POSTED_OR_CANCELLED('e', 'stock_entry')}`,
+              WHERE ${POSTED_OR_CANCELLED('e', 'stock_entry')}
+                AND (e.invoice_total <> 0 OR e.round_off <> 0
+                  OR COALESCE((SELECT SUM(l.value_change) FROM stock_ledger l
+                                WHERE l.voucher_type = 'stock_entry' AND l.voucher_id = e.id), 0) <> 0
+                  OR EXISTS (SELECT 1 FROM stock_entry_items i WHERE i.entry_id = e.id
+                              AND (i.cgst_amount <> 0 OR i.sgst_amount <> 0 OR i.igst_amount <> 0 OR i.cess_amount <> 0)))`,
   cash_session: `SELECT 'cash_session' AS type, s.id, 1 AS docstatus, s.closed_at AS at FROM cash_sessions s
               WHERE s.closed_at IS NOT NULL AND COALESCE(s.variance, 0) <> 0
                 AND NOT EXISTS (SELECT 1 FROM gl_entries g WHERE g.voucher_type = 'cash_session' AND g.voucher_id = s.id)`,
