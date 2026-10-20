@@ -277,6 +277,11 @@ tbody tr:hover { background: var(--accent-soft); }
 }
 .alert.warn { background: var(--warn-soft); border-left-color: var(--warn); }
 .alert.ok { background: var(--ok-soft); border-left-color: var(--ok); }
+/* Settings, Features: codes still on several items, each with a way to take it off one. */
+.shared-codes { list-style: none; margin: 8px 0 0; padding: 0; }
+.shared-codes li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 4px 0; }
+.shared-codes li > .num { min-width: 130px; }
+.shared-code-item { display: inline-flex; align-items: center; gap: 4px; }
 
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 

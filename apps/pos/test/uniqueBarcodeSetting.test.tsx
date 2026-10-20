@@ -16,7 +16,8 @@ vi.mock('@shopos/core', async (load) => ({
 const core: { db: object; features: Features; setFeatureFlag: ReturnType<typeof vi.fn> } = {
   db: {}, features: FEATURES_OFF, setFeatureFlag: vi.fn(async () => {}),
 }
-vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core }))
+const user = { id: 'owner', permissions: { resources: { product: { read: true, write: true } } } }
+vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core, useUser: () => user }))
 const { FeaturesSection } = await import('../src/pages/settings/FeaturesSection')
 
 afterEach(() => { cleanup(); shared.now = []; core.setFeatureFlag.mockClear() })
@@ -39,7 +40,8 @@ describe('one item per barcode, in Settings', () => {
     shared.now = [glue]
     render(<FeaturesSection />)
     expect(await screen.findByText(/One code is still on more than one item/)).toBeTruthy()
-    expect(screen.getByText('8901234567890: Glue 50ml, Glue 100ml')).toBeTruthy()
+    expect(screen.getByText('8901234567890')).toBeTruthy()
+    expect(screen.getByLabelText('Take 8901234567890 off Glue 100ml')).toBeTruthy()
   })
 
   it('lists nothing while it is off, whatever is shared', async () => {

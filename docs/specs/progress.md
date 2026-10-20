@@ -1388,6 +1388,12 @@ an item saved) and in a catalogue file (`importRowsTakingACode`, as
   scan asks, as it does with the switch off; the Settings list shows it.
 - A file row with a code exactly one item has, under a new name, is still read
   as that item renamed, as before.
+- **Sorting out codes shared from before:** the Settings list has a Take off
+  button on each item (`settings/SharedBarcodes.tsx`), asked first; the item
+  keeps its other codes, and one left with none is found by name.
+- **Inventory shows each item's latest cost** in a Cost column beside Rate --
+  `costHints`, the same figure the form, Stock In and the below-cost rule use,
+  with where it came from on hover.
 
 ## Nothing sells below cost; a discount can be a percentage (20 October)
 

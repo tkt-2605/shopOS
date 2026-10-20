@@ -16,6 +16,8 @@ import { useShopChanged } from '../core/useShopChanged'
 import { CatalogueFile } from '../ui/CatalogueFile'
 import { BLANK, levelOf, type Draft } from './inventory/draft'
 import { useParentSearch } from './inventory/useParentSearch'
+import { useCostHints } from './inventory/useCostHints'
+import { costNote } from '../ui/costNote'
 import { ProductForm } from './inventory/ProductForm'
 import { ExpiringCard, ProductBatches } from './inventory/Batches'
 
@@ -42,6 +44,7 @@ export default function Inventory() {
   const [lastCost, setLastCost] = useState<CostHint | null>(null)
 
   const canWrite = Permissions.can(user.permissions, 'product', 'write')
+  const costs = useCostHints(db, rows)
 
   const refresh = useCallback(async () => {
     setRows(await searchProducts(db, {
@@ -379,7 +382,7 @@ export default function Inventory() {
                   HSN cell the heading row did not, which pushed every heading after
                   it one column left of its figures. */}
               <th>Item</th><th>Barcode</th><th>{features.tieredPricing ? 'Quantity ladder' : 'Price list'}</th>
-              <th>HSN</th><th className="r">GST</th><th className="r">MRP</th><th className="r">Rate</th>
+              <th>HSN</th><th className="r">GST</th><th className="r">MRP</th><th className="r" title="The last price paid, or your cost price if newer; before GST">Cost</th><th className="r">Rate</th>
               <th className="r">On hand</th><th />
             </tr>
           </thead>
@@ -409,6 +412,7 @@ export default function Inventory() {
                 <td className="num">{p.hsnCode ?? <Missing />}</td>
                 <td className="r num">{Tax.bpToPercent(p.taxRateBp)}%</td>
                 <td className="r">{p.mrp !== null ? <Rupees value={p.mrp} /> : <Missing />}</td>
+                <td className="r" title={costs.has(p.id) ? costNote(costs.get(p.id)!) : 'No cost known yet'}>{costs.has(p.id) ? <Rupees value={costs.get(p.id)!.unitCost} /> : <Missing />}</td>
                 <td className="r"><Rupees value={p.baseRate} /></td>
                 <td className="r num" style={{ color: p.qtyOnHand <= 0 ? 'var(--danger)' : undefined }}>
                   {Quantity.formatQty(p.qtyOnHand)} {p.baseUnit}
@@ -432,7 +436,7 @@ export default function Inventory() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={9}><Empty>No products match</Empty></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={10}><Empty>No products match</Empty></td></tr>}
           </tbody>
         </table>
       </div>
