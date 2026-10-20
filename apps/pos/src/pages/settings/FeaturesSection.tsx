@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react'
+import { sharedBarcodes, type BarcodeOnSeveral } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
-import { Card } from '../../ui/components'
+import { Alert, Card } from '../../ui/components'
 import { Intro, Switch } from './parts'
 
 /**
@@ -9,7 +11,15 @@ import { Intro, Switch } from './parts'
  * saved is deleted, and turning it back on finds it where it was.
  */
 export function FeaturesSection() {
-  const { features, setFeatureFlag } = useCore()
+  const { db, features, setFeatureFlag } = useCore()
+  // Codes already on several items: left as they are, and listed so the owner can sort them out.
+  const [onSeveral, setOnSeveral] = useState<BarcodeOnSeveral[]>([])
+  useEffect(() => {
+    if (!features.uniqueBarcode) return
+    let live = true
+    void sharedBarcodes(db).then((s) => { if (live) setOnSeveral(s) })
+    return () => { live = false }
+  }, [db, features.uniqueBarcode])
 
   return (
     <>
@@ -32,6 +42,29 @@ export function FeaturesSection() {
             + 'scan that stopped finding its item would be the worst thing this switch could do.'
           }
         />
+        <Switch
+          id="feature-unique-barcode"
+          on={features.uniqueBarcode}
+          onChange={(on) => void setFeatureFlag('uniqueBarcode', on)}
+          title="One item per barcode"
+          note={
+            'On, a barcode another item already has is refused, in the item form and in a '
+            + 'catalogue file, and says which item has it. Off, the same code may go on two items '
+            + '— one EAN on two pack sizes — and scanning it asks which. Codes already on two '
+            + 'items are left as they are, and listed here so you can sort them out.'
+          }
+        />
+        {features.uniqueBarcode && onSeveral.length > 0 && (
+          <Alert kind="warn">
+            <p>{onSeveral.length === 1 ? 'One code is' : `${onSeveral.length} codes are`} still on more than one item:</p>
+            <ul>
+              {onSeveral.slice(0, 20).map((s) => (
+                <li key={s.barcode}>{s.barcode}: {s.items.map((i) => i.productName).join(', ')}</li>
+              ))}
+            </ul>
+            {onSeveral.length > 20 && <p>and {onSeveral.length - 20} more.</p>}
+          </Alert>
+        )}
         <Switch
           id="feature-tiered-pricing"
           on={features.tieredPricing}

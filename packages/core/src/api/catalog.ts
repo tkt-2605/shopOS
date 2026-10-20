@@ -40,8 +40,8 @@ export {
   setVariantOf, variantFamily,
 } from '../services/grouping.js'
 export type { Category, CategoryResult, VariantMember, VariantResult } from '../services/grouping.js'
-export { listBarcodes, setBarcodes, productIdForBarcode, productIdsForBarcode } from '../services/barcodes.js'
-export type { Barcode, BarcodeInput, SetBarcodesResult, SharedBarcode } from '../services/barcodes.js'
+export { listBarcodes, setBarcodes, productIdForBarcode, productIdsForBarcode, barcodesTaken, sharedBarcodes } from '../services/barcodes.js'
+export type { Barcode, BarcodeInput, SetBarcodesResult, SharedBarcode, BarcodeOnSeveral } from '../services/barcodes.js'
 export { pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
 export type { BillPricingContext, ResolvedLinePrice } from '../repos/pricing.js'
 export {

@@ -9,7 +9,7 @@ import { parseCsvRecords, toCsv } from '../domain/csv.js'
 import { isHsn } from '../domain/hsn.js'
 import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
-import { addPrimaryBarcode } from './barcodes.js'
+import { addPrimaryBarcode, importRowsTakingACode } from './barcodes.js'
 import { requirePermission } from '../integrity/permissions.js'
 import { importRowsUnderCost } from './belowCost.js'
 
@@ -278,10 +278,7 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
       action: productId === null ? 'create' : 'update',
       problem: null,
       productId,
-      brand,
-      category,
-      barcode,
-      hsn,
+      brand, category, barcode, hsn,
       taxRateBp: taxRateBp === null ? null : taxRateBp,
       rate: rate === null ? null : rate,
       mrp: mrp === null ? null : mrp,
@@ -297,6 +294,9 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     rate: r.rate, cost: r.cost, taxRateBp: r.taxRateBp,
   })))
   for (const row of planned) if (under.has(row.line)) { row.problem = 'BELOW_COST'; row.action = null }
+  // And whose a code becomes, where the shop holds every code to one item (`uniqueBarcode`).
+  const taken = await importRowsTakingACode(db, planned.filter((r) => r.problem === null).map((r) => ({ key: r.line, productId: r.productId, barcode: r.barcode })))
+  for (const row of planned) if (taken.has(row.line)) { row.problem = 'BARCODE_TAKEN'; row.action = null }
 
   return {
     headers,

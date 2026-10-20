@@ -65,7 +65,7 @@ describe('one barcode on several items (069)', () => {
     await setBarcodes(fx.db, ctx(), small, [{ barcode: '8901234567890' }])
 
     const result = await setBarcodes(fx.db, ctx(), large, [{ barcode: '8901234567890' }])
-    expect(result.shared).toEqual([{ barcode: '8901234567890', productId: small, productName: 'Glue 50ml' }])
+    expect(result).toMatchObject({ ok: true, shared: [{ barcode: '8901234567890', productId: small, productName: 'Glue 50ml' }] })
     expect((await listBarcodes(fx.db, large)).map((b) => b.barcode)).toEqual(['8901234567890'])
     // And the first item still has it: the second did not take it away.
     expect((await listBarcodes(fx.db, small)).map((b) => b.barcode)).toEqual(['8901234567890'])
@@ -101,7 +101,7 @@ describe('one barcode on several items (069)', () => {
     const p = await makeProduct(fx.db, { name: 'Glue 50ml' })
     await setBarcodes(fx.db, ctx(), p, [{ barcode: 'ONLY' }])
     expect(scanChoices(await searchProducts(fx.db, { term: 'ONLY' }))).toBeNull()
-    expect((await setBarcodes(fx.db, ctx(), p, [{ barcode: 'ONLY' }])).shared).toEqual([])
+    expect(await setBarcodes(fx.db, ctx(), p, [{ barcode: 'ONLY' }])).toMatchObject({ ok: true, shared: [] })
   })
 
   it('takes the code off one item without taking it off the other', async () => {
@@ -132,6 +132,7 @@ describe('keeping the scan unambiguous', () => {
     const result = await setBarcodes(fx.db, ctx(), p, [
       { barcode: '  ' }, { barcode: 'ONE' }, { barcode: 'ONE' }, { barcode: '' },
     ])
+    if (!result.ok) throw new Error(result.code)
     expect(result.barcodes.map((b) => b.barcode)).toEqual(['ONE'])
   })
 

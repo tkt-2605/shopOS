@@ -4,6 +4,7 @@ import { q, schema } from '../db/q.js'
 import { derivedId } from '../ids.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { requirePermission } from '../integrity/permissions.js'
+import { isOn } from './features.js'
 
 /**
  * The barcodes an item answers to.
@@ -19,6 +20,10 @@ import { requirePermission } from '../integrity/permissions.js'
  * `products.barcode` stays as the primary — it is what lists show and what a
  * shelf tag is printed from — and this module is the only place that writes the
  * pair, so the two cannot drift. Everything else reads.
+ *
+ * A shop that wants every code to mean one item turns on `uniqueBarcode`
+ * (`features.ts`): then a code is refused on an item when another has it, in
+ * the form (`setBarcodes`) and in a file (`importRowsTakingACode`).
  */
 
 export interface Barcode {
@@ -40,12 +45,15 @@ export interface SharedBarcode {
   productName: string
 }
 
-export interface SetBarcodesResult {
-  ok: true
-  barcodes: Barcode[]
-  /** Codes this item now shares, with each other item that has them. Empty for most. */
-  shared: SharedBarcode[]
-}
+export type SetBarcodesResult =
+  | {
+      ok: true
+      barcodes: Barcode[]
+      /** Codes this item now shares, with each other item that has them. Empty for most. */
+      shared: SharedBarcode[]
+    }
+  /** `uniqueBarcode` is on and these codes are already other items'. Nothing was written. */
+  | { ok: false; code: 'BARCODE_TAKEN'; taken: SharedBarcode[] }
 
 export async function listBarcodes(db: SqlDriver, productId: string): Promise<Barcode[]> {
   const rows = await q(db)
@@ -72,7 +80,9 @@ export async function listBarcodes(db: SqlDriver, productId: string): Promise<Ba
  * A code another item already has is saved, and named in `shared`. It used to
  * be refused -- a scan that could mean two things was judged worse than one
  * that means nothing -- and a shop with one EAN on two pack sizes could then
- * give only one of them its code. The scan asks instead.
+ * give only one of them its code. The scan asks instead. With `uniqueBarcode`
+ * on it is refused again (`barcodesTaken`), but only a code this item does not
+ * already have, so an item that shares one from before can still be saved.
  */
 export async function setBarcodes(
   db: SqlDriver,
@@ -92,6 +102,9 @@ export async function setBarcodes(
 
   const now = (ctx.now ?? (() => new Date().toISOString()))()
   const before = await listBarcodes(db, productId)
+
+  const taken = await barcodesTaken(db, productId, cleaned.map((b) => b.barcode))
+  if (taken.length > 0) return { ok: false, code: 'BARCODE_TAKEN', taken }
 
   await db.transaction(async (tx) => {
     /* Taken off, not deleted (056): a removal is an edit and merges like one,
@@ -215,6 +228,78 @@ async function alsoOn(db: SqlDriver, productId: string, codes: string[]): Promis
       isNull(schema.products.deletedAt),
     ))
     .orderBy(schema.productBarcodes.barcode, schema.products.name)
+}
+
+/**
+ * The codes among these that would be refused on this item: empty unless
+ * `uniqueBarcode` is on, and then each code another item has that this one
+ * does not have already. `productId` is null for an item not saved yet.
+ *
+ * Exported so a screen can ask before it saves anything, rather than save the
+ * item and then be refused its barcodes; `setBarcodes` asks again regardless.
+ */
+export async function barcodesTaken(
+  db: SqlDriver, productId: string | null, codes: readonly string[],
+): Promise<SharedBarcode[]> {
+  const wanted = [...new Set(codes.map((c) => c.trim()).filter((c) => c !== ''))]
+  if (wanted.length === 0 || !(await isOn(db, 'uniqueBarcode'))) return []
+  const own = productId === null ? new Set<string>() : new Set((await listBarcodes(db, productId)).map((b) => b.barcode))
+  const fresh = wanted.filter((c) => !own.has(c))
+  return fresh.length === 0 ? [] : alsoOn(db, productId ?? '', fresh)
+}
+
+/** A code on more than one item, and the items: what Settings lists while `uniqueBarcode` is on. */
+export interface BarcodeOnSeveral {
+  barcode: string
+  items: { productId: string; productName: string }[]
+}
+
+/** Every code now on more than one item, by code. Empty for most shops. */
+export async function sharedBarcodes(db: SqlDriver): Promise<BarcodeOnSeveral[]> {
+  const rows = await q(db)
+    .select({
+      barcode: schema.productBarcodes.barcode,
+      productId: schema.productBarcodes.productId,
+      productName: schema.products.name,
+    })
+    .from(schema.productBarcodes)
+    .innerJoin(schema.products, eq(schema.products.id, schema.productBarcodes.productId))
+    .where(and(isNull(schema.productBarcodes.deletedAt), isNull(schema.products.deletedAt)))
+    .orderBy(schema.productBarcodes.barcode, schema.products.name)
+  const byCode = new Map<string, BarcodeOnSeveral>()
+  for (const r of rows) {
+    const entry = byCode.get(r.barcode) ?? { barcode: r.barcode, items: [] }
+    if (!entry.items.some((i) => i.productId === r.productId)) entry.items.push({ productId: r.productId, productName: r.productName })
+    byCode.set(r.barcode, entry)
+  }
+  return [...byCode.values()].filter((e) => e.items.length > 1)
+}
+
+/**
+ * Rows of a catalogue file that would put a code on a second item while
+ * `uniqueBarcode` is on, by `key`: a new item with a code the shop already
+ * has, an item given a code another has, or a code the file has already given
+ * to an earlier row's item. The first row to claim a code keeps it. Rows
+ * already refused for something else are not passed in. `services/import.ts`
+ * turns these into `BARCODE_TAKEN`.
+ */
+export async function importRowsTakingACode(db: SqlDriver, rows: readonly {
+  key: number; productId: string | null; barcode: string | null
+}[]): Promise<Set<number>> {
+  const refused = new Set<number>()
+  const coded = rows.filter((r) => r.barcode !== null && r.barcode.trim() !== '')
+  if (coded.length === 0 || !(await isOn(db, 'uniqueBarcode'))) return refused
+  const claimed = new Map<string, string>()
+  for (const row of [...coded].sort((a, b) => a.key - b.key)) {
+    const code = row.barcode!.trim()
+    const who = row.productId ?? `new:${row.key}`
+    const first = claimed.get(code)
+    if (first !== undefined && first !== who) { refused.add(row.key); continue }
+    const holders = await productIdsForBarcode(db, code)
+    if (holders.some((id) => id !== row.productId)) { refused.add(row.key); continue }
+    claimed.set(code, who)
+  }
+  return refused
 }
 
 /** Every item a scan could mean. Empty for a code the shop does not have. */

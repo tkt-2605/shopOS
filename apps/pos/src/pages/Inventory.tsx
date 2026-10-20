@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Money, Quantity, Tax, Permissions, searchProducts, recomputeStock, listBarcodes, setBarcodes,
+  Money, Quantity, Tax, Permissions, searchProducts, recomputeStock, listBarcodes, setBarcodes, barcodesTaken,
   listUnits, setUnits, listCategories, createCategory, renameCategory, removeCategory,
   setProductCategory, setVariantOf, setLadder, laddersFor, defaultPriceListId, Ladder,
   setProductActive, saveProductDetails, costHint, type Category, type ProductListItem, type CostHint,
@@ -91,6 +91,9 @@ export default function Inventory() {
     if (!Number.isFinite(percent)) { setNotice('The tax rate is not a number. Nothing was saved.'); return }
     const cessPercent = draft.noGst || draft.cessPercent.trim() === '' ? 0 : Number(draft.cessPercent)
     if (!Number.isFinite(cessPercent)) { setNotice('The cess rate is not a number. Nothing was saved.'); return }
+    // One item per barcode (Settings, Features): asked before anything is written, so a refusal saves nothing.
+    const taken = await barcodesTaken(db, draft.id, draft.barcodes.map((b) => b.barcode))
+    if (taken.length > 0) { setNotice(`${takenMessage(taken)} Nothing was saved.`); return }
 
     // Through the core, which checks the figures and writes the change to the
     // history. The barcode column is not written here: setBarcodes owns the pair
@@ -131,7 +134,9 @@ export default function Inventory() {
     }
     const productId = saved.productId
     // A code another item has is saved too (069); the scan will ask which, and the owner is told so.
-    const { shared } = await setBarcodes(db, { actorId: user.id }, productId, draft.barcodes)
+    const coded = await setBarcodes(db, { actorId: user.id }, productId, draft.barcodes)
+    if (!coded.ok) { setNotice(`The item was saved; its barcodes were not. ${takenMessage(coded.taken)}`); await refresh(); return }
+    const { shared } = coded
 
     const units = await setUnits(db, { actorId: user.id }, productId, draft.units
       .filter((u) => u.saleUnit.trim() !== '')
@@ -480,4 +485,10 @@ export default function Inventory() {
 /** A cell with nothing in it, said the same quiet way in every column. */
 function Missing() {
   return <span style={{ color: 'var(--ink-3)' }}>—</span>
+}
+
+/** A code refused because the shop holds each code to one item. */
+function takenMessage(taken: readonly { barcode: string; productName: string }[]): string {
+  const which = taken.map((t) => `${t.barcode} is already on ${t.productName}`).join('; ')
+  return `${which}. Each barcode is on one item only (Settings, Features).`
 }

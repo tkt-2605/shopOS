@@ -1369,6 +1369,26 @@ Open: the installer cannot add a firewall rule while it installs per-user;
 stage 7 (the cloud as main, the home till, the grace window on the cloud)
 waits for the cloud peer.
 
+## One item per barcode, as a switch (20 October)
+
+Settings, Features gains **One item per barcode** (`uniqueBarcode`), off by
+default. Since 069 a code may be on several items and the scan asks which;
+some shops want a code to mean one item and nothing else. On, a code another
+item has is refused in the item form (`setBarcodes`, and `barcodesTaken`,
+which the form asks before writing anything, so a refusal never leaves half
+an item saved) and in a catalogue file (`importRowsTakingACode`, as
+`BARCODE_TAKEN`; within a file the first row to claim a code keeps it).
+
+- **Enforced in the service, not by an index**, for `uniquePhone`'s reason: a
+  shop that already shares codes must not be locked out. Only a code new to
+  the item is refused, so an item sharing one from before still saves, and
+  Settings lists every code still on several items while the switch is on.
+- **Two tills apart** can each give one code to a different item. That is not
+  refused at the merge -- refusing a synced row would strand it -- and the
+  scan asks, as it does with the switch off; the Settings list shows it.
+- A file row with a code exactly one item has, under a new name, is still read
+  as that item renamed, as before.
+
 ## Nothing sells below cost; a discount can be a percentage (20 October)
 
 Asked for by the owner: never let a selling price or a sale go below cost,

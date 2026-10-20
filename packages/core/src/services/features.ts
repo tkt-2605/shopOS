@@ -50,6 +50,18 @@ export interface Features {
    */
   uniquePhone: boolean
   /**
+   * One item per barcode.
+   *
+   * Off, a code may be on several items (069) and a scan of it asks which. On,
+   * a code is refused on an item when another already has it -- in the item
+   * form and in a catalogue file. Codes already shared are left as they are and
+   * listed in Settings, for the same reason as `uniquePhone`: a shop must not
+   * be locked out of saving an item it has. Two tills apart can still each give
+   * one code to a different item; the scan asks, as it does with the switch off.
+   * See `services/barcodes.ts`.
+   */
+  uniqueBarcode: boolean
+  /**
    * Batch numbers and expiry dates.
    *
    * On, a stock entry asks for the batch and expiry of each line, the counter
@@ -68,6 +80,7 @@ const SETTING: Record<FeatureKey, string> = {
   multiBarcode: 'feature_multi_barcode',
   tieredPricing: 'feature_tiered_pricing',
   uniquePhone: 'feature_unique_phone',
+  uniqueBarcode: 'feature_unique_barcode',
   batchExpiry: 'feature_batch_expiry',
 }
 
@@ -75,6 +88,7 @@ const LABEL: Record<FeatureKey, string> = {
   multiBarcode: 'Several barcodes per item',
   tieredPricing: 'Quantity price breaks',
   uniquePhone: 'One customer per phone number',
+  uniqueBarcode: 'One item per barcode',
   batchExpiry: 'Batch numbers and expiry dates',
 }
 
@@ -84,7 +98,7 @@ const LABEL: Record<FeatureKey, string> = {
  * does mean never used.
  */
 export const FEATURES_OFF: Features = {
-  multiBarcode: false, tieredPricing: false, uniquePhone: false, batchExpiry: false,
+  multiBarcode: false, tieredPricing: false, uniquePhone: false, uniqueBarcode: false, batchExpiry: false,
 }
 
 export async function loadFeatures(db: SqlDriver): Promise<Features> {

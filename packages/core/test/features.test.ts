@@ -33,10 +33,11 @@ function rungs(text: string) {
 describe('what a shop starts with', () => {
   /* The extras are off until asked for, batches too since 062. The phone rule
      is the exception and deliberately so: entering the same customer twice is a mistake, not a
-     capability, so a fresh shop is protected from it without being asked. */
+     capability, so a fresh shop is protected from it without being asked. One item per barcode starts off: a
+     shared code is a real thing (069), and the scan asks. */
   it('starts simple, but already refusing a duplicate phone number', async () => {
     expect(await loadFeatures(fx.db)).toEqual({
-      multiBarcode: false, tieredPricing: false, uniquePhone: true, batchExpiry: false,
+      multiBarcode: false, tieredPricing: false, uniquePhone: true, uniqueBarcode: false, batchExpiry: false,
     })
   })
 
