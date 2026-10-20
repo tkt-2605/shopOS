@@ -17,6 +17,17 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.4.0': {
+    title: 'Cost prices, and nothing sold below cost by mistake',
+    points: [
+      'Nothing can be sold, or priced, below what it cost. A bill, an item\'s rate, a price list rate or a delivery\'s selling price under cost is stopped and says which item and by how much. The owner can go ahead anyway, and it is recorded.',
+      'The bill discount can now be a percentage: switch between ₹ and % beside it. The totals warn while you type if the discount takes an item below cost.',
+      'An item has a cost price, set when you add it. Stock In and purchase orders start each cost at the last price paid, and a blank purchase order rate is no longer filled from the selling price.',
+      'Type a cost before GST or with GST: the Excl. GST / Incl. GST switch above the cost shows the same cost the other way, and the till remembers which you use.',
+      'An item with no GST is now one tick, No GST, on the item.',
+      'Reports to support now go by the shop\'s email instead of Telegram.',
+    ],
+  },
   '0.3.2': {
     title: 'Bills emailed to your customers, and simpler report settings',
     points: [
