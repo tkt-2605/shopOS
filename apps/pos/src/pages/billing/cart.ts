@@ -93,3 +93,21 @@ export function picksOf(lines: CartLine[]): Record<number, string> {
   lines.forEach((l, i) => { if (l.batchPick) picks[i + 1] = l.batchPick })
   return picks
 }
+
+/**
+ * The MRP for one of the line's sale units: the printed price of the batch the
+ * cashier chose, else the item's, both per base unit -- so a box of 12 shows
+ * twelve times the piece's. Null where the packet has none.
+ */
+export function mrpOf(line: CartLine): number | null {
+  const perBase = line.batchMrp ?? line.product.mrp
+  if (perBase == null) return null
+  const factor = line.units.find((u) => u.saleUnit === line.saleUnit)?.baseUnits ?? Quantity.fromUnits(1)
+  return Math.round((perBase * factor) / Quantity.QTY_SCALE)
+}
+
+/** Whether the line is charged more than its MRP, which the law does not allow. A before-tax rate is not compared. */
+export function aboveMrp(line: CartLine): boolean {
+  const mrp = mrpOf(line)
+  return mrp !== null && line.includesTax !== false && line.rate > mrp
+}

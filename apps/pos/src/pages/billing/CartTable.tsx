@@ -2,7 +2,7 @@ import { Money, Quantity, Pricing, type Totals } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import type { CartLine } from '../../core/useBillTabs'
 import { Empty, Rupees } from '../../ui/components'
-import type { ShortLine } from './cart'
+import { aboveMrp, mrpOf, type ShortLine } from './cart'
 import { LineBatch } from './LineBatch'
 
 /**
@@ -27,6 +27,7 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
               <th>Item</th>
               <th style={{ width: 100 }}>Unit</th>
               <th className="r" style={{ width: 96 }}>Qty</th>
+              <th className="r" style={{ width: 96 }}>MRP</th>
               <th className="r" style={{ width: 110 }}>Rate</th>
               <th className="r" style={{ width: 110 }}>Amount</th>
               <th style={{ width: 40 }} />
@@ -44,10 +45,7 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
                       </span>
                     )}
                   </div>
-                  <div className="src">
-                    {Pricing.describeSource(line.source)}
-                    {line.batchMrp != null && <> · MRP {Money.formatWithSymbol(line.batchMrp as Money.Money)}</>}
-                  </div>
+                  <div className="src">{Pricing.describeSource(line.source)}</div>
                   {features.batchExpiry && line.qty > 0 && (
                     <LineBatch
                       productId={line.product.id}
@@ -87,6 +85,11 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
                     onChange={(e) => onEdit(line.key, (l) => ({ ...l, qty: Math.max(0, Number(e.target.value) || 0) }))}
                   />
                 </td>
+                {/* The printed price on the packet, for the unit being sold. A rate above it is said in red: the law caps a sale at MRP. */}
+                <td className="r num" style={{ color: aboveMrp(line) ? 'var(--danger)' : undefined }}
+                  title={aboveMrp(line) ? 'The rate is above the MRP' : undefined}>
+                  {mrpOf(line) === null ? '' : Money.format(mrpOf(line) as Money.Money)}
+                </td>
                 <td className="r">
                   {canOverridePrice || line.product.openPrice ? (
                     <input
@@ -120,7 +123,7 @@ export function CartTable({ lines, totals, short, canOverridePrice, onEdit, onRa
               </tr>
             ))}
             {lines.length === 0 && (
-              <tr><td colSpan={6}><Empty>Scan an item to start a bill</Empty></td></tr>
+              <tr><td colSpan={7}><Empty>Scan an item to start a bill</Empty></td></tr>
             )}
           </tbody>
         </table>
