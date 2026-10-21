@@ -301,3 +301,42 @@ describe('the item form', () => {
     expect(screen.getByText(/Latest, before GST: last paid ₹285\.00 on 15 Oct 2026 · Sakthi Agencies/)).toBeTruthy()
   })
 })
+
+describe('a quotation', () => {
+  const config = {
+    kinds: ['quotation' as const],
+    party: 'customer' as const,
+    labels: { quotation: { name: 'Quotation', plural: 'Quotations', note: '' } },
+  }
+
+  async function quote() {
+    render(<Draft config={config} kind="quotation" onClose={vi.fn()} onDone={vi.fn()}
+      onError={vi.fn()} registerId={seed.registerId} userId={adminId} />)
+    const box = screen.getByPlaceholderText(/Scan or search an item/)
+    fireEvent.change(box, { target: { value: 'A4' } })
+    await waitFor(() => expect(screen.getAllByText(/A4 Copier Paper/).length).toBeGreaterThan(0))
+    fireEvent.keyDown(box, { key: 'Enter' })
+  }
+  const rateBox = () => screen.getByLabelText('Rate') as HTMLInputElement
+
+  it('shows in a blank rate the price that will be filled in, not the words "list price"', async () => {
+    await quote()
+    await waitFor(() => expect(rateBox().placeholder).toBe('340.00'))
+    expect(rateBox().value).toBe('')
+  })
+
+  it('shows the customer their own price once they are chosen', async () => {
+    const { createCustomer, setCustomerPrice } = await import('@shopos/core')
+    const made = await createCustomer(db, { actorId: adminId }, { name: 'Ravi Traders' })
+    if (!made.ok) throw new Error(made.code)
+    const priced = await setCustomerPrice(db, { actorId: adminId }, {
+      customerId: made.customerId, productId: paper, saleUnit: 'piece', rate: 31000 as never,
+    })
+    if (!priced.ok) throw new Error(priced.code)
+    await quote()
+    await waitFor(() => expect(rateBox().placeholder).toBe('340.00'))
+    await waitFor(() => expect(document.querySelector(`option[value="${made.customerId}"]`)).toBeTruthy())
+    fireEvent.change(document.getElementById('doc-party')!, { target: { value: made.customerId } })
+    await waitFor(() => expect(rateBox().placeholder).toBe('310.00'))
+  })
+})

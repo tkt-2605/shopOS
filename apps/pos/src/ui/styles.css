@@ -355,6 +355,8 @@ tbody tr:hover { background: var(--accent-soft); }
   background: var(--surface); color: var(--ink);
   border: 1px solid var(--rule-strong); border-radius: 0;
 }
+/* Pale, as every box's placeholder: a quotation's blank rate shows what the list will fill in. */
+.qty-input::placeholder { color: var(--ink-3); }
 
 /* The unit on a cart line sizes to its own options rather than to whatever the
    column has left over. `.select` is width:100%, and in a table cell that means

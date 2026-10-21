@@ -72,6 +72,9 @@ export function BillBody({
           {bill.discount > 0 && <div className="total-line"><span>Discount</span><Rupees value={bill.discount} /></div>}
           <div className="total-line"><span>Taxable</span><Rupees value={bill.taxableTotal} /></div>
           <div className="total-line"><span>GST</span><Rupees value={bill.taxTotal} /></div>
+          {/* Printed on the receipt as its own line (Settings, Tax & billing), so said here too:
+              without it the total is a few paise from taxable plus GST, and nothing says why. */}
+          {bill.roundOff !== 0 && <div className="total-line"><span>Round off</span><Rupees value={bill.roundOff} /></div>}
           <div className="total-line grand"><span>Total</span><Rupees value={bill.grandTotal} /></div>
         </div>
       </div>

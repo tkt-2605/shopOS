@@ -17,6 +17,14 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.4.4': {
+    title: 'Quotation rates you can see, and the round off on every bill',
+    points: [
+      'On a quotation or sales order, a blank rate now shows, in light grey, the price it will be filled with: the customer\'s own price or price list, or the shelf rate. Type over it to quote something else.',
+      'The Roughly total on a quotation uses those same prices.',
+      'A bill opened from Bills now shows its Round off line, as the receipt does. Rounding is set in Settings, Tax & billing.',
+    ],
+  },
   '0.4.3': {
     title: 'Quicker HSN and GST, and prices typed with or without GST',
     points: [

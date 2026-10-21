@@ -13,6 +13,7 @@ import type { DeskConfig, Line } from './types'
 import { costNote } from '../costNote'
 import { pairOf, type Side } from '../gstPair'
 import { GstSwitch, useGstMode } from '../GstSwitch'
+import { useListRates } from './useListRates'
 
 /**
  * A new document, or -- given `editing` -- a draft opened again to change it.
@@ -110,6 +111,9 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
     },
   })
 
+  /** What a blank rate box will be filled with on save, for a customer's document. */
+  const listRates = useListRates(db, lines, partyId || null, !forSupplier)
+
   /* A rough figure, before tax and before the price list has been consulted.
      The real total is computed by the service through the same resolver the
      counter uses, and replaces this the moment the document is saved. */
@@ -120,9 +124,9 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
        price, which is what the shop sells at. */
     const rate = forSupplier
       ? pairOf(l.rate, l.rateSide ?? 'before', l.product.taxRateBp, l.product.cessRateBp).beforeValue ?? 0
-      : Money.parseMoney(l.rate) ?? l.product.baseRate
+      : Money.parseMoney(l.rate) ?? listRates.get(l.key) ?? l.product.baseRate
     return sum + Math.round(qty * rate)
-  }, 0), [lines, forSupplier])
+  }, 0), [lines, forSupplier, listRates])
 
   async function save(issue: boolean) {
     if (!registerId) { onError('This machine is not set to a counter yet. Settings → Set up → Counters.'); return }
@@ -296,7 +300,8 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
                   </td>
                 ) : (
                   <td className="r">
-                    <input className="qty-input num" placeholder="list price" value={l.rate}
+                    <input className="qty-input num" aria-label="Rate" value={l.rate}
+                      placeholder={listRates.has(l.key) ? Money.format(listRates.get(l.key)!) : 'list price'}
                       onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, rate: e.target.value } : x))} />
                   </td>
                 )}
