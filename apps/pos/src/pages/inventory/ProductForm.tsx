@@ -1,12 +1,11 @@
-import {
-  hsnProblem, HSN_SHAPE_MESSAGE, type Category, type CostHint,
-} from '@shopos/core'
-import { costNote } from '../../ui/costNote'
+import type { Category, CostHint } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { Field } from '../../ui/components'
 import { LadderEditor } from '../../ui/LadderEditor'
 import { Results } from '../../ui/PickList'
 import type { Draft } from './draft'
+import { PriceFields } from './PriceFields'
+import { TaxFields } from './TaxFields'
 import type { ParentSearch } from './useParentSearch'
 
 /**
@@ -53,67 +52,8 @@ export function ProductForm({
           <input className="input" id="p-brand" value={draft.brand}
             onChange={(e) => setDraft({ ...draft, brand: e.target.value })} />
         </Field>
-        {/* The boxes are hidden, not emptied: untick it and what was typed is
-            still there. Saved, a ticked item carries no GST and no cess. */}
-        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', gridColumn: '1 / -1' }}>
-          <input type="checkbox" id="p-no-gst" checked={draft.noGst}
-            onChange={(e) => setDraft({ ...draft, noGst: e.target.checked })} />
-          <span style={{ fontSize: 12.5 }}>
-            No GST on this item
-            <span style={{ display: 'block', fontSize: 11.5, color: 'var(--ink-3)' }}>
-              Billed with no tax at all, the same as a 0% item.
-            </span>
-          </span>
-        </label>
-        {!draft.noGst && (
-          <>
-            {/* Warned, never blocked. Somebody entering three hundred items off
-                a supplier's list is the person most likely to mistype one and
-                least able to stop and look it up — and an item that cannot be
-                saved is an item that cannot be sold. */}
-            <Field
-              label="HSN code"
-              {...(hsnProblem(draft.hsnCode) ? { hint: HSN_SHAPE_MESSAGE } : {})}
-            >
-              <input className="input num" id="p-hsn" value={draft.hsnCode}
-                onChange={(e) => setDraft({ ...draft, hsnCode: e.target.value })} />
-            </Field>
-            <Field label="GST %">
-              <input className="input num" id="p-gst" value={draft.taxPercent}
-                onChange={(e) => setDraft({ ...draft, taxPercent: e.target.value })} />
-            </Field>
-            {/* Compensation cess: tobacco, pan masala, aerated drinks. Blank for
-                nearly everything a shop sells, which is why it says so. */}
-            <Field label="Cess %" hint="Only for goods that carry compensation cess. Leave blank otherwise.">
-              <input className="input num" id="p-cess" value={draft.cessPercent} placeholder="None"
-                onChange={(e) => setDraft({ ...draft, cessPercent: e.target.value })} />
-            </Field>
-          </>
-        )}
-        <Field label="Selling rate" hint="Tax inclusive.">
-          <input className="input num" id="p-rate" value={draft.baseRate}
-            onChange={(e) => setDraft({ ...draft, baseRate: e.target.value })} />
-        </Field>
-        <Field
-          label="MRP"
-          hint="The price printed on the packet. Leave blank if there is none. When it is
-                above the selling rate, the receipt shows it and what the customer saved."
-        >
-          <input className="input num" id="p-mrp" value={draft.mrp}
-            onChange={(e) => setDraft({ ...draft, mrp: e.target.value })} />
-        </Field>
-        {/* A default for whoever types a cost next, not the item's value: stock
-            is valued from what each delivery cost, so a wrong figure here can
-            only ever be a wrong suggestion. */}
-        <Field
-          label="Cost price"
-          hint={lastCost
-            ? `Per ${draft.baseUnit || 'unit'}, before tax. Latest: ${costNote(lastCost)}.`
-            : `What one ${draft.baseUnit || 'unit'} costs you, before tax. Fills in Stock In and purchase orders until you have bought it in.`}
-        >
-          <input className="input num" id="p-cost" value={draft.costPrice} placeholder="Not set"
-            onChange={(e) => setDraft({ ...draft, costPrice: e.target.value })} />
-        </Field>
+        <TaxFields draft={draft} setDraft={setDraft} />
+        <PriceFields draft={draft} setDraft={setDraft} lastCost={lastCost} />
         {!draft.id && (
           <Field label="Unit">
             <input className="input" id="p-unit" value={draft.baseUnit}

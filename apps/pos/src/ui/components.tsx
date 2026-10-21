@@ -114,8 +114,13 @@ export function Card({ title, actions, children }: { title?: string | undefined;
 const LABELABLE = new Set(['input', 'select', 'textarea'])
 
 export function Field({
-  label, hint, children,
-}: { label: string; hint?: string | undefined; children: ReactNode }) {
+  label, hint, aside, children,
+}: {
+  label: string; hint?: string | undefined
+  /** Beside the label, at the right: a small switch that says how the box is read. */
+  aside?: ReactNode
+  children: ReactNode
+}) {
   const made = useId()
   const hintId = `${made}-hint`
 
@@ -131,7 +136,14 @@ export function Field({
 
   return (
     <div className="field">
-      <label htmlFor={control ? controlId : undefined}>{label}</label>
+      {aside
+        ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <label htmlFor={control ? controlId : undefined}>{label}</label>
+            {aside}
+          </div>
+        )
+        : <label htmlFor={control ? controlId : undefined}>{label}</label>}
       {control
         ? cloneElement(control, {
             id: controlId,

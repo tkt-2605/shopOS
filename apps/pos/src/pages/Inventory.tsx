@@ -15,6 +15,7 @@ import { describeRowsProblem } from '../ui/LadderEditor'
 import { useShopChanged } from '../core/useShopChanged'
 import { CatalogueFile } from '../ui/CatalogueFile'
 import { BLANK, levelOf, type Draft } from './inventory/draft'
+import { stored } from './inventory/prices'
 import { useParentSearch } from './inventory/useParentSearch'
 import { useCostHints } from './inventory/useCostHints'
 import { costNote } from '../ui/costNote'
@@ -77,18 +78,16 @@ export default function Inventory() {
 
     /* Said, not assumed. A price typed as "12.3.4" used to save the item at
        ₹0, and a tax rate that was not a number saved it untaxed. */
-    const rate = draft.baseRate.trim() === '' ? Money.ZERO : Money.parseMoney(draft.baseRate)
-    if (rate === null || rate < 0) { setNotice('The price is not an amount. Nothing was saved.'); return }
+    // Kept with GST, whichever side it was typed on (`inventory/prices.ts`).
+    const rate = stored(draft, draft.baseRate, draft.rateSide, 'with') ?? Money.ZERO
+    if (rate === 'bad') { setNotice('The price is not an amount. Nothing was saved.'); return }
     /* Null, not zero. A packet with no printed price is not a packet printed
        with ₹0, and the receipt only shows the MRP line when there is one. */
     const mrp = draft.mrp.trim() === '' ? null : Money.parseMoney(draft.mrp)
     if (mrp !== null && mrp < 0) { setNotice('The MRP cannot be below zero. Nothing was saved.'); return }
     if (draft.mrp.trim() !== '' && mrp === null) { setNotice('The MRP is not an amount. Nothing was saved.'); return }
-    const cost = draft.costPrice.trim() === '' ? null : Money.parseMoney(draft.costPrice)
-    if (draft.costPrice.trim() !== '' && (cost === null || cost < 0)) {
-      setNotice('The cost price is not an amount. Nothing was saved.')
-      return
-    }
+    const cost = stored(draft, draft.costPrice, draft.costSide, 'before')
+    if (cost === 'bad') { setNotice('The cost price is not an amount. Nothing was saved.'); return }
     // No GST is a rate of nothing and no cess, whatever the hidden boxes still hold.
     const percent = draft.noGst || draft.taxPercent.trim() === '' ? 0 : Number(draft.taxPercent)
     if (!Number.isFinite(percent)) { setNotice('The tax rate is not a number. Nothing was saved.'); return }
@@ -283,8 +282,8 @@ export default function Inventory() {
       hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
       cessPercent: p.cessRateBp === 0 ? '' : String(Tax.bpToPercent(p.cessRateBp)),
       noGst: p.taxRateBp === 0 && p.cessRateBp === 0,
-      baseRate: Money.format(p.baseRate), mrp: p.mrp === null ? '' : Money.format(p.mrp),
-      costPrice: p.costPrice === null ? '' : Money.format(p.costPrice),
+      baseRate: Money.format(p.baseRate), rateSide: 'with', mrp: p.mrp === null ? '' : Money.format(p.mrp),
+      costPrice: p.costPrice === null ? '' : Money.format(p.costPrice), costSide: 'before',
       baseUnit: p.baseUnit,
       discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
       returnBlocked: p.returnBlocked, stockTracked: p.isStockTracked, openPrice: p.openPrice,

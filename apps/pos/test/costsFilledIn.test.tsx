@@ -298,6 +298,6 @@ describe('the item form', () => {
       productId: paper, unitCost: 28500 as never, source: 'purchase', postedOn: '2026-10-15', supplierName: 'Sakthi Agencies', taxPerUnit: 0 as never,
     }} />)
     expect((document.getElementById('p-cost') as HTMLInputElement).value).toBe('280.00')
-    expect(screen.getByText(/Latest: last paid ₹285\.00 on 15 Oct 2026 · Sakthi Agencies/)).toBeTruthy()
+    expect(screen.getByText(/Latest, before GST: last paid ₹285\.00 on 15 Oct 2026 · Sakthi Agencies/)).toBeTruthy()
   })
 })

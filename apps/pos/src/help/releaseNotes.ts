@@ -17,6 +17,14 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.4.3': {
+    title: 'Quicker HSN and GST, and prices typed with or without GST',
+    points: [
+      'Adding an item, type its name and the HSN and GST of items you already have with that name are offered: a new brand of scissors offers your other scissors. One click fills both.',
+      'Type an HSN code and GST fills in at the rate your other items with that code carry. You can still change it.',
+      'Selling rate and Cost price on an item each have an Excl. GST / Incl. GST switch, and the line under each box shows the same price the other way.',
+    ],
+  },
   '0.4.2': {
     title: 'Edit draft quotations, see every Stock In, and safer main till changes',
     points: [

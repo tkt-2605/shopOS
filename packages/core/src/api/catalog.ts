@@ -18,6 +18,8 @@ export type {
   ProductListItem, SearchOptions, SaleUnitOption, CustomerListItem, CustomerDetail,
   BillListItem, BillDetail, BillDetailItem, CustomerOrder,
 } from '../repos/catalog.js'
+export { taxLikeName, taxForHsn, nameWords } from '../repos/catalog/taxLikes.js'
+export type { TaxLike } from '../repos/catalog/taxLikes.js'
 export { setProductActive, saveProductDetails } from '../services/products.js'
 export type { ProductDetails, SaveProductResult } from '../services/products.js'
 export {

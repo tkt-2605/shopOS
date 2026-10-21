@@ -1,5 +1,6 @@
 import { Quantity } from '@shopos/core'
 import type { LadderRow } from '../../ui/LadderEditor'
+import type { Side } from '../../ui/gstPair'
 
 /*
  * A product as the form holds it while it is being typed: strings where the
@@ -42,6 +43,8 @@ export interface Draft {
   /** GST compensation cess, as a percentage. Blank is none. */
   cessPercent: string
   baseRate: string
+  /** Which side of GST `baseRate` was typed on. Kept with it; see `prices.ts`. */
+  rateSide: Side
   /** The printed price on the packet. Blank when there is none. */
   mrp: string
   /**
@@ -49,6 +52,8 @@ export interface Draft {
    * for Stock In and purchase orders, never a valuation.
    */
   costPrice: string
+  /** Which side of GST `costPrice` was typed on. */
+  costSide: Side
   baseUnit: string
   discountBlocked: boolean
   loyaltyBlocked: boolean
@@ -77,7 +82,7 @@ export interface Draft {
 export const BLANK: Draft = {
   id: null, name: '', brand: '', barcodes: [{ barcode: '', label: '' }], units: [],
   categoryId: '', parentProductId: '', variantLabel: '', ladder: [], hsnCode: '', noGst: false, taxPercent: '12', cessPercent: '',
-  baseRate: '', mrp: '', costPrice: '', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
+  baseRate: '', rateSide: 'with', mrp: '', costPrice: '', costSide: 'before', baseUnit: 'piece', discountBlocked: false, loyaltyBlocked: false,
   returnBlocked: false, stockTracked: true, openPrice: false,
   reorderLevel: '', reorderQty: '',
 }
