@@ -156,6 +156,8 @@ export interface DocumentItemRow {
   fulfilledQty: Qty
   /** What is still to be billed or received on this line. */
   remainingQty: Qty
+  /** Of `fulfilledQty`, what was given up rather than received (078). */
+  closedQty: Qty
 }
 
 export interface DocumentDetail extends DocumentListItem {
@@ -252,6 +254,9 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
       cess: schema.documentItems.cessAmount,
       rateIncludesTax: schema.documentItems.rateIncludesTax,
       fulfilledQty: schema.documentItems.fulfilledQty,
+      // raw: a correlated sum per line, which the builder cannot say.
+      closedQty: sql<number>`(SELECT COALESCE(SUM(df.qty), 0) FROM document_fulfilments df
+        WHERE df.document_item_id = document_items.id AND df.target_kind = 'closed')`,
     })
     .from(schema.documentItems)
     .where(eq(schema.documentItems.documentId, id))
@@ -261,6 +266,7 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
     ...i,
     rateIncludesTax: i.rateIncludesTax === 1,
     remainingQty: Math.max(0, i.qty - i.fulfilledQty) as Qty,
+    closedQty: i.closedQty as Qty,
   }))
 
   const started = lines.filter((l) => l.fulfilledQty > 0).length

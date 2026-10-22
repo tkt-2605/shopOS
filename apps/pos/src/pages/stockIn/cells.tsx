@@ -47,6 +47,12 @@ export interface Line {
    */
   mrp: string
   sellAt: string
+  /**
+   * The purchase order line these goods came against, when Stock In is
+   * receiving an order, and what that line still had open. Absent on a line
+   * the order never asked for, which comes in as goods on the same bill.
+   */
+  orderLine?: { id: string; left: Quantity.Qty }
 }
 
 /**

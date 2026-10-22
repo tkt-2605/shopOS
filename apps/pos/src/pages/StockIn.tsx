@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Permissions,
-  searchProducts, createStockEntry, submitStockEntry, listSuppliers, createSupplier,
-  directionOf, signedQty, noCostBasis, costHint, batchesOf, Batches, periodClosedMessage,
+  searchProducts, createStockEntry, submitStockEntry, listSuppliers,
+  directionOf, signedQty, noCostBasis, Batches, receivePurchaseOrder,
   type ProductListItem, type StockEntryType, type Supplier, Tax, chargesTax,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { useConfirm } from '../ui/useConfirm'
-import { belowCostMessage, retryBelowCost } from '../ui/belowCost'
+import { retryBelowCost } from '../ui/belowCost'
 import { useAction } from '../core/useAction'
-import { Field, Modal, Empty, Alert, Rupees } from '../ui/components'
+import { Field, Empty, Alert, Rupees } from '../ui/components'
 import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
 import { useSearch } from '../ui/useSearch'
@@ -19,17 +19,11 @@ import type { Side } from '../ui/gstPair'
 import { GstSwitch, useGstMode } from '../ui/GstSwitch'
 import { costNote } from '../ui/costNote'
 import { StockInViews } from './stockIn/PastEntries'
-
-/* Each note says which way the shelf moves, because that is what the list is
-   choosing between. It used to ask for the direction back: “Wastage.
-   Negative.” meant typing a minus into a box that starts at 1, having already
-   picked Wastage from this list. `signedQty` settles it now. */
-const TYPES: { id: StockEntryType; name: string; note: string }[] = [
-  { id: 'purchase', name: 'Purchase', note: 'Goods received from a supplier. Stock goes up.' },
-  { id: 'opening', name: 'Opening stock', note: 'What was on the shelf when you started. Stock goes up.' },
-  { id: 'adjustment', name: 'Adjustment', note: 'Correcting a count. Type a minus to take stock off.' },
-  { id: 'wastage', name: 'Wastage', note: 'Damaged or expired. Stock goes down by what you enter.' },
-]
+import { EntryKindField, SupplierField } from './stockIn/header'
+import { takeOrderToReceive } from '../core/nav'
+import {
+  blankLine, orderLines, receivedLines, leftOnOrder, receiveRefusal, refusalMessage, ReceivingBanner,
+} from './stockIn/order'
 
 /** Stock In: a new entry, and every entry made (`stockIn/PastEntries.tsx`). */
 export default function StockIn() {
@@ -47,7 +41,6 @@ function NewEntry() {
   const [entryType, setEntryType] = useState<StockEntryType>('purchase')
   const [supplierId, setSupplierId] = useState('')
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [newSupplier, setNewSupplier] = useState<string | null>(null)
   const [reference, setReference] = useState('')
   /* A purchase is the supplier's bill (065): its number and date as printed,
      and their rounding, so what is owed is what they billed. */
@@ -68,6 +61,14 @@ function NewEntry() {
      not whether to warn. */
   const [unpriced, setUnpriced] = useState<Set<string>>(new Set())
   const [gstMode, setGstMode] = useGstMode()
+  /**
+   * The purchase order this entry is receiving, handed over by "Receive into
+   * stock" on the order. While it is set the entry is that order's delivery:
+   * a purchase, from its supplier, and posting it marks the order off.
+   */
+  const [order, setOrder] = useState<{ id: string; docNo: string } | null>(null)
+  /** What posting a delivery left open on its order, said once beside the posted note. */
+  const [orderNote, setOrderNote] = useState<string | null>(null)
 
   const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 25 }))
   const results = search.rows
@@ -82,40 +83,42 @@ function NewEntry() {
     void noCostBasis(db).then((rows) => setUnpriced(new Set(rows.map((r) => r.productId))))
   }, [db])
 
-  async function addSupplier() {
-    if (!newSupplier) return
-    setError(null)
-    const result = await createSupplier(db, { name: newSupplier, actorId: user.id })
-    if (!result.ok) {
-      setError(result.code === 'NAME_TAKEN' ? 'That supplier already exists — pick it from the list.' : 'Give the supplier a name.')
-      return
-    }
-    await loadSuppliers()
-    setSupplierId(result.supplierId)
-    setNewSupplier(null)
+  /* Claimed once, on mount: the order that sent the person here. */
+  useEffect(() => {
+    const id = takeOrderToReceive()
+    if (id) void loadOrder(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function loadOrder(id: string) {
+    const loaded = await orderLines(db, id, batched)
+    if (!loaded.ok) { setError(loaded.message); return }
+    const { order: o } = loaded
+    setEntryType('purchase')
+    setSupplierId(o.supplierId ?? '')
+    setReference(o.docNo)
+    setLines(o.lines)
+    setOrder({ id: o.id, docNo: o.docNo })
+    setDone(null)
+    setOrderNote(null)
   }
 
   async function add(product: ProductListItem) {
     setTerm('')
     // One delivery can carry two batches of one item, so with batches on the
     // same item may be added again, once per batch.
-    const [held, hint] = await Promise.all([
-      batched ? batchesOf(db, product.id, { inStockOnly: true }) : Promise.resolve([]),
-      // The last price paid, or the item's cost price: typed in for the person, who can change it.
-      costHint(db, product.id),
-    ])
-    setLines((prev) =>
-      !batched && prev.some((l) => l.product.id === product.id)
-        ? prev
-        : [...prev, {
-            key: `${product.id}-${Date.now()}`, product, qty: '1', held,
-            cost: hint ? Money.format(hint.unitCost) : '', costSide: 'before', hint, costFilled: hint !== null,
-            batchNo: '', expiry: '',
-            mrp: product.mrp !== null ? Money.format(product.mrp) : '',
-            sellAt: Money.format(product.baseRate),
-            gst: String(Tax.bpToPercent(product.taxRateBp)),
-            cess: product.cessRateBp ? String(Tax.bpToPercent(product.cessRateBp)) : '',
-          }])
+    const line = await blankLine(db, product, batched)
+    setLines((prev) => {
+      if (!batched && prev.some((l) => l.product.id === product.id)) return prev
+      /* A second batch of an item the order asked for counts against the
+         same order line, at the order's cost; anything else is goods the
+         order never asked for, coming in on the same bill. */
+      const sibling = order ? prev.find((l) => l.orderLine && l.product.id === product.id) : undefined
+      return [...prev, sibling
+        ? { ...line, qty: '0', cost: sibling.cost, costSide: sibling.costSide, costFilled: false,
+            gst: sibling.gst, cess: sibling.cess, orderLine: sibling.orderLine! }
+        : line]
+    })
   }
 
   /** Whether this line takes stock off, once the kind of entry and its sign have had their say. */
@@ -155,6 +158,7 @@ function NewEntry() {
 
   async function post() {
     setError(null)
+    setOrderNote(null)
     if (lines.some((l) => (Money.parseMoney(costText(l)) ?? 0) < 0)) {
       setError('A cost cannot be below zero.')
       return
@@ -174,6 +178,10 @@ function NewEntry() {
     }
     if (purchase && roundOff.trim() !== '' && Money.parseMoney(roundOff) === null) {
       setError('The round-off is not an amount. Put a minus in front of it if the bill was rounded down.')
+      return
+    }
+    if (order) {
+      await receive(order, expiries)
       return
     }
     const create = (allowBelowCost: boolean) => createStockEntry(db, {
@@ -204,38 +212,56 @@ function NewEntry() {
     if (entry === null) return
 
     if (!entry.ok) {
-      setError(
-        entry.code === 'BELOW_COST' ? belowCostMessage(entry)
-        : entry.code === 'NO_LINES' ? 'Add at least one item.'
-        : entry.code === 'ZERO_QTY' ? 'Every line needs a quantity that is not zero.'
-        : entry.code === 'INFLOW_NEEDS_POSITIVE_QTY' ? 'A purchase or opening entry cannot be negative. Use Adjustment instead.'
-        : entry.code === 'BAD_BATCH_NO' ? 'A batch number is too long. Forty letters and digits at most.'
-        : entry.code === 'BAD_EXPIRY' ? 'One of the expiry dates is not a date.'
-        : entry.code === 'EXPIRY_MISMATCH'
-          ? `Batch ${entry.batchNo} is already recorded as expiring ${Batches.formatExpiry(entry.recorded)}. `
-            + 'A batch has one expiry — check the pack and the delivery note.'
-        : entry.code === 'UNKNOWN_BATCH' ? `There is no batch ${entry.batchNo} of that item in stock.`
-        : 'One of the items no longer exists.',
-      )
+      setError(refusalMessage(entry))
       return
     }
 
     const submitted = await submitStockEntry(db, { entryId: entry.entryId, actorId: user.id })
     if (!submitted.ok) {
-      setError(submitted.code === 'BATCH_WOULD_GO_NEGATIVE'
-        ? `Batch ${submitted.batchNo} holds only ${Quantity.formatQty(submitted.available)}. Check the quantities.`
-        : submitted.code === 'PERIOD_CLOSED'
-          ? periodClosedMessage(submitted.closedThrough)
-          : 'That would take stock below zero. Check the quantities.')
+      setError(refusalMessage(submitted))
       return
     }
 
-    setDone({ docNo: submitted.docNo, entryId: entry.entryId })
+    posted(submitted.docNo, entry.entryId)
+  }
+
+  /**
+   * The delivery against the order: one call that puts the goods in and marks
+   * the order off together, so neither can happen without the other.
+   */
+  async function receive(on: { id: string; docNo: string }, expiries: (string | null)[]) {
+    const attempt = (allowBelowCost: boolean) => receivePurchaseOrder(db, {
+      purchaseOrderId: on.id,
+      supplierInvoiceNo: invoiceNo.trim() || null,
+      supplierInvoiceDate: invoiceDate || null,
+      roundOff: rounding as never,
+      lines: receivedLines(lines, costText, expiries, batched),
+      ...(allowBelowCost ? { allowBelowCost } : {}),
+      actorId: user.id,
+    })
+    const result = await retryBelowCost(attempt, ask, setError)
+    if (result === null) return
+    if (!result.ok) { setError(receiveRefusal(result, on.docNo, lines)); return }
+    posted(result.docNo, result.stockEntryId)
+    setOrder(null)
+    setSupplierId('')
+    setOrderNote(await leftOnOrder(db, on.id, on.docNo))
+  }
+
+  function posted(docNo: string, entryId: string) {
+    setDone({ docNo, entryId })
     setLines([])
     setReference('')
     setInvoiceNo('')
     setInvoiceDate('')
     setRoundOff('')
+  }
+
+  /** Lets go of the order: the entry becomes an ordinary one, and the order stays as it was. */
+  function stopReceiving() {
+    setOrder(null)
+    setLines((prev) => prev.map(({ orderLine: _, ...rest }) => rest))
+    setReference('')
   }
 
   const scanChoice = useScanChoice((p) => void add(p))
@@ -262,7 +288,7 @@ function NewEntry() {
       {error && <Alert>{error}</Alert>}
       {done && (
         <div>
-          <Alert kind="ok">Posted as {done.docNo}. Stock updated.</Alert>
+          <Alert kind="ok">Posted as {done.docNo}. Stock updated.{orderNote ? ` ${orderNote}` : ''}</Alert>
           <Attachments
             entity="stock_entry"
             entityId={done.entryId}
@@ -272,29 +298,13 @@ function NewEntry() {
         </div>
       )}
 
+      {order && <ReceivingBanner docNo={order.docNo} onStop={stopReceiving} />}
+
       <div className="card">
         <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-          <Field label="Kind of entry" hint={TYPES.find((t) => t.id === entryType)?.note}>
-            <select className="select" id="entry-type" value={entryType}
-              onChange={(e) => setEntryType(e.target.value as StockEntryType)}>
-              {TYPES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-          </Field>
-          <Field
-            label="Supplier"
-            hint={entryType === 'purchase' ? 'Links this delivery to a vendor, so cost history adds up per supplier.' : undefined}
-          >
-            <div style={{ display: 'flex', gap: 6 }}>
-              <select
-                className="select" id="supplier" style={{ flex: 1, minWidth: 0 }}
-                value={supplierId} onChange={(e) => setSupplierId(e.target.value)}
-              >
-                <option value="">Not recorded</option>
-                {suppliers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-              </select>
-              <button className="btn sm" onClick={() => setNewSupplier('')} title="Add a supplier">+</button>
-            </div>
-          </Field>
+          <EntryKindField value={entryType} locked={order !== null} onChange={setEntryType} />
+          <SupplierField suppliers={suppliers} value={supplierId} locked={order !== null} purchase={purchase}
+            onChange={setSupplierId} onAdded={(id) => void loadSuppliers().then(() => setSupplierId(id))} />
           {purchase ? (
             <>
               <Field label="Supplier’s bill no.">
@@ -313,24 +323,6 @@ function NewEntry() {
           )}
         </div>
       </div>
-
-      {newSupplier !== null && (
-        <Modal
-          title="Add a supplier"
-          onClose={() => setNewSupplier(null)}
-          footer={<>
-            <button className="btn" onClick={() => setNewSupplier(null)}>Cancel</button>
-            <button className="btn primary" disabled={newSupplier.trim() === ''} onClick={() => void addSupplier()}>
-              Add
-            </button>
-          </>}
-        >
-          <Field label="Name" hint="Phone, GSTIN and the rest can be filled in later on the Suppliers screen.">
-            <input className="input" id="new-supplier" autoFocus value={newSupplier}
-              onChange={(e) => setNewSupplier(e.target.value)} placeholder="Sakthi Agencies" />
-          </Field>
-        </Modal>
-      )}
 
       <input className="input" placeholder="Scan or search an item to add" value={term}
         onChange={(e) => setTerm(e.target.value)} id="stock-search"
@@ -391,6 +383,11 @@ function NewEntry() {
                     <div className="src">
                       on hand {Quantity.formatQty(l.product.qtyOnHand)} → {Quantity.formatQty(after)} {l.product.baseUnit}
                     </div>
+                    {order && (
+                      <div className="src">
+                        {l.orderLine ? `on the order: ${Quantity.formatQty(l.orderLine.left)} open` : 'not on the order'}
+                      </div>
+                    )}
                   </td>
                   <td className="r">
                     <input className="qty-input num" value={l.qty}

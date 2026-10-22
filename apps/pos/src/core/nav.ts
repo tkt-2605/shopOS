@@ -45,3 +45,20 @@ export function takeAccountToOpen(): string | null {
   accountToOpen = null
   return id
 }
+
+/* A purchase order to receive when Stock In next mounts: "Receive into stock"
+   on the order hands it over, so the delivery is entered on the screen that
+   has every box a delivery needs -- batches, prices, the supplier's bill.
+   Taken once, by Stock In. */
+let orderToReceive: string | null = null
+
+export function receiveOrder(orderId: string): void {
+  orderToReceive = orderId
+  goTo('stock_in')
+}
+
+export function takeOrderToReceive(): string | null {
+  const id = orderToReceive
+  orderToReceive = null
+  return id
+}

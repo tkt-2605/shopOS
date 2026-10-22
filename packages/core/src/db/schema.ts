@@ -947,6 +947,7 @@ export const documentFulfilments = sqliteTable('document_fulfilments', {
   documentId: text('document_id').notNull().references(() => documents.id),
   documentItemId: text('document_item_id').notNull().references(() => documentItems.id),
   qty: qtyCol().notNull(),
+  /** document | stock_entry | before_054 | closed (078: given up, no target). */
   targetKind: text('target_kind').notNull(),
   targetId: text('target_id'),
   createdAt: text('created_at').notNull(),

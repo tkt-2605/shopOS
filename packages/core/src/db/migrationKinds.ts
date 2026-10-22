@@ -173,6 +173,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   // A new replicated record; a till below it skips the records as a table it has not got.
   [76, '076_every_till_knows_which_bills_were_emailed.sql', 'additive'],
   [77, '077_a_main_that_hands_over_keeps_answering.sql', 'additive'],
+  /* A CHECK widened to let an order line be closed short: a till below it refuses
+     the row, and would show a closed order as open and receive against it. */
+  [78, '078_an_order_closed_short.sql', 'breaking'],
 ]
 
 /**

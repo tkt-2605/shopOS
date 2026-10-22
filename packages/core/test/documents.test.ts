@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   createDocument, submitDocument, cancelDocument, listDocuments, loadDocument,
 } from '../src/services/documents.js'
-import { quotationToSalesOrder, receivePurchaseOrder } from '../src/services/convert.js'
+import { quotationToSalesOrder, receivePurchaseOrder, closePurchaseOrderShort } from '../src/services/convert.js'
+import { reconcileFulfilledQty } from '../src/services/documents/reconcile.js'
 import { currentStock } from '../src/services/stock.js'
 import { setItemPrice } from '../src/services/pricing.js'
 import { defaultPriceListId } from '../src/repos/pricing.js'
@@ -316,6 +317,205 @@ describe('goods arriving against a purchase order', () => {
     await receivePurchaseOrder(fx.db, { purchaseOrderId: po.documentId, actorId: fx.adminId })
 
     expect(toUnits(await currentStock(fx.db, productId))).toBe(toUnits(before) + 10)
+  })
+})
+
+describe('a delivery short of the order', () => {
+  /** A second item, so a delivery can bring one line and not the other. */
+  async function twoLineOrder() {
+    const other = await makeProduct(fx.db, { baseRate: 5000, taxRateBp: 0 })
+    const made = await createDocument(fx.db, {
+      kind: 'purchase_order',
+      registerId: fx.seed.registerId,
+      supplierId,
+      lines: [
+        { productId, qty: fromUnits(10), rateOverride: rupees(60) },
+        { productId: other, qty: fromUnits(5), rateOverride: rupees(30) },
+      ],
+      actorId: fx.adminId,
+    })
+    if (!made.ok) throw new Error(`the purchase order was refused: ${made.code}`)
+    await submitDocument(fx.db, { documentId: made.documentId, actorId: fx.adminId })
+    const doc = (await loadDocument(fx.db, made.documentId))!
+    return { id: made.documentId, other, first: doc.items[0]!.id, second: doc.items[1]!.id }
+  }
+
+  it('puts on the shelf only what came, and leaves the rest open', async () => {
+    const po = await twoLineOrder()
+    const before = await currentStock(fx.db, productId)
+
+    const received = await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId,
+      lines: [{ itemId: po.first, qty: fromUnits(8) }, { itemId: po.second, qty: fromUnits(0) }],
+    })
+    expect(received.ok).toBe(true)
+
+    expect(toUnits(await currentStock(fx.db, productId))).toBe(toUnits(before) + 8)
+    expect(toUnits(await currentStock(fx.db, po.other))).toBe(0)
+    const doc = (await loadDocument(fx.db, po.id))!
+    expect(doc.items.map((i) => toUnits(i.remainingQty))).toEqual([2, 5])
+    expect(doc.progress).toBe('part')
+  })
+
+  it('takes the rest in a second delivery and is then finished', async () => {
+    const po = await twoLineOrder()
+    await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId, lines: [{ itemId: po.first, qty: fromUnits(8) }],
+    })
+    expect((await receivePurchaseOrder(fx.db, { purchaseOrderId: po.id, actorId: fx.adminId })).ok).toBe(true)
+
+    const doc = (await loadDocument(fx.db, po.id))!
+    expect(doc.items.map((i) => toUnits(i.remainingQty))).toEqual([0, 0])
+    expect(doc.progress).toBe('done')
+    expect(toUnits(await currentStock(fx.db, po.other))).toBe(5)
+  })
+
+  it('refuses more than a line has open, and writes nothing', async () => {
+    const po = await twoLineOrder()
+    const before = await currentStock(fx.db, productId)
+
+    expect(await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId,
+      lines: [{ itemId: po.first, qty: fromUnits(11) }],
+    })).toEqual({ ok: false, code: 'OVER_RECEIVED', itemId: po.first, remaining: fromUnits(10) })
+
+    expect(await currentStock(fx.db, productId)).toBe(before)
+    expect(toUnits((await loadDocument(fx.db, po.id))!.items[0]!.remainingQty)).toBe(10)
+  })
+
+  it('refuses a delivery of nothing, two batches over the line between them, and a line from another order', async () => {
+    const po = await twoLineOrder()
+    expect(await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId, lines: [{ itemId: po.first, qty: fromUnits(0) }],
+    })).toEqual({ ok: false, code: 'NOTHING_ENTERED' })
+    expect(await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId,
+      lines: [{ itemId: po.first, qty: fromUnits(6) }, { itemId: po.first, qty: fromUnits(5) }],
+    })).toEqual({ ok: false, code: 'OVER_RECEIVED', itemId: po.first, remaining: fromUnits(10) })
+    expect(await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId, lines: [{ itemId: 'not-a-line', qty: fromUnits(1) }],
+    })).toEqual({ ok: false, code: 'UNKNOWN_LINE', itemId: 'not-a-line' })
+  })
+
+  it('takes the cost on the supplier bill when it differs from the order', async () => {
+    const po = await twoLineOrder()
+    await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId,
+      lines: [{ itemId: po.first, qty: fromUnits(10), unitCost: rupees(62) }],
+      supplierInvoiceNo: 'PM/4471',
+    })
+    const row = await fx.db.get<{ unit_cost: number }>(
+      `SELECT unit_cost FROM stock_ledger WHERE product_id = ? ORDER BY rowid DESC LIMIT 1`, [productId],
+    )
+    expect(row!.unit_cost).toBe(rupees(62))
+    const entry = await fx.db.get<{ supplier_invoice_no: string }>(
+      `SELECT supplier_invoice_no FROM stock_entries ORDER BY rowid DESC LIMIT 1`,
+    )
+    expect(entry!.supplier_invoice_no).toBe('PM/4471')
+  })
+
+  it('takes one order line in as two batches and marks it off by both', async () => {
+    const po = await twoLineOrder()
+    const received = await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId,
+      lines: [
+        { itemId: po.first, qty: fromUnits(6), batchNo: 'A1', expiryDate: '2027-03-31' },
+        { itemId: po.first, qty: fromUnits(4), batchNo: 'A2', expiryDate: '2027-06-30', mrp: rupees(120) },
+      ],
+    })
+    expect(received.ok).toBe(true)
+    const doc = (await loadDocument(fx.db, po.id))!
+    expect(toUnits(doc.items[0]!.remainingQty)).toBe(0)
+    const batches = await fx.db.query<{ batch_no: string; expiry_date: string }>(
+      `SELECT batch_no, expiry_date FROM batches WHERE product_id = ? ORDER BY batch_no`, [productId],
+    )
+    expect(batches.map((b) => [b.batch_no, b.expiry_date])).toEqual([['A1', '2027-03-31'], ['A2', '2027-06-30']])
+    expect(await reconcileFulfilledQty(fx.db)).toEqual([])
+  })
+
+  it('takes goods the order never asked for on the same bill, marking nothing off for them', async () => {
+    const po = await twoLineOrder()
+    const extra = await makeProduct(fx.db, { baseRate: 2000, taxRateBp: 0 })
+    const received = await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId,
+      lines: [{ itemId: po.first, qty: fromUnits(10) }, { productId: extra, qty: fromUnits(3), unitCost: rupees(12) }],
+    })
+    expect(received.ok).toBe(true)
+    expect(toUnits(await currentStock(fx.db, extra))).toBe(3)
+    const doc = (await loadDocument(fx.db, po.id))!
+    expect(doc.items.map((i) => toUnits(i.remainingQty))).toEqual([0, 5])
+  })
+
+  it('will not take only unordered goods as a receipt of the order', async () => {
+    const po = await twoLineOrder()
+    const extra = await makeProduct(fx.db, { baseRate: 2000, taxRateBp: 0 })
+    expect(await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId, lines: [{ productId: extra, qty: fromUnits(3) }],
+    })).toEqual({ ok: false, code: 'NOTHING_ENTERED' })
+  })
+
+  it('carries the order line GST onto the stock entry when none is given', async () => {
+    const taxed = await makeProduct(fx.db, { baseRate: 10000, taxRateBp: 1200 })
+    const made = await createDocument(fx.db, {
+      kind: 'purchase_order', registerId: fx.seed.registerId, supplierId,
+      lines: [{ productId: taxed, qty: fromUnits(2), rateOverride: rupees(50) }], actorId: fx.adminId,
+    })
+    if (!made.ok) throw new Error(made.code)
+    await submitDocument(fx.db, { documentId: made.documentId, actorId: fx.adminId })
+    expect((await receivePurchaseOrder(fx.db, { purchaseOrderId: made.documentId, actorId: fx.adminId })).ok).toBe(true)
+    const row = await fx.db.get<{ tax_rate_bp: number }>(
+      `SELECT tax_rate_bp FROM stock_entry_items WHERE product_id = ?`, [taxed],
+    )
+    expect(row!.tax_rate_bp).toBe(1200)
+  })
+
+  it('passes a refusal of the delivery itself through, and writes nothing', async () => {
+    const po = await twoLineOrder()
+    const result = await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId,
+      lines: [{ itemId: po.first, qty: fromUnits(5), batchNo: 'B1', expiryDate: 'soon' }],
+    })
+    expect(result.ok).toBe(false)
+    expect(result.ok ? null : result.code).toBe('BAD_EXPIRY')
+    expect(toUnits((await loadDocument(fx.db, po.id))!.items[0]!.remainingQty)).toBe(10)
+  })
+
+  it('closes what will not come, with no stock and a reason on record', async () => {
+    const po = await twoLineOrder()
+    await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId, lines: [{ itemId: po.first, qty: fromUnits(8) }],
+    })
+    const before = await currentStock(fx.db, productId)
+
+    expect(await closePurchaseOrderShort(fx.db, {
+      purchaseOrderId: po.id, reason: 'Supplier out of stock', actorId: fx.adminId,
+    })).toEqual({ ok: true, closedLines: 2 })
+
+    expect(await currentStock(fx.db, productId)).toBe(before)
+    const doc = (await loadDocument(fx.db, po.id))!
+    expect(doc.progress).toBe('done')
+    expect(doc.items.map((i) => toUnits(i.closedQty))).toEqual([2, 5])
+    expect(doc.items.map((i) => toUnits(i.remainingQty))).toEqual([0, 0])
+    expect(await receivePurchaseOrder(fx.db, { purchaseOrderId: po.id, actorId: fx.adminId }))
+      .toEqual({ ok: false, code: 'NOTHING_LEFT' })
+    // The record a merge rebuilds `fulfilled_qty` from agrees with it.
+    expect(await reconcileFulfilledQty(fx.db)).toEqual([])
+  })
+
+  it('will not close short an order nothing came against: that is a cancellation', async () => {
+    const po = await twoLineOrder()
+    expect(await closePurchaseOrderShort(fx.db, {
+      purchaseOrderId: po.id, reason: 'Never came', actorId: fx.adminId,
+    })).toEqual({ ok: false, code: 'NOTHING_RECEIVED' })
+  })
+
+  it('wants a reason', async () => {
+    const po = await twoLineOrder()
+    await receivePurchaseOrder(fx.db, {
+      purchaseOrderId: po.id, actorId: fx.adminId, lines: [{ itemId: po.first, qty: fromUnits(8) }],
+    })
+    expect(await closePurchaseOrderShort(fx.db, { purchaseOrderId: po.id, reason: '  ', actorId: fx.adminId }))
+      .toEqual({ ok: false, code: 'REASON_REQUIRED' })
   })
 })
 

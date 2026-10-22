@@ -103,8 +103,12 @@ export type {
   SubmitDocumentResult, CancelDocumentResult, EditDraftInput, EditDraftResult,
   DocumentListItem, DocumentFilter, DocumentDetail, DocumentItemRow, DocumentStatus,
 } from '../services/documents.js'
-export { quotationToSalesOrder, receivePurchaseOrder, documentToCart } from '../services/convert.js'
-export type { ConvertResult, ReceiveResult, ToCartResult, OrderCartLine } from '../services/convert.js'
+export {
+  quotationToSalesOrder, receivePurchaseOrder, closePurchaseOrderShort, documentToCart, receivedCost,
+} from '../services/convert.js'
+export type {
+  ConvertResult, ReceiveResult, ReceivedLine, CloseShortResult, ToCartResult, OrderCartLine,
+} from '../services/convert.js'
 export * as Totals from '../domain/billTotals.js'
 export type { ComputedTotals, LineTotals, TotalsLine } from '../domain/billTotals.js'
 export {
