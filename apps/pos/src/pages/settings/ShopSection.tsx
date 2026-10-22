@@ -125,7 +125,14 @@ export function ShopSection({ onOpenFormat }: { onOpenFormat: (() => void) | nul
             onChange={(e) => patch({ terms: e.target.value })} />
         </Field>
 
-        <LogoField logo={draft.logo} onChange={(logo) => patch({ logo })} onError={setError} />
+        <ImageField
+          id="shop-logo" label="Logo" value={draft.logo} onChange={(logo) => patch({ logo })} onError={setError}
+          hint="Printed at the top of the A4 sheet, above the name. The thermal printer cannot carry a picture, so the roll prints the shop name as it always has."
+        />
+        <ImageField
+          id="shop-signature" label="Signature" value={draft.signature} onChange={(signature) => patch({ signature })} onError={setError}
+          hint="Printed on the Authorised signatory line of the A4 invoice. Sign on white paper, photograph or scan it, and crop it close. Without one the line is left to sign by hand."
+        />
         {onOpenFormat && (
           <button type="button" className="link-btn" onClick={onOpenFormat}>
             Choose what prints, and where, under Bill format →
@@ -155,6 +162,10 @@ function describe(result: Extract<Awaited<ReturnType<typeof saveShopProfile>>, {
       return 'That file is not an image this can print. Use a PNG, JPEG or SVG.'
     case 'LOGO_TOO_BIG':
       return `That image is ${result.kb} KB and the limit is ${result.limitKb} KB. It rides on every bill and every preview, so a smaller copy is worth making.`
+    case 'BAD_SIGNATURE_IMAGE':
+      return 'That signature file is not an image this can print. Use a PNG, JPEG or SVG.'
+    case 'SIGNATURE_TOO_BIG':
+      return `That signature is ${result.kb} KB and the limit is ${result.limitKb} KB. Crop it close to the ink, or save it smaller.`
     case 'GSTIN_REQUIRED':
       return 'This shop is set to charge GST, and a tax invoice has to carry the shop’s own GSTIN. Enter it here, or change the GST scheme under Tax & billing if the shop is not registered.'
     default:
@@ -163,16 +174,19 @@ function describe(result: Extract<Awaited<ReturnType<typeof saveShopProfile>>, {
 }
 
 /**
- * The shop's own mark.
+ * An image the sheet prints: the shop's mark, or its signature.
  *
  * Read straight into the form as a `data:` URI rather than filed away and
  * pointed at: the bill prints from the app window and into a preview that is
  * only ever HTML, and neither can be handed a filename. Saving is what commits
  * it, like every other field -- choosing a file changes nothing until Save.
  */
-function LogoField({ logo, onChange, onError }: {
-  logo: string | null
-  onChange: (logo: string | null) => void
+function ImageField({ id, label, hint, value, onChange, onError }: {
+  id: string
+  label: string
+  hint: string
+  value: string | null
+  onChange: (value: string | null) => void
   onError: (message: string | null) => void
 }) {
   function choose(file: File | undefined) {
@@ -194,18 +208,15 @@ function LogoField({ logo, onChange, onError }: {
   }
 
   return (
-    <Field
-      label="Logo"
-      hint="Printed at the top of the A4 sheet, above the name. The thermal printer cannot carry a picture, so the roll prints the shop name as it always has."
-    >
+    <Field label={label} hint={hint}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        {logo && <img src={logo} alt="" className="settings-logo" />}
+        {value && <img src={value} alt="" className="settings-logo" />}
         <input
-          type="file" id="shop-logo" accept="image/png,image/jpeg,image/svg+xml,image/webp"
+          type="file" id={id} accept="image/png,image/jpeg,image/svg+xml,image/webp"
           style={{ fontSize: 12.5 }}
           onChange={(e) => { choose(e.target.files?.[0]); e.target.value = '' }}
         />
-        {logo && <button type="button" className="btn ghost sm" onClick={() => onChange(null)}>Remove</button>}
+        {value && <button type="button" className="btn ghost sm" onClick={() => onChange(null)}>Remove</button>}
       </div>
     </Field>
   )

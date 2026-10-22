@@ -53,6 +53,12 @@ export interface ShopProfile {
    * printed in one of them and not the others would be worse than none.
    */
   logo: string | null
+  /**
+   * The signatory's signature, as a `data:` URI, for the A4 sheet's signature
+   * block. Kept inline for the logo's reasons. A setting like the rest, so it
+   * reaches every till and every till's sheet is signed alike.
+   */
+  signature: string | null
 }
 
 /** The key each field is stored under. Adding a field is one line here. */
@@ -66,6 +72,7 @@ const SETTING: Record<keyof ShopProfile, string> = {
   receiptFooter: 'receipt_footer',
   terms: 'shop_terms',
   logo: 'shop_logo',
+  signature: 'shop_signature',
 }
 
 const FIELDS = Object.keys(SETTING) as (keyof ShopProfile)[]
@@ -93,6 +100,8 @@ export type SaveShopResult =
   | { ok: false; code: 'GSTIN_REQUIRED' }
   | { ok: false; code: 'BAD_LOGO' }
   | { ok: false; code: 'LOGO_TOO_BIG'; kb: number; limitKb: number }
+  | { ok: false; code: 'BAD_SIGNATURE_IMAGE' }
+  | { ok: false; code: 'SIGNATURE_TOO_BIG'; kb: number; limitKb: number }
 
 export async function loadShopProfile(db: SqlDriver): Promise<ShopProfile> {
   const values = await Promise.all(FIELDS.map((field) => getSetting(db, SETTING[field])))
@@ -126,6 +135,7 @@ export async function saveShopProfile(
     receiptFooter: tidy(next.receiptFooter),
     terms: tidy(next.terms),
     logo: tidy(next.logo),
+    signature: tidy(next.signature),
   }
 
   if (clean.name === '') return { ok: false, code: 'NAME_REQUIRED' }
@@ -133,10 +143,14 @@ export async function saveShopProfile(
   if (clean.logo !== null) {
     if (!LOGO_SHAPE.test(clean.logo)) return { ok: false, code: 'BAD_LOGO' }
     /* It rides on every bill this shop ever prints and on every preview, so it
-       is capped where a mark still looks right and a photograph does not fit.
-       Base64 carries three bytes in four characters. */
-    const kb = Math.round((clean.logo.length * 3) / 4 / 1024)
+       is capped where a mark still looks right and a photograph does not fit. */
+    const kb = imageKb(clean.logo)
     if (kb > LOGO_LIMIT_KB) return { ok: false, code: 'LOGO_TOO_BIG', kb, limitKb: LOGO_LIMIT_KB }
+  }
+  if (clean.signature !== null) {
+    if (!LOGO_SHAPE.test(clean.signature)) return { ok: false, code: 'BAD_SIGNATURE_IMAGE' }
+    const kb = imageKb(clean.signature)
+    if (kb > LOGO_LIMIT_KB) return { ok: false, code: 'SIGNATURE_TOO_BIG', kb, limitKb: LOGO_LIMIT_KB }
   }
   if (clean.gstin !== null && !GSTIN_SHAPE.test(clean.gstin)) return { ok: false, code: 'BAD_GSTIN' }
   if (clean.stateCode !== null && !isStateCode(clean.stateCode)) {
@@ -186,7 +200,7 @@ export async function saveShopProfile(
 /**
  * The fields that differ, as audit values.
  *
- * The logo is named but never carried: it is tens of kilobytes of base64, and
+ * The logo and the signature are named but never carried: it is tens of kilobytes of base64, and
  * a history row that held two copies of it would be unreadable and would grow
  * the database every time somebody tried a new one. That it changed is the
  * news; the image is on the screen.
@@ -195,7 +209,8 @@ function auditable(from: ShopProfile, against: ShopProfile): Record<string, SqlV
   const out: Record<string, SqlValue> = {}
   for (const field of FIELDS) {
     if (from[field] === against[field]) continue
-    out[field] = field === 'logo' ? (from[field] === null ? 'none' : 'an image') : from[field]
+    const image = field === 'logo' || field === 'signature'
+    out[field] = image ? (from[field] === null ? 'none' : 'an image') : from[field]
   }
   return out
 }
@@ -203,6 +218,11 @@ function auditable(from: ShopProfile, against: ShopProfile): Record<string, SqlV
 /** Only what the sheet will actually put in an `src`. */
 const LOGO_SHAPE = /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/]+=*$/
 const LOGO_LIMIT_KB = 256
+
+/** The size of an inline image. Base64 carries three bytes in four characters. */
+function imageKb(dataUri: string): number {
+  return Math.round((dataUri.length * 3) / 4 / 1024)
+}
 
 /** A form sends '' for a field a person emptied; the database should hold null. */
 function tidy(value: string | null | undefined): string | null {

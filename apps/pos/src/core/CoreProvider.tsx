@@ -44,7 +44,7 @@ export type { FailureKind } from './coreValue'
 const NO_SHOP: ShopProfile = {
   name: 'My Shop',
   address: null, phone: null, email: null, gstin: null, stateCode: null,
-  receiptFooter: null, terms: null, logo: null,
+  receiptFooter: null, terms: null, logo: null, signature: null,
 }
 
 const Ctx = createContext<CoreValue | null>(null)

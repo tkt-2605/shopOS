@@ -22,7 +22,7 @@ const ctx = () => ({ actorId: fx.adminId })
 const BLANK: ShopProfile = {
   name: 'Sri Stores',
   address: null, phone: null, email: null, gstin: null, stateCode: null,
-  receiptFooter: null, terms: null, logo: null,
+  receiptFooter: null, terms: null, logo: null, signature: null,
 }
 
 describe('the shop profile', () => {
@@ -179,5 +179,39 @@ describe('the shop own mark', () => {
     )
     expect(row?.diff).toContain('an image')
     expect(row?.diff).not.toContain('iVBOR')
+  })
+})
+
+describe('the signature for the A4 sheet', () => {
+  const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+  it('keeps the image beside the logo, as a setting every till receives', async () => {
+    expect((await saveShopProfile(fx.db, ctx(), { ...BLANK, signature: PIXEL })).ok).toBe(true)
+    expect((await loadShopProfile(fx.db)).signature).toBe(PIXEL)
+    const row = await fx.db.get<{ value: string }>(`SELECT value FROM settings WHERE key = 'shop_signature'`)
+    expect(row?.value).toBe(PIXEL)
+  })
+
+  it('refuses a file that is not an image, and one too big', async () => {
+    expect(await saveShopProfile(fx.db, ctx(), { ...BLANK, signature: 'data:text/html;base64,PHNjcmlwdD4=' }))
+      .toEqual({ ok: false, code: 'BAD_SIGNATURE_IMAGE' })
+    const huge = `data:image/png;base64,${'A'.repeat(400 * 1024)}`
+    const saved = await saveShopProfile(fx.db, ctx(), { ...BLANK, signature: huge })
+    expect(saved.ok ? null : saved.code).toBe('SIGNATURE_TOO_BIG')
+  })
+
+  it('records that it changed without writing the image into the history', async () => {
+    await saveShopProfile(fx.db, ctx(), { ...BLANK, signature: PIXEL })
+    const row = await fx.db.get<{ diff: string }>(
+      `SELECT diff FROM audit_log WHERE entity_id = 'shop_profile' ORDER BY at DESC LIMIT 1`,
+    )
+    expect(row?.diff).toContain('an image')
+    expect(row?.diff).not.toContain('iVBOR')
+  })
+
+  it('can be taken off again', async () => {
+    await saveShopProfile(fx.db, ctx(), { ...BLANK, signature: PIXEL })
+    await saveShopProfile(fx.db, ctx(), { ...BLANK, signature: null })
+    expect((await loadShopProfile(fx.db)).signature).toBeNull()
   })
 })

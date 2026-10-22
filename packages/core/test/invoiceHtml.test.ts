@@ -270,3 +270,25 @@ describe('the shop own mark', () => {
       .not.toContain('<img')
   })
 })
+
+describe('the signature on the sheet', () => {
+  const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  const signed = (signature: string | null) =>
+    buildInvoiceHtml({ ...doc, shop: { ...doc.shop, signature } }, STANDARD_INVOICE)
+
+  it('prints the uploaded signature on the signatory line of the A4 invoice', () => {
+    const page = signed(PIXEL)
+    expect(page).toContain(`<img class="sign-img" src="${PIXEL}"`)
+    expect(page.indexOf('sign-img')).toBeLessThan(page.indexOf('Authorised signatory'))
+  })
+
+  it('leaves the line blank to be signed by hand when there is none', () => {
+    const page = signed(null)
+    expect(page).not.toContain('<img class="sign-img"')
+    expect(page).toContain('Authorised signatory')
+  })
+
+  it('refuses anything that is not a plain image', () => {
+    expect(signed('data:image/png;base64,abc" onerror="alert(1)')).not.toContain('onerror')
+  })
+})

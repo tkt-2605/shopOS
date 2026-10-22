@@ -139,7 +139,7 @@ export async function creditNoteDocFor(db: SqlDriver, returnId: string): Promise
   return {
     shop: {
       name: shop.name, address: shop.address, phone: shop.phone,
-      email: shop.email, gstin: shop.gstin, logo: shop.logo,
+      email: shop.email, gstin: shop.gstin, logo: shop.logo, signature: shop.signature,
     },
     docNo: ret.docNo,
     postingDate: ret.postingDate,
@@ -235,7 +235,7 @@ export async function printDocumentSheet(db: SqlDriver, documentId: string): Pro
   const sheet: ReceiptDoc = {
     shop: {
       name: shop.name, address: shop.address, phone: shop.phone,
-      email: shop.email, gstin: shop.gstin, logo: shop.logo,
+      email: shop.email, gstin: shop.gstin, logo: shop.logo, signature: shop.signature,
     },
     docNo: doc.docNo,
     postingDate: doc.postingDate,
@@ -316,7 +316,7 @@ export async function sheetDocFor(db: SqlDriver, billId: string): Promise<Receip
   return {
     shop: {
       name: shop.name, address: shop.address, phone: shop.phone,
-      email: shop.email, gstin: shop.gstin, logo: shop.logo,
+      email: shop.email, gstin: shop.gstin, logo: shop.logo, signature: shop.signature,
     },
     docNo: bill.docNo,
     postingDate: bill.postingDate,

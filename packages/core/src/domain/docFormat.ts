@@ -161,6 +161,8 @@ export const BLOCK_NOTE: Partial<Record<BlockKind, string>> = {
   logo: 'The shop’s own mark, above the address. Uploaded on the Settings screen, '
     + 'and what makes a bill look like the shop’s rather than like software. On a roll it prints '
     + 'in black and white: a flat logo prints well, a photograph does not.',
+  signature: 'The line the invoice is signed on. With a signature uploaded on the Settings screen, '
+    + 'it prints on the line; without one the line is left to be signed by hand.',
   savings: 'One line under the total: what the customer saved against the MRP, discounts included. '
     + 'Printed only on a bill that saved them something.',
   amount_in_words: 'The total spelled out — “Rupees One Thousand Only”. What a customer and a shop '

@@ -28,6 +28,8 @@ export interface ReceiptShop {
    * and read it.
    */
   logo?: string | null
+  /** The signatory's signature, as a `data:` URI, for the sheet's signature block. */
+  signature?: string | null
 }
 
 /** The shop's logo as the roll's dots, already reduced -- see `raster.ts`. */

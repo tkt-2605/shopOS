@@ -108,7 +108,7 @@ export function Formats() {
        logo switch look like a switch that does nothing, which is the one thing
        this screen must never do. */
     const doc = {
-      ...sampleDoc({ name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo }),
+      ...sampleDoc({ name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin, logo: shop.logo, signature: shop.signature }),
       logoRaster: raster,
     }
 

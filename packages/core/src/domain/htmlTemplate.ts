@@ -71,6 +71,7 @@ export const TEMPLATE_TOKENS: readonly TokenDoc[] = [
   { token: 'shop.email', means: 'The shop’s email address' },
   { token: 'shop.gstin', means: 'The shop’s GSTIN' },
   { token: 'shop.logo', means: 'The uploaded logo, for an img src — wrap it in {{#if shop.logo}}' },
+  { token: 'shop.signature', means: 'The uploaded signature, for an img src — wrap it in {{#if shop.signature}}' },
 
   { token: 'doc.title', means: 'What the document calls itself — Tax Invoice, Quotation' },
   { token: 'doc.no', means: 'The document number' },
@@ -330,6 +331,7 @@ export function templateData(doc: ReceiptDoc): TemplateData {
          guard `invoiceHtml.ts` puts on the logo block. Anything else renders as
          empty, so `{{#if shop.logo}}` correctly says there is no logo. */
       'shop.logo': doc.shop.logo && SAFE_DATA_URI.test(doc.shop.logo) ? doc.shop.logo : '',
+      'shop.signature': doc.shop.signature && SAFE_DATA_URI.test(doc.shop.signature) ? doc.shop.signature : '',
 
       'doc.title': words.title,
       'doc.no': doc.docNo,
@@ -432,6 +434,8 @@ export const STARTER_TEMPLATE = `<style>
              border-top: 1px solid #ddd; }
   .sign    { margin: 34px 0 0 auto; width: 210px; text-align: center; break-inside: avoid; }
   .rule    { margin-top: 40px; border-top: 1px solid #111; }
+  .sign img { display: block; height: 16mm; max-width: 100%; margin: 6px auto 0; }
+  .sign img + .rule { margin-top: 2px; }
 </style>
 
 <div class="head">
@@ -506,6 +510,7 @@ export const STARTER_TEMPLATE = `<style>
 
 <div class="sign">
   <div class="muted">For {{shop.name}}</div>
+  {{#if shop.signature}}<img src="{{shop.signature}}" alt="">{{/if}}
   <div class="rule"></div>
   <div class="muted" style="font-size:8.5pt">Authorised signatory</div>
 </div>

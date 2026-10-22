@@ -233,12 +233,17 @@ function renderBlock(block: Block, doc: ReceiptDoc): string {
       return words ? `<p class="terms">${esc(words)}</p>` : ''
     }
 
-    case 'signature':
+    case 'signature': {
+      /* The uploaded signature sits on the line where a pen would; without one
+         the line is left blank to be signed, as it always was. */
+      const sign = doc.shop.signature && SAFE_DATA_URI.test(doc.shop.signature) ? doc.shop.signature : null
       return `<section class="signature">
         <div class="sign-for">For ${esc(doc.shop.name)}</div>
-        <div class="sign-rule"></div>
+        ${sign ? `<img class="sign-img" src="${sign}" alt="">` : ''}
+        <div class="sign-rule${sign ? ' signed' : ''}"></div>
         <div class="sign-label">Authorised signatory</div>
       </section>`
+    }
 
     case 'text': {
       const body = block.opts?.body?.trim()
@@ -531,6 +536,8 @@ function styles(pageSize: string, preview: boolean): string {
     .signature { margin-top: 30px; width: 220px; justify-self: end; text-align: center; break-inside: avoid; }
     .sign-for { font-size: 9.5pt; font-weight: 600; color: #333; }
     .sign-rule { margin-top: 42px; border-top: 1px solid #111; }
+    .sign-img { display: block; height: 16mm; max-width: 100%; margin: 8px auto 0; object-fit: contain; }
+    .sign-rule.signed { margin-top: 2px; }
     .sign-label { margin-top: 3px; font-size: 8.5pt; color: #555; }
   `
 }

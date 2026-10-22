@@ -220,3 +220,15 @@ describe('a format that carries one', () => {
     expect(buildInvoiceHtml(doc, STANDARD_INVOICE)).toContain('class="items"')
   })
 })
+
+describe('the signature in a template', () => {
+  const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+  it('is a token the starter uses, and prints only when one is uploaded', () => {
+    expect(checkTemplate(STARTER_TEMPLATE)).toEqual([])
+    const withSign = renderTemplate(STARTER_TEMPLATE, templateData({ ...doc, shop: { ...doc.shop, signature: PIXEL } }))
+    expect(withSign).toContain(`src="${PIXEL}"`)
+    const without = renderTemplate(STARTER_TEMPLATE, templateData(doc))
+    expect(without).not.toContain('<img')
+  })
+})
