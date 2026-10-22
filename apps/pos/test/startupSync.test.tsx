@@ -69,6 +69,36 @@ describe('a till that has just been switched on', () => {
     expect(screen.getByText('Start without it')).toBeTruthy()
   })
 
+  it('on the main, goes once every counter has called in since it started', async () => {
+    role = 'main'
+    peers = [peer({ deviceId: 'counter-2', label: 'Counter 2' }), peer({ deviceId: 'counter-3', label: 'Counter 3' })]
+    await show()
+    await waitFor(() => expect(document.body.textContent).toContain('Waiting for Counter 2, Counter 3'))
+    expect(ran).not.toHaveBeenCalled()
+
+    const now = () => new Date(Date.now() + 1000).toISOString()
+    peers = [peer({ deviceId: 'counter-2', label: 'Counter 2', lastAgreedAt: now() }), peers[1]!]
+    await waitFor(() => expect(document.body.textContent).toContain('Waiting for Counter 3'), { timeout: 3000 })
+    peers = [peers[0]!, peer({ deviceId: 'counter-3', label: 'Counter 3', lastAgreedAt: now() })]
+    await waitFor(() => expect(screen.queryByText('Catching up with the shop')).toBeNull(), { timeout: 3000 })
+  })
+
+  it('on the main, never waits more than half a minute for a counter that is switched off', async () => {
+    vi.useFakeTimers()
+    try {
+      role = 'main'
+      peers = [peer({ deviceId: 'counter-2', label: 'Counter 2' })]
+      await show()
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      expect(screen.getByText('Catching up with the shop')).toBeTruthy()
+      expect(screen.getByText('Start without it')).toBeTruthy()
+      await act(async () => { await vi.advanceTimersByTimeAsync(26_000) })
+      expect(screen.queryByText('Catching up with the shop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not wait for a till not heard from in days', async () => {
     peers = [peer({ lastAgreedAt: hoursAgo(24 * 5) })]
     await show()
