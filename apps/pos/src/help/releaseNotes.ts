@@ -17,6 +17,16 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.4.5': {
+    title: 'Receive a purchase order as it actually came, and a signature on the A4 invoice',
+    points: [
+      'Receive into stock on a purchase order now opens Stock In with the order filled in. Change each quantity to what came, add batch, expiry, MRP and the supplier\'s bill number, and post. The order is marked off by what came, and the rest stays open.',
+      'One item can come in two batches: add it again. An item the order did not ask for can go on the same bill.',
+      'When the supplier is not sending the rest, open the order and press Close short. Give a reason; nothing is added to stock.',
+      'Upload your signature in Settings, Shop, beside the logo. It prints on the Authorised signatory line of the A4 invoice on every till.',
+      'Update every till in the shop to this version. Tills on 0.4.4 stop syncing with it until they are updated too.',
+    ],
+  },
   '0.4.4': {
     title: 'Quotation rates you can see, and the round off on every bill',
     points: [

@@ -1514,6 +1514,48 @@ The portal's morning digest (`SHOPOS_DIGEST_TOKEN`) still goes by Telegram:
 it is the vendor's own server talking to the vendor, with no token in any
 installer, and the portal has no mail sender.
 
+## A delivery short of the order (22 October)
+
+Taken from the old TRT app's partial receive (`receive_purchase_order`,
+PATCH v3.27), which the owner pointed at. Receiving a purchase order was all
+or nothing: everything still open went in, so a supplier who sent 8 of 10
+left the shop recording 10 or not using the order at all.
+
+- **Receive takes what came, on Stock In.** "Receive into stock" on the
+  order opens Stock In with the order's open lines filled in (`nav.ts`,
+  `receiveOrder`): what is left, the ordered cost and GST, supplier and
+  type locked. Batch, expiry, MRP, sell-at, the supplier's bill and its
+  round-off are entered there as on any purchase. Posting calls
+  `receivePurchaseOrder` with those lines, which makes the same stock entry
+  Stock In makes and marks the order off in one transaction. A line at 0
+  stays open; one order line may come as several batches and is marked off
+  by their sum; more than it has open is refused (`OVER_RECEIVED`). An item
+  the order did not ask for comes in on the same bill and marks nothing
+  off. A refusal of the entry itself (a batch, a price below cost) comes
+  back as Stock In's own. The order's GST now goes onto the stock entry,
+  which receiving never carried before. A small Receive dialog was built
+  first and dropped the same day: the owner wanted everything Stock In asks.
+- **Close short.** What the supplier will not send is given up with a reason
+  (`closePurchaseOrderShort`), as a `closed` row in `document_fulfilments`:
+  no stock, no money, and `fulfilled_qty` and its reconcile need nothing new.
+  Refused on an order nothing came against: that is a cancellation. The old
+  app had no way out of `partial`.
+- **078 is breaking.** Widening the CHECK rebuilds the table, and a till
+  below it would refuse the row and show a closed order as open.
+- Paying the supplier at receive time, which the old dialog did, is left
+  out: payments to suppliers stay their own document.
+
+## A signature on the A4 invoice (22 October)
+
+The shop uploads its signatory's signature under Settings, Shop, beside the
+logo, and kept the same way: a `data:` URI in `settings` (`shop_signature`),
+so it reaches every till, capped and checked as the logo is, and named in the
+audit trail as "an image" rather than carried. The sheet's signature block
+prints it on the Authorised signatory line; without one the line is left
+blank to sign by hand, as before. Custom HTML templates get
+`{{shop.signature}}`, and the starter template uses it. The roll does not
+print it.
+
 ## Not committed
 
 `docs/specs.zip` — a redundant archive of `docs/specs/`. Left untracked
