@@ -17,6 +17,17 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.4.6': {
+    title: 'One normal price per item, a plainer Special Prices, and box prices with their own MRP',
+    points: [
+      'An item has one normal price: its selling rate. If an item also had an older "price on the shop\'s list", Inventory asks you once which one to keep. Keeping the shop list price changes nothing for customers.',
+      'Special Prices has two tabs. Price lists: pick a list, see who is on it, and add or change its items in place. One customer: as before. Export to CSV and Import from CSV move price lists and quantity breaks in and out of Excel.',
+      'Box prices and MRP, in Settings, Features: a box can have the MRP printed on it and its own price, on the item\'s units. Off, a box is priced as its pieces, and box prices already saved are kept but not charged until it is turned back on.',
+      'A box line on the bill now prints the box\'s MRP, not one piece\'s, so the customer\'s saving shows.',
+      'Start without them now stays started on the main till. An export already open in Excel is saved beside it as (2) instead of failing.',
+      'Update every till in the shop to this version. Tills on 0.4.5 stop syncing with it until they are updated too.',
+    ],
+  },
   '0.4.5': {
     title: 'Receive a purchase order as it actually came, and a signature on the A4 invoice',
     points: [
