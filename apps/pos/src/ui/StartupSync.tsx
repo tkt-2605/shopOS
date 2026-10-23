@@ -55,7 +55,9 @@ export function StartupSync() {
       p.lastAgreedAt !== null && startedAt - Date.parse(p.lastAgreedAt) < RECENT_MS
 
     const check = async (): Promise<void> => {
-      if (over) return
+      /* Also once a person has chosen to start without the others: the checks
+         already running must not put the screen back over them. */
+      if (over || caughtUpThisStart.has(db)) return
       // Switched off by the vendor where it misbehaves (`switches.ts`): the till opens as it did before it.
       if (isOff('startup_sync')) { finish(); return }
       const peers = (await listPeers(db)).filter((p) => !p.needsPairing && recent(p))
@@ -63,6 +65,8 @@ export function StartupSync() {
       // Caught up: heard from since this start, with nothing it said it had still to come.
       const behind = peers.filter((p) => p.lastAgreedAt! < started || (p.behind ?? 0) > 0)
       if (behind.length === 0) { finish(); return }
+      // Asked while the peers were read: a press of "Start without" in between still wins.
+      if (over || caughtUpThisStart.has(db)) return
       const unreachable = behind.filter((p) => p.lastTriedAt !== null && p.lastTriedAt >= started && p.lastError !== null)
       setStage({ at: 'waiting', who: behind.map(name), unreachable: unreachable.map(name) })
       if (unreachable.length > 0) setMayLeave(true)

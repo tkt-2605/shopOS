@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, act, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, act, waitFor, fireEvent } from '@testing-library/react'
 import type { PeerHealth } from '@shopos/core'
 import { StartupSync } from '../src/ui/StartupSync'
 
@@ -93,6 +93,23 @@ describe('a till that has just been switched on', () => {
       expect(screen.getByText('Catching up with the shop')).toBeTruthy()
       expect(screen.getByText('Start without it')).toBeTruthy()
       await act(async () => { await vi.advanceTimersByTimeAsync(26_000) })
+      expect(screen.queryByText('Catching up with the shop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays gone once a person has chosen to start without them', async () => {
+    vi.useFakeTimers()
+    try {
+      role = 'main'
+      peers = [peer({ deviceId: 'counter-2', label: 'Counter 2' })]
+      await show()
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      await act(async () => { fireEvent.click(screen.getByText('Start without it')) })
+      expect(screen.queryByText('Catching up with the shop')).toBeNull()
+      // The checks that were running before the press must not bring it back.
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
       expect(screen.queryByText('Catching up with the shop')).toBeNull()
     } finally {
       vi.useRealTimers()
