@@ -30,40 +30,36 @@ export function UnitRows({ draft, setDraft }: { draft: Draft; setDraft: (draft: 
           ? <>Give a unit its own MRP and price when they are printed on it; leave them empty and it is its {base}.</>
           : <>It is priced as its {base}: the selling rate times how many it holds.</>}
       </div>
-      {features.unitPrices && draft.units.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 4, fontSize: 11.5, color: 'var(--ink-3)' }}>
-          <span style={{ flex: 1 }}>Unit</span>
-          <span style={{ width: 90 + 6 + 40 }}>Holds</span>
-          <span style={{ width: 90 }}>MRP</span>
-          <span style={{ width: 110 }}>Sells at</span>
-          <span style={{ width: 30 }} />
-        </div>
-      )}
       {draft.units.map((unit, index) => (
-        <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-          <input
-            className="input"
-            style={{ flex: 1, minWidth: 0 }}
-            placeholder="ream, pack, dozen, box"
-            aria-label="Unit"
-            value={unit.saleUnit}
-            onChange={(e) => change(index, { saleUnit: e.target.value })}
-          />
-          <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>=</span>
-          <input
-            className="input num"
-            style={{ width: 90 }}
-            inputMode="decimal"
-            placeholder="500"
-            aria-label={`How many ${base} in a ${unit.saleUnit || 'unit'}`}
-            value={unit.baseUnits}
-            onChange={(e) => change(index, { baseUnits: e.target.value })}
-          />
-          <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap', width: features.unitPrices ? 34 : undefined }}>
-            {base}
-          </span>
+        <div key={index} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              className="input"
+              style={{ flex: 1, minWidth: 120 }}
+              placeholder="ream, pack, dozen, box"
+              aria-label="Unit"
+              value={unit.saleUnit}
+              onChange={(e) => change(index, { saleUnit: e.target.value })}
+            />
+            <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>=</span>
+            <input
+              className="input num"
+              style={{ width: 90 }}
+              inputMode="decimal"
+              placeholder="500"
+              aria-label={`How many ${base} in a ${unit.saleUnit || 'unit'}`}
+              value={unit.baseUnits}
+              onChange={(e) => change(index, { baseUnits: e.target.value })}
+            />
+            <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>{base}</span>
+            <button className="btn ghost" type="button" title="Remove this unit"
+              onClick={() => setDraft({ ...draft, units: draft.units.filter((_, i) => i !== index) })}
+            >✕</button>
+          </div>
+          {/* On a line of its own: beside the unit, four boxes squeezed its name to nothing. */}
           {features.unitPrices && (
-            <>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, paddingLeft: 12, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>MRP</span>
               <input
                 className="input num"
                 style={{ width: 90 }}
@@ -73,20 +69,18 @@ export function UnitRows({ draft, setDraft }: { draft: Draft; setDraft: (draft: 
                 value={unit.mrp ?? ''}
                 onChange={(e) => change(index, { mrp: e.target.value })}
               />
+              <span style={{ fontSize: 12, color: 'var(--ink-3)', marginLeft: 6 }}>Sells at</span>
               <input
                 className="input num"
-                style={{ width: 110 }}
+                style={{ width: 140 }}
                 inputMode="decimal"
                 placeholder={unit.asPieces ? `${unit.asPieces} as ${base}` : `as its ${base}`}
                 aria-label={`Price of a ${unit.saleUnit || 'unit'}`}
                 value={unit.rate ?? ''}
                 onChange={(e) => change(index, { rate: e.target.value })}
               />
-            </>
+            </div>
           )}
-          <button className="btn ghost" type="button" title="Remove this unit"
-            onClick={() => setDraft({ ...draft, units: draft.units.filter((_, i) => i !== index) })}
-          >✕</button>
         </div>
       ))}
       <button className="btn ghost sm" type="button"
