@@ -3,7 +3,7 @@ import { openMemoryDatabase } from '../src/db/node-driver.js'
 import { migrate } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { bootstrap } from '../src/services/bootstrap.js'
-import { setUnits, setLadder, setItemPrice, unitPrices, setUnitPrices, planLadderImport } from '../src/services/pricing.js'
+import { setUnits, setLadder, setItemPrice, unitPrices, setUnitPrices, planLadderImport, updatePriceList } from '../src/services/pricing.js'
 import { isOn, setFeature } from '../src/services/features.js'
 import { resolveLinePrice, pricingContextFor } from '../src/repos/pricing.js'
 import { saleUnitsFor } from '../src/repos/catalog.js'
@@ -148,6 +148,25 @@ describe('saving a box’s MRP and price', () => {
     await setUnitPrices(fx.db, ctx(), { productId: p, units: [{ saleUnit: 'box', mrp: null, rate: null }] })
     expect(await boxPrice(p, 5)).toBe(rupees(80))
     expect(await boxPrice(p, 1)).toBe(rupees(100))
+  })
+})
+
+describe('a shop list that quotes before GST', () => {
+  it('stores the box price before GST, reads it back as typed, and charges it with GST in', async () => {
+    const p = await makeProduct(fx.db, { name: 'Pen', baseRate: rupees(118), taxRateBp: 1800 })
+    await setUnits(fx.db, ctx(), p, [{ saleUnit: 'box', baseUnits: fromUnits(10) }])
+    const changed = await updatePriceList(fx.db, ctx(), { priceListId: fx.seed.priceListId, ratesIncludeTax: false })
+    expect(changed.ok).toBe(true)
+    await setFeature(fx.db, ctx(), 'unitPrices', true)
+
+    expect(await setUnitPrices(fx.db, ctx(), { productId: p, units: [{ saleUnit: 'box', mrp: rupees(1180), rate: rupees(1062) }] })).toEqual({ ok: true })
+    const row = await fx.db.get<{ rate: number }>(`SELECT rate FROM item_prices WHERE product_id = ? AND sale_unit = 'box' AND deleted_at IS NULL`, [p])
+    expect(row!.rate).toBe(rupees(900))
+    expect((await unitPrices(fx.db, p))[0]).toMatchObject({ rate: rupees(1062), asPieces: rupees(1180) })
+
+    const pricing = await pricingContextFor(fx.db, null)
+    const line = await resolveLinePrice(fx.db, pricing, { productId: p, saleUnit: 'box', qty: fromUnits(1) })
+    expect(line).toMatchObject({ rate: rupees(900), includesTax: false })
   })
 })
 

@@ -17,6 +17,9 @@ import { rupees } from '../src/money.js'
 import { newId } from '../src/ids.js'
 import { fromUnits } from '../src/quantity.js'
 import { freshDb, emptyDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
+import { setUnits, setUnitPrices, unitPrices } from '../src/services/pricing.js'
+import { setFeature, isOn } from '../src/services/features.js'
+import { pricingContextFor, resolveLinePrice } from '../src/repos/pricing.js'
 import type { Row, SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -180,6 +183,37 @@ describe('a change made on one till reaches the other', () => {
     const again = await bothWays()
     expect(again.first.ok && again.first.sent).toBe(0)
     expect(again.first.ok && again.first.received).toBe(0)
+  })
+})
+
+describe('box prices and MRP (079) travel with the shop', () => {
+  async function boxOn(till: Till) {
+    const pricing = await pricingContextFor(till.db, null)
+    return resolveLinePrice(till.db, pricing, { productId: penId, saleUnit: 'box', qty: fromUnits(1) })
+  }
+  let penId = ''
+
+  it('carries the switch, the box MRP and the box price, and turning it off on the other till reaches back', async () => {
+    const ctx = { actorId: a.fx!.adminId }
+    await as(a, async () => {
+      penId = await makeProduct(a.db, { name: 'Pen', baseRate: rupees(10), taxRateBp: 0 })
+      await setUnits(a.db, ctx, penId, [{ saleUnit: 'box', baseUnits: fromUnits(10) }])
+      await setFeature(a.db, ctx, 'unitPrices', true)
+      const saved = await setUnitPrices(a.db, ctx, { productId: penId, units: [{ saleUnit: 'box', mrp: rupees(90), rate: rupees(85) }] })
+      expect(saved).toEqual({ ok: true })
+    })
+    await bothWays()
+
+    expect(await isOn(b.db, 'unitPrices')).toBe(true)
+    expect((await unitPrices(b.db, penId))[0]).toMatchObject({ mrp: rupees(90), rate: rupees(85) })
+    expect((await as(b, () => boxOn(b))).rate).toBe(rupees(85))
+
+    await as(b, () => b.db.execute(`UPDATE settings SET value = 'off', updated_at = ? WHERE key = 'feature_unit_prices'`, [new Date(Date.now() + 1000).toISOString()]))
+    await bothWays()
+    expect(await isOn(a.db, 'unitPrices')).toBe(false)
+    expect((await as(a, () => boxOn(a))).rate).toBe(rupees(100))
+    // Kept on both, for when it is turned back on.
+    expect((await unitPrices(a.db, penId))[0]).toMatchObject({ mrp: rupees(90), rate: rupees(85) })
   })
 })
 
