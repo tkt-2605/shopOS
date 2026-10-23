@@ -18,6 +18,11 @@ export interface PricingContext {
   /** Defaults to true. See `PriceCandidates.quantityBreaks`. */
   quantityBreaks?: boolean | undefined
   /**
+   * Whether a unit's own price for everyone is charged: "Box prices and MRP"
+   * (079). Defaults to true. Off, a box is priced as its pieces.
+   */
+  unitPrices?: boolean | undefined
+  /**
    * The batch the line sells out of (070). A batch with a rate of its own
    * stands in for the item's base rate; the lists and the customer's own rates
    * still outrank it, as they outrank the base rate.
@@ -89,6 +94,14 @@ export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): P
   if (ctx.defaultPriceListId && ctx.defaultPriceListId !== ctx.customerPriceListId) {
     candidates.defaultListTiers = await loadTiers(
       db, ctx.productId, ctx.defaultPriceListId, ctx.saleUnit, ladderUnit, factor,
+      {
+        // Box prices switched off: the box's own rows are kept and not read.
+        ownUnit: ctx.unitPrices !== false,
+        /* The item's own breaks, seen from a box, are breaks too. With them
+           off, a rung at ten pieces must not become the price of a box of
+           ten -- only a rung at one piece, which is a price and not a break. */
+        baseFrom: ctx.quantityBreaks === false ? qty(QTY_SCALE) : null,
+      },
     )
   }
 
@@ -159,8 +172,11 @@ async function loadTiers(
   saleUnit: string,
   ladderUnit: string | null,
   factor: Qty,
+  opts: { ownUnit?: boolean; baseFrom?: Qty | null } = {},
 ): Promise<PriceTier[]> {
-  const tiers: PriceTier[] = await listTiers(db, productId, priceListId, saleUnit)
+  const tiers: PriceTier[] = ladderUnit && opts.ownUnit === false
+    ? []
+    : await listTiers(db, productId, priceListId, saleUnit)
 
   // The base ladder fills in for units the shop has said nothing about, and
   // steps aside entirely for one it has.
@@ -172,7 +188,8 @@ async function loadTiers(
   // on boxes writes a box ladder: 1=110, 2=96.
   if (ladderUnit && tiers.length === 0) {
     const base = await listTiers(db, productId, priceListId, ladderUnit)
-    tiers.push(...base.map((r) => converted(r, factor)))
+    const upTo = opts.baseFrom ?? null
+    tiers.push(...base.filter((r) => upTo === null || r.minQty <= upTo).map((r) => converted(r, factor)))
   }
 
   return tiers
@@ -240,6 +257,8 @@ export interface BillPricingContext {
   defaultPriceListId: string | null
   /** Whether this shop uses quantity breaks. Read once per bill, not per line. */
   quantityBreaks: boolean
+  /** Whether a box's own price for everyone is charged (079). Missing reads as on. */
+  unitPrices?: boolean
   /** Whether the customer's list quotes its rates with tax in them (063). True with no list. */
   customerListIncludesTax: boolean
   /** The same, for the shop's default list. */
@@ -298,6 +317,7 @@ export async function pricingContextFor(
     customerPriceListId: customer?.priceListId ?? null,
     defaultPriceListId: defaultList,
     quantityBreaks: await isOn(db, 'tieredPricing'),
+    unitPrices: await isOn(db, 'unitPrices'),
     customerListIncludesTax: await listIncludesTax(db, customer?.priceListId ?? null),
     defaultListIncludesTax: await listIncludesTax(db, defaultList),
   }
@@ -318,6 +338,7 @@ export async function resolveLinePrice(
     customerPriceListId: ctx.customerPriceListId,
     defaultPriceListId: ctx.defaultPriceListId,
     quantityBreaks: ctx.quantityBreaks,
+    unitPrices: ctx.unitPrices,
   })
   const resolved = resolvePrice(candidates, line.qty, on)
   return { ...resolved, includesTax: includesTaxFor(resolved.source, ctx) }
@@ -356,6 +377,23 @@ export async function purchaseOrderRate(
 export interface SaleUnitInfo {
   saleUnit: string
   baseUnits: Qty
+  /** The MRP printed on one of this unit (079), whether or not the shop uses it; null for the base unit. */
+  mrp?: Money | null
+}
+
+/**
+ * The MRP of one of a line's unit: the box's own when it has one and the
+ * shop uses box prices (079), else the piece's -- the batch's, or the item's --
+ * times how many the unit holds. Null where nothing is printed.
+ *
+ * Per sale unit, as the receipt, the A4 invoice and "you saved" all read it.
+ * Until 079 a box line was given the piece's MRP, so a box of ten at ₹85
+ * printed MRP ₹10 beside it and its saving was never shown.
+ */
+export function lineMrp(perBase: Money | null, unit: SaleUnitInfo, unitPrices: boolean): Money | null {
+  if (unitPrices && unit.mrp != null) return unit.mrp
+  if (perBase === null) return null
+  return scaleRate(perBase, unit.baseUnits)
 }
 
 export async function resolveSaleUnit(db: SqlDriver, productId: string, saleUnit: string | null): Promise<SaleUnitInfo> {
@@ -364,6 +402,7 @@ export async function resolveSaleUnit(db: SqlDriver, productId: string, saleUnit
       .select({
         saleUnit: schema.productUnits.saleUnit,
         baseUnits: schema.productUnits.baseUnits,
+        mrp: schema.productUnits.mrp,
       })
       .from(schema.productUnits)
       .where(and(

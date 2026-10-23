@@ -7,7 +7,7 @@ import { type Qty, qty, QTY_SCALE } from '../../quantity.js'
 import type { PriceSource } from '../../domain/pricing.js'
 import { computeTotals, grossOf, type ComputedTotals } from '../../domain/billTotals.js'
 import type { SupplyType } from '../../domain/tax.js'
-import { resolveSaleUnit, pricingContextFor, resolveLinePrice } from '../../repos/pricing.js'
+import { resolveSaleUnit, pricingContextFor, resolveLinePrice, lineMrp } from '../../repos/pricing.js'
 import { loadRounding, loadTaxScheme } from '../features.js'
 import { chargesTax } from '../../domain/taxScheme.js'
 import { openSessionFor } from '../cash.js'
@@ -246,7 +246,7 @@ export async function priceBill(
       qty: line.qty,
       baseQty: qty(Math.round((line.qty * unit.baseUnits) / QTY_SCALE)),
       rate: priced.rate,
-      mrp: batch?.mrp ?? product.mrp ?? null,
+      mrp: lineMrp(batch?.mrp ?? product.mrp ?? null, unit, pricing.unitPrices !== false),
       discount,
       taxRateBp: taxed ? product.taxRateBp : 0,
       // Cess is a tax like GST: a shop that may not collect one collects neither.

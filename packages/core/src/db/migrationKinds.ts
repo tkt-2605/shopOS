@@ -176,6 +176,7 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* A CHECK widened to let an order line be closed short: a till below it refuses
      the row, and would show a closed order as open and receive against it. */
   [78, '078_an_order_closed_short.sql', 'breaking'],
+  [79, '079_a_box_has_its_own_mrp.sql', 'breaking'],
 ]
 
 /**

@@ -9,6 +9,7 @@ import type { AuditContext } from '../../integrity/audit.js'
 import { defaultPriceListId } from '../../repos/pricing.js'
 import type { BelowCostRefusal } from '../belowCost.js'
 import { setCustomerLadder, setLadder } from './ladders.js'
+import { isOn } from '../features.js'
 
 /*
  * Special prices in and out of a spreadsheet: one row per rung.
@@ -34,6 +35,12 @@ export type LadderProblem =
   | 'BAD_QTY' | 'BAD_RATE' | 'BAD_DATE' | 'DATES_DIFFER' | 'REPEATED_QTY'
   /** For everyone, the price of one is the item's selling rate: a break needs a quantity above one. */
   | 'EVERYONE_NEEDS_QTY'
+  /**
+   * A box priced for everyone while "Box prices and MRP" is off (079). It
+   * would be saved and not charged, which is the hidden price the switch is
+   * there to prevent; the row says to turn it on first.
+   */
+  | 'UNIT_PRICES_OFF'
   /** Another row of the same ladder is wrong, so none of it is touched. */
   | 'LADDER_SKIPPED'
 
@@ -119,6 +126,7 @@ export async function planLadderImport(db: SqlDriver, text: string): Promise<Lad
   const { headers, rows } = parseCsvRecords(text)
   const known = new Set<string>(LADDER_COLUMNS.map(header))
   const everyone = await defaultPriceListId(db)
+  const boxPrices = await isOn(db, 'unitPrices')
 
   const products = await q(db)
     .select({ id: schema.products.id, name: schema.products.name, barcode: schema.products.barcode, baseUnit: schema.products.baseUnit })
@@ -192,6 +200,7 @@ export async function planLadderImport(db: SqlDriver, text: string): Promise<Lad
     // The unit as the item spells it, so `Box` in a file is the item's `box`.
     const typedUnit = get('unit')
     const saleUnit = typedUnit === '' || norm(typedUnit) === norm(product.baseUnit) ? product.baseUnit : typedUnit
+    if (target.kind === 'everyone' && saleUnit !== product.baseUnit && !boxPrices) { say('UNIT_PRICES_OFF'); continue }
     const key = `${target.kind === 'list' ? target.priceListId : target.kind === 'customer' ? target.customerId : 'everyone'}|${productId}|${norm(saleUnit)}`
     const group = groups.get(key) ?? {
       key, target, productId, productName: product.name, saleUnit, rungs: [], validFrom: null, validTo: null,

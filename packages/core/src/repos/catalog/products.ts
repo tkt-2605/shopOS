@@ -4,6 +4,7 @@ import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import type { Money } from '../../money.js'
 import { qty, QTY_SCALE, type Qty } from '../../quantity.js'
+import { isOn } from '../../services/features.js'
 
 /**
  * The parent a variant hangs off, and the item's own barcodes.
@@ -237,6 +238,11 @@ export interface SaleUnitOption {
   saleUnit: string
   baseUnits: Qty
   isDefault: boolean
+  /**
+   * The MRP printed on one of this unit, when the shop uses box prices (079);
+   * null otherwise, and for the base unit. See `lineMrp`.
+   */
+  mrp: Money | null
 }
 
 export async function saleUnitsFor(db: SqlDriver, productId: string): Promise<SaleUnitOption[]> {
@@ -251,14 +257,16 @@ export async function saleUnitsFor(db: SqlDriver, productId: string): Promise<Sa
       saleUnit: schema.productUnits.saleUnit,
       baseUnits: schema.productUnits.baseUnits,
       isDefault: schema.productUnits.isDefault,
+      mrp: schema.productUnits.mrp,
     })
     .from(schema.productUnits)
     .where(and(eq(schema.productUnits.productId, productId), isNull(schema.productUnits.deletedAt)))
     .orderBy(schema.productUnits.baseUnits)
+  const own = await isOn(db, 'unitPrices')
 
   return [
-    { saleUnit: product.baseUnit, baseUnits: qty(QTY_SCALE), isDefault: rows.every((r) => r.isDefault === 0) },
-    ...rows.map((r) => ({ saleUnit: r.saleUnit, baseUnits: r.baseUnits, isDefault: r.isDefault === 1 })),
+    { saleUnit: product.baseUnit, baseUnits: qty(QTY_SCALE), isDefault: rows.every((r) => r.isDefault === 0), mrp: null },
+    ...rows.map((r) => ({ saleUnit: r.saleUnit, baseUnits: r.baseUnits, isDefault: r.isDefault === 1, mrp: own ? r.mrp : null })),
   ]
 }
 

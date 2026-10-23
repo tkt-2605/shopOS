@@ -72,6 +72,21 @@ export interface Features {
    * `services/batches.ts`.
    */
   batchExpiry: boolean
+  /**
+   * Box prices and MRP (079).
+   *
+   * On, each unit row on the item form carries the MRP printed on it and the
+   * price it sells at -- a box of ten printed ₹90, sold at ₹85. Off, a box is
+   * its pieces: the selling rate times how many it holds (less any quantity
+   * break it reaches), and its MRP the piece's times the same.
+   *
+   * Like quantity breaks, off means *not charged*, not merely not shown: a box
+   * price nobody can see must not go on setting what the box costs. The prices
+   * stay where they are, and turning the switch back on brings them back.
+   * Only the price for everyone is governed; a price list or a customer's own
+   * box price is on Special Prices, where it can be seen.
+   */
+  unitPrices: boolean
 }
 
 export type FeatureKey = keyof Features
@@ -82,6 +97,7 @@ const SETTING: Record<FeatureKey, string> = {
   uniquePhone: 'feature_unique_phone',
   uniqueBarcode: 'feature_unique_barcode',
   batchExpiry: 'feature_batch_expiry',
+  unitPrices: 'feature_unit_prices',
 }
 
 const LABEL: Record<FeatureKey, string> = {
@@ -90,6 +106,7 @@ const LABEL: Record<FeatureKey, string> = {
   uniquePhone: 'One customer per phone number',
   uniqueBarcode: 'One item per barcode',
   batchExpiry: 'Batch numbers and expiry dates',
+  unitPrices: 'Box prices and MRP',
 }
 
 /**
@@ -99,6 +116,7 @@ const LABEL: Record<FeatureKey, string> = {
  */
 export const FEATURES_OFF: Features = {
   multiBarcode: false, tieredPricing: false, uniquePhone: false, uniqueBarcode: false, batchExpiry: false,
+  unitPrices: false,
 }
 
 export async function loadFeatures(db: SqlDriver): Promise<Features> {

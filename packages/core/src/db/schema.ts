@@ -211,6 +211,8 @@ export const productUnits = sqliteTable('product_units', {
   updatedAt: text('updated_at').notNull(),
   /** Taken off the item (056). */
   deletedAt: text('deleted_at'),
+  /** The MRP printed on one of this unit (079). Null: its pieces' MRP times how many it holds. */
+  mrp: money(),
 })
 
 export const priceLists = sqliteTable('price_lists', {

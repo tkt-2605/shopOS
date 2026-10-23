@@ -28,6 +28,8 @@ export type { CustomerPrice } from './pricing/customerPrices.js'
 export { customerLadderFor, ladderFor, laddersFor, setCustomerLadder, setLadder } from './pricing/ladders.js'
 export type { SetLadderResult } from './pricing/ladders.js'
 export { itemsPricedTwice, settleDoublePrice, pricesElsewhere } from './pricing/normalPrice.js'
+export { unitPrices, setUnitPrices } from './pricing/unitPrices.js'
+export type { UnitPrice, UnitPriceInput, SetUnitPricesResult } from './pricing/unitPrices.js'
 export type { DoublePrice, SettleResult, PriceElsewhere } from './pricing/normalPrice.js'
 export { exportLadders, planLadderImport, applyLadderImport, LADDER_COLUMNS } from './pricing/ladderCsv.js'
 export type {

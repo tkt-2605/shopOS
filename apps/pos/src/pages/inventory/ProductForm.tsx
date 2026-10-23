@@ -7,6 +7,7 @@ import type { Draft } from './draft'
 import { PriceFields } from './PriceFields'
 import { TaxFields } from './TaxFields'
 import { PricesElsewhere } from './PricesElsewhere'
+import { UnitRows } from './UnitRows'
 import type { ParentSearch } from './useParentSearch'
 
 /**
@@ -139,51 +140,7 @@ export function ProductForm({
         </Field>
       </div>
 
-      <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>
-          Units it also sells in
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-          Stock is counted in {draft.baseUnit || 'the base unit'}. A bigger unit says how many of
-          those it holds — a ream is 500 sheets, a pack of pens is 10. The cashier then picks the
-          unit at the counter, and each one can carry its own price on Special Prices.
-        </div>
-        {draft.units.map((unit, index) => (
-          <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-            <input
-              className="input"
-              style={{ flex: 1, minWidth: 0 }}
-              placeholder="ream, pack, dozen, box"
-              value={unit.saleUnit}
-              onChange={(e) => setDraft({
-                ...draft,
-                units: draft.units.map((u, i) => (i === index ? { ...u, saleUnit: e.target.value } : u)),
-              })}
-            />
-            <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>=</span>
-            <input
-              className="input num"
-              style={{ width: 90 }}
-              inputMode="decimal"
-              placeholder="500"
-              value={unit.baseUnits}
-              onChange={(e) => setDraft({
-                ...draft,
-                units: draft.units.map((u, i) => (i === index ? { ...u, baseUnits: e.target.value } : u)),
-              })}
-            />
-            <span style={{ fontSize: 12, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>
-              {draft.baseUnit || 'units'}
-            </span>
-            <button className="btn ghost" type="button" title="Remove this unit"
-              onClick={() => setDraft({ ...draft, units: draft.units.filter((_, i) => i !== index) })}
-            >✕</button>
-          </div>
-        ))}
-        <button className="btn ghost sm" type="button"
-          onClick={() => setDraft({ ...draft, units: [...draft.units, { saleUnit: '', baseUnits: '' }] })}
-        >Another unit</button>
-      </div>
+      <UnitRows draft={draft} setDraft={setDraft} />
 
       <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Barcodes</div>

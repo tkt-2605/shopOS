@@ -38,6 +38,7 @@ describe('what a shop starts with', () => {
   it('starts simple, but already refusing a duplicate phone number', async () => {
     expect(await loadFeatures(fx.db)).toEqual({
       multiBarcode: false, tieredPricing: false, uniquePhone: true, uniqueBarcode: false, batchExpiry: false,
+      unitPrices: false,
     })
   })
 

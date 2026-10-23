@@ -95,14 +95,17 @@ export function picksOf(lines: CartLine[]): Record<number, string> {
 }
 
 /**
- * The MRP for one of the line's sale units: the printed price of the batch the
- * cashier chose, else the item's, both per base unit -- so a box of 12 shows
- * twelve times the piece's. Null where the packet has none.
+ * The MRP for one of the line's sale units: the box's own when it is printed
+ * on it and the shop uses box prices (`saleUnitsFor` only carries it then),
+ * else the batch's the cashier chose or the item's, per base unit -- so a box
+ * of 12 shows twelve times the piece's. Null where the packet has none.
  */
 export function mrpOf(line: CartLine): number | null {
+  const unit = line.units.find((u) => u.saleUnit === line.saleUnit)
+  if (unit?.mrp != null) return unit.mrp
   const perBase = line.batchMrp ?? line.product.mrp
   if (perBase == null) return null
-  const factor = line.units.find((u) => u.saleUnit === line.saleUnit)?.baseUnits ?? Quantity.fromUnits(1)
+  const factor = unit?.baseUnits ?? Quantity.fromUnits(1)
   return Math.round((perBase * factor) / Quantity.QTY_SCALE)
 }
 

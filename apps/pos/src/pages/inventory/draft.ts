@@ -16,6 +16,11 @@ export interface UnitDraft {
   saleUnit: string
   /** How many base units one of these is: a ream is 500 sheets. */
   baseUnits: string
+  /** The MRP printed on one, and what one sells for (079). Blank is none: it reads as its pieces. */
+  mrp?: string
+  rate?: string
+  /** What one comes to as its pieces, for the empty price box to say. Not saved. */
+  asPieces?: string
 }
 
 export interface Draft {

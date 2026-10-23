@@ -77,7 +77,7 @@ function rowCounts(db: Database.Database): Map<string, number> {
  * here must come out of an upgrade with exactly the rows it went in with.
  */
 const WRITTEN_BY_A_MIGRATION = new Map<string, string>([
-  ['settings', '012 and 024 insert a key; 033 removes `schema_bootstrapped_at`'],
+  ['settings', '012, 024 and 079 insert a key; 033 removes `schema_bootstrapped_at`'],
   ['role_pages', '009 and later grant pages to the seeded roles'],
   ['role_permissions', 'the same, for what a role may do'],
   ['change_feed', '021 creates it; its triggers fire on anything a later migration writes'],
@@ -89,11 +89,11 @@ const WRITTEN_BY_A_MIGRATION = new Map<string, string>([
    quietly grow to cover a table it was never meant to. Checked as well as the
    counts themselves: a list of exceptions nobody looks at is how the exception
    that mattered gets added. */
-/* `settings` was here until 043 and its absence is arithmetic rather than an
-   oversight: 033 removes a key and 043 adds one, so on this fixture the two
-   cancel and the count comes out where it started. This list is of counts that
-   move, not of tables a migration wrote — `WRITTEN_BY_A_MIGRATION` is that. */
-const MOVED_ON_THE_REAL_SHOP = ['doc_sequences']
+/* `settings` was here until 043 and is back since 079: 033 removes a key and
+   043 adds one, which on this fixture cancel, and 079 adds the box prices
+   switch. This list is of counts that move, not of tables a migration wrote --
+   `WRITTEN_BY_A_MIGRATION` is that. */
+const MOVED_ON_THE_REAL_SHOP = ['doc_sequences', 'settings']
 
 describe('replaying every migration, one at a time', () => {
   it('leaves the database sound after each one', () => {

@@ -75,9 +75,35 @@ pub(crate) fn exports_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn write(app: &tauri::AppHandle, name: &str, bytes: &[u8]) -> Result<String, String> {
-    let path = exports_dir(app)?.join(name);
-    crate::files::write_durably(&path, bytes)?;
-    Ok(path.to_string_lossy().to_string())
+    write_or_beside(&exports_dir(app)?.join(name), bytes)
+}
+
+fn write_or_beside(first: &std::path::Path, bytes: &[u8]) -> Result<String, String> {
+    let first = first.to_path_buf();
+    let mut tried = crate::files::write_durably(&first, bytes).map(|()| first.clone());
+    /* Today's export, still open in Excel from an hour ago. Excel locks the
+       file it has open, so writing over it fails with "access denied" -- and
+       the shopkeeper did nothing wrong. The new copy goes beside it instead,
+       as `name (2).csv`, and the path handed back says where. */
+    let mut n = 2;
+    while tried.is_err() && first.exists() && n <= 20 {
+        let next = beside(&first, n);
+        if !next.exists() {
+            tried = crate::files::write_durably(&next, bytes).map(|()| next);
+        }
+        n += 1;
+    }
+    tried.map(|path| path.to_string_lossy().to_string())
+}
+
+/// `catalogue.csv` as `catalogue (2).csv`: the name Windows itself gives a second copy.
+fn beside(path: &std::path::Path, n: u32) -> PathBuf {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = match path.extension() {
+        Some(ext) => format!("{stem} ({n}).{}", ext.to_string_lossy()),
+        None => format!("{stem} ({n})"),
+    };
+    path.with_file_name(name)
 }
 
 /// `async`, as is `export_pdf`: a year of bills is a large file, and writing
@@ -144,6 +170,34 @@ mod tests {
         // The extension is per command: a CSV name is not a PDF name.
         assert!(safe_name("statement.csv", &["pdf"]).is_err());
         assert!(safe_name("shopos-licence.txt", &["csv", "txt"]).is_ok());
+    }
+
+    #[test]
+    fn a_second_copy_is_named_the_way_windows_names_one() {
+        let dir = std::path::Path::new("exports");
+        assert_eq!(beside(&dir.join("catalogue-2026-10-24.csv"), 2), dir.join("catalogue-2026-10-24 (2).csv"));
+        assert_eq!(beside(&dir.join("GSTR-1 Sep 2026.csv"), 3), dir.join("GSTR-1 Sep 2026 (3).csv"));
+    }
+
+    /// Excel opens a file without letting anyone delete or replace it, which is what makes a rename over it fail.
+    #[cfg(windows)]
+    #[test]
+    fn a_report_open_in_excel_is_left_alone_and_the_new_one_saved_beside_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join("shopos-exports-tests");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("catalogue.csv");
+        std::fs::write(&target, b"yesterday").unwrap();
+        const FILE_SHARE_READ: u32 = 1;
+        let excel = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(&target).unwrap();
+
+        let saved = write_or_beside(&target, b"today").unwrap();
+
+        assert_eq!(saved, dir.join("catalogue (2).csv").to_string_lossy());
+        assert_eq!(std::fs::read(dir.join("catalogue (2).csv")).unwrap(), b"today");
+        drop(excel);
+        assert_eq!(std::fs::read(&target).unwrap(), b"yesterday");
     }
 
     /// Only the whole first part is a device. `CONSOLE.csv` and `console-log.csv`

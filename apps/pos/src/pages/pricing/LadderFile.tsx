@@ -32,6 +32,7 @@ const WHY: Record<LadderProblem, string> = {
   DATES_DIFFER: 'The rows for this item give different dates',
   REPEATED_QTY: 'That quantity is given twice for this item',
   EVERYONE_NEEDS_QTY: 'With no list or customer this is the item’s own break; give a quantity above 1 (the price of one is its selling rate)',
+  UNIT_PRICES_OFF: 'A box price for everyone needs Box prices and MRP turned on in Settings, or it would be saved and never charged',
   LADDER_SKIPPED: 'Another row for this item is wrong, so none of its rows were taken',
 }
 

@@ -1590,7 +1590,39 @@ typed on the Prices page's "Rates per item" tab.
   back and asked about once. An export reads back as nothing to change.
 - A box price for everybody (a default-list rate in a bigger unit) still
   charges, but has no box of its own now that Rates per item is gone; it is
-  in the CSV. A per-unit price on the item form would be its home.
+  in the CSV. A per-unit price on the item form would be its home -- and is,
+  since the next section.
+
+## Box prices and MRP (24 October)
+
+A pen is ₹10 and its box of ten is printed ₹90 and sold at ₹85.
+
+- **A switch, "Box prices and MRP"** (Settings, Features; `unitPrices`,
+  079). On, each unit row on the item form has the MRP printed on it and the
+  price it sells at (`inventory/UnitRows.tsx`, `services/pricing/unitPrices.ts`).
+  An empty price shows what the box comes to as its pieces.
+- **Off means not charged**, the quantity-breaks rule: the box's own rate on
+  the default list is kept and ignored, and a box is its pieces
+  (`repos/pricing.ts`, `loadTiers` `ownUnit`). Turning it on brings them back.
+  079 turns it on for a shop already charging a box price, so nothing changes
+  for that shop on upgrade. Named lists and customers' box prices are not
+  governed: they are on Special Prices, where they can be seen.
+- **Breaks off really is off for a box.** A piece rung at ten converted to a
+  box of ten used to price the box with breaks switched off; only a rung at one
+  piece is read now (`baseFrom`).
+- **A bill line's MRP is per sale unit** (`lineMrp`): the box's own when set
+  and on, else the piece's (batch's or item's) times what it holds. Before,
+  a box line was given the piece's MRP, so the receipt printed MRP ₹10 beside
+  ₹85 and never showed the saving.
+- **Refused:** a box price above its MRP, and an MRP the box would be charged
+  over as its pieces (`ABOVE_MRP`, `PIECES_ABOVE_MRP`). Checked before any write.
+- **CSV:** a box price for everyone with the switch off is refused
+  (`UNIT_PRICES_OFF`): it would be saved and never charged.
+- 079 is breaking: an older till would pass on a unit row without its MRP.
+  Its seeding of the setting runs inside the `applying` bracket, as 043's does.
+- **Exports** open in Excel are no longer "Access is denied": the new file is
+  saved beside it as `name (2).csv` and the path returned says so
+  (`src-tauri/src/exports.rs`).
 
 ## Not committed
 

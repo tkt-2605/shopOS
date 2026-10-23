@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Tax, Permissions, searchProducts, recomputeStock, listBarcodes, setBarcodes, barcodesTaken,
   listUnits, setUnits, listCategories, createCategory, renameCategory, removeCategory,
-  setProductCategory, setVariantOf, laddersFor, defaultPriceListId, Ladder,
+  setProductCategory, setVariantOf, laddersFor, defaultPriceListId, Ladder, unitPrices,
   setProductActive, saveProductDetails, costHint, type Category, type ProductListItem, type CostHint,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -12,6 +12,7 @@ import { ProductHistory } from '../ui/ProductHistory'
 import { useConfirm } from '../ui/useConfirm'
 import { belowCostMessage, retryBelowCost } from '../ui/belowCost'
 import { breakRows, saveBreaks } from './inventory/breaks'
+import { saveUnitPrices, unitDrafts } from './inventory/unitPrices'
 import { DoublePrices } from '../ui/DoublePrices'
 import { useShopChanged } from '../core/useShopChanged'
 import { CatalogueFile } from '../ui/CatalogueFile'
@@ -157,6 +158,11 @@ export default function Inventory() {
       return
     }
 
+    // Only with box prices on: off, the form shows none, and saving must not take any away.
+    if (features.unitPrices && !(await saveUnitPrices(db, {
+      actorId: user.id, productId, units: draft.units, ask, say: setNotice,
+    }))) { await refresh(); return }
+
     // Only with breaks on: off, the form shows none, and saving must not take any away.
     if (features.tieredPricing && priceListId && !(await saveBreaks(db, {
       actorId: user.id, productId, priceListId, unit: draft.baseUnit || 'piece', rows: draft.ladder, ask, say: setNotice,
@@ -253,7 +259,9 @@ export default function Inventory() {
   }
 
   async function edit(p: ProductListItem) {
-    const [codes, units, cost] = await Promise.all([listBarcodes(db, p.id), listUnits(db, p.id), costHint(db, p.id)])
+    const [codes, units, cost, priced] = await Promise.all([
+      listBarcodes(db, p.id), listUnits(db, p.id), costHint(db, p.id), unitPrices(db, p.id),
+    ])
     // Only a price actually paid: the item's own cost price is already in the box.
     setLastCost(cost !== null && cost.source !== 'item' ? cost : null)
     setDraft({
@@ -261,7 +269,7 @@ export default function Inventory() {
       barcodes: codes.length > 0
         ? codes.map((c) => ({ barcode: c.barcode, label: c.label ?? '' }))
         : [{ barcode: '', label: '' }],
-      units: units.map((u) => ({ saleUnit: u.saleUnit, baseUnits: Quantity.formatQty(u.baseUnits) })),
+      units: unitDrafts(units, priced),
       ladder: breakRows(ladders.get(p.id) ?? []),
       categoryId: p.categoryId ?? '',
       parentProductId: p.parentProductId ?? '',

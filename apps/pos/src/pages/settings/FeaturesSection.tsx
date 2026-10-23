@@ -59,6 +59,19 @@ export function FeaturesSection() {
             + 'being charged by a rule nobody can see is worse than no rule at all.'
           }
         />
+        <Switch
+          id="feature-unit-prices"
+          on={features.unitPrices}
+          onChange={(on) => void setFeatureFlag('unitPrices', on)}
+          title="Box prices and MRP"
+          note={
+            'A pen is ₹10 and its box of ten is printed ₹90 and sold at ₹85. On, each unit on the '
+            + 'item form — box, pack, dozen — has its own MRP and its own price. Off, a box is its '
+            + 'pieces: ten times the pen’s price and MRP, less any quantity break. Box prices '
+            + 'already saved stay in the database but stop being charged while this is off, and '
+            + 'come back when it is turned on — the same rule as quantity breaks.'
+          }
+        />
       </Card>
 
       <Card title="Stock">
