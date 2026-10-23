@@ -196,3 +196,15 @@ export async function customerPriceListId(db: SqlDriver, customerId: string): Pr
     .where(eq(schema.customers.id, customerId))
   return row?.priceListId ?? null
 }
+
+/** Who buys on a list, by name: the people a rate on it reaches. */
+export async function customersOnList(
+  db: SqlDriver,
+  priceListId: string,
+): Promise<{ id: string; name: string }[]> {
+  return q(db)
+    .select({ id: schema.customers.id, name: schema.customers.name })
+    .from(schema.customers)
+    .where(and(eq(schema.customers.priceListId, priceListId), isNull(schema.customers.deletedAt)))
+    .orderBy(schema.customers.name)
+}

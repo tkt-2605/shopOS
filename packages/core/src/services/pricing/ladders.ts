@@ -58,7 +58,11 @@ async function ladderUnderCost(
 export async function setLadder(
   db: SqlDriver,
   ctx: AuditContext & { actorId: string },
-  input: { productId: string; priceListId: string; saleUnit: string; rungs: Rung[]; allowBelowCost?: boolean },
+  input: {
+    productId: string; priceListId: string; saleUnit: string; rungs: Rung[]; allowBelowCost?: boolean
+    /** The days the whole ladder applies on, as the shop's calendar names them. Blank is always. */
+    validFrom?: string | null; validTo?: string | null
+  },
 ): Promise<SetLadderResult> {
   await requirePermission(db, ctx.actorId, 'price_list', 'write')
   if (!(await unitExists(db, input.productId, input.saleUnit))) {
@@ -89,6 +93,8 @@ export async function setLadder(
       saleUnit: input.saleUnit,
       minQty: rung.minQty,
       rate: rung.rate,
+      validFrom: input.validFrom ?? null,
+      validTo: input.validTo ?? null,
       allowBelowCost: allow,
     })
     if (!written.ok) return written
@@ -105,7 +111,10 @@ export async function setLadder(
 export async function setCustomerLadder(
   db: SqlDriver,
   ctx: AuditContext & { actorId: string },
-  input: { customerId: string; productId: string; saleUnit: string; rungs: Rung[]; allowBelowCost?: boolean },
+  input: {
+    customerId: string; productId: string; saleUnit: string; rungs: Rung[]; allowBelowCost?: boolean
+    validFrom?: string | null; validTo?: string | null
+  },
 ): Promise<SetLadderResult> {
   await requirePermission(db, ctx.actorId, 'price_list', 'write')
   if (!(await unitExists(db, input.productId, input.saleUnit))) {
@@ -140,6 +149,8 @@ export async function setCustomerLadder(
       saleUnit: input.saleUnit,
       minQty: rung.minQty,
       rate: rung.rate,
+      validFrom: input.validFrom ?? null,
+      validTo: input.validTo ?? null,
       allowBelowCost: allow,
     })
     if (!written.ok) return written

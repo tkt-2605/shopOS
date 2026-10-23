@@ -1,5 +1,5 @@
 import type { Money } from '../money.js'
-import type { Qty } from '../quantity.js'
+import { qty, QTY_SCALE, type Qty } from '../quantity.js'
 import { businessDate } from '../dates.js'
 
 /**
@@ -9,7 +9,8 @@ import { businessDate } from '../dates.js'
  *      a quantity ladder — the whole reason a shop negotiates with a regular
  *      is how much they take
  *   2. the customer's assigned price list, best matching quantity tier
- *   3. the default price list, best matching quantity tier
+ *   3. the default price list, best matching quantity tier: the item's own
+ *      quantity breaks, which every customer earns
  *   4. the product's own base rate
  *
  * The resolved price carries the rule that produced it. A cashier is asked "why
@@ -84,7 +85,14 @@ export function resolvePrice(candidates: PriceCandidates, quantity: Qty, on: Dat
     return { rate: fromCustomerList.rate, source: 'customer_list', sourceId: fromCustomerList.id }
   }
 
-  const fromDefaultList = bestTier(candidates.defaultListTiers, quantity, asOf)
+  /* The default list holds the item's own quantity breaks above its base
+     rate, which is the price of one (Special Prices, 24 October). With breaks
+     off, a rung at ten must not become the price of one, so only a rung that
+     starts at a single unit -- a box priced for everyone, or a list rate kept
+     from before -- still speaks. */
+  const fromDefaultList = breaks
+    ? tierForQty(candidates.defaultListTiers, quantity, asOf)
+    : tierForQty(candidates.defaultListTiers, qty(QTY_SCALE), asOf)
   if (fromDefaultList) {
     return { rate: fromDefaultList.rate, source: 'default_list', sourceId: fromDefaultList.id }
   }
@@ -136,9 +144,9 @@ export function describeSource(source: PriceSource): string {
     case 'customer_list':
       return "Customer's price list"
     case 'default_list':
-      return 'Default price list'
+      return 'Cheaper by the quantity'
     case 'base_rate':
-      return 'Product base price'
+      return 'Normal price'
     case 'manual_override':
       return 'Entered by cashier'
     case 'order_rate':

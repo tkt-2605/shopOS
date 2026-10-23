@@ -1556,6 +1556,42 @@ blank to sign by hand, as before. Custom HTML templates get
 `{{shop.signature}}`, and the starter template uses it. The roll does not
 print it.
 
+## Special Prices made plain (24 October)
+
+The owner found prices entered in several places and the Prices page
+confusing. Two of the places were the same thing: an item had its selling
+rate and, on its form, a "price on the shop's list" -- a single rate on the
+default list that the counter charged *before* the selling rate, so an item
+could read ₹10 on Inventory and ring up at ₹9. That second box could also be
+typed on the Prices page's "Rates per item" tab.
+
+- **One normal price.** The selling rate is what everybody pays. The item form
+  no longer has a shop-list price; with quantity breaks on it has "Cheaper by
+  the quantity", the breaks above the price of one, stored on the default list
+  as before (`inventory/breaks.ts`). With breaks off the resolver no longer
+  lets a default-list rung above one unit become the price of one
+  (`domain/pricing.ts`). A read-only line on the item names its other prices.
+- **Items already priced twice** are asked about once, on Inventory and
+  Special Prices (`ui/DoublePrices.tsx`, `itemsPricedTwice` /
+  `settleDoublePrice`): the ones that agree are tidied in one press; for the
+  rest, keeping the list rate makes it the selling rate, so no customer pays
+  differently. Nothing is changed until somebody chooses.
+- **Special Prices has two tabs.** Price lists: choose a list, see who is on
+  it and every item it prices beside the normal price, add and change items
+  in place, with units, breaks and dates (`pricing/ListPrices.tsx`). One
+  customer: as before. The default list is never shown as a list. Rates per
+  item and the list-of-lists tab are gone.
+- **CSV in and out** (`pricing/ladderCsv.ts`, `pricing/LadderFile.tsx`): one
+  row per rung, `item, barcode, unit, price_list, customer, min_qty, rate,
+  from, to`. A row with neither list nor customer is the item's own break.
+  The rows for an item on a list or customer replace its ladder there;
+  ladders the file leaves out are untouched; one blank-rate row takes a
+  ladder off. Choosing a file writes nothing; below-cost ladders are handed
+  back and asked about once. An export reads back as nothing to change.
+- A box price for everybody (a default-list rate in a bigger unit) still
+  charges, but has no box of its own now that Rates per item is gone; it is
+  in the CSV. A per-unit price on the item form would be its home.
+
 ## Not committed
 
 `docs/specs.zip` — a redundant archive of `docs/specs/`. Left untracked

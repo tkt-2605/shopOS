@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Money, Quantity, Tax, Permissions, searchProducts, recomputeStock, listBarcodes, setBarcodes, barcodesTaken,
   listUnits, setUnits, listCategories, createCategory, renameCategory, removeCategory,
-  setProductCategory, setVariantOf, setLadder, laddersFor, defaultPriceListId, Ladder,
+  setProductCategory, setVariantOf, laddersFor, defaultPriceListId, Ladder,
   setProductActive, saveProductDetails, costHint, type Category, type ProductListItem, type CostHint,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -11,7 +11,8 @@ import { Modal, Empty, Alert, Rupees } from '../ui/components'
 import { ProductHistory } from '../ui/ProductHistory'
 import { useConfirm } from '../ui/useConfirm'
 import { belowCostMessage, retryBelowCost } from '../ui/belowCost'
-import { describeRowsProblem } from '../ui/LadderEditor'
+import { breakRows, saveBreaks } from './inventory/breaks'
+import { DoublePrices } from '../ui/DoublePrices'
 import { useShopChanged } from '../core/useShopChanged'
 import { CatalogueFile } from '../ui/CatalogueFile'
 import { BLANK, levelOf, type Draft } from './inventory/draft'
@@ -63,8 +64,8 @@ export default function Inventory() {
   const refreshCategories = useCallback(async () => setCategories(await listCategories(db)), [db])
   useEffect(() => { void refreshCategories() }, [refreshCategories])
 
-  // The ladder column reads the shop's own price list. Other lists are the
-  // Prices screen's business; this one is the answer to "what does it cost".
+  // The item's own quantity breaks, on the shop's own list. Other lists are
+  // Special Prices' business; this is the answer to "what does it cost".
   const refreshLadders = useCallback(async () => {
     const listId = await defaultPriceListId(db)
     if (!listId) return
@@ -156,24 +157,10 @@ export default function Inventory() {
       return
     }
 
-    const parsed = Ladder.rowsToRungs(draft.ladder)
-    if (!parsed.ok) {
-      setNotice(describeRowsProblem(parsed, draft.baseUnit || 'units') ?? 'The prices need checking.')
-      return
-    }
-    if (priceListId) {
-      const ladder = (allowBelowCost: boolean) => setLadder(db, { actorId: user.id }, {
-        productId, priceListId, saleUnit: draft.baseUnit, rungs: parsed.rungs,
-        ...(allowBelowCost ? { allowBelowCost } : {}),
-      })
-      const written = await retryBelowCost(ladder, ask, setNotice)
-      if (written !== null && !written.ok) {
-        // A refused ladder leaves the old one as it was: every rung is asked before any is written.
-        setNotice(written.code === 'BELOW_COST'
-          ? `The item was saved; its price breaks were not. ${belowCostMessage(written)}`
-          : 'The ladder could not be saved against this item.')
-      }
-    }
+    // Only with breaks on: off, the form shows none, and saving must not take any away.
+    if (features.tieredPricing && priceListId && !(await saveBreaks(db, {
+      actorId: user.id, productId, priceListId, unit: draft.baseUnit || 'piece', rows: draft.ladder, ask, say: setNotice,
+    }))) return
 
     await setProductCategory(db, { actorId: user.id }, productId, draft.categoryId || null)
     if (shared.length > 0) {
@@ -275,7 +262,7 @@ export default function Inventory() {
         ? codes.map((c) => ({ barcode: c.barcode, label: c.label ?? '' }))
         : [{ barcode: '', label: '' }],
       units: units.map((u) => ({ saleUnit: u.saleUnit, baseUnits: Quantity.formatQty(u.baseUnits) })),
-      ladder: Ladder.rungsToRows(ladders.get(p.id) ?? []),
+      ladder: breakRows(ladders.get(p.id) ?? []),
       categoryId: p.categoryId ?? '',
       parentProductId: p.parentProductId ?? '',
       variantLabel: p.variantLabel ?? '',
@@ -345,6 +332,7 @@ export default function Inventory() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {notice && <Alert kind="ok">{notice}</Alert>}
+      {canWrite && <DoublePrices onDone={refresh} />}
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <input className="input" style={{ maxWidth: 320 }} placeholder="Search products"
@@ -380,7 +368,7 @@ export default function Inventory() {
               {/* One heading per cell below, in the same order: the rows carried an
                   HSN cell the heading row did not, which pushed every heading after
                   it one column left of its figures. */}
-              <th>Item</th><th>Barcode</th><th>{features.tieredPricing ? 'Quantity ladder' : 'Price list'}</th>
+              <th>Item</th><th>Barcode</th>{features.tieredPricing && <th>Cheaper by quantity</th>}
               <th>HSN</th><th className="r">GST</th><th className="r">MRP</th><th className="r" title="The last price paid, or your cost price if newer; before GST">Cost</th><th className="r">Rate</th>
               <th className="r">On hand</th><th />
             </tr>
@@ -403,11 +391,11 @@ export default function Inventory() {
                   </div>
                 </td>
                 <td className="num">{p.barcode ?? <Missing />}</td>
-                <td className="num" style={{ fontSize: 12 }}>
-                  {ladders.has(p.id)
-                    ? Ladder.describeLadder(ladders.get(p.id)!)
-                    : <Missing />}
-                </td>
+                {features.tieredPricing && (
+                  <td className="num" style={{ fontSize: 12 }}>
+                    {Ladder.describeLadder((ladders.get(p.id) ?? []).filter((r) => r.minQty > Quantity.QTY_SCALE))}
+                  </td>
+                )}
                 <td className="num">{p.hsnCode ?? <Missing />}</td>
                 <td className="r num">{Tax.bpToPercent(p.taxRateBp)}%</td>
                 <td className="r">{p.mrp !== null ? <Rupees value={p.mrp} /> : <Missing />}</td>
@@ -435,7 +423,7 @@ export default function Inventory() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={10}><Empty>No products match</Empty></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={features.tieredPricing ? 10 : 9}><Empty>No products match</Empty></td></tr>}
           </tbody>
         </table>
       </div>

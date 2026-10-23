@@ -28,12 +28,15 @@ export {
   listItemPrices, setItemPrice, removeItemPrice,
   listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList, customerPriceListId,
   setLadder, setCustomerLadder, ladderFor, customerLadderFor, laddersFor,
-  perBaseUnit,
+  perBaseUnit, customersOnList, itemsPricedTwice, settleDoublePrice, pricesElsewhere,
+  exportLadders, planLadderImport, applyLadderImport, LADDER_COLUMNS,
 } from '../services/pricing.js'
 export type {
   SaleUnit, SaleUnitInput, SetUnitsResult, PriceList, PriceListResult,
   ArchivePriceListResult,
   ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice, SetLadderResult,
+  DoublePrice, SettleResult, PriceElsewhere,
+  LadderPlan, PlannedLadder, LadderTarget, LadderProblem, LadderRowProblem, LadderImportResult,
 } from '../services/pricing.js'
 export * as Ladder from '../domain/ladder.js'
 export type { Rung, LadderRow, RowsResult } from '../domain/ladder.js'

@@ -22,7 +22,14 @@ export { listItemPrices, removeItemPrice, setItemPrice } from './pricing/itemPri
 export type { ItemPrice, ItemPriceInput, ItemPriceResult } from './pricing/itemPrices.js'
 export {
   customerPriceListId, listCustomerPrices, removeCustomerPrice, setCustomerPrice, setCustomerPriceList,
+  customersOnList,
 } from './pricing/customerPrices.js'
 export type { CustomerPrice } from './pricing/customerPrices.js'
 export { customerLadderFor, ladderFor, laddersFor, setCustomerLadder, setLadder } from './pricing/ladders.js'
 export type { SetLadderResult } from './pricing/ladders.js'
+export { itemsPricedTwice, settleDoublePrice, pricesElsewhere } from './pricing/normalPrice.js'
+export type { DoublePrice, SettleResult, PriceElsewhere } from './pricing/normalPrice.js'
+export { exportLadders, planLadderImport, applyLadderImport, LADDER_COLUMNS } from './pricing/ladderCsv.js'
+export type {
+  LadderPlan, PlannedLadder, LadderTarget, LadderProblem, LadderRowProblem, LadderImportResult,
+} from './pricing/ladderCsv.js'

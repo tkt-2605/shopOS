@@ -42,6 +42,7 @@ export function LadderEditor({
   unit,
   disabled = false,
   breaks = true,
+  firstQty = '1',
 }: {
   rows: LadderRow[]
   onChange: (rows: LadderRow[]) => void
@@ -50,6 +51,8 @@ export function LadderEditor({
   disabled?: boolean
   /** Whether this shop prices by the quantity at all. */
   breaks?: boolean
+  /** What the first quantity box suggests: 1 for a whole ladder, more for breaks above a price of one. */
+  firstQty?: string
 }) {
   const patch = (index: number, change: Partial<LadderRow>) =>
     onChange(rows.map((r, i) => (i === index ? { ...r, ...change } : r)))
@@ -76,7 +79,7 @@ export function LadderEditor({
             <input
               className="input num"
               inputMode="decimal"
-              placeholder={index === 0 ? '1' : ''}
+              placeholder={index === 0 ? firstQty : ''}
               value={row.minQty}
               disabled={disabled}
               onChange={(e) => patch(index, { minQty: e.target.value })}
@@ -152,7 +155,7 @@ function OnePrice({
         <input
           className="input num"
           inputMode="decimal"
-          placeholder="Leave empty for the base rate"
+          placeholder="Leave empty for the normal price"
           value={first.rate}
           disabled={disabled}
           onChange={(e) => set(e.target.value)}

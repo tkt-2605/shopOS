@@ -6,11 +6,12 @@ import { Results } from '../../ui/PickList'
 import type { Draft } from './draft'
 import { PriceFields } from './PriceFields'
 import { TaxFields } from './TaxFields'
+import { PricesElsewhere } from './PricesElsewhere'
 import type { ParentSearch } from './useParentSearch'
 
 /**
  * Everything the product form asks, section by section: the item, its price
- * or its ladder, its group and what it is a version of, the units it sells
+ * and its quantity breaks, its group and what it is a version of, the units it sells
  * in, its barcodes, when to buy more, and the switches for thin-margin goods.
  *
  * The draft and what is done with it on save belong to the page. This only
@@ -62,34 +63,23 @@ export function ProductForm({
         )}
       </div>
 
-      <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
-        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>
-          {features.tieredPricing ? 'Quantity ladder' : 'Price on the shop’s list'}
+      {features.tieredPricing && (
+        <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Cheaper by the quantity</div>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
+            The selling rate above is the price of one. Add a row for each break: from 10{' '}
+            {draft.baseUnit || 'units'}, ₹9 each. Counted in {draft.baseUnit || 'base units'}, so a box of
+            twelve reaches the ten-or-more break. Leave it empty and everyone pays the selling rate.
+          </div>
+          <LadderEditor
+            rows={draft.ladder}
+            unit={draft.baseUnit || 'units'}
+            firstQty="10"
+            onChange={(ladder) => setDraft({ ...draft, ladder })}
+          />
         </div>
-        <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
-          {features.tieredPricing ? (
-            <>
-              Cheaper by the quantity. One row per price break: buy one or more at one price, ten
-              or more at another. Counted in {draft.baseUnit || 'base units'}, so a bigger unit
-              gets the rate its contents have earned — a box of twelve reaches the ten-or-more
-              break. Leave it empty and everyone pays the base rate. Other price lists, a price
-              for the box itself, and a ladder for one customer are on the Prices screen.
-            </>
-          ) : (
-            <>
-              What this item sells for on the shop’s own price list, per{' '}
-              {draft.baseUnit || 'unit'}. Leave it empty and everyone pays the base rate above.
-              Turn on cheaper-by-the-quantity in Settings to price by how much is bought.
-            </>
-          )}
-        </div>
-        <LadderEditor
-          rows={draft.ladder}
-          unit={draft.baseUnit || 'units'}
-          breaks={features.tieredPricing}
-          onChange={(ladder) => setDraft({ ...draft, ladder })}
-        />
-      </div>
+      )}
+      {draft.id && <PricesElsewhere productId={draft.id} />}
 
       <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Grouping</div>
@@ -156,7 +146,7 @@ export function ProductForm({
         <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
           Stock is counted in {draft.baseUnit || 'the base unit'}. A bigger unit says how many of
           those it holds — a ream is 500 sheets, a pack of pens is 10. The cashier then picks the
-          unit at the counter, and each one can carry its own price on the Prices screen.
+          unit at the counter, and each one can carry its own price on Special Prices.
         </div>
         {draft.units.map((unit, index) => (
           <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>

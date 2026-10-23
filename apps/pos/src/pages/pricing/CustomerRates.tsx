@@ -14,7 +14,7 @@ import { usePickList, Results } from '../../ui/PickList'
 import { useSearch } from '../../ui/useSearch'
 import { useScanChoice } from '../../ui/ScanChoice'
 
-/* The third tab: a customer's list, and the rates only they get. */
+/* The second tab: a customer's list, and the prices only they get. */
 
 export function CustomerRates({ canWrite }: { canWrite: boolean }) {
   const db = useDb()
@@ -240,15 +240,15 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
         <Card title={chosen.name}>
           {error && <div style={{ marginBottom: 11 }}><Alert>{error}</Alert></div>}
 
-          <Field label="Price list" hint="Everything this customer buys comes off this list, unless an item below says otherwise.">
+          <Field label="Price list" hint="What this customer pays for the items on that list. Everything else is at its normal price, unless an item below says otherwise.">
             <select className="input" value={onList} disabled={!canWrite}
               onChange={(e) => void moveList(e.target.value)} style={{ maxWidth: 320 }}>
-              <option value="">The shop's default list</option>
+              <option value="">None — normal prices</option>
               {lists.filter((l) => !l.isDefault).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
             </select>
           </Field>
 
-          <div style={{ fontSize: 12.5, fontWeight: 600, margin: '15px 0 3px' }}>Rates only this customer gets</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600, margin: '15px 0 3px' }}>Prices only this customer gets</div>
           <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 7 }}>
             {breaks ? (
               <>
@@ -281,7 +281,7 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
                 </tr>
               ))}
               {rates.length === 0 && (
-                <tr><td colSpan={breaks ? 5 : 4}><Empty>Nothing special — they pay their list's rates</Empty></td></tr>
+                <tr><td colSpan={breaks ? 5 : 4}><Empty>Nothing of their own — they pay their list's prices, or normal prices</Empty></td></tr>
               )}
             </tbody>
           </table>
