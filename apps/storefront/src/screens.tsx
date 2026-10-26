@@ -5,7 +5,7 @@ import {
 } from './api'
 import { showGoogleButton } from './google'
 import { read, write, forget } from './keep'
-import { addToCart, cartTotal, rupees, setQty } from './money'
+import { addToCart, cartTotal, rupees, setQty, shownName } from './money'
 import type { Shop } from './useShop'
 
 const BAR: Record<ShopState, string> = {
@@ -78,7 +78,7 @@ export function Browse({ shop }: { shop: Shop }) {
           <li key={i.id}>
             <button type="button" className="tile" onClick={() => setOpen(i)}>
               {i.thumb ? <img src={imageUrl(i.thumb)} alt="" loading="lazy" width={200} height={200} /> : <span className="noimg" />}
-              <span className="name">{i.name}</span>
+              <span className="name">{shownName(i)}</span>
               <span className="price">{rupees(i.units[0]!.price)}{i.units.length > 1 ? ' +' : ''}</span>
               {!i.available && <span className="out">Out of stock</span>}
             </button>
@@ -96,11 +96,10 @@ function ItemSheet({ item, shop, onClose }: { item: CatalogItem; shop: Shop; onC
   const [qty, setQtyState] = useState(1)
   const chosen = item.units[unit]!
   return (
-    <div className="sheet" role="dialog" aria-label={item.name} onClick={onClose}>
+    <div className="sheet" role="dialog" aria-label={shownName(item)} onClick={onClose}>
       <div className="sheet-body" onClick={(e) => e.stopPropagation()}>
         {item.photo && <img src={imageUrl(item.photo)} alt="" className="photo" />}
-        <h2>{item.name}</h2>
-        {item.brand && <p className="muted">{item.brand}</p>}
+        <h2>{shownName(item)}</h2>
         {item.units.length > 1 && (
           <div className="chips">
             {item.units.map((u, i) => (
@@ -118,7 +117,7 @@ function ItemSheet({ item, shop, onClose }: { item: CatalogItem; shop: Shop; onC
           <span className="qty">{qty}</span>
           <button type="button" onClick={() => setQtyState(Math.min(999, qty + 1))} aria-label="One more">+</button>
           <button type="button" className="primary" onClick={() => {
-            shop.setCart(addToCart(shop.cart, { productId: item.id, name: item.name, unit: chosen.unit, qty, price: chosen.price }))
+            shop.setCart(addToCart(shop.cart, { productId: item.id, name: shownName(item), unit: chosen.unit, qty, price: chosen.price }))
             onClose()
           }}>Add to cart</button>
         </div>

@@ -31,3 +31,10 @@ export function setQty(lines: readonly CartLine[], index: number, qty: number): 
   if (qty <= 0) return lines.filter((_, i) => i !== index)
   return lines.map((l, i) => (i === index ? { ...l, qty: Math.min(999, Math.floor(qty)) } : l))
 }
+
+/** An item as the customer reads it: "Pen (Cello)", unless the name already says the brand. */
+export function shownName(item: { name: string; brand: string | null }): string {
+  const brand = item.brand?.trim()
+  if (!brand || item.name.toLowerCase().includes(brand.toLowerCase())) return item.name
+  return `${item.name} (${brand})`
+}

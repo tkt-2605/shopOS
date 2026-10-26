@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { addToCart, cartTotal, rupees, setQty, type CartLine } from '../src/money'
+import { addToCart, cartTotal, rupees, setQty, shownName, type CartLine } from '../src/money'
 
 /** The cart on the phone: money in paise, whole units, one line per item and unit. */
 
@@ -25,5 +25,14 @@ describe('the cart', () => {
     expect(rupees(10000)).toBe('₹100')
     expect(rupees(1050)).toBe('₹10.50')
     expect(rupees(12345600)).toBe('₹1,23,456')
+  })
+})
+
+describe('an item’s name', () => {
+  it('carries its brand in brackets, once', () => {
+    expect(shownName({ name: 'Pen', brand: 'Cello' })).toBe('Pen (Cello)')
+    expect(shownName({ name: 'Cello Gripper pen', brand: 'Cello' })).toBe('Cello Gripper pen')
+    expect(shownName({ name: 'Notebook', brand: null })).toBe('Notebook')
+    expect(shownName({ name: 'Notebook', brand: '  ' })).toBe('Notebook')
   })
 })
