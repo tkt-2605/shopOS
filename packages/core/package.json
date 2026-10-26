@@ -13,6 +13,7 @@
     "./stock": "./src/api/stock.ts",
     "./books": "./src/api/books.ts",
     "./shop": "./src/api/shop.ts",
+    "./web": "./src/api/web.ts",
     "./node": "./src/db/node-driver.ts",
     "./libsql": "./src/db/libsql-driver.ts",
     "./migrations": "./src/db/migrations.ts",

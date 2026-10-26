@@ -179,6 +179,13 @@ export const REPLICATED: readonly RecordShape[] = [
      they were the main, or a new main taking over. After `bills`, which it
      points at. */
   { table: 'bill_emails', key: 'bill_id', lines: [] },
+  /* Orders from the web (080), written on the main and kept on every till so
+     any counter can bill one and tick a customer's phone as checked. After
+     `customers`, `users` and `documents`, which they point at. */
+  { table: 'web_accounts', key: 'id', lines: [] },
+  { table: 'web_orders', key: 'id', lines: [] },
+  /* Which attachment is an item's photo. The row travels; the file does not. */
+  { table: 'product_photos', key: 'product_id', lines: [] },
 ]
 
 const BY_TABLE = new Map(REPLICATED.map((r) => [r.table, r]))
@@ -201,6 +208,7 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
   sync_quarantine: 'a record this machine could not apply. The till that sent it applied it fine',
   discrepancies_seen: 'which discrepancies somebody at this till has been told about. The other till tells its own people',
+  web_state: 'the main\'s key for signing customers\' web sessions, and Google\'s keys as it last fetched them. A new main makes its own',
 }
 
 /** One record as it crosses between two tills. */

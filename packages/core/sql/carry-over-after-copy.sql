@@ -31,6 +31,8 @@ INSERT INTO main.discrepancies_seen SELECT * FROM prev.discrepancies_seen;
 DELETE FROM main.bill_emails;
 DELETE FROM main.doc_sequences;
 INSERT INTO main.doc_sequences SELECT * FROM prev.doc_sequences;
+DELETE FROM main.web_state;
+INSERT INTO main.web_state SELECT * FROM prev.web_state;
 INSERT INTO main.audit_log
   SELECT * FROM prev.audit_log WHERE id NOT IN (SELECT id FROM main.audit_log);
 UPDATE main.sync_state

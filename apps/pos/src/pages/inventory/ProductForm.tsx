@@ -7,6 +7,7 @@ import type { Draft } from './draft'
 import { PriceFields } from './PriceFields'
 import { TaxFields } from './TaxFields'
 import { PricesElsewhere } from './PricesElsewhere'
+import { ProductPhotoBox } from '../../ui/ProductPhotoBox'
 import { UnitRows } from './UnitRows'
 import { RenameUnit } from './RenameUnit'
 import type { ParentSearch } from './useParentSearch'
@@ -86,6 +87,7 @@ export function ProductForm({
         </div>
       )}
       {draft.id && <PricesElsewhere productId={draft.id} />}
+      {draft.id && <ProductPhotoBox productId={draft.id} />}
 
       <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Grouping</div>

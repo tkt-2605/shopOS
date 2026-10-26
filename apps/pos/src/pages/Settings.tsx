@@ -14,6 +14,7 @@ import { BackupsSection } from './settings/BackupsSection'
 import { ReportsOutSection } from './settings/ReportsOutSection'
 import { TeamSection, hasTeamScreens } from './settings/TeamSection'
 import { HelpSection } from './settings/HelpSection'
+import { OnlineSection, useSellsOnline } from './settings/OnlineSection'
 import { Intro } from './settings/parts'
 
 /**
@@ -36,7 +37,7 @@ import { Intro } from './settings/parts'
 
 export type SettingsSection =
   | 'shop' | 'tax' | 'format' | 'printer'
-  | 'features' | 'loyalty'
+  | 'features' | 'loyalty' | 'online'
   | 'team' | 'sync' | 'licence'
   | 'backups' | 'reportsOut'
   | 'appearance' | 'help'
@@ -56,6 +57,7 @@ const GROUPS: { label: string; sections: SectionDef[] }[] = [
       { id: 'tax', label: 'Tax & billing' },
       { id: 'loyalty', label: 'Loyalty' },
       { id: 'features', label: 'Features' },
+      { id: 'online', label: 'Online orders' },
     ],
   },
   {
@@ -105,8 +107,12 @@ export function openSettings(section: SettingsSection): void {
 export default function Settings({ initial }: { initial?: SettingsSection } = {}) {
   const user = useUser()
   const pages = Permissions.visiblePages(user.permissions)
+  const sellsOnline = useSellsOnline()
   const groups = GROUPS
-    .map((g) => ({ ...g, sections: g.sections.filter((s) => !s.needs || s.needs(pages)) }))
+    .map((g) => ({
+      ...g,
+      sections: g.sections.filter((s) => (!s.needs || s.needs(pages)) && (s.id !== 'online' || sellsOnline)),
+    }))
     .filter((g) => g.sections.length > 0)
   const available = groups.flatMap((g) => g.sections.map((s) => s.id))
 
@@ -157,6 +163,7 @@ function body(
     case 'tax': return <TaxSection />
     case 'features': return <FeaturesSection />
     case 'loyalty': return <LoyaltySection />
+    case 'online': return <OnlineSection />
     case 'format': return (
       <>
         <Intro>

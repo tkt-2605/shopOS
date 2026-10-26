@@ -26,6 +26,7 @@ export const SWITCHES = {
   stock_check: 'The weekly stock recount at night',
   daily_reports: 'Reports sent out by themselves each evening',
   needs_attention_banner: 'The Needs Attention banner across the top of the screen',
+  online_orders: 'The storefront: the main stops answering it, and the counter is untouched',
 } as const
 
 export type Switch = keyof typeof SWITCHES

@@ -325,8 +325,9 @@ describe('the set of tables it covers', () => {
     // being merged on the two machines' clocks; 049 added user_sessions, and
     // 051 loyalty_entries, which is edited and so needs one to merge by; 062
     // batches, whose expiry is filled in after the fact; 076 bill_emails, a
-    // note written again when a failed bill fails again.
-    expect(revTables.length).toBe(26)
+    // note written again when a failed bill fails again; 080 web_accounts,
+    // web_orders and product_photos, the storefront's.
+    expect(revTables.length).toBe(29)
 
     const triggers = new Set(
       (await fx.db.query<{ name: string }>(

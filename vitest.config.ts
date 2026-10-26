@@ -21,6 +21,13 @@ export default defineConfig({
       },
       {
         test: {
+          name: 'storefront',
+          include: ['apps/storefront/test/**/*.test.ts'],
+          environment: 'node',
+        },
+      },
+      {
+        test: {
           name: 'portal',
           include: ['apps/portal/test/**/*.test.ts'],
           environment: 'node',
@@ -62,6 +69,7 @@ export default defineConfig({
             '@shopos/core/stock': new URL('./packages/core/src/api/stock.ts', import.meta.url).pathname,
             '@shopos/core/books': new URL('./packages/core/src/api/books.ts', import.meta.url).pathname,
             '@shopos/core/shop': new URL('./packages/core/src/api/shop.ts', import.meta.url).pathname,
+            '@shopos/core/web': new URL('./packages/core/src/api/web.ts', import.meta.url).pathname,
             '@shopos/core': new URL('./packages/core/src/index.ts', import.meta.url).pathname,
           },
         },

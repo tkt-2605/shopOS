@@ -992,6 +992,68 @@ export const billEmails = sqliteTable('bill_emails', {
   originId: text('origin_id'),
 })
 
+/** A customer who signed in to the storefront with Google. Migration 080. */
+export const webAccounts = sqliteTable('web_accounts', {
+  id: text().primaryKey(),
+  googleSub: text('google_sub').notNull(),
+  email: text(),
+  name: text(),
+  phone: text(),
+  phoneVerifiedAt: text('phone_verified_at'),
+  phoneVerifiedBy: text('phone_verified_by').references(() => users.id),
+  customerId: text('customer_id').references(() => customers.id),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  rev: integer().notNull().default(1),
+  originId: text('origin_id'),
+})
+
+/** An order placed on the storefront, until and after a person answers it. Migration 080. */
+export const webOrders = sqliteTable('web_orders', {
+  id: text().primaryKey(),
+  orderNo: integer('order_no').notNull(),
+  accountId: text('account_id').notNull().references(() => webAccounts.id),
+  clientOrderId: text('client_order_id').notNull(),
+  status: text().notNull(),
+  contactName: text('contact_name').notNull(),
+  contactPhone: text('contact_phone').notNull(),
+  note: text(),
+  linesJson: text('lines_json').notNull(),
+  catalogHash: text('catalog_hash'),
+  seenTotal: money('seen_total').notNull(),
+  documentId: text('document_id').references(() => documents.id),
+  tillTotal: money('till_total'),
+  reason: text(),
+  cancelRequested: integer('cancel_requested').notNull().default(0),
+  placedAt: text('placed_at').notNull(),
+  answeredAt: text('answered_at'),
+  answeredBy: text('answered_by').references(() => users.id),
+  packingAt: text('packing_at'),
+  readyAt: text('ready_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  rev: integer().notNull().default(1),
+  originId: text('origin_id'),
+}, (table) => [
+  index('idx_web_orders_status').on(table.status),
+])
+
+/** Which of an item's attachments the storefront shows, in two sizes. Migration 080. */
+export const productPhotos = sqliteTable('product_photos', {
+  productId: text('product_id').primaryKey().references(() => products.id),
+  photoId: text('photo_id').notNull().references(() => attachments.id),
+  thumbId: text('thumb_id').notNull().references(() => attachments.id),
+  updatedAt: text('updated_at').notNull(),
+  rev: integer().notNull().default(1),
+  originId: text('origin_id'),
+})
+
+/** The main's own keys for the web: never replicated. Migration 080. */
+export const webState = sqliteTable('web_state', {
+  key: text().primaryKey(),
+  value: text().notNull(),
+})
+
 export const syncState = sqliteTable('sync_state', {
   id: integer().primaryKey(),
   applying: integer().default(0).notNull(),

@@ -177,6 +177,8 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
      the row, and would show a closed order as open and receive against it. */
   [78, '078_an_order_closed_short.sql', 'breaking'],
   [79, '079_a_box_has_its_own_mrp.sql', 'breaking'],
+  // New tables only; a till below it skips their records as tables it has not got.
+  [80, '080_orders_from_the_web.sql', 'additive'],
 ]
 
 /**

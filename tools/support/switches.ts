@@ -7,7 +7,7 @@
  *   npx tsx tools/support/switches.ts --all-on        a board that turns everything back on
  *
  * Features that can be switched: startup_sync, stock_check, daily_reports,
- * needs_attention_banner. Nothing that takes money can be.
+ * needs_attention_banner, online_orders. Nothing that takes money can be.
  *
  * Signed with the repair key (`~/.shopos/repair-key.json`, or --key). Put it
  * out with `npx tsx apps/portal/src/cli.ts switches board.txt` on the portal;

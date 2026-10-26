@@ -20,6 +20,7 @@
 pub mod client;
 pub mod discovery;
 pub mod http;
+pub mod web;
 
 pub use http::{
     lan_address, serve, Answerer, Bound, Reply, Request, LISTEN_PORT_HEADER, MAX_BODY, PATHS,

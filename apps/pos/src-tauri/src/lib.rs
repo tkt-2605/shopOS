@@ -27,6 +27,7 @@ mod sync_client;
 mod sync_server;
 mod updater;
 mod version;
+mod web_server;
 
 use tauri::Manager;
 
@@ -169,6 +170,7 @@ pub fn run() {
             // which is most of them -- never opens a port at all.
             app.manage(sync_server::SyncHost::default());
             app.manage(shop_copy::CopyShelf::default());
+            app.manage(web_server::WebHost::default());
 
             Ok(())
         })
@@ -193,6 +195,12 @@ pub fn run() {
             sync_server::sync_serve_stop,
             sync_server::sync_serve_status,
             sync_server::sync_reply,
+            web_server::web_serve_start,
+            web_server::web_serve_stop,
+            web_server::web_serve_status,
+            web_server::web_reply,
+            web_server::web_google_keys,
+            web_server::web_open_whatsapp,
             sync_client::sync_request,
             shop_copy::sync_copy_prepare,
             shop_copy::sync_copy_download,
@@ -274,4 +282,5 @@ fn refuse_to_open(
     }
     app.manage(sync_server::SyncHost::default());
     app.manage(shop_copy::CopyShelf::default());
+    app.manage(web_server::WebHost::default());
 }

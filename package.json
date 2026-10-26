@@ -12,8 +12,10 @@
     "pull-shop-db": "node tools/pull-shop-db.mjs",
     "schema:doc": "tsx tools/dump-schema.ts",
     "portal": "tsx apps/portal/src/cli.ts",
+    "storefront:dev": "vite apps/storefront",
+    "storefront:build": "vite build apps/storefront",
     "test:watch": "vitest",
-    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/pos --noEmit && tsc -p tools/virtual-till --noEmit && tsc -p tools/synthetic-shop --noEmit && tsc -p tools/support --noEmit && tsc -p apps/portal --noEmit"
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p apps/pos --noEmit && tsc -p tools/virtual-till --noEmit && tsc -p tools/synthetic-shop --noEmit && tsc -p tools/support --noEmit && tsc -p apps/portal --noEmit && tsc -p apps/storefront --noEmit"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",

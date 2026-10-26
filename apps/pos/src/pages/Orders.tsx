@@ -1,4 +1,7 @@
+import { useState } from 'react'
 import { DocumentDesk, type DeskConfig } from '../ui/DocumentDesk'
+import { OnlineOrders } from '../ui/OnlineOrders'
+import { useSellsOnline } from './settings/OnlineSection'
 
 /**
  * What the shop has promised a customer, before any money changes hands.
@@ -32,5 +35,18 @@ const CONFIG: DeskConfig = {
 }
 
 export default function Orders() {
-  return <DocumentDesk config={CONFIG} />
+  /* Orders from the storefront sit beside these, for a shop that sells online:
+     accepted, they become sales orders like the ones on the other tab. */
+  const sellsOnline = useSellsOnline()
+  const [online, setOnline] = useState(false)
+  if (!sellsOnline) return <DocumentDesk config={CONFIG} />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="segment">
+        <button type="button" aria-pressed={!online} onClick={() => setOnline(false)}>Quotations & orders</button>
+        <button type="button" aria-pressed={online} onClick={() => setOnline(true)}>Online</button>
+      </div>
+      {online ? <OnlineOrders /> : <DocumentDesk config={CONFIG} />}
+    </div>
+  )
 }

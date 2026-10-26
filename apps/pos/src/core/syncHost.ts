@@ -6,6 +6,7 @@ import {
 import { logEvent, describe } from './log'
 import { deviceSetting, setDeviceSetting } from './device'
 import { copyMaker } from './shopCopy'
+import { keepTheStorefrontRight } from './webHost'
 
 /**
  * Answering the other till.
@@ -169,6 +170,9 @@ export async function resumeServing(db: SqlDriver): Promise<ServeInfo | null> {
  * Nothing takes that back.
  */
 export async function serveIfPaired(db: SqlDriver): Promise<ServeInfo | null> {
+  /* The storefront's door, on its own terms (`webHost.ts`): open on the main
+     of a shop that sells online, a shop with one till included. */
+  void keepTheStorefrontRight(db).catch(() => undefined)
   /* Already open, which is a webview reload under a listener that outlived it.
      Re-attend and leave the port where it is. */
   const already = await resumeServing(db)
@@ -209,6 +213,9 @@ export async function keepTheDoorRight(db: SqlDriver): Promise<void> {
     await stopServing()
     logEvent('info', 'sync', 'stopped answering: this till syncs through the main')
   }
+  /* The storefront follows the main the same way: a till that has just become
+     it starts answering customers, and one that has handed over stops. */
+  await keepTheStorefrontRight(db).catch(() => undefined)
 }
 
 async function attend(db: SqlDriver): Promise<void> {

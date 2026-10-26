@@ -28,6 +28,8 @@ DELETE FROM sync_quarantine;
 DELETE FROM discrepancies_seen;
 DELETE FROM bill_emails;
 DELETE FROM doc_sequences;
+-- The key the main signs customers' web sessions with, which never leaves it.
+DELETE FROM web_state;
 UPDATE sync_state
    SET applying = 0, pruned_through = 0, main_device = NULL, main_epoch = 0
  WHERE id = 1;
