@@ -8,7 +8,7 @@ import { rupees, type Money } from '../src/money.js'
 import { newId } from '../src/ids.js'
 import { WEB_SETTINGS, whyNotServing } from '../src/services/web/gate.js'
 import { signIn, saveContact, verifyPhone, loadAccount } from '../src/services/web/accounts.js'
-import { placeOrder, acceptWebOrder, rejectWebOrder, markWebOrder } from '../src/services/web/orders.js'
+import { placeOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder } from '../src/services/web/orders.js'
 import { loadWebOrder } from '../src/services/web/orderViews.js'
 import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
 import { as, pull, type Till } from './twoTills.js'
@@ -113,5 +113,61 @@ describe('a web order across two tills', () => {
     await pull(counter, main)
     expect((await loadWebOrder(main.db, orderId))?.status).toBe('collected')
     expect((await loadAccount(main.db, accountId))?.phoneVerified).toBe(true)
+  })
+
+  it('changes nothing when another till presses a button with the main off, and its bill lands when the main is back', async () => {
+    const { orderId, documentId } = await as(MAIN, async () => {
+      const account = await signIn(main.db, { sub: 'g-2', email: 'ravi@example.com', name: 'Ravi' }, NOW)
+      await saveContact(main.db, account.id, { name: 'Ravi', phone: '9123456780' }, NOW)
+      const placed = await placeOrder(main.db, {
+        accountId: account.id, clientOrderId: 'order-main-off', lines: [{ productId: pen, unit: 'piece', qty: 2, price: 2000 }],
+      }, NOW)
+      if (!placed.ok) throw new Error(placed.code)
+      const accepted = await acceptWebOrder(main.db, {
+        webOrderId: placed.order.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW,
+      })
+      if (!accepted.ok) throw new Error(accepted.code)
+      return { orderId: placed.order.id, documentId: accepted.documentId }
+    })
+    await pull(counter, main)
+
+    /* The main is off from here: no pull until it is back. */
+    const feedBefore = (await counter.db.get<{ n: number }>(`SELECT count(*) AS n FROM change_feed`))!.n
+    const rowBefore = await counter.db.get(`SELECT * FROM web_orders WHERE id = ?`, [orderId])
+    await as(COUNTER, async () => {
+      for (const to of ['packing', 'ready'] as const) {
+        expect(await markWebOrder(counter.db, { webOrderId: orderId, actorId: fx.adminId, to }))
+          .toEqual({ ok: false, code: 'NOT_THE_MAIN' })
+      }
+      expect(await cancelWebOrder(counter.db, { webOrderId: orderId, actorId: fx.adminId, reason: 'Gone' }))
+        .toEqual({ ok: false, code: 'NOT_THE_MAIN' })
+    })
+    /* Refused, and nothing written: no change to the order, nothing waiting to be sent. */
+    expect(await counter.db.get(`SELECT * FROM web_orders WHERE id = ?`, [orderId])).toEqual(rowBefore)
+    expect((await counter.db.get<{ n: number }>(`SELECT count(*) AS n FROM change_feed`))!.n).toBe(feedBefore)
+    expect((await counter.db.get<{ docstatus: number }>(`SELECT docstatus FROM documents WHERE id = ?`, [documentId]))!.docstatus).toBe(1)
+
+    /* The customer is at the counter, so the counter takes the money anyway. */
+    await as(COUNTER, async () => {
+      const registerId = (await ensureOwnRegister(counter.db))!
+      const loaded = await documentToCart(counter.db, { documentId })
+      if (!loaded.ok) throw new Error(loaded.code)
+      const bill = await createBill(counter.db, {
+        registerId, customerId: loaded.customerId, convertedFrom: loaded.documentId,
+        lines: loaded.lines.map((l) => ({
+          productId: l.productId, saleUnit: l.saleUnit, qty: l.qty,
+          resolved: { rate: l.rate, source: 'order_rate' as const, sourceId: loaded.documentId },
+        })),
+        actorId: fx.adminId,
+      })
+      if (!bill.ok) throw new Error(bill.code)
+      const paid = await submitBill(counter.db, { billId: bill.billId, payments: [{ method: 'cash', amount: bill.grandTotal as Money }], actorId: fx.adminId })
+      if (!paid.ok) throw new Error(paid.code)
+    })
+    expect((await loadWebOrder(main.db, orderId))?.status).toBe('accepted')
+
+    /* The main is back. */
+    await pull(counter, main)
+    expect((await loadWebOrder(main.db, orderId))?.status).toBe('collected')
   })
 })
