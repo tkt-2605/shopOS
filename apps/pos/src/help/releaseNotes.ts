@@ -17,6 +17,16 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.5.0': {
+    title: 'Online orders: customers order from their phone and collect at the counter',
+    points: [
+      'Settings, Online orders: turn it on, tick the categories to list, and give the storefront address and Google client id. Only the main till answers customers.',
+      'Orders, Online: each new order shows what the customer saw, today\'s price and what is on the shelf. Accept makes it a sales order. Bill it at any counter when they come.',
+      'Mark an order Packing or Ready, and use WhatsApp to tell the customer. Tick Phone checked with customer the first time you meet them.',
+      'Items can have a photo for the storefront. Add it on the main till, under the item.',
+      'Nothing changes at the counter if online orders stay off.',
+    ],
+  },
   '0.4.7': {
     title: 'Rename the unit an item is counted in',
     points: [
