@@ -56,10 +56,16 @@ export function ProductForm({
         </Field>
         <TaxFields draft={draft} setDraft={setDraft} />
         <PriceFields draft={draft} setDraft={setDraft} lastCost={lastCost} />
-        {!draft.id && (
+        {/* Shown on an item that exists, not editable: its stock, bills and
+            valuation are all counted in it, and a hidden field read as a lost one. */}
+        {!draft.id ? (
           <Field label="Unit">
             <input className="input" id="p-unit" value={draft.baseUnit}
               onChange={(e) => setDraft({ ...draft, baseUnit: e.target.value })} />
+          </Field>
+        ) : (
+          <Field label="Unit" hint="Fixed: stock and bills are counted in it. Add a box or pack under Units below.">
+            <input className="input" id="p-unit" value={draft.baseUnit} readOnly disabled />
           </Field>
         )}
       </div>

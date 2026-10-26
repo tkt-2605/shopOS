@@ -120,6 +120,14 @@ describe('the item form', () => {
     expect(screen.queryByText('Cheaper by the quantity')).toBeNull()
   })
 
+  it('shows the unit on an item that exists, fixed, rather than hiding it', () => {
+    render(<Form draft={{ ...BLANK, id: pen, name: 'Ball Pen Black', baseUnit: 'piece' }} />)
+    const unit = screen.getByLabelText('Unit') as HTMLInputElement
+    expect(unit.value).toBe('piece')
+    expect(unit.disabled).toBe(true)
+    expect(screen.getByText(/Fixed: stock and bills are counted in it/)).toBeTruthy()
+  })
+
   it('with quantity breaks on, sets them above the selling rate', () => {
     core = { ...core, features: { ...(core['features'] as object), tieredPricing: true } }
     render(<Form draft={{ ...BLANK, id: pen, name: 'Ball Pen Black' }} />)
