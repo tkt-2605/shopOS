@@ -35,7 +35,7 @@ export {
 export type {
   WebOrderStatus, WebOrderLine, WebOrderView, ShopWebOrder, ShopOrderFilter, ReviewLine,
 } from '../services/web/orderViews.js'
-export { productPhoto, setProductPhoto, removeProductPhoto } from '../services/web/photos.js'
+export { productPhoto, setProductPhoto, removeProductPhoto, listedWithoutPhoto } from '../services/web/photos.js'
 export type { ProductPhoto } from '../services/web/photos.js'
 export { handleWebRequest, newThrottles, currentCatalog } from '../services/web/routes.js'
 export type { WebRequest, WebReply, WebDeps, WebThrottles } from '../services/web/routes.js'

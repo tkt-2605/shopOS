@@ -33,6 +33,7 @@ phone ── shop.<domain> (Cloudflare Pages: apps/storefront, a PWA)
   only what was typed until a cashier ticks "Phone checked with customer" on
   the order. Until then it never links the account to an existing customer, so
   typing someone else's number never gets their price list or khata.
+- **Items without a photo** are listed under Settings → Online orders.
 - **Photos** are added on the main (Inventory → item → Photo for the
   storefront). The till shrinks each one to 600 px and 200 px WebP. The files
   stay on the main; only the row travels.
@@ -98,10 +99,10 @@ To try it without a domain:
 
 ## Not done yet
 
-- A "Missing photos" filter on Inventory.
 - Taking a photo with a phone straight into an item.
 - Web push for "ready" (the Online view has a WhatsApp button instead).
 - Copying photo files to other tills.
 - A Play Store app.
-- The icon is 128 px; Android wants 192 and 512 px icons before it offers
-  "Install app".
+- The storefront's icon is a plain shopping bag. Put the shop's own in
+  `apps/storefront/public/` as `icon.png` (128 px), `icon-192.png` and
+  `icon-512.png`, and change `name` in `manifest.webmanifest`.

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { listCategories, type Category } from '@shopos/core'
-import { loadWebSettings, saveWebSettings, isOnlineOrderShop, type WebSettings } from '@shopos/core/web'
+import {
+  loadWebSettings, saveWebSettings, isOnlineOrderShop, listedCategoryIds, listedWithoutPhoto, type WebSettings,
+} from '@shopos/core/web'
 import { useCore, useUser } from '../../core/CoreProvider'
 import { keepTheStorefrontRight, storefrontRefusal, webPort, webServingOn } from '../../core/webHost'
 import { Alert, Card, Field } from '../../ui/components'
@@ -40,12 +42,17 @@ export function OnlineSection() {
   const [categories, setCategories] = useState<Category[]>([])
   const [serving, setServing] = useState<{ port: number | null; why: string | null }>({ port: null, why: null })
   const [error, setError] = useState<string | null>(null)
+  const [noPhoto, setNoPhoto] = useState<{ id: string; name: string }[]>([])
 
   async function refreshStatus() {
     await keepTheStorefrontRight(db)
     const why = await storefrontRefusal(db)
     setServing({ port: await webServingOn(), why: why === null ? null : WHY[why] ?? why })
   }
+
+  useEffect(() => {
+    void listedCategoryIds(db).then((ids) => listedWithoutPhoto(db, ids)).then(setNoPhoto)
+  }, [db, settings?.categoryIds.join(',')])
 
   useEffect(() => {
     void loadWebSettings(db).then(setSettings)
@@ -128,6 +135,16 @@ export function OnlineSection() {
           </label>
         ))}
       </Card>
+
+      {noPhoto.length > 0 && (
+        <Card title={`Listed without a photo (${noPhoto.length})`}>
+          <p className="hint">
+            These show a blank square on the storefront. Add a photo on the main till: Inventory, open the
+            item, Photo for the storefront.
+          </p>
+          <p>{noPhoto.slice(0, 60).map((p) => p.name).join(' · ')}{noPhoto.length > 60 ? ` and ${noPhoto.length - 60} more` : ''}</p>
+        </Card>
+      )}
 
       <Card title="Storefront">
         <TextSetting

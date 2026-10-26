@@ -1,5 +1,14 @@
 # Progress
 
+**27–28 October: online orders, 0.5.0.** A storefront the main till answers
+through a Cloudflare Tunnel, for two shops only (`01a122eb` and one id still to
+come). Schema at **80**, additive. Tagged `v0.5.0` with `shops: 01a122eb`, so
+the draft is offered to that shop alone once published. The website download
+is pinned at 0.4.7. Proven by tests, including two tills and the HTTP path
+behind a real socket. Not yet proven: a real tunnel, Google sign-in against
+Google's own keys, and photos shrunk in the WebView. Setup and the reasoning
+are in `online-orders.md`.
+
 Branch `phase-2-foundations`, 30 commits ahead of `main`, pushed to
 `origin/phase-2-foundations`. Not merged to `main`, and nothing is released: no
 installer, no tag, no update anybody's till will fetch.

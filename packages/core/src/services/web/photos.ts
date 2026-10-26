@@ -73,6 +73,27 @@ export async function removeProductPhoto(
   return { orphaned }
 }
 
+/**
+ * Items the storefront lists that have no photo yet, by name -- so the owner
+ * can work through them in one sitting.
+ */
+export async function listedWithoutPhoto(db: SqlDriver, categories: ReadonlySet<string>): Promise<{ id: string; name: string }[]> {
+  if (categories.size === 0) return []
+  const ids = [...categories]
+  /* raw: "no live photo row" is a NOT EXISTS over a join of three tables. */
+  return db.query<{ id: string; name: string }>(
+    `SELECT p.id, p.name FROM products p
+      WHERE p.is_active = 1 AND p.open_price = 0 AND p.deleted_at IS NULL
+        AND p.category_id IN (${ids.map(() => '?').join(', ')})
+        AND NOT EXISTS (
+          SELECT 1 FROM product_photos pp
+            JOIN attachments a ON a.id = pp.thumb_id AND a.deleted_at IS NULL
+           WHERE pp.product_id = p.id)
+      ORDER BY p.name`,
+    ids,
+  )
+}
+
 async function dropFiles(db: SqlDriver, ctx: AuditContext & { actorId: string }, held: ProductPhoto): Promise<string[]> {
   const out: string[] = []
   for (const id of [held.photo.id, held.thumb.id]) {

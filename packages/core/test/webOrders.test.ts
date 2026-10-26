@@ -17,6 +17,8 @@ import {
 } from '../src/services/web/orders.js'
 import { loadWebOrder, orderForAccount, reviewWebOrder } from '../src/services/web/orderViews.js'
 import { handleWebRequest, newThrottles, type WebDeps } from '../src/services/web/routes.js'
+import { setProductPhoto, removeProductPhoto, listedWithoutPhoto } from '../src/services/web/photos.js'
+import { listedCategoryIds } from '../src/services/web/catalog.js'
 import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 
 /**
@@ -148,6 +150,29 @@ describe('the catalogue', () => {
     expect(file.headers['cache-control']).toContain('immutable')
     const stale = await handleWebRequest(fx.db, { method: 'GET', path: `/catalog/${'0'.repeat(64)}.json`, headers: {}, body: '' }, deps())
     expect(stale.status).toBe(404)
+  })
+})
+
+describe("an item's photo", () => {
+  const stored = (sha: string) => ({ fileName: 'photo.webp', mime: 'image/webp', sizeBytes: 100, sha256: sha, storedPath: `${sha.slice(0, 2)}/${sha}.webp` })
+
+  it('goes into the catalogue in two sizes, and off the list of items without one', async () => {
+    expect((await listedWithoutPhoto(fx.db, await listedCategoryIds(fx.db))).map((p) => p.name)).toEqual(['Book', 'Pen'])
+    const big = 'a'.repeat(64)
+    const small = 'b'.repeat(64)
+    await setProductPhoto(fx.db, { actorId: fx.adminId }, { productId: pen, photo: stored(big), thumb: stored(small) })
+    const item = (await buildCatalog(fx.db, NOW)).items.find((i) => i.name === 'Pen')
+    expect(item).toMatchObject({ photo: big, thumb: small })
+    expect((await listedWithoutPhoto(fx.db, await listedCategoryIds(fx.db))).map((p) => p.name)).toEqual(['Book'])
+  })
+
+  it('hands back the files nothing points at once it is replaced or removed', async () => {
+    await setProductPhoto(fx.db, { actorId: fx.adminId }, { productId: pen, photo: stored('c'.repeat(64)), thumb: stored('d'.repeat(64)) })
+    const replaced = await setProductPhoto(fx.db, { actorId: fx.adminId }, { productId: pen, photo: stored('e'.repeat(64)), thumb: stored('d'.repeat(64)) })
+    expect(replaced.orphaned).toEqual([`cc/${'c'.repeat(64)}.webp`])
+    const removed = await removeProductPhoto(fx.db, { actorId: fx.adminId }, pen)
+    expect(removed.orphaned.sort()).toEqual([`dd/${'d'.repeat(64)}.webp`, `ee/${'e'.repeat(64)}.webp`])
+    expect((await buildCatalog(fx.db, NOW)).items.find((i) => i.name === 'Pen')?.photo).toBeNull()
   })
 })
 
