@@ -77,10 +77,22 @@ export type WebRefusal = 'NOT_THIS_SHOP' | 'TURNED_OFF' | 'NOT_THE_MAIN'
 export async function whyNotServing(db: SqlDriver): Promise<WebRefusal | null> {
   if (!await isOnlineOrderShop(db)) return 'NOT_THIS_SHOP'
   if ((await getSetting(db, WEB_SETTINGS.enabled)) !== 'on') return 'TURNED_OFF'
-  /* A till on its own is its own main: it has nobody to disagree with. */
-  const role = await tillRole(db)
-  if (role !== 'main' && role !== 'alone') return 'NOT_THE_MAIN'
+  if (!await answersOnlineOrders(db)) return 'NOT_THE_MAIN'
   return null
+}
+
+/**
+ * Whether this till is the one that answers online orders: the main, or a
+ * till on its own, which is its own main and has nobody to disagree with.
+ *
+ * Accepting, turning away and every change of status is the main's alone, as
+ * answering the storefront is. Two tills that could each accept an order
+ * would raise two sales orders for one customer. Every till still sees the
+ * orders and any counter can bill one.
+ */
+export async function answersOnlineOrders(db: SqlDriver): Promise<boolean> {
+  const role = await tillRole(db)
+  return role === 'main' || role === 'alone'
 }
 
 export async function onlineOrdersAllowed(db: SqlDriver): Promise<boolean> {

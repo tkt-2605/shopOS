@@ -8,7 +8,7 @@ import { rupees, type Money } from '../src/money.js'
 import { newId } from '../src/ids.js'
 import { WEB_SETTINGS, whyNotServing } from '../src/services/web/gate.js'
 import { signIn, saveContact, verifyPhone, loadAccount } from '../src/services/web/accounts.js'
-import { placeOrder, acceptWebOrder } from '../src/services/web/orders.js'
+import { placeOrder, acceptWebOrder, rejectWebOrder, markWebOrder } from '../src/services/web/orders.js'
 import { loadWebOrder } from '../src/services/web/orderViews.js'
 import { freshDb, emptyDb, makeProduct, type Fixture } from './helpers.js'
 import { as, pull, type Till } from './twoTills.js'
@@ -82,6 +82,14 @@ describe('a web order across two tills', () => {
 
     await pull(counter, main)
     expect((await loadWebOrder(counter.db, orderId))?.status).toBe('accepted')
+
+    /* Only the main answers: a second till that could would be a second sales order. */
+    await as(COUNTER, async () => {
+      expect(await markWebOrder(counter.db, { webOrderId: orderId, actorId: fx.adminId, to: 'ready' }))
+        .toEqual({ ok: false, code: 'NOT_THE_MAIN' })
+      expect(await rejectWebOrder(counter.db, { webOrderId: orderId, actorId: fx.adminId, reason: 'No' }))
+        .toEqual({ ok: false, code: 'NOT_THE_MAIN' })
+    })
 
     await as(COUNTER, async () => {
       const registerId = (await ensureOwnRegister(counter.db))!

@@ -12,7 +12,7 @@ import { submitDocument, cancelDocument } from '../documents/lifecycle.js'
 import { createCustomer, customerByPhone } from '../customers.js'
 import { isListed, listedCategoryIds } from './catalog.js'
 import { loadAccount, type WebAccount } from './accounts.js'
-import { loadWebSettings } from './gate.js'
+import { answersOnlineOrders, loadWebSettings } from './gate.js'
 import {
   isOpen, loadWebOrder, orderForAccount, ordersForAccount,
   type OrderRow, type WebOrderLine, type WebOrderStatus, type WebOrderView,
@@ -135,7 +135,7 @@ async function openOrderCount(db: SqlDriver, accountId: string): Promise<number>
 
 export type AcceptResult =
   | { ok: true; documentId: string; docNo: string; tillTotal: Money }
-  | { ok: false; code: 'NOT_FOUND' | 'NOT_PENDING' | 'NO_CUSTOMER' | 'NO_LINES' | 'INVALID_QTY' | 'UNKNOWN_PRODUCT' | 'PARTY_REQUIRED'; productId?: string }
+  | { ok: false; code: 'NOT_THE_MAIN' | 'NOT_FOUND' | 'NOT_PENDING' | 'NO_CUSTOMER' | 'NO_LINES' | 'INVALID_QTY' | 'UNKNOWN_PRODUCT' | 'PARTY_REQUIRED'; productId?: string }
 
 /**
  * Accepted by the person at the main: a submitted sales order for the
@@ -146,6 +146,7 @@ export async function acceptWebOrder(
   input: { webOrderId: string; actorId: string; registerId: string; now?: Date },
 ): Promise<AcceptResult> {
   await requirePermission(db, input.actorId, 'document', 'create')
+  if (!await answersOnlineOrders(db)) return { ok: false, code: 'NOT_THE_MAIN' }
   const now = input.now ?? new Date()
   const order = await loadWebOrder(db, input.webOrderId)
   if (!order) return { ok: false, code: 'NOT_FOUND' }
@@ -235,13 +236,14 @@ async function customerFor(
   return null
 }
 
-export type AnswerResult = { ok: true } | { ok: false; code: 'NOT_FOUND' | 'NOT_PENDING' | 'NOT_ACCEPTED' | 'REASON_REQUIRED' | 'ALREADY_BILLED' }
+export type AnswerResult = { ok: true } | { ok: false; code: 'NOT_THE_MAIN' | 'NOT_FOUND' | 'NOT_PENDING' | 'NOT_ACCEPTED' | 'REASON_REQUIRED' | 'ALREADY_BILLED' }
 
 /** Turned away before anything was raised for it. */
 export async function rejectWebOrder(
   db: SqlDriver, input: { webOrderId: string; actorId: string; reason: string; now?: Date },
 ): Promise<AnswerResult> {
   await requirePermission(db, input.actorId, 'document', 'create')
+  if (!await answersOnlineOrders(db)) return { ok: false, code: 'NOT_THE_MAIN' }
   const reason = input.reason.trim().slice(0, 200)
   if (reason === '') return { ok: false, code: 'REASON_REQUIRED' }
   const order = await loadWebOrder(db, input.webOrderId)
@@ -256,6 +258,7 @@ export async function markWebOrder(
   db: SqlDriver, input: { webOrderId: string; actorId: string; to: 'packing' | 'ready'; now?: Date },
 ): Promise<AnswerResult> {
   await requirePermission(db, input.actorId, 'document', 'create')
+  if (!await answersOnlineOrders(db)) return { ok: false, code: 'NOT_THE_MAIN' }
   const order = await loadWebOrder(db, input.webOrderId)
   if (!order) return { ok: false, code: 'NOT_FOUND' }
   const from: WebOrderStatus[] = input.to === 'packing' ? ['accepted'] : ['accepted', 'packing']
@@ -276,6 +279,7 @@ export async function cancelWebOrder(
 ): Promise<AnswerResult> {
   const reason = input.reason.trim().slice(0, 200)
   if (reason === '') return { ok: false, code: 'REASON_REQUIRED' }
+  if (!await answersOnlineOrders(db)) return { ok: false, code: 'NOT_THE_MAIN' }
   const order = await loadWebOrder(db, input.webOrderId)
   if (!order) return { ok: false, code: 'NOT_FOUND' }
   if (order.documentId === null || !isOpen(order.status) || order.status === 'pending') {

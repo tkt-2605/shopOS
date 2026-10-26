@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Permissions, Quantity, documentToCart } from '@shopos/core'
 import {
-  ordersForShop, reviewWebOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, verifyPhone,
+  answersOnlineOrders, ordersForShop, reviewWebOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, verifyPhone,
   type ShopWebOrder, type ShopOrderFilter, type ReviewLine, type WebOrderStatus,
 } from '@shopos/core/web'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -16,8 +16,8 @@ import { Alert, Card, Empty, Field, Modal, Rupees } from './components'
  * raises an ordinary sales order priced by the till; from then on it is billed
  * like any other with "Bill it", and the customer's phone reads it as
  * collected once every line is billed. Only the main till takes answers --
- * the services refuse anywhere else -- but every till sees the orders and any
- * counter can bill one.
+ * the services refuse anywhere else (`answersOnlineOrders`), and the buttons
+ * are not offered -- but every till sees the orders and any counter can bill one.
  */
 
 const STATUS: Record<WebOrderStatus, string> = {
@@ -117,8 +117,10 @@ function OrderDetail({ order, onClose, onDone, onError }: {
 }) {
   const { db, registerId } = useCore()
   const user = useUser()
-  const canAnswer = Permissions.can(user.permissions, 'document', 'create')
-  const canCancel = Permissions.can(user.permissions, 'document', 'cancel')
+  const [isMain, setIsMain] = useState(true)
+  useEffect(() => { void answersOnlineOrders(db).then(setIsMain) }, [db])
+  const canAnswer = isMain && Permissions.can(user.permissions, 'document', 'create')
+  const canCancel = isMain && Permissions.can(user.permissions, 'document', 'cancel')
   const canBill = Permissions.can(user.permissions, 'bill', 'create')
   const canCheckPhone = Permissions.can(user.permissions, 'customer', 'write')
   const [lines, setLines] = useState<ReviewLine[] | null>(null)
@@ -145,7 +147,8 @@ function OrderDetail({ order, onClose, onDone, onError }: {
   const accept = () => act(async () => {
     const r = await acceptWebOrder(db, { webOrderId: order.id, actorId: user.id, registerId })
     if (r.ok) return `W-${order.orderNo} accepted as ${r.docNo}.`
-    onError(r.code === 'NOT_PENDING' ? 'It has already been answered.'
+    onError(r.code === 'NOT_THE_MAIN' ? 'Answer online orders on the main till.'
+      : r.code === 'NOT_PENDING' ? 'It has already been answered.'
       : r.code === 'UNKNOWN_PRODUCT' ? 'An item on it no longer exists.'
       : `It could not be accepted (${r.code}).`)
     return null
@@ -239,6 +242,9 @@ function OrderDetail({ order, onClose, onDone, onError }: {
           {order.account?.email && <div className="src">{order.account.email}</div>}
         </div>
         {order.note && <div>“{order.note}”</div>}
+        {!isMain && (waiting || live) && (
+          <div className="src">Accept, turn away and mark ready on the main till. You can bill it here.</div>
+        )}
         {order.cancelRequested && live && <Alert kind="warn">The customer has asked to cancel this order.</Alert>}
         {order.reason && <div className="src">Reason: {order.reason}</div>}
 

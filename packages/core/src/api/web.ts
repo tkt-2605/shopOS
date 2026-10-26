@@ -9,6 +9,7 @@
 
 export {
   ONLINE_ORDER_SHOPS, WEB_SETTINGS, loadWebSettings, saveWebSettings, isOnlineOrderShop, whyNotServing, onlineOrdersAllowed,
+  answersOnlineOrders,
 } from '../services/web/gate.js'
 export type { WebSettings, WebRefusal } from '../services/web/gate.js'
 export {
