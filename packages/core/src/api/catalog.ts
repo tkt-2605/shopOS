@@ -23,7 +23,7 @@ export type { TaxLike } from '../repos/catalog/taxLikes.js'
 export { setProductActive, saveProductDetails } from '../services/products.js'
 export type { ProductDetails, SaveProductResult } from '../services/products.js'
 export {
-  listUnits, setUnits, listPriceLists, createPriceList, updatePriceList,
+  listUnits, setUnits, renameBaseUnit, listPriceLists, createPriceList, updatePriceList,
   archivePriceList, restorePriceList,
   listItemPrices, setItemPrice, removeItemPrice,
   listCustomerPrices, setCustomerPrice, removeCustomerPrice, setCustomerPriceList, customerPriceListId,
@@ -32,7 +32,7 @@ export {
   exportLadders, planLadderImport, applyLadderImport, LADDER_COLUMNS,
 } from '../services/pricing.js'
 export type {
-  SaleUnit, SaleUnitInput, SetUnitsResult, PriceList, PriceListResult,
+  SaleUnit, SaleUnitInput, SetUnitsResult, RenameBaseUnitResult, PriceList, PriceListResult,
   ArchivePriceListResult,
   ItemPrice, ItemPriceInput, ItemPriceResult, CustomerPrice, SetLadderResult,
   DoublePrice, SettleResult, PriceElsewhere, UnitPrice, UnitPriceInput, SetUnitPricesResult,

@@ -8,6 +8,7 @@ import { PriceFields } from './PriceFields'
 import { TaxFields } from './TaxFields'
 import { PricesElsewhere } from './PricesElsewhere'
 import { UnitRows } from './UnitRows'
+import { RenameUnit } from './RenameUnit'
 import type { ParentSearch } from './useParentSearch'
 
 /**
@@ -56,17 +57,15 @@ export function ProductForm({
         </Field>
         <TaxFields draft={draft} setDraft={setDraft} />
         <PriceFields draft={draft} setDraft={setDraft} lastCost={lastCost} />
-        {/* Shown on an item that exists, not editable: its stock, bills and
-            valuation are all counted in it, and a hidden field read as a lost one. */}
+        {/* On an item that exists, shown and renamable but not changeable: its
+            stock, bills and valuation are all counted in it. */}
         {!draft.id ? (
           <Field label="Unit">
             <input className="input" id="p-unit" value={draft.baseUnit}
               onChange={(e) => setDraft({ ...draft, baseUnit: e.target.value })} />
           </Field>
         ) : (
-          <Field label="Unit" hint="Fixed: stock and bills are counted in it. Add a box or pack under Units below.">
-            <input className="input" id="p-unit" value={draft.baseUnit} readOnly disabled />
-          </Field>
+          <RenameUnit draft={draft} setDraft={setDraft} />
         )}
       </div>
 

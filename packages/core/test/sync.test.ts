@@ -17,9 +17,9 @@ import { rupees } from '../src/money.js'
 import { newId } from '../src/ids.js'
 import { fromUnits } from '../src/quantity.js'
 import { freshDb, emptyDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
-import { setUnits, setUnitPrices, unitPrices } from '../src/services/pricing.js'
+import { setUnits, setUnitPrices, unitPrices, renameBaseUnit } from '../src/services/pricing.js'
 import { setFeature, isOn } from '../src/services/features.js'
-import { pricingContextFor, resolveLinePrice } from '../src/repos/pricing.js'
+import { pricingContextFor, resolveLinePrice, resolveSaleUnit } from '../src/repos/pricing.js'
 import type { Row, SqlDriver } from '../src/db/driver.js'
 
 /**
@@ -214,6 +214,23 @@ describe('box prices and MRP (079) travel with the shop', () => {
     expect((await as(a, () => boxOn(a))).rate).toBe(rupees(100))
     // Kept on both, for when it is turned back on.
     expect((await unitPrices(a.db, penId))[0]).toMatchObject({ mrp: rupees(90), rate: rupees(85) })
+  })
+})
+
+describe('a unit renamed on one till', () => {
+  it('reaches the other with its prices, and the old word still sells one there', async () => {
+    const ctx = { actorId: a.fx!.adminId }
+    let p = ''
+    await as(a, async () => {
+      p = await makeProduct(a.db, { name: 'Pen', baseRate: rupees(10), taxRateBp: 0 })
+      await setUnits(a.db, ctx, p, [{ saleUnit: 'box', baseUnits: fromUnits(10) }])
+      expect((await renameBaseUnit(a.db, ctx, { productId: p, name: 'pcs' })).ok).toBe(true)
+    })
+    await bothWays()
+
+    expect((await b.db.get<{ base_unit: string }>('SELECT base_unit FROM products WHERE id = ?', [p]))!.base_unit).toBe('pcs')
+    expect(await as(b, () => resolveSaleUnit(b.db, p, 'piece'))).toEqual({ saleUnit: 'pcs', baseUnits: fromUnits(1) })
+    expect(await as(b, () => resolveSaleUnit(b.db, p, 'box'))).toMatchObject({ saleUnit: 'box', baseUnits: fromUnits(10) })
   })
 })
 

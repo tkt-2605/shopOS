@@ -120,12 +120,31 @@ describe('the item form', () => {
     expect(screen.queryByText('Cheaper by the quantity')).toBeNull()
   })
 
-  it('shows the unit on an item that exists, fixed, rather than hiding it', () => {
+  it('shows the unit on an item that exists, renamable but not changeable, rather than hiding it', () => {
     render(<Form draft={{ ...BLANK, id: pen, name: 'Ball Pen Black', baseUnit: 'piece' }} />)
     const unit = screen.getByLabelText('Unit') as HTMLInputElement
     expect(unit.value).toBe('piece')
     expect(unit.disabled).toBe(true)
-    expect(screen.getByText(/Fixed: stock and bills are counted in it/)).toBeTruthy()
+    expect(screen.getByText(/Stock and bills are counted in it\. Rename changes only the word/)).toBeTruthy()
+  })
+
+  it('renames the unit on the spot, and says stock and prices are unchanged', async () => {
+    const setDraft = vi.fn()
+    function Live() {
+      const parent = useParentSearch(db, BLANK, vi.fn())
+      return (
+        <ProductForm draft={{ ...BLANK, id: pen, name: 'Ball Pen Black', baseUnit: 'piece' }} setDraft={setDraft} categories={[]}
+          newCategory="" setNewCategory={vi.fn()} onAddCategory={vi.fn()} parentName={undefined} parent={parent} lastCost={null} />
+      )
+    }
+    render(<Live />)
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+    fireEvent.change(screen.getByLabelText('Unit'), { target: { value: 'pcs' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }))
+    await waitFor(() => expect(setDraft).toHaveBeenCalledWith(expect.objectContaining({ baseUnit: 'pcs' })))
+    expect(await screen.findByText('Renamed from piece. Stock and prices are unchanged.')).toBeTruthy()
+    const row = await db.get<{ base_unit: string }>('SELECT base_unit FROM products WHERE id = ?', [pen])
+    expect(row!.base_unit).toBe('pcs')
   })
 
   it('with quantity breaks on, sets them above the selling rate', () => {

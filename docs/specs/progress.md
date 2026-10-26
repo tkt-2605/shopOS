@@ -1624,6 +1624,23 @@ A pen is ₹10 and its box of ten is printed ₹90 and sold at ₹85.
   saved beside it as `name (2).csv` and the path returned says so
   (`src-tauri/src/exports.rs`).
 
+## Renaming an item's unit (26 October)
+
+The unit an item is counted in was hidden on an item being edited, which
+read as lost. It is shown now, and **Rename** changes only the word -- piece
+as pcs (`renameBaseUnit`, `inventory/RenameUnit.tsx`). What an item is
+counted *in* still cannot change: 500 pieces would become 500 boxes.
+
+- The item's prices for that unit move to the new word, on every list and
+  for every customer. Old bills keep the word they were written with.
+- The old word stays as a retired unit of one (a taken-off `product_units`
+  row), so a held bill, a quotation turned into a bill later, or a price file
+  kept from before still resolves it as one of the new (`formerBaseUnit`,
+  `resolveSaleUnit`, the ladder CSV). It is never offered at the counter, and
+  `setUnits` refuses it as a new unit (`WAS_THE_BASE`).
+- No migration: every column already existed. A till still on 0.4.6 would not
+  know the old word, so rename only once every till is on the release with it.
+
 ## Not committed
 
 `docs/specs.zip` — a redundant archive of `docs/specs/`. Left untracked

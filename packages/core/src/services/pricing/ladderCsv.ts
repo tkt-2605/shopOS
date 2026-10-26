@@ -10,6 +10,7 @@ import { defaultPriceListId } from '../../repos/pricing.js'
 import type { BelowCostRefusal } from '../belowCost.js'
 import { setCustomerLadder, setLadder } from './ladders.js'
 import { isOn } from '../features.js'
+import { formerBaseUnit } from '../../repos/pricing.js'
 
 /*
  * Special prices in and out of a spreadsheet: one row per rung.
@@ -199,7 +200,10 @@ export async function planLadderImport(db: SqlDriver, text: string): Promise<Lad
     if (target.kind === 'everyone' && !everyone) { say('UNKNOWN_LIST'); continue }
     // The unit as the item spells it, so `Box` in a file is the item's `box`.
     const typedUnit = get('unit')
-    const saleUnit = typedUnit === '' || norm(typedUnit) === norm(product.baseUnit) ? product.baseUnit : typedUnit
+    const typedBase = typedUnit === '' || norm(typedUnit) === norm(product.baseUnit)
+      // A file kept from before the unit was renamed: the old word is still one of it.
+      || await formerBaseUnit(db, productId, typedUnit)
+    const saleUnit = typedBase ? product.baseUnit : typedUnit
     if (target.kind === 'everyone' && saleUnit !== product.baseUnit && !boxPrices) { say('UNIT_PRICES_OFF'); continue }
     const key = `${target.kind === 'list' ? target.priceListId : target.kind === 'customer' ? target.customerId : 'everyone'}|${productId}|${norm(saleUnit)}`
     const group = groups.get(key) ?? {

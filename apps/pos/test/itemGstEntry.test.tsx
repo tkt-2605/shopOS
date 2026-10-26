@@ -15,7 +15,7 @@ let db: SqlDriver
 let core: Record<string, unknown>
 const settings = new Map<string, string>()
 
-vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core, useDb: () => core['db'] }))
+vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core, useDb: () => core['db'], useUser: () => core['user'] }))
 vi.mock('../src/core/device', () => ({
   deviceSetting: (key: string) => settings.get(key) ?? null,
   setDeviceSetting: async (key: string, value: string | null) => {

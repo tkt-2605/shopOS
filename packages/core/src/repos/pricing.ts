@@ -1,4 +1,4 @@
-import { eq, and, isNull } from 'drizzle-orm'
+import { eq, and, isNull, isNotNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import type { Money } from '../money.js'
@@ -418,8 +418,26 @@ export async function resolveSaleUnit(db: SqlDriver, productId: string, saleUnit
     .from(schema.products)
     .where(eq(schema.products.id, productId))
   if (!base) throw new Error(`unknown product: ${productId}`)
-  if (saleUnit && saleUnit !== base.baseUnit) {
+  if (saleUnit && saleUnit !== base.baseUnit && !(await formerBaseUnit(db, productId, saleUnit))) {
     throw new Error(`product ${productId} has no sale unit "${saleUnit}"`)
   }
   return { saleUnit: base.baseUnit, baseUnits: qty(QTY_SCALE) }
+}
+
+/**
+ * Whether a word is what this item's base unit used to be called
+ * (`renameBaseUnit`): a retired unit of one. A held bill, a quotation or a
+ * price file written before the rename still means one of the base unit.
+ */
+export async function formerBaseUnit(db: SqlDriver, productId: string, saleUnit: string): Promise<boolean> {
+  const [row] = await q(db)
+    .select({ id: schema.productUnits.id })
+    .from(schema.productUnits)
+    .where(and(
+      eq(schema.productUnits.productId, productId),
+      eq(schema.productUnits.saleUnit, saleUnit),
+      eq(schema.productUnits.baseUnits, qty(QTY_SCALE)),
+      isNotNull(schema.productUnits.deletedAt),
+    ))
+  return row !== undefined
 }

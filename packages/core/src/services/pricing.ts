@@ -12,8 +12,8 @@
  * `pricing/itemPrices.ts`, `pricing/customerPrices.ts` and `pricing/ladders.ts`.
  */
 
-export { listUnits, perBaseUnit, setUnits } from './pricing/units.js'
-export type { SaleUnit, SaleUnitInput, SetUnitsResult } from './pricing/units.js'
+export { listUnits, perBaseUnit, setUnits, renameBaseUnit } from './pricing/units.js'
+export type { SaleUnit, SaleUnitInput, SetUnitsResult, RenameBaseUnitResult } from './pricing/units.js'
 export {
   archivePriceList, createPriceList, listPriceLists, restorePriceList, updatePriceList,
 } from './pricing/lists.js'

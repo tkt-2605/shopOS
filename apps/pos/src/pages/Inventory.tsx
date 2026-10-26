@@ -151,6 +151,8 @@ export default function Inventory() {
           ? `${units.saleUnit} is on ${units.billCount} bill(s) and cannot be removed. The rest was saved.`
           : units.code === 'CLASHES_WITH_BASE'
             ? `This item is already counted in ${units.saleUnit}. The rest was saved.`
+            : units.code === 'WAS_THE_BASE'
+            ? `${units.saleUnit} is what this item's unit used to be called, and still means one on older bills. Use another name. The rest was saved.`
             : `${units.saleUnit} needs how many ${draft.baseUnit} it holds. The rest was saved.`,
       )
       setDraft(null)
