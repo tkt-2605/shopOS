@@ -106,7 +106,8 @@ export function useShop() {
         }
       }
     })()
-    const timer = setInterval(() => { void check() }, CHECK_EVERY_MS)
+    /* A new photo or price reaches an open page within a couple of minutes, with no reload. */
+    const timer = setInterval(() => { void check(); void refreshCatalog() }, CHECK_EVERY_MS)
     const online = () => { void check(); void refreshCatalog() }
     window.addEventListener('online', online)
     window.addEventListener('offline', online)

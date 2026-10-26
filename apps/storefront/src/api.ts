@@ -71,7 +71,9 @@ export async function checkShop(): Promise<{ state: ShopState; status: Status | 
   }
 }
 
-export const fetchManifest = () => call<Manifest>('/catalog/manifest.json')
+/* `no-cache`: always asked again (of Cloudflare, which holds it a minute), never
+   the browser's own copy served stale while it checks in the background. */
+export const fetchManifest = () => call<Manifest>('/catalog/manifest.json', { cache: 'no-cache' })
 export const fetchCatalog = (hash: string) => call<Catalog>(`/catalog/${hash}.json`, { timeout: 30_000 })
 export const imageUrl = (hash: string) => `${API}/img/${hash}`
 
