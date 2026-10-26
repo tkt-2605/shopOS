@@ -3,14 +3,15 @@ import { productPhoto, setProductPhoto, removeProductPhoto, whyNotServing, type 
 import { useCore, useUser } from '../core/CoreProvider'
 import { deleteFile, readFile, storeFile, type StoredResult } from '../core/attachments'
 import { Alert } from './components'
+import { CropPhoto } from './CropPhoto'
 
 /**
  * The photo the storefront shows for an item.
  *
- * One picture in, two out: the till shrinks it to about 600 pixels across for
- * the item's page and 200 for lists, as WebP, with a canvas -- so a customer's
- * phone never downloads a camera's full picture to show a thumbnail, and the
- * main never sends one. Saved at once, not with the rest of the form: it is a
+ * One picture in, two out. The person cropping chooses a square of it
+ * (`CropPhoto`), and the till draws that square at exactly 600 pixels for the
+ * item's page and 200 for lists, as WebP -- every photo on the storefront the
+ * same shape and size, and no phone ever downloads a camera's full picture. Saved at once, not with the rest of the form: it is a
  * file, and the form's Save is about the item's fields.
  *
  * Only on the main. The files stay on the till they were added on (only the
@@ -20,19 +21,6 @@ import { Alert } from './components'
 const BIG = 600
 const SMALL = 200
 
-async function shrink(file: Blob, width: number): Promise<Blob> {
-  const image = await createImageBitmap(file)
-  const scale = Math.min(1, width / image.width)
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(image.width * scale)
-  canvas.height = Math.round(image.height * scale)
-  canvas.getContext('2d')!.drawImage(image, 0, 0, canvas.width, canvas.height)
-  image.close()
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('That picture could not be read.'))), 'image/webp', 0.82)
-  })
-}
-
 export function ProductPhotoBox({ productId }: { productId: string }) {
   const { db } = useCore()
   const user = useUser()
@@ -41,6 +29,7 @@ export function ProductPhotoBox({ productId }: { productId: string }) {
   const [preview, setPreview] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [cropping, setCropping] = useState<File | null>(null)
   const picker = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
@@ -56,12 +45,19 @@ export function ProductPhotoBox({ productId }: { productId: string }) {
     void refresh()
   }, [db, refresh])
 
-  async function take(file: File | undefined) {
+  function take(file: File | undefined) {
     if (!file) return
+    if (!file.type.startsWith('image/')) { setError('That is not a picture.'); return }
+    setError(null)
+    setCropping(file)
+  }
+
+  async function keep([big, small]: Blob[]) {
+    setCropping(null)
+    if (!big || !small) return
     setBusy(true)
     setError(null)
     try {
-      const [big, small] = await Promise.all([shrink(file, BIG), shrink(file, SMALL)])
       const stored = await Promise.all([storeFile(big, 'photo.webp'), storeFile(small, 'photo-small.webp')])
       const kept = (s: StoredResult) => ({
         fileName: s.fileName, mime: s.mime, sizeBytes: s.sizeBytes, sha256: s.sha256, storedPath: s.storedPath,
@@ -90,20 +86,24 @@ export function ProductPhotoBox({ productId }: { productId: string }) {
   }
 
   if (shown === 'hidden') return null
+  const crop = cropping && (
+    <CropPhoto file={cropping} sizes={[BIG, SMALL]} onDone={(b) => void keep(b)} onCancel={() => setCropping(null)} />
+  )
 
   return (
     <div
       style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}
       onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => { e.preventDefault(); if (shown === 'here') void take(e.dataTransfer.files[0]) }}
-      onPaste={(e) => { if (shown === 'here') void take(e.clipboardData.files[0]) }}
+      onDrop={(e) => { e.preventDefault(); if (shown === 'here') take(e.dataTransfer.files[0]) }}
+      onPaste={(e) => { if (shown === 'here') take(e.clipboardData.files[0]) }}
     >
       <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Photo for the storefront</div>
       <div style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 9 }}>
         {shown === 'elsewhere'
           ? 'Add photos on the main till: it is the till that shows them to customers, and a photo stays on the computer it was added on.'
-          : 'Pick, drop or paste a picture. It is made small for phones before it is kept.'}
+          : 'Pick, drop or paste a picture, then choose the square to show. Every photo is kept at the same size.'}
       </div>
+      {crop}
       {error && <Alert>{error}</Alert>}
       <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
         {preview
@@ -112,7 +112,7 @@ export function ProductPhotoBox({ productId }: { productId: string }) {
         {shown === 'here' && (
           <>
             <input ref={picker} type="file" accept="image/jpeg,image/png,image/webp" hidden
-              onChange={(e) => { void take(e.target.files?.[0]); e.target.value = '' }} />
+              onChange={(e) => { take(e.target.files?.[0]); e.target.value = '' }} />
             <button type="button" className="btn" disabled={busy} onClick={() => picker.current?.click()}>
               {photo ? 'Change photo' : 'Add photo'}
             </button>
