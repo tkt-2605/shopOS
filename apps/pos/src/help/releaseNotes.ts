@@ -17,6 +17,16 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.4.7': {
+    title: 'Rename the unit an item is counted in',
+    points: [
+      'Editing an item now shows its Unit, with a Rename button beside it. Rename changes only the word, for example piece to pcs. Stock, prices and the books stay exactly as they were.',
+      'The item\'s price list prices, quantity breaks and customers\' own prices move to the new word. Old bills keep the word they were written with.',
+      'A held bill, an old quotation or an old price file that still says the old word goes on working.',
+      'What an item is counted in cannot change. To sell it by the box as well, add the box under Units it also sells in.',
+      'Update every till to this version before renaming any unit.',
+    ],
+  },
   '0.4.6': {
     title: 'One normal price per item, a plainer Special Prices, and box prices with their own MRP',
     points: [
