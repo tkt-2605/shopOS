@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Permissions, Quantity, documentToCart } from '@shopos/core'
 import {
-  answersOnlineOrders, ordersForShop, reviewWebOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, verifyPhone,
+  answersOnlineOrders, orderLabel, ordersForShop, reviewWebOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, verifyPhone,
   type ShopWebOrder, type ShopOrderFilter, type ReviewLine, type WebOrderStatus,
 } from '@shopos/core/web'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -82,7 +82,7 @@ export function OnlineOrders() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} onClick={() => setOpen(r)} style={{ cursor: 'pointer' }}>
-                <td>W-{r.orderNo}</td>
+                <td>{orderLabel(r.orderNo)}</td>
                 <td>{new Date(r.placedAt).toLocaleString()}</td>
                 <td>{r.contactName} <span className="src">{r.contactPhone}</span></td>
                 <td>
@@ -146,7 +146,7 @@ function OrderDetail({ order, onClose, onDone, onError }: {
 
   const accept = () => act(async () => {
     const r = await acceptWebOrder(db, { webOrderId: order.id, actorId: user.id, registerId })
-    if (r.ok) return `W-${order.orderNo} accepted as ${r.docNo}.`
+    if (r.ok) return `${orderLabel(order.orderNo)} accepted as ${r.docNo}.`
     onError(r.code === 'NOT_THE_MAIN' ? 'Answer online orders on the main till.'
       : r.code === 'NOT_PENDING' ? 'It has already been answered.'
       : r.code === 'UNKNOWN_PRODUCT' ? 'An item on it no longer exists.'
@@ -156,19 +156,19 @@ function OrderDetail({ order, onClose, onDone, onError }: {
 
   const reject = () => act(async () => {
     const r = await rejectWebOrder(db, { webOrderId: order.id, actorId: user.id, reason })
-    if (r.ok) return `W-${order.orderNo} turned away.`
+    if (r.ok) return `${orderLabel(order.orderNo)} turned away.`
     onError(r.code === 'REASON_REQUIRED' ? 'Say why, so the customer knows.' : 'It has already been answered.')
     return null
   })
 
   const mark = (to: 'packing' | 'ready') => act(async () => {
     const r = await markWebOrder(db, { webOrderId: order.id, actorId: user.id, to })
-    return r.ok ? `W-${order.orderNo} is ${to === 'ready' ? 'ready to collect' : 'being packed'}.` : null
+    return r.ok ? `${orderLabel(order.orderNo)} is ${to === 'ready' ? 'ready to collect' : 'being packed'}.` : null
   })
 
   const cancel = () => act(async () => {
     const r = await cancelWebOrder(db, { webOrderId: order.id, actorId: user.id, reason })
-    if (r.ok) return `W-${order.orderNo} cancelled.`
+    if (r.ok) return `${orderLabel(order.orderNo)} cancelled.`
     onError(r.code === 'REASON_REQUIRED' ? 'Say why, so the customer knows.'
       : r.code === 'ALREADY_BILLED' ? 'Some of it has been billed. Cancel or return the bill first.'
       : 'It cannot be cancelled now.')
@@ -201,8 +201,8 @@ function OrderDetail({ order, onClose, onDone, onError }: {
 
   const whatsapp = () => {
     const text = order.status === 'ready'
-      ? `Your order W-${order.orderNo} is ready to collect.`
-      : `About your order W-${order.orderNo}:`
+      ? `Your ${orderLabel(order.orderNo)} is ready to collect.`
+      : `About your ${orderLabel(order.orderNo)}:`
     void openWhatsApp(order.contactPhone, text).catch((err: unknown) => onError(String(err)))
   }
 
@@ -211,7 +211,7 @@ function OrderDetail({ order, onClose, onDone, onError }: {
 
   return (
     <Modal
-      title={`W-${order.orderNo} · ${STATUS[order.status]}`}
+      title={`${orderLabel(order.orderNo)} · ${STATUS[order.status]}`}
       onClose={onClose}
       wide
       footer={(

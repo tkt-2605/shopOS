@@ -160,6 +160,12 @@ export function OnlineSection() {
           onSave={(v) => save({ googleClientId: v || null })}
         />
         <TextSetting
+          label="Opening hours"
+          hint="Shown on the storefront, as you write it: “9 am to 9 pm, closed Sunday”. The address and phone come from Shop details."
+          value={settings.hours ?? ''}
+          onSave={(v) => save({ hours: v || null })}
+        />
+        <TextSetting
           label="Minutes to answer an order"
           hint="An order nobody accepts in this time is turned away, so the customer is not left waiting."
           value={String(settings.answerMinutes)}

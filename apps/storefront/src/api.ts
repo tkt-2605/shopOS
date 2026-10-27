@@ -24,13 +24,14 @@ export interface OrderLine { productId: string; name: string; unit: string; qty:
 export interface Order {
   id: string; orderNo: number; status: OrderStatus; lines: OrderLine[]
   seenTotal: number; tillTotal: number | null; note: string | null; reason: string | null
-  cancelRequested: boolean; placedAt: string; answeredAt: string | null; readyAt: string | null
+  cancelRequested: boolean; placedAt: string; answeredAt: string | null; packingAt?: string | null; readyAt: string | null
 }
 
 /** What the bar at the top says. */
 export type ShopState = 'checking' | 'open' | 'closed' | 'unreachable' | 'offline'
 
-export interface Status { state: 'open' | 'closed'; shop: string; googleClientId: string | null }
+export interface About { address: string | null; phone: string | null; hours: string | null }
+export interface Status { state: 'open' | 'closed'; shop: string; googleClientId: string | null; about?: About }
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string) {

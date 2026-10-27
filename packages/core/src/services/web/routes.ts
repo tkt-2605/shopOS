@@ -1,5 +1,5 @@
 import type { SqlDriver } from '../../db/driver.js'
-import { getSetting } from '../settings.js'
+import { loadShopProfile } from '../shop.js'
 import { loadWebSettings, whyNotServing } from './gate.js'
 import { publishCatalog, type PublishedCatalog } from './catalog.js'
 import { verifyGoogleIdToken, type Jwks } from './google.js'
@@ -81,10 +81,13 @@ export async function handleWebRequest(db: SqlDriver, req: WebRequest, deps: Web
   if (wait !== null) return reply(429, { error: 'SLOW_DOWN', retryAfter: wait })
 
   if (path === '/api/status' && req.method === 'GET') {
+    const profile = await loadShopProfile(db)
     return reply(200, {
       state: settings.open ? 'open' : 'closed',
-      shop: (await getSetting(db, 'shop_name')) ?? '',
+      shop: profile.name,
       googleClientId: settings.googleClientId,
+      /* What a customer needs to find and ring the shop. Nothing else of the profile. */
+      about: { address: profile.address, phone: profile.phone, hours: settings.hours },
     })
   }
 
@@ -213,6 +216,7 @@ function orderOut(o: WebOrderView) {
     cancelRequested: o.cancelRequested,
     placedAt: o.placedAt,
     answeredAt: o.answeredAt,
+    packingAt: o.packingAt,
     readyAt: o.readyAt,
   }
 }

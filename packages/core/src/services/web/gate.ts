@@ -37,6 +37,8 @@ export const WEB_SETTINGS = {
   answerMinutes: 'web_answer_minutes',
   /** Business days an accepted order may wait to be collected before it is listed as overdue. */
   collectDays: 'web_collect_days',
+  /** Opening hours as the shop writes them, shown on the storefront: "9 am to 9 pm, closed Sunday". */
+  hours: 'web_hours',
 } as const
 
 export interface WebSettings {
@@ -47,6 +49,7 @@ export interface WebSettings {
   googleClientId: string | null
   answerMinutes: number
   collectDays: number
+  hours: string | null
 }
 
 const ANSWER_MINUTES_DEFAULT = 30
@@ -62,6 +65,7 @@ export async function loadWebSettings(db: SqlDriver): Promise<WebSettings> {
     googleClientId: (await get(WEB_SETTINGS.googleClientId))?.trim() || null,
     answerMinutes: whole(await get(WEB_SETTINGS.answerMinutes), ANSWER_MINUTES_DEFAULT),
     collectDays: whole(await get(WEB_SETTINGS.collectDays), COLLECT_DAYS_DEFAULT),
+    hours: (await get(WEB_SETTINGS.hours))?.trim() || null,
   }
 }
 
@@ -115,6 +119,7 @@ export async function saveWebSettings(
   if (changes.googleClientId !== undefined) await put(WEB_SETTINGS.googleClientId, changes.googleClientId?.trim() ?? '')
   if (changes.answerMinutes !== undefined) await put(WEB_SETTINGS.answerMinutes, String(Math.max(1, Math.round(changes.answerMinutes))))
   if (changes.collectDays !== undefined) await put(WEB_SETTINGS.collectDays, String(Math.max(1, Math.round(changes.collectDays))))
+  if (changes.hours !== undefined) await put(WEB_SETTINGS.hours, changes.hours?.trim().slice(0, 120) ?? '')
   return loadWebSettings(db)
 }
 

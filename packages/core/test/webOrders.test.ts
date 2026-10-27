@@ -283,6 +283,22 @@ describe('placing an order', () => {
   })
 })
 
+describe('what the storefront is told', () => {
+  it("gives the shop's address, phone and hours with its state, and names a line with its brand", async () => {
+    await setSetting(fx.db, 'shop_address', '12 Car Street, Madurai')
+    await setSetting(fx.db, 'shop_phone', '0452 123456')
+    await setSetting(fx.db, WEB_SETTINGS.hours, '9 am to 9 pm, closed Sunday')
+    const reply = await handleWebRequest(fx.db, { method: 'GET', path: '/api/status', headers: {}, body: '' }, deps())
+    expect(JSON.parse(reply.body)).toMatchObject({
+      state: 'open', about: { address: '12 Car Street, Madurai', phone: '0452 123456', hours: '9 am to 9 pm, closed Sunday' },
+    })
+
+    await fx.db.execute(`UPDATE products SET brand = 'Cello' WHERE id = ?`, [pen])
+    const placed = await order((await customer()).id)
+    expect(placed.lines[0]!.name).toBe('Pen (Cello)')
+  })
+})
+
 describe('an order answered and collected', () => {
   it('becomes a submitted sales order priced by the till, and is collected when it is billed', async () => {
     const account = await customer()
@@ -296,7 +312,7 @@ describe('an order answered and collected', () => {
     if (!accepted.ok) throw new Error(accepted.code)
     expect(accepted.tillTotal).toBe(rupees(220))
     const doc = await loadDocument(fx.db, accepted.documentId)
-    expect(doc).toMatchObject({ kind: 'sales_order', docstatus: 1, notes: 'Online order W-1' })
+    expect(doc).toMatchObject({ kind: 'sales_order', docstatus: 1, notes: 'Online order #1' })
     expect((await loadWebOrder(fx.db, placed.id))?.status).toBe('accepted')
 
     expect(await markWebOrder(fx.db, { webOrderId: placed.id, actorId: fx.adminId, to: 'ready' })).toEqual({ ok: true })

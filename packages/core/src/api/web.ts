@@ -27,7 +27,7 @@ export { loadAccount, signIn, saveContact, verifyPhone, normalisePhone } from '.
 export type { WebAccount, SaveContactResult } from '../services/web/accounts.js'
 export {
   placeOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, customerCancel, expireUnanswered,
-  MAX_LINES, MAX_QTY, MAX_OPEN_ORDERS,
+  MAX_LINES, MAX_QTY, MAX_OPEN_ORDERS, orderLabel,
 } from '../services/web/orders.js'
 export type { WebOrderLineInput, PlaceOrderResult, AcceptResult, AnswerResult } from '../services/web/orders.js'
 export {

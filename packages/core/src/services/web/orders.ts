@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, lt, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { newId } from '../../ids.js'
@@ -49,7 +49,11 @@ export const MAX_LINES = 40
 export const MAX_QTY = 999
 export const MAX_OPEN_ORDERS = 3
 
-const NOTE = (orderNo: number) => `Online order W-${orderNo}`
+/** How an order is named to a person: "Order #12", on the phone, the till and the sales order alike. */
+export const orderLabel = (orderNo: number) => `Order #${orderNo}`
+const NOTE = (orderNo: number) => `Online ${orderLabel(orderNo).toLowerCase()}`
+/* What 0.5.0 wrote, so an order accepted then is still found by its note. */
+const OLD_NOTE = (orderNo: number) => `Online order W-${orderNo}`
 
 export type PlaceOrderResult =
   | { ok: true; order: WebOrderView }
@@ -83,12 +87,13 @@ export async function placeOrder(
       return { ok: false, code: 'BAD_LINE' }
     }
     if (!await isListed(db, line.productId, categories)) return { ok: false, code: 'NOT_LISTED', productId: line.productId }
-    const [product] = await q(db).select({ name: schema.products.name, baseUnit: schema.products.baseUnit })
+    const [product] = await q(db)
+      .select({ name: schema.products.name, brand: schema.products.brand, baseUnit: schema.products.baseUnit })
       .from(schema.products).where(eq(schema.products.id, line.productId))
     if (line.unit !== product!.baseUnit && !await hasUnit(db, line.productId, line.unit)) {
       return { ok: false, code: 'BAD_LINE' }
     }
-    lines.push({ productId: line.productId, name: product!.name, unit: line.unit, qty: line.qty, seenPrice: line.price as Money })
+    lines.push({ productId: line.productId, name: withBrand(product!.name, product!.brand), unit: line.unit, qty: line.qty, seenPrice: line.price as Money })
   }
 
   if (await openOrderCount(db, account.id) >= MAX_OPEN_ORDERS) return { ok: false, code: 'TOO_MANY_OPEN' }
@@ -115,6 +120,12 @@ export async function placeOrder(
     })
   })
   return { ok: true, order: (await loadWebOrder(db, id))! }
+}
+
+/** "Ball pen (Cello)", as the storefront shows it, unless the name already says the brand. */
+function withBrand(name: string, brand: string | null): string {
+  const b = brand?.trim()
+  return !b || name.toLowerCase().includes(b.toLowerCase()) ? name : `${name} (${b})`
 }
 
 async function hasUnit(db: SqlDriver, productId: string, unit: string): Promise<boolean> {
@@ -166,7 +177,7 @@ export async function acceptWebOrder(
     .where(and(
       eq(schema.documents.kind, 'sales_order'),
       eq(schema.documents.customerId, customerId),
-      eq(schema.documents.notes, NOTE(order.orderNo)),
+      inArray(schema.documents.notes, [NOTE(order.orderNo), OLD_NOTE(order.orderNo)]),
     ))
   if (earlier && earlier.docstatus !== CANCELLED) {
     documentId = earlier.id

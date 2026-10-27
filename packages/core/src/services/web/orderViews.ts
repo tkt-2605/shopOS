@@ -48,6 +48,7 @@ export interface WebOrderView {
   cancelRequested: boolean
   placedAt: string
   answeredAt: string | null
+  packingAt: string | null
   readyAt: string | null
 }
 
@@ -104,6 +105,7 @@ function toView(r: OrderRow, doc: { cancelled: boolean; finished: boolean } | un
     cancelRequested: r.cancelRequested === 1,
     placedAt: r.placedAt,
     answeredAt: r.answeredAt,
+    packingAt: r.packingAt,
     readyAt: r.readyAt,
   }
 }

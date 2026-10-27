@@ -25,12 +25,14 @@ export function useShop() {
   const [account, setAccount] = useState<Account | null>(null)
   const [cart, setCartState] = useState<CartLine[]>([])
   const [orders, setOrders] = useState<{ at: string; orders: Order[] } | null>(null)
+  /** Items opened lately, newest first, kept on the phone. */
+  const [viewed, setViewed] = useState<string[]>([])
   const loaded = useRef(false)
 
   const check = useCallback(async () => {
     const r = await checkShop()
     setState(r.state)
-    if (r.status) setStatus(r.status)
+    if (r.status) { setStatus(r.status); void write('status', r.status) }
     return r.state
   }, [])
 
@@ -85,10 +87,12 @@ export function useShop() {
     if (loaded.current) return
     loaded.current = true
     void (async () => {
-      const [c, s, k, o] = await Promise.all([
+      const [c, s, k, o, v, st] = await Promise.all([
         read<HeldCatalog>('catalog'), read<string>('session'), read<CartLine[]>('cart'),
-        read<{ at: string; orders: Order[] }>('orders'),
+        read<{ at: string; orders: Order[] }>('orders'), read<string[]>('viewed'), read<Status>('status'),
       ])
+      if (v) setViewed(v)
+      if (st) setStatus(st)
       if (c) setHeld(c)
       if (k) setCartState(k)
       if (o) setOrders(o)
@@ -118,9 +122,17 @@ export function useShop() {
     }
   }, [check, refreshCatalog, refreshOrders])
 
+  const sawItem = useCallback((id: string) => {
+    setViewed((was) => {
+      const next = [id, ...was.filter((v) => v !== id)].slice(0, 12)
+      void write('viewed', next)
+      return next
+    })
+  }, [])
+
   return {
-    held, state, status, session, account, cart, orders,
-    check, refreshCatalog, refreshOrders, signedIn, signOut, setCart, setAccount,
+    held, state, status, session, account, cart, orders, viewed,
+    check, refreshCatalog, refreshOrders, signedIn, signOut, setCart, setAccount, sawItem,
   }
 }
 

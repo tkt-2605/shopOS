@@ -38,3 +38,6 @@ export function shownName(item: { name: string; brand: string | null }): string 
   if (!brand || item.name.toLowerCase().includes(brand.toLowerCase())) return item.name
   return `${item.name} (${brand})`
 }
+
+/** How an order is named: "Order #12", the number a customer gives at the counter. */
+export const orderLabel = (orderNo: number) => `Order #${orderNo}`
