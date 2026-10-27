@@ -23,8 +23,8 @@ export function Home({ shop, go, open }: { shop: Shop; go: (to: string) => void;
     <>
       {note && <p className="saved">{note}</p>}
       <section className="hero">
-        <h1>{catalog.shop || 'Our shop'}</h1>
-        <p>Order online, pick up at the counter, pay when you collect.</p>
+        <h1>Everything for school and office, ready when you are.</h1>
+        <p>Order from {catalog.shop || 'the shop'} online, pick up at the counter, pay when you collect.</p>
         <button type="button" className="search-fake" onClick={() => go('/shop')}>Search {catalog.items.length} items…</button>
       </section>
 

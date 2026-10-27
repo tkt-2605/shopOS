@@ -28,8 +28,8 @@ function App() {
   const shop = useShop()
   const [route, go] = useRoute()
   const [open, setOpen] = useState<CatalogItem | null>(null)
-  const name = shop.held?.catalog.shop || shop.status?.shop || 'Shop'
-  useEffect(() => { document.title = name }, [name])
+  const shopName = shop.held?.catalog.shop || shop.status?.shop || 'TRT'
+  useEffect(() => { document.title = `StoreFront by ${shopName}` }, [shopName])
 
   const [path, query = ''] = route.split('?') as [string, string?]
   const params = useMemo(() => new URLSearchParams(query), [query])
@@ -60,7 +60,10 @@ function App() {
   return (
     <>
       <header>
-        <button type="button" className="title" onClick={() => go('/')}>{name}</button>
+        <button type="button" className="brand" onClick={() => go('/')}>
+          <span className="mark" aria-hidden>S</span>
+          <span className="words"><strong>StoreFront</strong><small>by {shopName}</small></span>
+        </button>
         <nav className="top-nav">
           <button type="button" aria-current={tab === 'shop'} onClick={() => go('/shop')}>Shop</button>
           <button type="button" aria-current={tab === 'orders'} onClick={() => go('/orders')}>My orders</button>
