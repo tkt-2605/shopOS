@@ -54,6 +54,14 @@ export class ApiError extends Error {
   }
 }
 
+/** Signed out by the shop, or stopped by it: the phone forgets the session either way. */
+export function endsSession(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 401 || err.code === 'BLOCKED')
+}
+
+/** What to tell a customer the shop has stopped ordering online. */
+export const BLOCKED_TEXT = 'The shop has stopped online orders from this account. Please ring or visit the shop.'
+
 const TIMEOUT_MS = 8000
 /** How long to wait before asking a busy till again (its `retry-after`). */
 export const BUSY_WAIT_MS = 1000

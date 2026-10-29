@@ -185,6 +185,9 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* Zero credit limit turns from "no limit" into "no credit": a till below it
      would give unlimited credit to a customer marked No credit. */
   [82, '082_a_zero_limit_is_no_credit.sql', 'breaking'],
+  /* Nullable columns on web_accounts, written and read only by the main as it
+     answers the storefront; a till below it relays an account without them. */
+  [83, '083_an_online_customer_can_be_stopped.sql', 'additive'],
 ]
 
 /**

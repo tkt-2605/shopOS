@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { imageUrl, placeOrder, saveContact, signIn, ApiError, type CatalogUnit, type Order } from './api'
+import { imageUrl, placeOrder, saveContact, signIn, ApiError, BLOCKED_TEXT, type CatalogUnit, type Order } from './api'
 import { showGoogleButton } from './google'
 import { barText, NoImage, PageHead, QtyInput } from './items'
 import { inApp, nativeGoogleToken } from './native'
@@ -65,7 +65,8 @@ export function Cart({ shop, onPlaced, go }: { shop: Shop; onPlaced: (order: Ord
       onPlaced(order)
     } catch (err) {
       const code = err instanceof ApiError ? err.code : ''
-      setError(code === 'SHOP_CLOSED' ? 'The shop has just closed for online orders.'
+      setError(code === 'BLOCKED' ? BLOCKED_TEXT
+        : code === 'SHOP_CLOSED' ? 'The shop has just closed for online orders.'
         : code === 'TOO_MANY_OPEN' ? 'You already have three orders waiting. Collect one first.'
         : code === 'NOT_LISTED' ? 'Something in your cart is no longer sold online. Remove it and try again.'
         : code === 'SLOW_DOWN' ? 'Too many orders just now. Try again in a while.'
@@ -187,7 +188,8 @@ export function SignIn({ shop, bare = false }: { shop: Shop; bare?: boolean }) {
   const withToken = (token: string) => {
     void signIn(token)
       .then((r) => shop.signedIn(r.session, r.account))
-      .catch((err) => setError(`The shop did not accept the sign-in (${err instanceof ApiError ? err.code : 'no answer'}). Try again.`))
+      .catch((err) => setError(err instanceof ApiError && err.code === 'BLOCKED' ? BLOCKED_TEXT
+        : `The shop did not accept the sign-in (${err instanceof ApiError ? err.code : 'no answer'}). Try again.`))
   }
 
   const reachable = shop.state === 'open' || shop.state === 'closed'

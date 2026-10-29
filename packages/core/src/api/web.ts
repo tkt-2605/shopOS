@@ -23,7 +23,7 @@ export type { Jwk, Jwks, GoogleIdentity, GoogleVerdict } from '../services/web/g
 export { heldGoogleKeys, rememberGoogleKeys } from '../services/web/googleKeys.js'
 export { issueSession, readSession, bearer } from '../services/web/session.js'
 export type { Session } from '../services/web/session.js'
-export { loadAccount, signIn, saveContact, verifyPhone, normalisePhone } from '../services/web/accounts.js'
+export { loadAccount, signIn, saveContact, verifyPhone, normalisePhone, blockWebAccount, signOutWebAccount } from '../services/web/accounts.js'
 export type { WebAccount, SaveContactResult } from '../services/web/accounts.js'
 export {
   placeOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, customerCancel, expireUnanswered,

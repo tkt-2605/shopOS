@@ -3,7 +3,7 @@ import { loadShopProfile } from '../shop.js'
 import { loadWebSettings, whatsappNumber, whyNotServing, type WebSettings } from './gate.js'
 import { publishCatalog, type PublishedCatalog } from './catalog.js'
 import { verifyGoogleIdToken, type Jwks } from './google.js'
-import { bearer, issueSession, readSession } from './session.js'
+import { bearer, issueSession, issuedAt, readSession } from './session.js'
 import { loadAccount, saveContact, signIn, type WebAccount } from './accounts.js'
 import { customerCancel, placeOrder, type WebOrderLineInput } from './orders.js'
 import { orderForAccount, ordersForAccount, type WebOrderView } from './orderViews.js'
@@ -103,13 +103,18 @@ export async function handleWebRequest(db: SqlDriver, req: WebRequest, deps: Web
     const verdict = await verifyGoogleIdToken(body.idToken, deps.googleKeys, settings.googleClientId, deps.now)
     if (!verdict.ok) return reply(401, { error: verdict.code })
     const account = await signIn(db, verdict.identity, deps.now)
+    if (account.blockedAt !== null) return reply(403, { error: 'BLOCKED' })
     return reply(200, { session: await issueSession(db, account.id, deps.now), account: accountOut(account) })
   }
 
   /* Everything below is a signed-in customer's own business. */
   const session = await readSession(db, bearer(req.headers['authorization']), deps.now)
   const account = session ? await loadAccount(db, session.accountId) : null
-  if (!account) return reply(401, { error: 'SIGN_IN' })
+  if (!session || !account) return reply(401, { error: 'SIGN_IN' })
+  if (account.blockedAt !== null) return reply(403, { error: 'BLOCKED' })
+  if (account.signedOutBefore !== null && issuedAt(session) < Date.parse(account.signedOutBefore)) {
+    return reply(401, { error: 'SIGN_IN' })
+  }
 
   if (path === '/api/me') {
     if (req.method === 'GET') return reply(200, { account: accountOut(account) })

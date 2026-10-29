@@ -1006,6 +1006,10 @@ export const webAccounts = sqliteTable('web_accounts', {
   updatedAt: text('updated_at').notNull(),
   rev: integer().notNull().default(1),
   originId: text('origin_id'),
+  /** Migration 083. Set while the shop has stopped this customer ordering online. */
+  blockedAt: text('blocked_at'),
+  /** Migration 083. Sessions issued before this are refused. */
+  signedOutBefore: text('signed_out_before'),
 })
 
 /** An order placed on the storefront, until and after a person answers it. Migration 080. */

@@ -20,6 +20,11 @@ export interface Session {
   expiresAt: number
 }
 
+/** When a session was issued: it carries only its expiry, which is a fixed time after. */
+export function issuedAt(session: Session): number {
+  return session.expiresAt - SESSION_DAYS * 86_400_000
+}
+
 export async function issueSession(db: SqlDriver, accountId: string, now: Date): Promise<string> {
   const payload = encode(JSON.stringify({ a: accountId, e: now.getTime() + SESSION_DAYS * 86_400_000 }))
   return `${payload}.${await sign(await secret(db), payload)}`

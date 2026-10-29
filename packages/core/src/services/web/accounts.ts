@@ -25,6 +25,10 @@ export interface WebAccount {
   phone: string | null
   phoneVerified: boolean
   customerId: string | null
+  /** When the shop stopped this customer ordering online, or null. */
+  blockedAt: string | null
+  /** Sessions issued before this are refused. */
+  signedOutBefore: string | null
 }
 
 const columns = {
@@ -34,12 +38,18 @@ const columns = {
   phone: schema.webAccounts.phone,
   phoneVerifiedAt: schema.webAccounts.phoneVerifiedAt,
   customerId: schema.webAccounts.customerId,
+  blockedAt: schema.webAccounts.blockedAt,
+  signedOutBefore: schema.webAccounts.signedOutBefore,
 }
 
-type Row = { id: string; email: string | null; name: string | null; phone: string | null; phoneVerifiedAt: string | null; customerId: string | null }
+type Row = {
+  id: string; email: string | null; name: string | null; phone: string | null; phoneVerifiedAt: string | null
+  customerId: string | null; blockedAt: string | null; signedOutBefore: string | null
+}
 
 const toAccount = (r: Row): WebAccount => ({
   id: r.id, email: r.email, name: r.name, phone: r.phone, phoneVerified: r.phoneVerifiedAt !== null, customerId: r.customerId,
+  blockedAt: r.blockedAt, signedOutBefore: r.signedOutBefore,
 })
 
 export async function loadAccount(db: SqlDriver, accountId: string): Promise<WebAccount | null> {
@@ -133,4 +143,48 @@ export async function verifyPhone(
     })
   })
   return { ok: true, customer: match ? { id: match.id, name: match.name } : null }
+}
+
+/**
+ * The shop stops a customer ordering online, or lets them back. Stopping also
+ * ends every session they hold, so a phone already signed in is turned away
+ * on its next request rather than up to thirty days later. Orders already
+ * accepted are untouched: they are sales orders, and are the counter's to
+ * bill or cancel.
+ *
+ * Under `customer` `write`, as checking the phone is.
+ */
+export async function blockWebAccount(
+  db: SqlDriver, input: { accountId: string; actorId: string; blocked: boolean; now?: Date },
+): Promise<{ ok: true } | { ok: false; code: 'UNKNOWN_ACCOUNT' }> {
+  await requirePermission(db, input.actorId, 'customer', 'write')
+  if (!await loadAccount(db, input.accountId)) return { ok: false, code: 'UNKNOWN_ACCOUNT' }
+  const at = (input.now ?? new Date()).toISOString()
+  await db.transaction(async (tx) => {
+    await q(tx).update(schema.webAccounts)
+      .set(input.blocked ? { blockedAt: at, signedOutBefore: at, updatedAt: at } : { blockedAt: null, updatedAt: at })
+      .where(eq(schema.webAccounts.id, input.accountId))
+    await writeAudit(tx, { actorId: input.actorId, now: () => at }, {
+      entity: 'web_accounts', entityId: input.accountId, action: 'update',
+      after: { blocked_at: input.blocked ? at : null },
+    })
+  })
+  return { ok: true }
+}
+
+/** Ends every session this customer holds now; they can sign in again. */
+export async function signOutWebAccount(
+  db: SqlDriver, input: { accountId: string; actorId: string; now?: Date },
+): Promise<{ ok: true } | { ok: false; code: 'UNKNOWN_ACCOUNT' }> {
+  await requirePermission(db, input.actorId, 'customer', 'write')
+  if (!await loadAccount(db, input.accountId)) return { ok: false, code: 'UNKNOWN_ACCOUNT' }
+  const at = (input.now ?? new Date()).toISOString()
+  await db.transaction(async (tx) => {
+    await q(tx).update(schema.webAccounts).set({ signedOutBefore: at, updatedAt: at })
+      .where(eq(schema.webAccounts.id, input.accountId))
+    await writeAudit(tx, { actorId: input.actorId, now: () => at }, {
+      entity: 'web_accounts', entityId: input.accountId, action: 'update', after: { signed_out_before: at },
+    })
+  })
+  return { ok: true }
 }

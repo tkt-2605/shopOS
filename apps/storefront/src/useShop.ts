@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  checkShop, fetchCatalog, fetchManifest, me, myOrders, ApiError,
+  checkShop, fetchCatalog, fetchManifest, me, myOrders, endsSession,
   type Account, type Catalog, type Order, type ShopState, type Status,
 } from './api'
 import { askToKeep, forget, read, write } from './keep'
@@ -62,7 +62,7 @@ export function useShop() {
       setOrders(next)
       await write('orders', next)
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) await signOut()
+      if (endsSession(err)) await signOut()
     }
   }, [session])
 
@@ -118,7 +118,7 @@ export function useShop() {
             setAccount((await me(s)).account)
             await refreshOrders(s)
           } catch (err) {
-            if (err instanceof ApiError && err.status === 401) await signOut()
+            if (endsSession(err)) await signOut()
           }
         }
       }

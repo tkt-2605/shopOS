@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Permissions, Quantity, documentToCart } from '@shopos/core'
 import {
   answersOnlineOrders, orderLabel, ordersForShop, reviewWebOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, verifyPhone,
-  withdrawProposal,
+  withdrawProposal, blockWebAccount, signOutWebAccount,
   type ShopWebOrder, type ShopOrderFilter, type ReviewLine, type WebOrderStatus,
 } from '@shopos/core/web'
 import { useCore, useUser } from '../core/CoreProvider'
@@ -10,6 +10,7 @@ import { requestRepeat } from '../core/repeat'
 import { openWhatsApp } from '../core/webHost'
 import { Alert, Card, Empty, Field, Modal, Rupees } from './components'
 import { SendBackChanged, TurnAway } from './OnlineOrderChanges'
+import { useConfirm } from './useConfirm'
 
 /**
  * Orders from the storefront, as the shop answers them.
@@ -131,6 +132,7 @@ function OrderDetail({ order, onClose, onDone, onError }: {
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [mode, setMode] = useState<'turnAway' | 'change' | null>(null)
+  const [confirmUi, ask] = useConfirm()
 
   useEffect(() => {
     void reviewWebOrder(db, order.id).then((r) => setLines(r?.lines ?? null))
@@ -195,6 +197,22 @@ function OrderDetail({ order, onClose, onDone, onError }: {
       : `${order.contactPhone} checked with the customer.`
   })
 
+  /* The main's, like answering: it is the till that turns the storefront's requests away. */
+  const block = (blocked: boolean) => act(async () => {
+    if (blocked && !await ask({
+      message: `${order.contactName} is signed out on every phone and cannot sign in or order online until you let them back. Orders already accepted stay as they are.`,
+      confirmLabel: 'Stop them ordering online',
+    })) return null
+    const r = await blockWebAccount(db, { accountId: order.accountId, actorId: user.id, blocked })
+    if (!r.ok) return null
+    return blocked ? `${order.contactName} can no longer order online.` : `${order.contactName} can order online again.`
+  })
+
+  const signOut = () => act(async () => {
+    const r = await signOutWebAccount(db, { accountId: order.accountId, actorId: user.id })
+    return r.ok ? `${order.contactName} is signed out on every phone.` : null
+  })
+
   const bill = () => act(async () => {
     if (!order.documentId) return null
     const result = await documentToCart(db, { documentId: order.documentId })
@@ -225,6 +243,8 @@ function OrderDetail({ order, onClose, onDone, onError }: {
   const live = order.status === 'accepted' || order.status === 'packing' || order.status === 'ready'
 
   return (
+    <>
+    {confirmUi}
     <Modal
       title={`${orderLabel(order.orderNo)} · ${STATUS[order.status]}`}
       onClose={onClose}
@@ -260,6 +280,15 @@ function OrderDetail({ order, onClose, onDone, onError }: {
               </button>
             )}
           {order.account?.email && <div className="src">{order.account.email}</div>}
+          {order.account?.blockedAt && <div className="src">Stopped from ordering online.</div>}
+          {isMain && canCheckPhone && order.account && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+              <button className="btn" disabled={busy} onClick={() => void signOut()}>Sign out on every phone</button>
+              <button className="btn" disabled={busy} onClick={() => void block(!order.account!.blockedAt)}>
+                {order.account.blockedAt ? 'Let them order online again' : 'Stop them ordering online'}
+              </button>
+            </div>
+          )}
         </div>
         {order.note && <div>“{order.note}”</div>}
         {!isMain && (waiting || live) && (
@@ -313,5 +342,6 @@ function OrderDetail({ order, onClose, onDone, onError }: {
           onSent={(message) => { setMode(null); onDone(message) }} />
       )}
     </Modal>
+    </>
   )
 }

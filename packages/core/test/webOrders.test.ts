@@ -10,7 +10,7 @@ import { whyNotServing, whatsappNumber, WEB_SETTINGS } from '../src/services/web
 import { buildCatalog, publishCatalog } from '../src/services/web/catalog.js'
 import { verifyGoogleIdToken, type Jwks } from '../src/services/web/google.js'
 import { issueSession, readSession } from '../src/services/web/session.js'
-import { signIn, saveContact, verifyPhone, normalisePhone, loadAccount } from '../src/services/web/accounts.js'
+import { signIn, saveContact, verifyPhone, normalisePhone, loadAccount, blockWebAccount, signOutWebAccount } from '../src/services/web/accounts.js'
 import {
   placeOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, customerCancel, expireUnanswered,
   MAX_OPEN_ORDERS, ORDER_NOS_PER_MAIN, orderNoBase,
@@ -292,6 +292,39 @@ describe('signing in with Google', () => {
     const [payload, mac] = token.split('.') as [string, string]
     expect(await readSession(fx.db, `${payload}x.${mac}`, NOW)).toBeNull()
     expect(await readSession(fx.db, token, new Date(NOW.getTime() + 31 * 86_400_000))).toBeNull()
+  })
+
+  it('turns a stopped customer away at once, and a signed-out session for good', async () => {
+    const account = await customer('g-stopped', '9123456783')
+    const token = await issueSession(fx.db, account.id, NOW)
+    const me = (t: string) => handleWebRequest(fx.db, {
+      method: 'GET', path: '/api/me', headers: { authorization: `Bearer ${t}` }, body: '',
+    }, deps())
+    expect((await me(token)).status).toBe(200)
+
+    const later = new Date(NOW.getTime() + 1000)
+    expect(await blockWebAccount(fx.db, { accountId: account.id, actorId: fx.adminId, blocked: true, now: later })).toEqual({ ok: true })
+    expect((await me(token)).status).toBe(403)
+
+    /* Let back in: the session they held before is still over; a new one works. */
+    await blockWebAccount(fx.db, { accountId: account.id, actorId: fx.adminId, blocked: false, now: later })
+    expect((await me(token)).status).toBe(401)
+    const fresh = await issueSession(fx.db, account.id, new Date(later.getTime() + 1000))
+    expect((await me(fresh)).status).toBe(200)
+
+    await signOutWebAccount(fx.db, { accountId: account.id, actorId: fx.adminId, now: new Date(later.getTime() + 2000) })
+    expect((await me(fresh)).status).toBe(401)
+  })
+
+  it('will not sign in a customer the shop has stopped', async () => {
+    const google = await fakeGoogle()
+    const account = await signIn(fx.db, { sub: 'google-1', email: 'asha@example.com', name: 'Asha' }, NOW)
+    await blockWebAccount(fx.db, { accountId: account.id, actorId: fx.adminId, blocked: true, now: NOW })
+    const reply = await handleWebRequest(fx.db, {
+      method: 'POST', path: '/api/session', headers: { origin: ORIGIN }, body: JSON.stringify({ idToken: await google.token({}) }),
+    }, deps({ googleKeys: google.jwks }))
+    expect(reply.status).toBe(403)
+    expect(JSON.parse(reply.body)).toEqual({ error: 'BLOCKED' })
   })
 
   it("signs in through the API and answers only the storefront's own origin", async () => {
