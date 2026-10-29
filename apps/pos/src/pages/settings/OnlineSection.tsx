@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { listCategories, isOn, loadShopProfile, type Category, type ShopProfile } from '@shopos/core'
 import {
   loadWebSettings, saveWebSettings, isOnlineOrderShop, listedCategoryIds, listedWithoutPhoto, listedPhotoFiles, republishCatalog, type WebSettings,
@@ -8,6 +7,7 @@ import { useCore, useUser } from '../../core/CoreProvider'
 import { keepTheStorefrontRight, storefrontPortTrouble, storefrontRefusal, tunnelProblem, tunnelState, webPort, webServingOn, webSettingsChanged, type TunnelState } from '../../core/webHost'
 import { setStartsWithWindows, startsWithWindows } from '../../core/autostart'
 import { cloudReady, pushShop } from '../../core/cloudShop'
+import { filePresent } from '../../core/attachments'
 import { Alert, Card, Field } from '../../ui/components'
 import { Intro, Switch } from './parts'
 
@@ -67,8 +67,7 @@ export function OnlineSection() {
     void listedCategoryIds(db).then((ids) => listedPhotoFiles(db, ids)).then(async (items) => {
       const missing: string[] = []
       for (const item of items) {
-        const here = await Promise.all(item.paths.map((path) =>
-          invoke<boolean>('attachment_present', { path }).catch(() => true)))
+        const here = await Promise.all(item.paths.map(filePresent))
         if (here.includes(false)) missing.push(item.name)
       }
       setPhotoNotHere(missing)

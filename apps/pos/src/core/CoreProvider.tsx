@@ -3,13 +3,13 @@ import { invoke } from '@tauri-apps/api/core'
 import { startupStatus } from './startup'
 import { logEvent } from './log'
 import {
-  createTauriDriver, migrate, currentVersion, checkMigrationSums, SchemaTooNewError, SchemaUnversionedError, type SqlDriver,
+  createTauriDriver, migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type SqlDriver,
 } from '@shopos/core'
 import {
   DEVICE_LOCAL_KEYS, chooseRegister, chosenRegister, deviceSetting,
   deviceStore, establishDevice, recordStranded,
 } from './device'
-import { MIGRATIONS, staleBuild } from './migrations'
+import { MIGRATIONS, logEditedMigrations, staleBuild } from './migrations'
 import { settleRestore } from './restoreHold'
 import { startBackupTimer, takeUpgradeCopy, type BackupResult } from './backup'
 import { runStockCheck, startMaintenanceTimer } from './maintenance'
@@ -136,16 +136,7 @@ function startOnce(): Promise<{ needsSetup: boolean }> {
     })
     const after = await currentVersion(db)
     if (after !== before) logEvent('info', 'migrate', `schema ${before} -> ${after}`)
-    /* A migration edited after this till ran it: said, never acted on. */
-    const edited = await checkMigrationSums(db, MIGRATIONS).catch((err: unknown) => {
-      logEvent('warn', 'migrate', `could not check what the migrations said: ${String(err)}`)
-      return []
-    })
-    if (edited.length > 0) {
-      logEvent('error', 'migrate', `migrations changed since this till ran them: ${edited.join(', ')}. `
-        + 'Its schema may not be the one this build describes.')
-    }
-
+    await logEditedMigrations(db)
     /* Belt and braces, and cheap. `applyingRemote` only ever sets the flag
        inside a transaction, so a merge that failed rolled it back and one that
        lost power never committed it — but the cost of being wrong about that is

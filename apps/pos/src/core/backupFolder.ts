@@ -102,3 +102,12 @@ export async function cloudFolders(): Promise<CloudFolder[]> {
 export async function makeCloudFolder(root: string): Promise<string> {
   return invoke<string>('make_cloud_folder', { root })
 }
+
+/**
+ * Whether the chosen folder takes backups off this computer -- another drive,
+ * or a Drive, OneDrive or Dropbox folder -- or null when none is chosen or
+ * Rust could not say (`backup_folder_leaves_machine`).
+ */
+export async function backupFolderLeavesMachine(): Promise<boolean | null> {
+  return invoke<boolean | null>('backup_folder_leaves_machine').catch(() => null)
+}

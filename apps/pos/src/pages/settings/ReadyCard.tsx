@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { getSetting } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { deviceSetting } from '../../core/device'
+import { backupFolderLeavesMachine } from '../../core/backupFolder'
 import { healthGoesDaily } from '../../core/reportOut'
 import { supportContact } from '../../core/support'
 import { supportDataReady } from '../../core/supportData'
@@ -36,7 +36,7 @@ export function ReadyCard() {
         healthGoesDaily(),
         supportDataReady(),
         supportContact(),
-        invoke<boolean | null>('backup_folder_leaves_machine').catch(() => null),
+        backupFolderLeavesMachine(),
       ])
       if (!live) return
       setPhone(contact?.phone ?? null)

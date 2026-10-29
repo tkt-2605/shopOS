@@ -18,9 +18,8 @@ vi.mock('../src/core/reportOut', () => ({ healthGoesDaily: async () => build.dai
 vi.mock('../src/core/supportData', () => ({ supportDataReady: async () => build.sealed }))
 vi.mock('../src/core/support', () => ({ supportContact: async () => ({ phone: build.phone, whatsapp: false }) }))
 /* Rust's answer (`backup_folder_leaves_machine`), from the folder this test chose: anywhere but C: leaves. */
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: async (cmd: string) => {
-    if (cmd !== 'backup_folder_leaves_machine') throw new Error(cmd)
+vi.mock('../src/core/backupFolder', () => ({
+  backupFolderLeavesMachine: async () => {
     const folder = machine.get('backup_folder')
     return folder === undefined ? null : !/^c:/i.test(folder)
   },

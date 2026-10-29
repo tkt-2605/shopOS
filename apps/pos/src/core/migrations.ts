@@ -1,4 +1,5 @@
-import { EXPECTED_SCHEMA_VERSION, type Migration } from '@shopos/core'
+import { EXPECTED_SCHEMA_VERSION, checkMigrationSums, type Migration, type SqlDriver } from '@shopos/core'
+import { logEvent } from './log'
 
 /**
  * Every .sql file in the core migrations folder, in order, with the version taken
@@ -47,4 +48,20 @@ export function staleBuild(): string | null {
   return `This build carries database changes up to ${SCHEMA_VERSION}, but the code needs `
     + `${EXPECTED_SCHEMA_VERSION}. Close ShopOS and start it again — the new changes are on disk `
     + `but were not in the running copy.`
+}
+
+/**
+ * Writes to the log any migration whose statements have changed since this
+ * till ran it (`checkMigrationSums`, 084). Said, never acted on: the log goes
+ * out with the health report, and the till goes on billing.
+ */
+export async function logEditedMigrations(db: SqlDriver): Promise<void> {
+  const edited = await checkMigrationSums(db, MIGRATIONS).catch((err: unknown) => {
+    logEvent('warn', 'migrate', `could not check what the migrations said: ${String(err)}`)
+    return []
+  })
+  if (edited.length > 0) {
+    logEvent('error', 'migrate', `migrations changed since this till ran them: ${edited.join(', ')}. `
+      + 'Its schema may not be the one this build describes.')
+  }
 }

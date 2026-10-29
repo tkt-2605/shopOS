@@ -30,6 +30,8 @@ DELETE FROM bill_emails;
 DELETE FROM doc_sequences;
 -- The key the main signs customers' web sessions with, which never leaves it.
 DELETE FROM web_state;
+-- What the main's own migrations said when they ran; the joining till keeps its own.
+DELETE FROM migration_sums;
 UPDATE sync_state
    SET applying = 0, pruned_through = 0, main_device = NULL, main_epoch = 0
  WHERE id = 1;

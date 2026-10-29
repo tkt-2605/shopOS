@@ -33,6 +33,9 @@ DELETE FROM main.doc_sequences;
 INSERT INTO main.doc_sequences SELECT * FROM prev.doc_sequences;
 DELETE FROM main.web_state;
 INSERT INTO main.web_state SELECT * FROM prev.web_state;
+-- Left empty, not carried: the previous database may predate 084, and this
+-- till records its own sums afresh on its next start (`checkMigrationSums`).
+DELETE FROM main.migration_sums;
 INSERT INTO main.audit_log
   SELECT * FROM prev.audit_log WHERE id NOT IN (SELECT id FROM main.audit_log);
 UPDATE main.sync_state
