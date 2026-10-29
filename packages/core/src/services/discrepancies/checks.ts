@@ -358,7 +358,7 @@ export async function soldBelowZero(db: SqlDriver): Promise<Discrepancy[]> {
 /** A customer owing more than their limit: credit given on two counters at once. */
 export async function overCreditLimit(db: SqlDriver): Promise<Discrepancy[]> {
   const limited = await db.query<{ id: string; name: string; credit_limit: number }>(
-    `SELECT id, name, credit_limit FROM customers WHERE credit_limit > 0 AND deleted_at IS NULL ORDER BY name`)
+    `SELECT id, name, credit_limit FROM customers WHERE credit_enforcement <> 'none' AND deleted_at IS NULL ORDER BY name`)
   const found: Discrepancy[] = []
   for (const c of limited) {
     const owed = await customerOutstanding(db, c.id)

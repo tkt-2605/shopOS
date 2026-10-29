@@ -33,8 +33,28 @@ export const WEB_SETTINGS = {
   origin: 'web_origin',
   /** The storefront's Google OAuth client id, which every sign-in token must be addressed to. */
   googleClientId: 'google_client_id',
-  /** Minutes a pending order waits for an answer before it is turned away. */
+  /**
+   * Minutes a pending order waits for an answer before it is turned away, or
+   * 0 (the default since 27 Oct) for never: an order nobody answered stays
+   * waiting until a person accepts or turns it away.
+   */
   answerMinutes: 'web_answer_minutes',
+  /** `on` to show the shop's quantity prices online ("10 or more at ₹9 each"). Needs tiered pricing on. */
+  tiers: 'web_tiers',
+  /**
+   * `on` to list items with their name and photo and no price. A customer
+   * asks for what they want, and the shop answers with a quotation (a changed
+   * order sent back, `proposals.ts`) that they accept or turn down.
+   */
+  quotes: 'web_quotes',
+  /** `off` to keep the shop's address, phone, email and hours off the storefront. On unless turned off. */
+  contact: 'web_show_contact',
+  /** The number customers WhatsApp, as the shop writes it. Blank is the shop's own phone (Shop details). */
+  whatsapp: 'web_whatsapp',
+  /** `off` to take away the "WhatsApp the shop" button. On unless turned off. */
+  whatsappChat: 'web_whatsapp_chat',
+  /** `off` to take away "Send cart on WhatsApp". On unless turned off. */
+  whatsappCart: 'web_whatsapp_cart',
   /** Business days an accepted order may wait to be collected before it is listed as overdue. */
   collectDays: 'web_collect_days',
   /** Opening hours as the shop writes them, shown on the storefront: "9 am to 9 pm, closed Sunday". */
@@ -48,11 +68,17 @@ export interface WebSettings {
   origin: string | null
   googleClientId: string | null
   answerMinutes: number
+  tiers: boolean
+  quotes: boolean
+  contact: boolean
+  whatsapp: string | null
+  whatsappChat: boolean
+  whatsappCart: boolean
   collectDays: number
   hours: string | null
 }
 
-const ANSWER_MINUTES_DEFAULT = 30
+const ANSWER_MINUTES_DEFAULT = 0
 const COLLECT_DAYS_DEFAULT = 3
 
 export async function loadWebSettings(db: SqlDriver): Promise<WebSettings> {
@@ -63,7 +89,13 @@ export async function loadWebSettings(db: SqlDriver): Promise<WebSettings> {
     categoryIds: parseIds(await get(WEB_SETTINGS.categories)),
     origin: (await get(WEB_SETTINGS.origin))?.trim().replace(/\/+$/, '') || null,
     googleClientId: (await get(WEB_SETTINGS.googleClientId))?.trim() || null,
-    answerMinutes: whole(await get(WEB_SETTINGS.answerMinutes), ANSWER_MINUTES_DEFAULT),
+    answerMinutes: whole(await get(WEB_SETTINGS.answerMinutes), ANSWER_MINUTES_DEFAULT, true),
+    tiers: (await get(WEB_SETTINGS.tiers)) === 'on',
+    quotes: (await get(WEB_SETTINGS.quotes)) === 'on',
+    contact: (await get(WEB_SETTINGS.contact)) !== 'off',
+    whatsapp: (await get(WEB_SETTINGS.whatsapp))?.trim() || null,
+    whatsappChat: (await get(WEB_SETTINGS.whatsappChat)) !== 'off',
+    whatsappCart: (await get(WEB_SETTINGS.whatsappCart)) !== 'off',
     collectDays: whole(await get(WEB_SETTINGS.collectDays), COLLECT_DAYS_DEFAULT),
     hours: (await get(WEB_SETTINGS.hours))?.trim() || null,
   }
@@ -117,10 +149,27 @@ export async function saveWebSettings(
   if (changes.categoryIds !== undefined) await put(WEB_SETTINGS.categories, JSON.stringify(changes.categoryIds))
   if (changes.origin !== undefined) await put(WEB_SETTINGS.origin, changes.origin?.trim().replace(/\/+$/, '') ?? '')
   if (changes.googleClientId !== undefined) await put(WEB_SETTINGS.googleClientId, changes.googleClientId?.trim() ?? '')
-  if (changes.answerMinutes !== undefined) await put(WEB_SETTINGS.answerMinutes, String(Math.max(1, Math.round(changes.answerMinutes))))
+  if (changes.answerMinutes !== undefined) await put(WEB_SETTINGS.answerMinutes, String(Math.max(0, Math.round(changes.answerMinutes))))
+  if (changes.tiers !== undefined) await put(WEB_SETTINGS.tiers, changes.tiers ? 'on' : 'off')
+  if (changes.quotes !== undefined) await put(WEB_SETTINGS.quotes, changes.quotes ? 'on' : 'off')
+  if (changes.contact !== undefined) await put(WEB_SETTINGS.contact, changes.contact ? 'on' : 'off')
+  if (changes.whatsapp !== undefined) await put(WEB_SETTINGS.whatsapp, changes.whatsapp?.trim().slice(0, 20) ?? '')
+  if (changes.whatsappChat !== undefined) await put(WEB_SETTINGS.whatsappChat, changes.whatsappChat ? 'on' : 'off')
+  if (changes.whatsappCart !== undefined) await put(WEB_SETTINGS.whatsappCart, changes.whatsappCart ? 'on' : 'off')
   if (changes.collectDays !== undefined) await put(WEB_SETTINGS.collectDays, String(Math.max(1, Math.round(changes.collectDays))))
   if (changes.hours !== undefined) await put(WEB_SETTINGS.hours, changes.hours?.trim().slice(0, 120) ?? '')
   return loadWebSettings(db)
+}
+
+/**
+ * A phone as WhatsApp's links want it: digits only, with the country. A
+ * ten-digit Indian mobile gets 91 in front; anything else is taken as written.
+ * Null when there is nothing a link could be made of.
+ */
+export function whatsappNumber(raw: string | null | undefined): string | null {
+  const digits = (raw ?? '').replace(/\D/g, '').replace(/^0+/, '')
+  if (digits.length === 10) return `91${digits}`
+  return digits.length >= 11 && digits.length <= 15 ? digits : null
 }
 
 function parseIds(raw: string | null): string[] {
@@ -133,7 +182,7 @@ function parseIds(raw: string | null): string[] {
   }
 }
 
-function whole(raw: string | null, fallback: number): number {
+function whole(raw: string | null, fallback: number, zeroAllowed = false): number {
   const n = Number(raw)
-  return raw !== null && Number.isInteger(n) && n > 0 ? n : fallback
+  return raw !== null && raw !== '' && Number.isInteger(n) && (n > 0 || (zeroAllowed && n === 0)) ? n : fallback
 }

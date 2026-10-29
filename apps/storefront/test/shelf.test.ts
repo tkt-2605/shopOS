@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Catalog, CatalogItem } from '../src/api'
-import { againFrom, brandsIn, checkCart, matchScore, NO_FILTERS, repriced, saving, shelf } from '../src/shelf'
+import { againFrom, brandsIn, changesIn, checkCart, matchScore, nextTier, NO_FILTERS, priceAt, repriced, saving, shelf } from '../src/shelf'
 
 /** Searching, sorting and filtering the catalogue on the phone, and holding a cart up against it. */
 
@@ -53,6 +53,38 @@ describe('sorting and filtering', () => {
     expect(saving({ unit: 'piece', price: 1000, mrp: 1200 })).toEqual({ amount: 200, percent: 17 })
     expect(saving({ unit: 'piece', price: 1000, mrp: null })).toBeNull()
     expect(saving({ unit: 'piece', price: 1000, mrp: 900 })).toBeNull()
+  })
+})
+
+describe('what the shop changed', () => {
+  it('reads each line as fewer, more, taken off, added or the same', () => {
+    const line = (productId: string, qty: number, seenPrice = 1000) => ({ productId, name: productId, unit: 'piece', qty, seenPrice })
+    expect(changesIn([line('a', 5), line('b', 1), line('c', 2), line('d', 1)], [line('a', 3), line('c', 4), line('d', 1), line('e', 2, 900)])
+      .map((c) => [c.name, c.kind, c.from, c.to])).toEqual([
+      ['a', 'fewer', 5, 3], ['b', 'removed', 1, 0], ['c', 'more', 2, 4], ['d', 'same', 1, 1], ['e', 'added', 0, 2],
+    ])
+  })
+})
+
+describe('quantity prices', () => {
+  const unit = { unit: 'piece', price: 1000, mrp: null, tiers: [{ minQty: 10, price: 900 }, { minQty: 50, price: 800 }] }
+
+  it('charges the lowest rung reached', () => {
+    expect([1, 9, 10, 49, 50, 200].map((q) => priceAt(unit, q))).toEqual([1000, 1000, 900, 900, 800, 800])
+    expect(priceAt({ unit: 'piece', price: 1000, mrp: null }, 100)).toBe(1000)
+  })
+
+  it('says how many more reach the next rung, and what that many save', () => {
+    expect(nextTier(unit, 7)).toEqual({ minQty: 10, price: 900, more: 3, save: 1000 })
+    expect(nextTier(unit, 10)).toMatchObject({ minQty: 50, more: 40, save: 10000 })
+    expect(nextTier(unit, 50)).toBeNull()
+  })
+
+  it('prices a cart line at its quantity, and orders it at that price', () => {
+    const tiered: Catalog = { ...catalog, items: [item('t', 'Pencil', 1000, { units: [unit] })] }
+    const lines = checkCart([{ productId: 't', name: 'Pencil', unit: 'piece', qty: 12, price: 1000 }], tiered)
+    expect(lines[0]).toMatchObject({ each: 900, now: { price: 1000 } })
+    expect(repriced(lines)[0]?.price).toBe(900)
   })
 })
 

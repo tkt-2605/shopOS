@@ -20,6 +20,8 @@ export interface CustomerListItem {
    */
   advance: Money
   creditLimit: Money
+  /** `none` is "No limit"; otherwise a limit of zero is no credit. */
+  creditEnforcement: 'none' | 'soft' | 'hard'
   loyaltyPoints: number
   /** Out of every search but this one. See `archiveCustomer`. */
   archived: boolean
@@ -42,7 +44,6 @@ export interface CustomerListItem {
 export interface CustomerDetail extends CustomerListItem {
   address: string | null
   stateCode: string | null
-  creditEnforcement: 'none' | 'soft' | 'hard'
   isActive: boolean
   email: string | null
   /** When "Email every bill" was ticked; null when it is not. */
@@ -153,6 +154,7 @@ export async function searchCustomers(
       phone: schema.customers.phone,
       gstin: schema.customers.gstin,
       creditLimit: schema.customers.creditLimit,
+      creditEnforcement: schema.customers.creditEnforcement,
       outstanding,
       advance,
       loyaltyPoints: sql<number>`
@@ -170,7 +172,9 @@ export async function searchCustomers(
     .orderBy(...orderFor(opts.order ?? 'name', outstanding, advance))
     .limit(limit)
 
-  return rows.map((r) => ({ ...r, archived: r.deletedAt !== null }))
+  return rows.map((r) => ({
+    ...r, creditEnforcement: r.creditEnforcement as 'none' | 'soft' | 'hard', archived: r.deletedAt !== null,
+  }))
 }
 
 /**

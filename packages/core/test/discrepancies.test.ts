@@ -190,7 +190,7 @@ describe('on one till', () => {
     const paid = await submitBill(fx.db, { billId: d.billId, payments: [{ method: 'credit', amount: d.grandTotal }], actorId: fx.adminId })
     if (!paid.ok) throw new Error(paid.code)
     // The limit as the other counter saw it, lower than what is now owed.
-    await fx.db.execute(`UPDATE customers SET credit_limit = ? WHERE id = ?`, [rupees(600), customer])
+    await fx.db.execute(`UPDATE customers SET credit_limit = ?, credit_enforcement = 'hard' WHERE id = ?`, [rupees(600), customer])
 
     const found = (await findDiscrepancies(fx.db)).find((d) => d.kind === 'over_credit_limit')
     expect(found?.amount).toBe(rupees(400))

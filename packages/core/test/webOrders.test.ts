@@ -6,7 +6,7 @@ import { setProductActive } from '../src/services/products.js'
 import { setSetting } from '../src/services/bootstrap.js'
 import { rupees, type Money } from '../src/money.js'
 import { newId } from '../src/ids.js'
-import { whyNotServing, WEB_SETTINGS } from '../src/services/web/gate.js'
+import { whyNotServing, whatsappNumber, WEB_SETTINGS } from '../src/services/web/gate.js'
 import { buildCatalog, publishCatalog } from '../src/services/web/catalog.js'
 import { verifyGoogleIdToken, type Jwks } from '../src/services/web/google.js'
 import { issueSession, readSession } from '../src/services/web/session.js'
@@ -16,9 +16,13 @@ import {
   MAX_OPEN_ORDERS,
 } from '../src/services/web/orders.js'
 import { loadWebOrder, orderForAccount, reviewWebOrder } from '../src/services/web/orderViews.js'
-import { handleWebRequest, newThrottles, type WebDeps } from '../src/services/web/routes.js'
-import { setProductPhoto, removeProductPhoto, listedWithoutPhoto } from '../src/services/web/photos.js'
+import { handleWebRequest, newThrottles, currentCatalog, republishCatalog, publicStatus, type WebDeps } from '../src/services/web/routes.js'
+import { setProductPhoto, removeProductPhoto, listedWithoutPhoto, productPhoto } from '../src/services/web/photos.js'
 import { listedCategoryIds } from '../src/services/web/catalog.js'
+import { proposeChanges, withdrawProposal, answerProposal } from '../src/services/web/proposals.js'
+import { setLadder } from '../src/services/pricing.js'
+import { setFeature } from '../src/services/features.js'
+import { rowsToRungs } from '../src/domain/ladder.js'
 import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 
 /**
@@ -110,6 +114,40 @@ describe('who answers the web', () => {
   })
 })
 
+describe('quantity prices online', () => {
+  async function ladder(productId: string, text: string) {
+    await setFeature(fx.db, { actorId: fx.adminId }, 'tieredPricing', true)
+    const parsed = rowsToRungs(text.split(',').map((part) => {
+      const [minQty, rate] = part.split('=')
+      return { minQty: (minQty ?? '').trim(), rate: (rate ?? '').trim() }
+    }))
+    if (!parsed.ok) throw new Error(parsed.code)
+    const saved = await setLadder(fx.db, { actorId: fx.adminId }, { productId, priceListId: fx.seed.priceListId, saleUnit: 'piece', rungs: parsed.rungs })
+    if (!saved.ok) throw new Error(saved.code)
+  }
+
+  it('carries the cheaper rungs, each priced as the counter would, only when the shop says so', async () => {
+    await ladder(book, '1=50, 10=45, 50=40')
+    const off = await buildCatalog(fx.db, NOW)
+    expect(off.items.find((i) => i.id === book)?.units[0]?.tiers).toBeUndefined()
+
+    await setSetting(fx.db, WEB_SETTINGS.tiers, 'on')
+    const on = await buildCatalog(fx.db, NOW)
+    expect(on.items.find((i) => i.id === book)?.units[0]).toMatchObject({
+      price: rupees(50), tiers: [{ minQty: 10, price: rupees(45) }, { minQty: 50, price: rupees(40) }],
+    })
+    /* No ladder, nothing to show. */
+    expect(on.items.find((i) => i.id === pen)?.units[0]?.tiers).toBeUndefined()
+  })
+
+  it('shows nothing while the shop has tiered pricing switched off', async () => {
+    await ladder(book, '1=50, 10=45')
+    await setSetting(fx.db, WEB_SETTINGS.tiers, 'on')
+    await setFeature(fx.db, { actorId: fx.adminId }, 'tieredPricing', false)
+    expect((await buildCatalog(fx.db, NOW)).items.find((i) => i.id === book)?.units[0]?.tiers).toBeUndefined()
+  })
+})
+
 describe('the catalogue', () => {
   it('lists items in the chosen categories and their children, priced as the counter would, with tax in', async () => {
     const pens = await category('Pens', stationery)
@@ -139,6 +177,15 @@ describe('the catalogue', () => {
     expect((await publishCatalog(fx.db, new Date(NOW.getTime() + 60_000))).hash).toBe(first.hash)
     await fx.db.execute(`UPDATE products SET base_rate = ? WHERE id = ?`, [rupees(120), pen])
     expect((await publishCatalog(fx.db, NOW)).hash).not.toBe(first.hash)
+  })
+
+  it('goes out at once when the till asks, not a minute later', async () => {
+    const first = await currentCatalog(fx.db, NOW)
+    await fx.db.execute(`UPDATE products SET base_rate = ? WHERE id = ?`, [rupees(130), pen])
+    expect((await currentCatalog(fx.db, NOW)).hash).toBe(first.hash)
+    expect(await republishCatalog(fx.db, NOW)).toMatchObject({ changed: true })
+    expect((await currentCatalog(fx.db, NOW)).hash).not.toBe(first.hash)
+    expect(await republishCatalog(fx.db, NOW)).toMatchObject({ changed: false })
   })
 
   it('serves the manifest briefly and the named file for ever', async () => {
@@ -173,6 +220,23 @@ describe("an item's photo", () => {
     const removed = await removeProductPhoto(fx.db, { actorId: fx.adminId }, pen)
     expect(removed.orphaned.sort()).toEqual([`dd/${'d'.repeat(64)}.webp`, `ee/${'e'.repeat(64)}.webp`])
     expect((await buildCatalog(fx.db, NOW)).items.find((i) => i.name === 'Pen')?.photo).toBeNull()
+  })
+
+  it('keeps the picture it was cut from, to crop again, until a new picture or removal', async () => {
+    const ctx = { actorId: fx.adminId }
+    await setProductPhoto(fx.db, ctx, { productId: pen, photo: stored('1'.repeat(64)), thumb: stored('2'.repeat(64)), original: stored('3'.repeat(64)) })
+    expect((await productPhoto(fx.db, pen))?.original?.storedPath).toBe(`33/${'3'.repeat(64)}.webp`)
+
+    /* Cut again from the same picture: the original stays. */
+    await setProductPhoto(fx.db, ctx, { productId: pen, photo: stored('4'.repeat(64)), thumb: stored('5'.repeat(64)) })
+    expect((await productPhoto(fx.db, pen))?.original?.storedPath).toBe(`33/${'3'.repeat(64)}.webp`)
+
+    /* A new picture replaces it. */
+    const next = await setProductPhoto(fx.db, ctx, { productId: pen, photo: stored('6'.repeat(64)), thumb: stored('7'.repeat(64)), original: stored('8'.repeat(64)) })
+    expect(next.orphaned).toContain(`33/${'3'.repeat(64)}.webp`)
+    const removed = await removeProductPhoto(fx.db, ctx, pen)
+    expect(removed.orphaned).toContain(`88/${'8'.repeat(64)}.webp`)
+    expect(await productPhoto(fx.db, pen)).toBeNull()
   })
 })
 
@@ -284,6 +348,31 @@ describe('placing an order', () => {
 })
 
 describe('what the storefront is told', () => {
+  const status = async () => JSON.parse((await handleWebRequest(fx.db, { method: 'GET', path: '/api/status', headers: {}, body: '' }, deps())).body)
+
+  it('gives a WhatsApp number from the shop phone or its own setting, and nothing the shop has turned off', async () => {
+    await setSetting(fx.db, 'shop_phone', '98765 43210')
+    await setSetting(fx.db, 'shop_email', 'shop@example.in')
+    expect(await status()).toMatchObject({
+      whatsapp: '919876543210', offers: { whatsappChat: true, whatsappCart: true }, about: { phone: '98765 43210', email: 'shop@example.in' },
+    })
+
+    await setSetting(fx.db, WEB_SETTINGS.whatsapp, '+91 91234 56780')
+    expect((await status()).whatsapp).toBe('919123456780')
+
+    await setSetting(fx.db, WEB_SETTINGS.whatsappChat, 'off')
+    await setSetting(fx.db, WEB_SETTINGS.whatsappCart, 'off')
+    await setSetting(fx.db, WEB_SETTINGS.contact, 'off')
+    expect(await status()).toMatchObject({
+      whatsapp: null, offers: { whatsappChat: false, whatsappCart: false }, about: { address: null, phone: null, email: null, hours: null },
+    })
+  })
+
+  it('reads a phone as WhatsApp wants it, or not at all', () => {
+    expect([whatsappNumber('098765 43210'), whatsappNumber('+44 20 7946 0958'), whatsappNumber('12345'), whatsappNumber(null)])
+      .toEqual(['919876543210', '442079460958', null, null])
+  })
+
   it("gives the shop's address, phone and hours with its state, and names a line with its brand", async () => {
     await setSetting(fx.db, 'shop_address', '12 Car Street, Madurai')
     await setSetting(fx.db, 'shop_phone', '0452 123456')
@@ -344,6 +433,23 @@ describe('an order answered and collected', () => {
     expect((await loadDocument(fx.db, again.documentId))?.customerId).toBe(regular)
   })
 
+  it('joins an account to the shop customer once its phone is checked, even after an order', async () => {
+    const regular = await makeCustomer(fx.db, 'Old regular')
+    await fx.db.execute(`UPDATE customers SET phone = '9876500001' WHERE id = ?`, [regular])
+    const account = await customer('g-old-regular', '9876500001')
+    const first = await order(account.id)
+    const accepted = await acceptWebOrder(fx.db, { webOrderId: first.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW })
+    if (!accepted.ok) throw new Error(accepted.code)
+    expect((await loadDocument(fx.db, accepted.documentId))?.customerId).not.toBe(regular)
+
+    expect(await verifyPhone(fx.db, { accountId: account.id, actorId: fx.adminId }))
+      .toMatchObject({ ok: true, customer: { id: regular, name: 'Old regular' } })
+    const second = await order(account.id)
+    const again = await acceptWebOrder(fx.db, { webOrderId: second.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW })
+    if (!again.ok) throw new Error(again.code)
+    expect((await loadDocument(fx.db, again.documentId))?.customerId).toBe(regular)
+  })
+
   it('can be turned away with a reason, and only while it waits', async () => {
     const account = await customer()
     const placed = await order(account.id)
@@ -371,7 +477,64 @@ describe('an order answered and collected', () => {
     expect((await loadDocument(fx.db, after!.documentId!))?.docstatus).toBe(2)
   })
 
-  it('is turned away by itself when nobody answers in time', async () => {
+  it('can be changed by the shop and sent back; the customer takes it, and it returns to the shop to accept', async () => {
+    const account = await customer()
+    const placed = await order(account.id, [{ productId: pen, unit: 'piece', qty: 5, price: 11800 }, { productId: book, unit: 'piece', qty: 1, price: 5000 }])
+
+    expect(await proposeChanges(fx.db, { webOrderId: placed.id, actorId: fx.adminId, lines: [{ productId: pen, unit: 'piece', qty: 5 }, { productId: book, unit: 'piece', qty: 1 }] }))
+      .toMatchObject({ ok: false, code: 'NO_CHANGE' })
+    const sent = await proposeChanges(fx.db, {
+      webOrderId: placed.id, actorId: fx.adminId, note: 'Only 3 pens left', now: NOW,
+      lines: [{ productId: pen, unit: 'piece', qty: 3 }, { productId: book, unit: 'piece', qty: 0 }],
+    })
+    expect(sent.ok).toBe(true)
+    const waiting = await loadWebOrder(fx.db, placed.id)
+    expect(waiting).toMatchObject({ status: 'pending', proposal: { note: 'Only 3 pens left', lines: [{ productId: pen, qty: 3 }] } })
+    /* Nothing changes on the order itself until the customer answers, and the shop cannot accept meanwhile. */
+    expect(waiting!.lines).toHaveLength(2)
+    expect(await acceptWebOrder(fx.db, { webOrderId: placed.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW }))
+      .toMatchObject({ ok: false, code: 'AWAITING_CUSTOMER' })
+
+    const someoneElse = await customer('g-other', '9123456780')
+    expect(await answerProposal(fx.db, { accountId: someoneElse.id, orderId: placed.id, take: true, now: NOW })).toMatchObject({ ok: false, code: 'NOT_FOUND' })
+
+    const taken = await answerProposal(fx.db, { accountId: account.id, orderId: placed.id, take: true, now: NOW })
+    expect(taken).toMatchObject({ ok: true, order: { status: 'pending', proposal: null, agreedAt: NOW.toISOString(), lines: [{ productId: pen, qty: 3 }] } })
+    const accepted = await acceptWebOrder(fx.db, { webOrderId: placed.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW })
+    expect(accepted.ok).toBe(true)
+    const doc = await loadDocument(fx.db, (await loadWebOrder(fx.db, placed.id))!.documentId!)
+    expect(doc?.items.map((l) => l.productId)).toEqual([pen])
+  })
+
+  it('is cancelled when the customer will not take the changes, and the shop can take changes back', async () => {
+    const account = await customer()
+    const first = await order(account.id)
+    await proposeChanges(fx.db, { webOrderId: first.id, actorId: fx.adminId, lines: [{ productId: pen, unit: 'piece', qty: 1 }] })
+    expect(await withdrawProposal(fx.db, { webOrderId: first.id, actorId: fx.adminId })).toEqual({ ok: true })
+    expect((await loadWebOrder(fx.db, first.id))?.proposal).toBeNull()
+
+    await proposeChanges(fx.db, { webOrderId: first.id, actorId: fx.adminId, lines: [{ productId: pen, unit: 'piece', qty: 1 }] })
+    const refused = await answerProposal(fx.db, { accountId: account.id, orderId: first.id, take: false, now: NOW })
+    expect(refused).toMatchObject({ ok: true, order: { status: 'cancelled', proposal: null } })
+  })
+
+  it('offers only what the storefront sells as a new line', async () => {
+    const account = await customer()
+    const placed = await order(account.id)
+    const rice = await makeProduct(fx.db, { name: 'Rice', baseRate: rupees(60) })
+    expect(await proposeChanges(fx.db, { webOrderId: placed.id, actorId: fx.adminId, lines: [{ productId: rice, unit: 'piece', qty: 1 }] }))
+      .toMatchObject({ ok: false, code: 'NOT_LISTED' })
+  })
+
+  it('waits for a person by default, however long nobody answers', async () => {
+    const account = await customer()
+    const placed = await order(account.id)
+    expect(await expireUnanswered(fx.db, new Date(NOW.getTime() + 3 * 86_400_000))).toBe(0)
+    expect((await loadWebOrder(fx.db, placed.id))?.status).toBe('pending')
+  })
+
+  it('is turned away by itself when the shop has set a time and nobody answers in it', async () => {
+    await setSetting(fx.db, WEB_SETTINGS.answerMinutes, '30')
     const account = await customer()
     const placed = await order(account.id)
     expect(await expireUnanswered(fx.db, new Date(NOW.getTime() + 10 * 60_000))).toBe(0)
@@ -451,3 +614,108 @@ async function fakeGoogle() {
   }
   return { jwks, token }
 }
+
+describe('prices on request', () => {
+  it('lists names and photos only, and the shop answers with a quotation the customer takes', async () => {
+    await setSetting(fx.db, WEB_SETTINGS.quotes, 'on')
+    const listed = (await buildCatalog(fx.db, NOW)).items.find((i) => i.id === pen)
+    expect(listed?.units).toEqual([{ unit: 'piece', price: 0, mrp: null }])
+
+    const account = await customer()
+    const asked = await order(account.id, [{ productId: pen, unit: 'piece', qty: 4, price: 999 }])
+    expect(asked.lines[0]?.seenPrice).toBe(0)
+    expect(asked.seenTotal).toBe(0)
+
+    /* The same items back, now priced: that is the quotation. */
+    const quoted = await proposeChanges(fx.db, {
+      webOrderId: asked.id, actorId: fx.adminId, note: 'Your quotation', now: NOW,
+      lines: [{ productId: pen, unit: 'piece', qty: 4 }],
+    })
+    if (!quoted.ok) throw new Error(quoted.code)
+    expect(quoted.order.proposal?.total).toBeGreaterThan(0)
+
+    expect(await answerProposal(fx.db, { accountId: account.id, orderId: asked.id, take: true, now: NOW })).toMatchObject({ ok: true })
+    const agreed = await loadWebOrder(fx.db, asked.id)
+    expect(agreed?.seenTotal).toBe(quoted.order.proposal?.total)
+    expect(agreed?.agreedAt).not.toBeNull()
+  })
+})
+
+describe('the copy uploaded to Cloudflare', () => {
+  it('is the very object the till answers live', async () => {
+    const live = JSON.parse((await handleWebRequest(fx.db, { method: 'GET', path: '/api/status', headers: {}, body: '' }, deps())).body)
+    expect(await publicStatus(fx.db)).toEqual(live)
+  })
+
+  it('says closed when online orders are off, not only when the shop is shut', async () => {
+    expect((await publicStatus(fx.db)).state).toBe('open')
+    await setSetting(fx.db, WEB_SETTINGS.open, 'off')
+    expect((await publicStatus(fx.db)).state).toBe('closed')
+    await setSetting(fx.db, WEB_SETTINGS.open, 'on')
+    await setSetting(fx.db, WEB_SETTINGS.enabled, 'off')
+    expect((await publicStatus(fx.db)).state).toBe('closed')
+  })
+
+  it('changes its name when a setting that shows on phones changes, and only then', async () => {
+    const first = await republishCatalog(fx.db, NOW)
+    expect((await republishCatalog(fx.db, NOW)).changed).toBe(false)
+    await setSetting(fx.db, WEB_SETTINGS.quotes, 'on')
+    expect((await republishCatalog(fx.db, NOW)).changed).toBe(true)
+    expect(first.items).toBeGreaterThan(0)
+  })
+})
+
+describe('prices on request, the edges', () => {
+  it('hides quantity prices and MRP even with quantity prices switched on', async () => {
+    await setSetting(fx.db, WEB_SETTINGS.tiers, 'on')
+    await setSetting(fx.db, WEB_SETTINGS.quotes, 'on')
+    for (const item of (await buildCatalog(fx.db, NOW)).items) {
+      for (const u of item.units) {
+        expect(u.price).toBe(0)
+        expect(u.mrp).toBeNull()
+        expect(u.tiers).toBeUndefined()
+      }
+    }
+  })
+
+  it('still lists only what the counter could price', async () => {
+    const before = (await buildCatalog(fx.db, NOW)).items.map((i) => i.id).sort()
+    await setSetting(fx.db, WEB_SETTINGS.quotes, 'on')
+    expect((await buildCatalog(fx.db, NOW)).items.map((i) => i.id).sort()).toEqual(before)
+  })
+
+  it('cancels the order when the customer turns the quotation down', async () => {
+    await setSetting(fx.db, WEB_SETTINGS.quotes, 'on')
+    const account = await customer()
+    const asked = await order(account.id, [{ productId: pen, unit: 'piece', qty: 2, price: 0 }])
+    const quoted = await proposeChanges(fx.db, { webOrderId: asked.id, actorId: fx.adminId, lines: [{ productId: pen, unit: 'piece', qty: 2 }], now: NOW })
+    expect(quoted.ok).toBe(true)
+    expect(await answerProposal(fx.db, { accountId: account.id, orderId: asked.id, take: false, now: NOW })).toMatchObject({ ok: true })
+    expect((await loadWebOrder(fx.db, asked.id))?.status).toBe('cancelled')
+  })
+
+  it('cannot be accepted while the quotation waits for the customer', async () => {
+    await setSetting(fx.db, WEB_SETTINGS.quotes, 'on')
+    const account = await customer()
+    const asked = await order(account.id, [{ productId: pen, unit: 'piece', qty: 1, price: 0 }])
+    await proposeChanges(fx.db, { webOrderId: asked.id, actorId: fx.adminId, lines: [{ productId: pen, unit: 'piece', qty: 1 }], now: NOW })
+    expect(await acceptWebOrder(fx.db, { webOrderId: asked.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW }))
+      .toMatchObject({ ok: false, code: 'AWAITING_CUSTOMER' })
+  })
+
+  it('takes the price back off once quotations are off again', async () => {
+    await setSetting(fx.db, WEB_SETTINGS.quotes, 'on')
+    await setSetting(fx.db, WEB_SETTINGS.quotes, 'off')
+    const listed = (await buildCatalog(fx.db, NOW)).items.find((i) => i.id === pen)
+    expect(listed?.units[0]?.price).toBeGreaterThan(0)
+  })
+})
+
+describe('checking a phone, without a customer to match', () => {
+  it('says so, and links nobody', async () => {
+    const account = await customer('g-new-face', '9000000001')
+    expect(await verifyPhone(fx.db, { accountId: account.id, actorId: fx.adminId })).toEqual({ ok: true, customer: null })
+    expect((await loadAccount(fx.db, account.id))?.customerId).toBeNull()
+  })
+})
+

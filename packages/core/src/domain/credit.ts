@@ -93,9 +93,9 @@ export function checkCreditLimit(input: CreditCheckInput): CreditCheck {
   if (input.enforcement === 'none' || input.additionalCredit <= 0) {
     return { allowed: true, warning: null, projected }
   }
-  if (input.creditLimit <= 0) {
-    return { allowed: true, warning: null, projected }
-  }
+  /* A limit of zero is no credit at all (decided 28 Oct): the counter blocks
+     or warns on any of it. A customer who may run up any amount is
+     `enforcement: 'none'`, shown as "No limit". */
   if (projected <= input.creditLimit) {
     return { allowed: true, warning: null, projected }
   }

@@ -20,6 +20,8 @@ export default defineConfig({
         },
       },
       {
+        /* The two addresses a build is given (vite.config.ts), as test stand-ins. */
+        define: { __SHOP_API__: JSON.stringify('https://till.test'), __SHOP_DATA__: JSON.stringify('https://shop.test/data') },
         test: {
           name: 'storefront',
           include: ['apps/storefront/test/**/*.test.ts'],

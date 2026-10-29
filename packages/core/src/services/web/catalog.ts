@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { ZERO, type Money } from '../../money.js'
-import { fromUnits } from '../../quantity.js'
+import { fromUnits, QTY_SCALE, type Qty } from '../../quantity.js'
 import { computeTotals } from '../../domain/billTotals.js'
 import { chargesTax } from '../../domain/taxScheme.js'
 import { loadTaxScheme } from '../features.js'
@@ -33,6 +33,18 @@ export interface CatalogUnit {
   /** One of this unit, tax included, in paise. */
   price: Money
   mrp: Money | null
+  /**
+   * Buy at least `minQty` of this unit and pay `price` each, tax included --
+   * only rungs cheaper than one, lowest quantity first. Present only when the
+   * shop shows its quantity prices online (`web_tiers`).
+   */
+  tiers?: CatalogTier[]
+}
+
+export interface CatalogTier {
+  /** Whole units of the sale unit, e.g. 10 for "10 or more". */
+  minQty: number
+  price: Money
 }
 
 export interface CatalogItem {
@@ -121,10 +133,12 @@ export async function shelfPricer(db: SqlDriver): Promise<ShelfPricer> {
  */
 export async function shelfPrice(
   db: SqlDriver, pricer: ShelfPricer, productId: string, saleUnit: string | null, on: Date,
+  qty: Qty = fromUnits(1),
 ): Promise<{ unit: string; price: Money; mrp: Money | null }> {
   const unit = await resolveSaleUnit(db, productId, saleUnit)
+  /* The rate for buying `qty`, put on one unit: what each one costs at that quantity. */
   const resolved = await resolveLinePrice(
-    db, pricer.ctx, { productId, saleUnit: unit.saleUnit, qty: fromUnits(1) }, on,
+    db, pricer.ctx, { productId, saleUnit: unit.saleUnit, qty }, on,
   )
   const [product] = await q(db)
     .select({ taxRateBp: schema.products.taxRateBp, cessRateBp: schema.products.cessRateBp, mrp: schema.products.mrp })
@@ -183,14 +197,29 @@ export async function buildCatalog(db: SqlDriver, on: Date = new Date()): Promis
 
   const photos = await photoHashes(db)
   const pricer = await shelfPricer(db)
+  const settings = await loadWebSettings(db)
+  const withTiers = settings.tiers && !settings.quotes && pricer.ctx.quantityBreaks
+  const breaks = withTiers ? await quantityBreaks(db, pricer.ctx.defaultPriceListId, products.map((p) => p.id)) : null
   const items: CatalogItem[] = []
   for (const p of products) {
     const names = [p.baseUnit, ...(unitsOf.get(p.id) ?? []).filter((u) => u !== p.baseUnit)]
     const priced: CatalogUnit[] = []
     for (const name of names) {
-      const s = await shelfPrice(db, pricer, p.id, name === p.baseUnit ? null : name, on)
+      const s: CatalogUnit = await shelfPrice(db, pricer, p.id, name === p.baseUnit ? null : name, on)
       /* A unit nobody has priced would show as free. Leave it out. */
-      if (s.price > 0) priced.push(s)
+      if (s.price <= 0) continue
+      if (breaks) {
+        const tiers: CatalogTier[] = []
+        for (const minQty of breaks.get(`${p.id}|${s.unit}`) ?? []) {
+          const at = await shelfPrice(db, pricer, p.id, name === p.baseUnit ? null : name, on, fromUnits(minQty))
+          const last = tiers.at(-1)?.price ?? s.price
+          if (at.price > 0 && at.price < last) tiers.push({ minQty, price: at.price })
+        }
+        if (tiers.length > 0) s.tiers = tiers
+      }
+      /* Priced on request: listed only if the counter could price it, but
+         the price stays at the shop until it quotes. */
+      priced.push(settings.quotes ? { unit: s.unit, price: 0 as Money, mrp: null } : s)
     }
     if (priced.length === 0) continue
     const photo = photos.get(p.id)
@@ -218,6 +247,35 @@ export async function publishCatalog(db: SqlDriver, on: Date = new Date()): Prom
   const catalog = await buildCatalog(db, on)
   const body = JSON.stringify(catalog)
   return { hash: await sha256Hex(body), body, itemCount: catalog.items.length }
+}
+
+/**
+ * The quantities at which an item's price may step down, per item and sale
+ * unit (`<productId>|<unit>`): the whole-number rungs above one on the walk-in
+ * price list. They are only where to ask; what each step costs is asked of
+ * `resolveLinePrice`, so a rung the counter would not honour today (out of its
+ * dates, or not cheaper) never reaches the storefront.
+ */
+async function quantityBreaks(
+  db: SqlDriver, priceListId: string | null, productIds: string[],
+): Promise<Map<string, number[]>> {
+  const found = new Map<string, number[]>()
+  if (!priceListId || productIds.length === 0) return found
+  const rows = await q(db)
+    .select({ productId: schema.itemPrices.productId, saleUnit: schema.itemPrices.saleUnit, minQty: schema.itemPrices.minQty })
+    .from(schema.itemPrices)
+    .where(and(
+      eq(schema.itemPrices.priceListId, priceListId),
+      inArray(schema.itemPrices.productId, productIds),
+      isNull(schema.itemPrices.deletedAt),
+    ))
+  for (const r of rows) {
+    const units = r.minQty / QTY_SCALE
+    if (!Number.isInteger(units) || units < 2) continue
+    const key = `${r.productId}|${r.saleUnit}`
+    found.set(key, [...new Set([...(found.get(key) ?? []), units])].sort((a, b) => a - b))
+  }
+  return found
 }
 
 /** Each listed item's photo, as the content hashes of its two sizes. */

@@ -87,7 +87,7 @@ export function ProductForm({
         </div>
       )}
       {draft.id && <PricesElsewhere productId={draft.id} />}
-      {draft.id && <ProductPhotoBox productId={draft.id} />}
+      {draft.id && <ProductPhotoBox productId={draft.id} name={draft.name} />}
 
       <div style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>Grouping</div>

@@ -1,12 +1,13 @@
 import type { SqlDriver } from '../../db/driver.js'
 import { loadShopProfile } from '../shop.js'
-import { loadWebSettings, whyNotServing } from './gate.js'
+import { loadWebSettings, whatsappNumber, whyNotServing } from './gate.js'
 import { publishCatalog, type PublishedCatalog } from './catalog.js'
 import { verifyGoogleIdToken, type Jwks } from './google.js'
 import { bearer, issueSession, readSession } from './session.js'
 import { loadAccount, saveContact, signIn, type WebAccount } from './accounts.js'
 import { customerCancel, placeOrder, type WebOrderLineInput } from './orders.js'
 import { orderForAccount, ordersForAccount, type WebOrderView } from './orderViews.js'
+import { answerProposal } from './proposals.js'
 import { HourlyThrottle } from './throttle.js'
 
 /*
@@ -80,16 +81,7 @@ export async function handleWebRequest(db: SqlDriver, req: WebRequest, deps: Web
   const wait = deps.throttles.address.take(req.headers['cf-connecting-ip'], deps.now)
   if (wait !== null) return reply(429, { error: 'SLOW_DOWN', retryAfter: wait })
 
-  if (path === '/api/status' && req.method === 'GET') {
-    const profile = await loadShopProfile(db)
-    return reply(200, {
-      state: settings.open ? 'open' : 'closed',
-      shop: profile.name,
-      googleClientId: settings.googleClientId,
-      /* What a customer needs to find and ring the shop. Nothing else of the profile. */
-      about: { address: profile.address, phone: profile.phone, hours: settings.hours },
-    })
-  }
+  if (path === '/api/status' && req.method === 'GET') return reply(200, await publicStatus(db))
 
   if (path === '/api/session' && req.method === 'POST') {
     const waitSignIn = deps.throttles.signIn.take(req.headers['cf-connecting-ip'], deps.now)
@@ -137,10 +129,18 @@ export async function handleWebRequest(db: SqlDriver, req: WebRequest, deps: Web
     }
   }
 
-  const one = /^\/api\/orders\/([A-Za-z0-9-]{1,64})(\/cancel)?$/.exec(path)
+  const one = /^\/api\/orders\/([A-Za-z0-9-]{1,64})(\/cancel|\/changes)?$/.exec(path)
   if (one) {
-    const [, id, cancel] = one
-    if (!cancel && req.method === 'GET') {
+    const [, id, action] = one
+    const cancel = action === '/cancel'
+    if (action === '/changes' && req.method === 'POST') {
+      /* The customer's answer to the list the shop sent back: { take: true } or { take: false }. */
+      const take = parse<{ take?: unknown }>(req.body)?.take
+      if (typeof take !== 'boolean') return reply(400, { error: 'BAD_REQUEST' })
+      const done = await answerProposal(db, { accountId: account.id, orderId: id!, take, now: deps.now })
+      return done.ok ? reply(200, { order: orderOut(done.order) }) : reply(done.code === 'NOT_FOUND' ? 404 : 409, { error: done.code })
+    }
+    if (!action && req.method === 'GET') {
       const order = await orderForAccount(db, account.id, id!)
       return order ? reply(200, { order: orderOut(order) }) : reply(404, { error: 'NOT_FOUND' })
     }
@@ -181,6 +181,41 @@ export async function currentCatalog(db: SqlDriver, now: Date): Promise<Held> {
   return next
 }
 
+/**
+ * Built again now rather than within the minute, for the till's "Publish
+ * items now". Says whether anything a customer sees has changed.
+ */
+export async function republishCatalog(db: SqlDriver, now: Date = new Date()): Promise<{ changed: boolean; items: number }> {
+  const before = held.get(db)?.hash
+  held.delete(db)
+  const next = await currentCatalog(db, now)
+  return { changed: before !== undefined && before !== next.hash, items: next.itemCount }
+}
+
+/**
+ * What the storefront is told about the shop: open or closed, its name, how
+ * to reach it, what it offers. The till answers it live, and the same object
+ * is what the main uploads to Cloudflare for when the till is off
+ * (`apps/pos/src/core/cloudShop.ts`), so the two can never say different things.
+ */
+export async function publicStatus(db: SqlDriver) {
+  const settings = await loadWebSettings(db)
+  const profile = await loadShopProfile(db)
+  return {
+    state: settings.enabled && settings.open ? 'open' as const : 'closed' as const,
+    shop: profile.name,
+    googleClientId: settings.googleClientId,
+    /* What a customer needs to find and ring the shop -- nothing else of the
+       profile, and none of it when the shop has turned it off. */
+    about: settings.contact
+      ? { address: profile.address, phone: profile.phone, email: profile.email, hours: settings.hours }
+      : { address: null, phone: null, email: null, hours: null },
+    /* The number to WhatsApp, only while the shop offers a chat or cart to send it. */
+    whatsapp: settings.whatsappChat || settings.whatsappCart ? whatsappNumber(settings.whatsapp ?? profile.phone) : null,
+    offers: { whatsappChat: settings.whatsappChat, whatsappCart: settings.whatsappCart },
+  }
+}
+
 async function catalogRoute(db: SqlDriver, method: string, path: string, now: Date): Promise<WebReply> {
   const open = { 'access-control-allow-origin': '*' }
   if (method !== 'GET') return json(405, { error: 'GET_ONLY' }, { 'cache-control': NO_STORE, ...open })
@@ -218,6 +253,8 @@ function orderOut(o: WebOrderView) {
     answeredAt: o.answeredAt,
     packingAt: o.packingAt,
     readyAt: o.readyAt,
+    proposal: o.proposal,
+    agreedAt: o.agreedAt,
   }
 }
 

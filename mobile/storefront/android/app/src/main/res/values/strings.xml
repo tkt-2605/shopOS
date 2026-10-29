@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">StoreFront</string>
+    <string name="title_activity_main">StoreFront</string>
+    <string name="package_name">me.thiruvengadam.storefront</string>
+    <string name="custom_url_scheme">me.thiruvengadam.storefront</string>
+</resources>

@@ -41,3 +41,42 @@ export function shownName(item: { name: string; brand: string | null }): string 
 
 /** How an order is named: "Order #12", the number a customer gives at the counter. */
 export const orderLabel = (orderNo: number) => `Order #${orderNo}`
+
+/** A WhatsApp link to `number` (digits, with the country), with a message typed in ready to send. */
+export function waLink(number: string, text?: string): string {
+  return `https://wa.me/${number}${text ? `?text=${encodeURIComponent(text)}` : ''}`
+}
+
+/**
+ * The cart as a WhatsApp message to the shop: each line, the total, and who is
+ * asking when they are signed in. Plain text, because it is read on a phone
+ * at the counter and copied into a bill by hand.
+ */
+/** A price, or "Price on request" when the shop lists items without them (a quotation). */
+export function priceText(paise: number): string {
+  return paise > 0 ? rupees(paise) : 'Price on request'
+}
+
+export function cartMessage(shop: string, lines: readonly CartLine[], who?: { name: string | null; phone: string | null } | null): string {
+  const total = lines.reduce((s, l) => s + l.price * l.qty, 0)
+  /* Prices on request: the list alone, and a quotation asked for. */
+  if (total === 0) {
+    return [
+      `Hello ${shop || 'there'}, please send me a quotation for:`,
+      '',
+      ...lines.map((l, i) => `${i + 1}. ${l.name} - ${l.qty} ${l.unit}`),
+      '',
+      ...(who?.name ? [`Name: ${who.name}${who.phone ? `, ${who.phone}` : ''}`] : []),
+    ].join('\n')
+  }
+  return [
+    `Hello ${shop || 'there'}, I would like to order:`,
+    '',
+    ...lines.map((l, i) => `${i + 1}. ${l.name} - ${l.qty} ${l.unit} x ${rupees(l.price)} = ${rupees(l.price * l.qty)}`),
+    '',
+    `Total: ${rupees(total)} (to pay when I collect)`,
+    ...(who?.name ? [`Name: ${who.name}${who.phone ? `, ${who.phone}` : ''}`] : []),
+    '',
+    'Please confirm when it is ready.',
+  ].join('\n')
+}

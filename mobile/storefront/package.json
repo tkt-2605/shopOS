@@ -1,0 +1,18 @@
+{
+  "name": "storefront-android",
+  "private": true,
+  "description": "StoreFront by TRT as an Android app: the storefront (apps/storefront) in a Capacitor shell. Kept outside the npm workspaces so it never touches the root lockfile.",
+  "scripts": {
+    "ship": "node ship.mjs",
+    "apk": "node build-apk.mjs",
+    "apk:debug": "node build-apk.mjs debug"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/core": "8.5.3",
+    "@capgo/capacitor-social-login": "8.7.5"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3"
+  }
+}

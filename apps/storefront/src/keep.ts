@@ -66,3 +66,18 @@ export async function forget(...keys: string[]): Promise<void> {
 export function askToKeep(): void {
   void navigator.storage?.persist?.().catch(() => false)
 }
+
+/**
+ * Drops the saved catalogue and the kept photos and page, then reloads, so
+ * everything comes fresh from the shop. The cart, the session and the order
+ * copy stay.
+ */
+export async function startAfresh(): Promise<void> {
+  await forget('catalog', 'status')
+  try {
+    for (const k of await caches.keys()) await caches.delete(k)
+  } catch {
+    // No caches here (the app, or a private window).
+  }
+  location.reload()
+}

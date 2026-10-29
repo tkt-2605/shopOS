@@ -4,6 +4,7 @@ import { q, schema } from '../../db/q.js'
 import { newId } from '../../ids.js'
 import { requirePermission } from '../../integrity/permissions.js'
 import { writeAudit } from '../../integrity/audit.js'
+import { customerByPhone } from '../customers.js'
 import type { GoogleIdentity } from './google.js'
 
 /*
@@ -105,27 +106,31 @@ export async function saveContact(
 }
 
 /**
- * A cashier has checked the phone with the customer in front of them.
+ * A cashier has checked the phone with the customer in front of them. If the
+ * shop already has a customer with that number, the account becomes that
+ * customer from here on: their price list and khata on every later order.
+ * Orders already accepted stay on whoever they were raised for.
  *
  * Under `customer` `write`, the permission a cashier already has to correct a
  * customer's details: this is the same act, done at the same counter.
  */
 export async function verifyPhone(
   db: SqlDriver, input: { accountId: string; actorId: string; now?: Date },
-): Promise<{ ok: true } | { ok: false; code: 'UNKNOWN_ACCOUNT' | 'NO_PHONE' }> {
+): Promise<{ ok: true; customer: { id: string; name: string } | null } | { ok: false; code: 'UNKNOWN_ACCOUNT' | 'NO_PHONE' }> {
   await requirePermission(db, input.actorId, 'customer', 'write')
   const held = await loadAccount(db, input.accountId)
   if (!held) return { ok: false, code: 'UNKNOWN_ACCOUNT' }
   if (held.phone === null) return { ok: false, code: 'NO_PHONE' }
   const at = (input.now ?? new Date()).toISOString()
+  const match = await customerByPhone(db, held.phone)
   await db.transaction(async (tx) => {
     await q(tx).update(schema.webAccounts)
-      .set({ phoneVerifiedAt: at, phoneVerifiedBy: input.actorId, updatedAt: at })
+      .set({ phoneVerifiedAt: at, phoneVerifiedBy: input.actorId, updatedAt: at, ...(match ? { customerId: match.id } : {}) })
       .where(eq(schema.webAccounts.id, input.accountId))
     await writeAudit(tx, { actorId: input.actorId, now: () => at }, {
       entity: 'web_accounts', entityId: input.accountId, action: 'update',
-      after: { phone: held.phone, phone_verified_at: at },
+      after: { phone: held.phone, phone_verified_at: at, ...(match ? { customer_id: match.id } : {}) },
     })
   })
-  return { ok: true }
+  return { ok: true, customer: match ? { id: match.id, name: match.name } : null }
 }

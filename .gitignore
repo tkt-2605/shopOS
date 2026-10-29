@@ -41,3 +41,6 @@ portal.db-journal
 portal.db-wal
 portal.db-shm
 apps/pos/src-tauri/tauri.release.json
+
+# Local till build output.
+.till-build*.log

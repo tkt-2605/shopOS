@@ -165,6 +165,11 @@ pub fn sync_serve_start(
     // Preferring, not insisting: `serve_preferring` says why, and the port it
     // settled on is what the screen shows and what the shout announces.
     let bound = http::serve_preferring(port, Arc::new(ToWebview { app: app.clone() }))?;
+    if bound.port != port {
+        crate::log::write("warn", "sync", &format!(
+            "port {port} was taken, listening on {} instead.{}", bound.port, crate::ports::held_by(port, false),
+        ));
+    }
 
     /* Answering the shout and answering HTTP start and stop together, sharing
        one flag. There is deliberately no state where a till announces itself on
@@ -191,7 +196,9 @@ pub fn sync_serve_start(
            still be typed in by address, and the screen shows the address. But
            it is a reason nobody could find it, and that belongs in the log. */
         if let Err(why) = findable {
-            crate::log::write("warn", "sync", &format!("discovery is off: {why}"));
+            crate::log::write("warn", "sync", &format!(
+                "discovery is off: {why}{}", crate::ports::held_by(shopos_net::discovery::DISCOVERY_PORT, true),
+            ));
         }
     }
 

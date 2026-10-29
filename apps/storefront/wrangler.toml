@@ -1,0 +1,10 @@
+# Cloudflare Pages: shop.thiruvengadam.me. Deployed by mobile/storefront/ship.mjs
+# from this folder, so functions/ goes up with dist/.
+name = "shopos-shop"
+pages_build_output_dir = "./dist"
+compatibility_date = "2025-09-01"
+
+# What the main till uploads (apps/pos/src/core/cloudShop.ts), served by functions/data.
+[[kv_namespaces]]
+binding = "SHOP"
+id = "58d51b7a681441948bc3588b4df0d13a"

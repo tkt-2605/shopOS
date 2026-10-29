@@ -106,7 +106,7 @@ describe('a web order across two tills', () => {
       if (!bill.ok) throw new Error(bill.code)
       const paid = await submitBill(counter.db, { billId: bill.billId, payments: [{ method: 'cash', amount: bill.grandTotal as Money }], actorId: fx.adminId })
       if (!paid.ok) throw new Error(paid.code)
-      expect(await verifyPhone(counter.db, { accountId, actorId: fx.adminId })).toEqual({ ok: true })
+      expect(await verifyPhone(counter.db, { accountId, actorId: fx.adminId })).toMatchObject({ ok: true })
     })
     expect((await loadWebOrder(counter.db, orderId))?.status).toBe('collected')
 

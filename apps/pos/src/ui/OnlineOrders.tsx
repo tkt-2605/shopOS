@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 import { Permissions, Quantity, documentToCart } from '@shopos/core'
 import {
   answersOnlineOrders, orderLabel, ordersForShop, reviewWebOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, verifyPhone,
+  withdrawProposal,
   type ShopWebOrder, type ShopOrderFilter, type ReviewLine, type WebOrderStatus,
 } from '@shopos/core/web'
 import { useCore, useUser } from '../core/CoreProvider'
 import { requestRepeat } from '../core/repeat'
 import { openWhatsApp } from '../core/webHost'
 import { Alert, Card, Empty, Field, Modal, Rupees } from './components'
+import { SendBackChanged, TurnAway } from './OnlineOrderChanges'
 
 /**
  * Orders from the storefront, as the shop answers them.
@@ -86,7 +88,9 @@ export function OnlineOrders() {
                 <td>{new Date(r.placedAt).toLocaleString()}</td>
                 <td>{r.contactName} <span className="src">{r.contactPhone}</span></td>
                 <td>
-                  {STATUS[r.status]}
+                  {r.proposal ? 'Sent back, waiting for the customer'
+                    : r.status === 'pending' && r.seenTotal === 0 && !r.agreedAt ? 'Wants a quotation' : STATUS[r.status]}
+                  {r.status === 'pending' && !r.proposal && r.agreedAt && <span className="src"> · customer took your changes</span>}
                   {r.cancelRequested && r.status !== 'cancelled' && <span className="src"> · asked to cancel</span>}
                   {r.overdue && <span className="src"> · overdue</span>}
                 </td>
@@ -126,6 +130,7 @@ function OrderDetail({ order, onClose, onDone, onError }: {
   const [lines, setLines] = useState<ReviewLine[] | null>(null)
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState<'turnAway' | 'change' | null>(null)
 
   useEffect(() => {
     void reviewWebOrder(db, order.id).then((r) => setLines(r?.lines ?? null))
@@ -149,16 +154,23 @@ function OrderDetail({ order, onClose, onDone, onError }: {
     if (r.ok) return `${orderLabel(order.orderNo)} accepted as ${r.docNo}.`
     onError(r.code === 'NOT_THE_MAIN' ? 'Answer online orders on the main till.'
       : r.code === 'NOT_PENDING' ? 'It has already been answered.'
+      : r.code === 'AWAITING_CUSTOMER' ? 'The customer has not answered your changes yet. Take them back to accept it as it is.'
       : r.code === 'UNKNOWN_PRODUCT' ? 'An item on it no longer exists.'
       : `It could not be accepted (${r.code}).`)
     return null
   })
 
-  const reject = () => act(async () => {
-    const r = await rejectWebOrder(db, { webOrderId: order.id, actorId: user.id, reason })
+  const reject = (message: string) => act(async () => {
+    setMode(null)
+    const r = await rejectWebOrder(db, { webOrderId: order.id, actorId: user.id, reason: message })
     if (r.ok) return `${orderLabel(order.orderNo)} turned away.`
     onError(r.code === 'REASON_REQUIRED' ? 'Say why, so the customer knows.' : 'It has already been answered.')
     return null
+  })
+
+  const takeBack = () => act(async () => {
+    const r = await withdrawProposal(db, { webOrderId: order.id, actorId: user.id })
+    return r.ok ? `Your changes to ${orderLabel(order.orderNo)} were taken back. It is waiting for you again.` : null
   })
 
   const mark = (to: 'packing' | 'ready') => act(async () => {
@@ -177,7 +189,10 @@ function OrderDetail({ order, onClose, onDone, onError }: {
 
   const checkPhone = () => act(async () => {
     const r = await verifyPhone(db, { accountId: order.accountId, actorId: user.id })
-    return r.ok ? `${order.contactPhone} checked with the customer.` : null
+    if (!r.ok) return null
+    return r.customer
+      ? `${order.contactPhone} checked. This account is now ${r.customer.name}, your customer with that number.`
+      : `${order.contactPhone} checked with the customer.`
   })
 
   const bill = () => act(async () => {
@@ -218,8 +233,13 @@ function OrderDetail({ order, onClose, onDone, onError }: {
         <>
           <button className="btn" onClick={whatsapp}>WhatsApp</button>
           <div className="spacer" />
-          {waiting && canAnswer && <button className="btn" disabled={busy} onClick={() => void reject()}>Turn away</button>}
-          {waiting && canAnswer && <button className="btn primary" disabled={busy} onClick={() => void accept()}>Accept</button>}
+          {waiting && canAnswer && <button className="btn" disabled={busy} onClick={() => setMode('turnAway')}>Turn away</button>}
+          {waiting && canAnswer && (order.proposal
+            ? <button className="btn" disabled={busy} onClick={() => void takeBack()}>Take changes back</button>
+            : <button className="btn" disabled={busy} onClick={() => setMode('change')}>
+              {order.seenTotal === 0 ? 'Send quotation' : 'Change & send back'}
+            </button>)}
+          {waiting && canAnswer && <button className="btn primary" disabled={busy || order.proposal !== null} onClick={() => void accept()}>Accept</button>}
           {live && canCancel && <button className="btn" disabled={busy} onClick={() => void cancel()}>Cancel order</button>}
           {order.status === 'accepted' && canAnswer && <button className="btn" disabled={busy} onClick={() => void mark('packing')}>Packing</button>}
           {(order.status === 'accepted' || order.status === 'packing') && canAnswer && (
@@ -247,6 +267,18 @@ function OrderDetail({ order, onClose, onDone, onError }: {
         )}
         {order.cancelRequested && live && <Alert kind="warn">The customer has asked to cancel this order.</Alert>}
         {order.reason && <div className="src">Reason: {order.reason}</div>}
+        {order.agreedAt && waiting && !order.proposal && (
+          <Alert kind="ok">The customer took your changes. The list below is the changed one: accept it when ready.</Alert>
+        )}
+        {order.proposal && (
+          <Alert kind="warn">
+            Sent back {new Date(order.proposal.at).toLocaleString()}, waiting for the customer to take it or cancel.
+            {order.proposal.note && <> Your note: “{order.proposal.note}”</>}
+            <div style={{ marginTop: 6 }}>
+              They were sent: {order.proposal.lines.map((l) => `${l.qty} × ${l.name}`).join(', ')} · <Rupees value={order.proposal.total} />
+            </div>
+          </Alert>
+        )}
 
         <table>
           <thead>
@@ -265,16 +297,21 @@ function OrderDetail({ order, onClose, onDone, onError }: {
           </tbody>
         </table>
         <div className="r">
-          They saw <Rupees value={order.seenTotal} />
+          {order.seenTotal === 0 && !order.agreedAt ? 'Asked with prices on request: send a quotation.' : <>They saw <Rupees value={order.seenTotal} /></>}
           {order.tillTotal !== null && <> · accepted at <Rupees value={order.tillTotal} /></>}
         </div>
 
-        {(waiting || live) && (canAnswer || canCancel) && (
-          <Field label="Reason (to turn away or cancel)" hint="The customer sees this on their phone.">
+        {live && canCancel && (
+          <Field label="Reason (to cancel)" hint="The customer sees this on their phone.">
             <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Out of stock" />
           </Field>
         )}
       </div>
+      {mode === 'turnAway' && <TurnAway order={order} onCancel={() => setMode(null)} onSend={(m) => void reject(m)} />}
+      {mode === 'change' && (
+        <SendBackChanged order={order} onCancel={() => setMode(null)} onError={onError}
+          onSent={(message) => { setMode(null); onDone(message) }} />
+      )}
     </Modal>
   )
 }

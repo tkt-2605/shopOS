@@ -15,6 +15,7 @@ export function submitMessage(result: Extract<SubmitBillResult, { ok: false }>):
         : `Not enough stock.${how}`
     }
     case 'CREDIT_LIMIT_EXCEEDED':
+      if (result.limit === 0) return 'This customer is not given credit. Take the full amount, or give them a credit limit under Customers.'
       /* Checked against what this till knows. Two tills apart can each give
          credit up to the limit, so the shop's figure may already be higher. */
       return `Over the credit limit by ${Money.formatWithSymbol(result.excess)}, going by what this till knows. `

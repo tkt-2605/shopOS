@@ -114,14 +114,11 @@ describe('credit limit', () => {
     expect(r.allowed).toBe(true)
   })
 
-  it('treats a zero limit as unlimited rather than as a block', () => {
-    const r = checkCreditLimit({
-      creditLimit: ZERO,
-      enforcement: 'hard',
-      currentOutstanding: rupees(9000),
-      additionalCredit: rupees(5000),
-    })
-    expect(r.allowed).toBe(true)
+  it('treats a zero limit as no credit, and No limit as any amount', () => {
+    const asked = { creditLimit: ZERO, currentOutstanding: ZERO, additionalCredit: rupees(1) }
+    expect(checkCreditLimit({ ...asked, enforcement: 'hard' })).toMatchObject({ allowed: false, code: 'CREDIT_LIMIT_EXCEEDED' })
+    expect(checkCreditLimit({ ...asked, enforcement: 'soft' })).toMatchObject({ allowed: true, warning: 'OVER_LIMIT' })
+    expect(checkCreditLimit({ ...asked, enforcement: 'none', currentOutstanding: rupees(9000) }).allowed).toBe(true)
   })
 
   it('allows a cash sale to a customer already over limit', () => {

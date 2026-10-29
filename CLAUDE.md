@@ -42,7 +42,9 @@ ERPNext is the reference model, not the foundation. Built solo. This is product 
   backdated, never today's bill.
 - Valuation stores *value* and derives rate, never the reverse.
 - Modular: code should come apart like a car — parts you can pull out and replace.
-- No rounded corners anywhere, including inputs.
+- No rounded corners anywhere, including inputs -- except the customer storefront
+  (`apps/storefront`, also the Android app), which is soft and rounded by the owner's
+  choice on 27 Oct. The till stays square.
 - In prose to the user: sparing bold.
 
 ## Working agreements

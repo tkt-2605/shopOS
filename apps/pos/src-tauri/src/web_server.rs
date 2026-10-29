@@ -141,7 +141,8 @@ pub fn web_serve_start(app: tauri::AppHandle, port: u16) -> Result<u16, String> 
     /* Insisting on the port, not settling for another: `cloudflared` is
        configured with this one, and a different one would be a storefront
        that is "unreachable" for a reason nobody could see. */
-    let bound = web::serve_web(port, Arc::new(ToWebview { app: app.clone() }))?;
+    let bound = web::serve_web(port, Arc::new(ToWebview { app: app.clone() }))
+        .map_err(|e| format!("{e}{}", crate::ports::held_by(port, false)))?;
     let port = bound.port;
     *running = Some(bound);
     Ok(port)

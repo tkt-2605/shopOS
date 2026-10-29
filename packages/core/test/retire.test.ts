@@ -131,7 +131,7 @@ describe('a product taken out of use', () => {
 
 describe('a customer who has stopped coming', () => {
   async function customer(name: string): Promise<string> {
-    const made = await createCustomer(fx.db, { actorId: fx.adminId }, { name })
+    const made = await createCustomer(fx.db, { actorId: fx.adminId }, { name, creditEnforcement: 'none' })
     if (!made.ok) throw new Error(`could not create: ${made.code}`)
     return made.customerId
   }

@@ -50,6 +50,21 @@ export interface WebOrderView {
   answeredAt: string | null
   packingAt: string | null
   readyAt: string | null
+  /**
+   * A changed list the shop sent back, waiting for the customer to take or
+   * refuse -- only while the order is still waiting. Taking it puts these lines
+   * in place and returns the order to the shop to accept.
+   */
+  proposal: Proposal | null
+  /** When the customer took the shop's changes, if they did. */
+  agreedAt: string | null
+}
+
+export interface Proposal {
+  lines: WebOrderLine[]
+  note: string | null
+  at: string
+  total: Money
 }
 
 export const isOpen = (s: WebOrderStatus) => s === 'pending' || s === 'accepted' || s === 'packing' || s === 'ready'
@@ -107,7 +122,14 @@ function toView(r: OrderRow, doc: { cancelled: boolean; finished: boolean } | un
     answeredAt: r.answeredAt,
     packingAt: r.packingAt,
     readyAt: r.readyAt,
+    proposal: status === 'pending' && r.proposedJson !== null ? proposalOf(r.proposedJson, r.proposalNote, r.proposedAt ?? r.updatedAt) : null,
+    agreedAt: r.agreedAt,
   }
+}
+
+function proposalOf(json: string, note: string | null, at: string): Proposal {
+  const lines = JSON.parse(json) as WebOrderLine[]
+  return { lines, note, at, total: lines.reduce((s, l) => s + l.seenPrice * l.qty, 0) as Money }
 }
 
 export async function loadWebOrder(db: SqlDriver, id: string): Promise<WebOrderView | null> {

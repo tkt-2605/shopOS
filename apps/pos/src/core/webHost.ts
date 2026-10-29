@@ -8,6 +8,7 @@ import {
 import { logEvent, describe } from './log'
 import { deviceSetting } from './device'
 import { isOff } from './switches'
+import { keepShopUploaded, pushShop, stopUploading } from './cloudShop'
 
 /**
  * Answering the storefront.
@@ -40,6 +41,47 @@ let listening: UnlistenFn | null = null
 let keys: Jwks | null = null
 let timers: Array<ReturnType<typeof setInterval>> = []
 const throttles = newThrottles()
+/** Why the port could not be opened last time, e.g. "Port 7802 is held by OtherApp.exe". */
+let portTrouble: string | null = null
+
+export function storefrontPortTrouble(): string | null {
+  return portTrouble
+}
+
+/** The tunnel as Rust keeps it (`tunnel.rs`): up, how often it has had to be restarted, and why. */
+export interface TunnelState { up: boolean; restarts: number; problem: string | null; config: string }
+
+let tunnelTrouble: string | null = null
+
+/** Null while the till is not running the tunnel itself. */
+export async function tunnelState(): Promise<TunnelState | null> {
+  return (await invoke<TunnelState | null>('web_tunnel_status').catch(() => null)) ?? null
+}
+
+/** Why the tunnel could not be started, e.g. no config on this computer. */
+export function tunnelProblem(): string | null {
+  return tunnelTrouble
+}
+
+/**
+ * The till runs the Cloudflare tunnel itself, so a PC that restarted comes back
+ * online with the till. `web_tunnel` = `off` in device.json leaves it to
+ * something else (a Windows service); `web_tunnel_exe` and `web_tunnel_config`
+ * point at another cloudflared or config.
+ */
+async function startTunnel(): Promise<void> {
+  if (deviceSetting('web_tunnel') === 'off') return
+  try {
+    const s = await invoke<TunnelState>('web_tunnel_start', {
+      exe: deviceSetting('web_tunnel_exe') || null, config: deviceSetting('web_tunnel_config') || null,
+    })
+    tunnelTrouble = null
+    logEvent('info', 'web', `tunnel ${s.up ? 'running' : 'starting'} with ${s.config}`)
+  } catch (err) {
+    tunnelTrouble = describe(err)
+    logEvent('error', 'web', `could not start the tunnel: ${tunnelTrouble}`)
+  }
+}
 
 export function webPort(): number {
   const n = Number(deviceSetting('web_port'))
@@ -62,6 +104,8 @@ export async function keepTheStorefrontRight(db: SqlDriver): Promise<void> {
     // A webview reload under a port that outlived it.
     await attend(db)
   } else if (!should && open !== null) {
+    /* Last word to Cloudflare first, so the storefront says closed rather than showing yesterday's shop. */
+    await pushShop(db)
     await stopWeb()
     logEvent('info', 'web', 'stopped answering the storefront')
   }
@@ -71,12 +115,16 @@ async function startWeb(db: SqlDriver): Promise<void> {
   await attend(db)
   try {
     const port = await invoke<number>('web_serve_start', { port: webPort() })
+    portTrouble = null
     logEvent('info', 'web', `answering the storefront on 127.0.0.1:${port}`)
   } catch (err) {
-    logEvent('error', 'web', `could not open the storefront port: ${describe(err)}`)
+    portTrouble = describe(err)
+    logEvent('error', 'web', `could not open the storefront port: ${portTrouble}`)
     await stopWeb()
     return
   }
+  await startTunnel()
+  keepShopUploaded(db)
   await refreshKeys(db)
   timers = [
     setInterval(() => { void refreshKeys(db) }, KEYS_EVERY_MS),
@@ -85,6 +133,7 @@ async function startWeb(db: SqlDriver): Promise<void> {
 }
 
 export async function stopWeb(): Promise<void> {
+  stopUploading()
   for (const t of timers) clearInterval(t)
   timers = []
   if (listening !== null) {
@@ -92,6 +141,7 @@ export async function stopWeb(): Promise<void> {
     listening = null
   }
   await invoke('web_serve_stop').catch(() => undefined)
+  await invoke('web_tunnel_stop').catch(() => undefined)
 }
 
 export async function webServingOn(): Promise<number | null> {

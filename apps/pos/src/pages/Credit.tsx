@@ -227,13 +227,13 @@ export default function Credit() {
                 <td>{c.name}</td>
                 <td className="num">{c.phone ?? '—'}</td>
                 <td className="r">
-                  {c.creditLimit > 0
-                    ? <Rupees value={c.creditLimit} />
-                    : <span style={{ color: 'var(--ink-3)' }}>none</span>}
+                  {c.creditEnforcement === 'none'
+                    ? <span style={{ color: 'var(--ink-3)' }}>no limit</span>
+                    : c.creditLimit > 0 ? <Rupees value={c.creditLimit} /> : <span style={{ color: 'var(--ink-3)' }}>no credit</span>}
                 </td>
                 <td className="r">
                   <Rupees value={c.outstanding} />
-                  {c.creditLimit > 0 && c.outstanding > c.creditLimit && (
+                  {c.creditEnforcement !== 'none' && c.outstanding > c.creditLimit && (
                     <span className="badge bad" style={{ marginLeft: 7 }}>over limit</span>
                   )}
                   {/* Money the shop is holding for them. It has always been in

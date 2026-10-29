@@ -95,7 +95,8 @@ export async function makeCustomer(db: SqlDriver, name = 'Test Customer'): Promi
   const id = newId()
   const now = new Date().toISOString()
   await db.execute(
-    `INSERT INTO customers (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+    /* A khata customer with no limit, as every test customer was before zero meant no credit (082). */
+    `INSERT INTO customers (id, name, credit_enforcement, created_at, updated_at) VALUES (?, ?, 'none', ?, ?)`,
     [id, name, now, now],
   )
   return id

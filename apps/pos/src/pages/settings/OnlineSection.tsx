@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { listCategories, type Category } from '@shopos/core'
+import { listCategories, isOn, loadShopProfile, type Category, type ShopProfile } from '@shopos/core'
 import {
-  loadWebSettings, saveWebSettings, isOnlineOrderShop, listedCategoryIds, listedWithoutPhoto, type WebSettings,
+  loadWebSettings, saveWebSettings, isOnlineOrderShop, listedCategoryIds, listedWithoutPhoto, republishCatalog, type WebSettings,
 } from '@shopos/core/web'
 import { useCore, useUser } from '../../core/CoreProvider'
-import { keepTheStorefrontRight, storefrontRefusal, webPort, webServingOn } from '../../core/webHost'
+import { keepTheStorefrontRight, storefrontPortTrouble, storefrontRefusal, tunnelProblem, tunnelState, webPort, webServingOn, type TunnelState } from '../../core/webHost'
+import { setStartsWithWindows, startsWithWindows } from '../../core/autostart'
+import { pushShop } from '../../core/cloudShop'
 import { Alert, Card, Field } from '../../ui/components'
 import { Intro, Switch } from './parts'
 
@@ -43,11 +45,17 @@ export function OnlineSection() {
   const [serving, setServing] = useState<{ port: number | null; why: string | null }>({ port: null, why: null })
   const [error, setError] = useState<string | null>(null)
   const [noPhoto, setNoPhoto] = useState<{ id: string; name: string }[]>([])
+  const [tiered, setTiered] = useState(true)
+  const [profile, setProfile] = useState<ShopProfile | null>(null)
+  const [published, setPublished] = useState<string | null>(null)
+  const [tunnel, setTunnel] = useState<TunnelState | null>(null)
+  const [atSignIn, setAtSignIn] = useState(false)
 
   async function refreshStatus() {
     await keepTheStorefrontRight(db)
     const why = await storefrontRefusal(db)
-    setServing({ port: await webServingOn(), why: why === null ? null : WHY[why] ?? why })
+    setServing({ port: await webServingOn(), why: why === null ? storefrontPortTrouble() : WHY[why] ?? why })
+    setTunnel(await tunnelState())
   }
 
   useEffect(() => {
@@ -55,17 +63,37 @@ export function OnlineSection() {
   }, [db, settings?.categoryIds.join(',')])
 
   useEffect(() => {
+    void isOn(db, 'tieredPricing').then(setTiered).catch(() => undefined)
+    void loadShopProfile(db).then(setProfile).catch(() => undefined)
     void loadWebSettings(db).then(setSettings)
     void listCategories(db).then(setCategories)
     void refreshStatus()
+    void startsWithWindows().then(setAtSignIn)
   }, [db])
 
   async function save(changes: Partial<WebSettings>) {
     setError(null)
     try {
       setSettings(await saveWebSettings(db, user.id, changes))
+      /* Out to phones now, not within the minute: a till closed straight after
+         a change would otherwise never have published it. */
+      await republishCatalog(db).catch(() => undefined)
       await refreshStatus()
+      void pushShop(db)
     } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function publishNow() {
+    setPublished('Publishing…')
+    try {
+      const r = await republishCatalog(db)
+      await pushShop(db)
+      setPublished(`${r.items} item${r.items === 1 ? '' : 's'} published${r.changed ? ', with changes' : ', nothing had changed'}. `
+        + 'Phones see it at their next refresh, or within about two minutes.')
+    } catch (err) {
+      setPublished(null)
       setError(err instanceof Error ? err.message : String(err))
     }
   }
@@ -105,6 +133,24 @@ export function OnlineSection() {
             ? `Answering on 127.0.0.1:${serving.port}. The tunnel on this computer must point there.`
             : serving.why ?? `Not answering yet. The tunnel should point at 127.0.0.1:${webPort()}.`}
         </p>
+        {serving.port !== null && (
+          <p className="hint">
+            {tunnel === null
+              ? tunnelProblem() ?? 'The tunnel is run outside the till on this computer.'
+              : tunnel.up
+                ? `Tunnel running, started by this till${tunnel.restarts > 0 ? `, restarted ${tunnel.restarts} time${tunnel.restarts === 1 ? '' : 's'}` : ''}.`
+                : `Tunnel down, trying again: ${tunnel.problem ?? 'starting'}.`}
+          </p>
+        )}
+        <Switch
+          id="web-autostart"
+          on={atSignIn}
+          onChange={(on) => void setStartsWithWindows(on).then(setAtSignIn).catch((err) => setError(String(err)))}
+          title="Start this till with Windows"
+          note={'On, Windows opens this till when someone signs in after the computer is turned on, and '
+            + 'the main till then opens the online shop and its tunnel by itself. Turn it on for the main till. '
+            + 'For the shop to come online with nobody at the computer, Windows must also sign in by itself.'}
+        />
       </Card>
 
       <Card title="What is listed">
@@ -134,6 +180,71 @@ export function OnlineSection() {
             </span>
           </label>
         ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+          <button className="btn" onClick={() => void publishNow()}>Publish items now</button>
+          <span className="hint">
+            {published ?? 'Changes to items, prices, stock and photos go out within a minute by themselves. This sends them now.'}
+          </span>
+        </div>
+      </Card>
+
+      <Card title="Prices">
+        <Switch
+          id="web-quotes"
+          on={settings.quotes}
+          onChange={(on) => void save({ quotes: on })}
+          title="Prices on request (quotation)"
+          note={'On, customers see each item’s name and photo but no price. They send what they want, '
+            + 'and you answer with a quotation from the order (Send quotation): your prices for it. They '
+            + 'accept or cancel, and an accepted one comes back to you to accept as usual.'}
+        />
+        <Switch
+          id="web-tiers"
+          on={settings.tiers}
+          onChange={(on) => void save({ tiers: on })}
+          title="Show quantity prices online"
+          note={'On, an item with a quantity ladder shows it to customers: “10 or more at ₹9 each”, and '
+            + 'the cart tells them how much more to add to save. Off, they see only the price of one.'}
+        />
+        {settings.tiers && !tiered && (
+          <p className="hint">Tiered pricing is off for the shop, so there are no quantity prices to show. Turn it on under Features.</p>
+        )}
+      </Card>
+
+      <Card title="Contact and WhatsApp">
+        <p className="hint">
+          {profile?.address || profile?.phone
+            ? `From Shop details: ${[profile.address, profile.phone, profile.email].filter(Boolean).join(' · ')}.`
+            : 'Shop details has no address or phone yet, so the storefront has none to show. Add them under Settings, Shop details.'}
+        </p>
+        <Switch
+          id="web-contact"
+          on={settings.contact}
+          onChange={(on) => void save({ contact: on })}
+          title="Show the shop’s contact details"
+          note="Address, phone, email and opening hours on the storefront, with Call and Directions."
+        />
+        <Switch
+          id="web-wa-chat"
+          on={settings.whatsappChat}
+          onChange={(on) => void save({ whatsappChat: on })}
+          title="WhatsApp the shop"
+          note="A WhatsApp button on the storefront that opens a chat with the number below."
+        />
+        <Switch
+          id="web-wa-cart"
+          on={settings.whatsappCart}
+          onChange={(on) => void save({ whatsappCart: on })}
+          title="Send cart on WhatsApp"
+          note={'A button in the cart that sends the list and total to the shop’s WhatsApp. It needs no sign-in and '
+            + 'works even while this till is off; you reply and bill it at the counter as usual.'}
+        />
+        <TextSetting
+          label="WhatsApp number"
+          hint={`Leave empty to use the shop’s phone${profile?.phone ? ` (${profile.phone})` : ''}. A 10-digit mobile is taken as Indian.`}
+          value={settings.whatsapp ?? ''}
+          onSave={(v) => save({ whatsapp: v || null })}
+        />
       </Card>
 
       {noPhoto.length > 0 && (
@@ -166,10 +277,14 @@ export function OnlineSection() {
           onSave={(v) => save({ hours: v || null })}
         />
         <TextSetting
-          label="Minutes to answer an order"
-          hint="An order nobody accepts in this time is turned away, so the customer is not left waiting."
+          label="Turn away unanswered orders after (minutes)"
+          hint={'0 keeps an order waiting until somebody accepts or turns it away. Any other number turns '
+            + 'away an order nobody has answered in that many minutes.'}
           value={String(settings.answerMinutes)}
-          onSave={(v) => save({ answerMinutes: Number(v) || settings.answerMinutes })}
+          onSave={(v) => {
+            const n = Number(v)
+            if (Number.isInteger(n) && n >= 0) void save({ answerMinutes: n })
+          }}
         />
         <TextSetting
           label="Days to collect"

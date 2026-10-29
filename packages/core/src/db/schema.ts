@@ -1034,6 +1034,13 @@ export const webOrders = sqliteTable('web_orders', {
   updatedAt: text('updated_at').notNull(),
   rev: integer().notNull().default(1),
   originId: text('origin_id'),
+  /** The changed list the shop sent back, waiting for the customer. Migration 081. */
+  proposedJson: text('proposed_json'),
+  proposalNote: text('proposal_note'),
+  proposedAt: text('proposed_at'),
+  proposedBy: text('proposed_by').references(() => users.id),
+  /** When the customer took the shop's changes. */
+  agreedAt: text('agreed_at'),
 }, (table) => [
   index('idx_web_orders_status').on(table.status),
 ])

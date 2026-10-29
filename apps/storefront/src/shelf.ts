@@ -1,4 +1,4 @@
-import type { Catalog, CatalogItem, CatalogUnit } from './api'
+import type { Catalog, CatalogItem, CatalogTier, CatalogUnit, OrderLine } from './api'
 import { shownName, type CartLine } from './money'
 
 /*
@@ -118,12 +118,37 @@ export function brandsIn(items: readonly CatalogItem[]): string[] {
   return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([b]) => b)
 }
 
+// ---------------------------------------------------------------- buying more
+
+/** What each one costs when buying `qty`: the lowest rung reached, or the price of one. */
+export function priceAt(unit: CatalogUnit, qty: number): number {
+  let price = unit.price
+  for (const t of unit.tiers ?? []) if (qty >= t.minQty && t.price < price) price = t.price
+  return price
+}
+
+/**
+ * The next rung up from `qty`, and what reaching it saves against paying the
+ * single price for that many -- the nudge to buy a little more. Null at the
+ * top rung, or for an item with no quantity prices.
+ */
+export function nextTier(unit: CatalogUnit, qty: number): { minQty: number; price: number; more: number; save: number } | null {
+  const next = (unit.tiers ?? []).find((t) => t.minQty > qty)
+  if (!next) return null
+  return { ...next, more: next.minQty - qty, save: (unit.price - next.price) * next.minQty }
+}
+
+/** The best rung, for a card: "50+ at ₹8". */
+export const bestTier = (unit: CatalogUnit): CatalogTier | null => unit.tiers?.at(-1) ?? null
+
 // ---------------------------------------------------------------- cart against the catalogue
 
 export interface CheckedLine extends CartLine {
   /** The unit as the catalogue has it now, or null when it is no longer sold online. */
   now: CatalogUnit | null
   item: CatalogItem | null
+  /** What each one costs at this line's quantity, quantity prices included. */
+  each: number
 }
 
 /** Each cart line beside today's catalogue: its current price, or that it has gone. */
@@ -131,15 +156,15 @@ export function checkCart(cart: readonly CartLine[], catalog: Catalog | undefine
   const byId = new Map((catalog?.items ?? []).map((i) => [i.id, i]))
   return cart.map((l) => {
     const item = byId.get(l.productId) ?? null
-    const now = item?.units.find((u) => u.unit === l.unit) ?? null
-    return { ...l, item, now: catalog ? now : { unit: l.unit, price: l.price, mrp: null } }
+    const now = catalog ? item?.units.find((u) => u.unit === l.unit) ?? null : { unit: l.unit, price: l.price, mrp: null }
+    return { ...l, item, now, each: now ? priceAt(now, l.qty) : l.price }
   })
 }
 
-/** The cart at today's prices, without lines the shop no longer sells. */
+/** The cart at today's prices, quantity prices included, without lines the shop no longer sells. */
 export function repriced(lines: readonly CheckedLine[]): CartLine[] {
-  return lines.filter((l) => l.now !== null).map(({ productId, name, unit, qty, now }) => ({
-    productId, name, unit, qty, price: now!.price,
+  return lines.filter((l) => l.now !== null).map(({ productId, name, unit, qty, each }) => ({
+    productId, name, unit, qty, price: each,
   }))
 }
 
@@ -151,4 +176,37 @@ export function againFrom(lines: readonly { productId: string; unit: string; qty
     const unit = item?.units.find((u) => u.unit === l.unit)
     return item && unit ? [{ productId: item.id, name: shownName(item), unit: unit.unit, qty: l.qty, price: unit.price }] : []
   })
+}
+
+// ---------------------------------------------------------------- what the shop changed
+
+export interface LineChange {
+  name: string
+  unit: string
+  /** What the customer asked for, 0 for an item the shop added. */
+  from: number
+  /** What the shop is offering, 0 for an item it took off. */
+  to: number
+  /** Each, as the shop priced the changed list (as first seen for one taken off). */
+  price: number
+  kind: 'same' | 'fewer' | 'more' | 'removed' | 'added'
+}
+
+/** The asked-for list beside the shop's changed one, line by line, in the order the customer will read it. */
+export function changesIn(asked: readonly OrderLine[], offered: readonly OrderLine[]): LineChange[] {
+  const key = (l: OrderLine) => `${l.productId}|${l.unit}`
+  const offeredBy = new Map(offered.map((l) => [key(l), l]))
+  const out: LineChange[] = asked.map((a) => {
+    const o = offeredBy.get(key(a))
+    const to = o?.qty ?? 0
+    return {
+      name: a.name, unit: a.unit, from: a.qty, to, price: o?.seenPrice ?? a.seenPrice,
+      kind: to === 0 ? 'removed' : to < a.qty ? 'fewer' : to > a.qty ? 'more' : 'same',
+    }
+  })
+  const askedKeys = new Set(asked.map(key))
+  for (const o of offered) {
+    if (!askedKeys.has(key(o))) out.push({ name: o.name, unit: o.unit, from: 0, to: o.qty, price: o.seenPrice, kind: 'added' })
+  }
+  return out
 }

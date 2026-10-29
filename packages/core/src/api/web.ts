@@ -9,14 +9,14 @@
 
 export {
   ONLINE_ORDER_SHOPS, WEB_SETTINGS, loadWebSettings, saveWebSettings, isOnlineOrderShop, whyNotServing, onlineOrdersAllowed,
-  answersOnlineOrders,
+  answersOnlineOrders, whatsappNumber,
 } from '../services/web/gate.js'
 export type { WebSettings, WebRefusal } from '../services/web/gate.js'
 export {
   buildCatalog, publishCatalog, listedCategoryIds, isListed, shelfPricer, shelfPrice,
 } from '../services/web/catalog.js'
 export type {
-  Catalog, CatalogItem, CatalogUnit, CatalogCategory, PublishedCatalog, ShelfPricer,
+  Catalog, CatalogItem, CatalogUnit, CatalogTier, CatalogCategory, PublishedCatalog, ShelfPricer,
 } from '../services/web/catalog.js'
 export { verifyGoogleIdToken, parseJwks } from '../services/web/google.js'
 export type { Jwk, Jwks, GoogleIdentity, GoogleVerdict } from '../services/web/google.js'
@@ -36,8 +36,11 @@ export {
 export type {
   WebOrderStatus, WebOrderLine, WebOrderView, ShopWebOrder, ShopOrderFilter, ReviewLine,
 } from '../services/web/orderViews.js'
+export { proposeChanges, withdrawProposal, answerProposal } from '../services/web/proposals.js'
+export type { ProposedLineInput, ProposeResult } from '../services/web/proposals.js'
+export type { Proposal } from '../services/web/orderViews.js'
 export { productPhoto, setProductPhoto, removeProductPhoto, listedWithoutPhoto } from '../services/web/photos.js'
 export type { ProductPhoto } from '../services/web/photos.js'
-export { handleWebRequest, newThrottles, currentCatalog } from '../services/web/routes.js'
+export { handleWebRequest, newThrottles, currentCatalog, republishCatalog, publicStatus } from '../services/web/routes.js'
 export type { WebRequest, WebReply, WebDeps, WebThrottles } from '../services/web/routes.js'
 export { HourlyThrottle } from '../services/web/throttle.js'

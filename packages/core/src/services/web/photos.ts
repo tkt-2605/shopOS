@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import type { AuditContext } from '../../integrity/audit.js'
@@ -13,6 +13,10 @@ import { recordAttachment, removeAttachment, type StoredFile } from '../attachme
  * show a thumbnail. `product_photos` says which two they are; the item can
  * carry other attachments that are not its photo.
  *
+ * Beside them, the picture they were cut from (captioned ORIGINAL), so the
+ * square can be moved or widened again later without finding the picture
+ * twice. It is never served.
+ *
  * The rows travel to every till; the files do not -- attachments never have.
  * The main is the till that serves photos, so the screen offers this only
  * there.
@@ -21,6 +25,19 @@ import { recordAttachment, removeAttachment, type StoredFile } from '../attachme
 export interface ProductPhoto {
   photo: { id: string; storedPath: string; sha256: string }
   thumb: { id: string; storedPath: string; sha256: string }
+  /** The picture the two were cut from, when it was kept. */
+  original: { id: string; storedPath: string } | null
+}
+
+const ORIGINAL = 'Photo (original)'
+
+async function originalsOf(db: SqlDriver, productId: string) {
+  return q(db).select({ id: schema.attachments.id, storedPath: schema.attachments.storedPath })
+    .from(schema.attachments)
+    .where(and(
+      eq(schema.attachments.entity, 'product'), eq(schema.attachments.entityId, productId),
+      eq(schema.attachments.caption, ORIGINAL), isNull(schema.attachments.deletedAt),
+    ))
 }
 
 export async function productPhoto(db: SqlDriver, productId: string): Promise<ProductPhoto | null> {
@@ -37,9 +54,11 @@ export async function productPhoto(db: SqlDriver, productId: string): Promise<Pr
     [productId],
   )
   if (!row) return null
+  const [original] = await originalsOf(db, productId)
   return {
     photo: { id: row.photo_id, storedPath: row.photo_path, sha256: row.photo_sha },
     thumb: { id: row.thumb_id, storedPath: row.thumb_path, sha256: row.thumb_sha },
+    original: original ?? null,
   }
 }
 
@@ -47,20 +66,31 @@ export async function productPhoto(db: SqlDriver, productId: string): Promise<Pr
  * Sets an item's photo from the two files the till has already stored. The
  * one it replaces is taken off; the files that leaves with nothing pointing at
  * them are returned for the caller to delete, as `removeAttachment` does.
+ *
+ * With `original`, a new picture: it is kept and any earlier one dropped.
+ * Without, the square was cut again from the picture already kept.
  */
 export async function setProductPhoto(
   db: SqlDriver,
   ctx: AuditContext & { actorId: string },
-  input: { productId: string; photo: StoredFile; thumb: StoredFile },
+  input: { productId: string; photo: StoredFile; thumb: StoredFile; original?: StoredFile },
 ): Promise<{ orphaned: string[] }> {
   const before = await productPhoto(db, input.productId)
+  const orphaned: string[] = []
+  if (input.original) {
+    for (const old of await originalsOf(db, input.productId)) {
+      const gone = await removeAttachment(db, ctx, old.id)
+      if (gone.orphaned) orphaned.push(gone.orphaned)
+    }
+    await recordAttachment(db, ctx, { entity: 'product', entityId: input.productId, file: input.original, caption: ORIGINAL })
+  }
   const photo = await recordAttachment(db, ctx, { entity: 'product', entityId: input.productId, file: input.photo, caption: 'Photo' })
   const thumb = await recordAttachment(db, ctx, { entity: 'product', entityId: input.productId, file: input.thumb, caption: 'Photo (small)' })
   const at = (ctx.now ?? (() => new Date().toISOString()))()
   await q(db).insert(schema.productPhotos)
     .values({ productId: input.productId, photoId: photo.id, thumbId: thumb.id, updatedAt: at })
     .onConflictDoUpdate({ target: schema.productPhotos.productId, set: { photoId: photo.id, thumbId: thumb.id, updatedAt: at } })
-  return { orphaned: before ? await dropFiles(db, ctx, before) : [] }
+  return { orphaned: [...orphaned, ...(before ? await dropFiles(db, ctx, before) : [])] }
 }
 
 export async function removeProductPhoto(
@@ -69,6 +99,10 @@ export async function removeProductPhoto(
   const before = await productPhoto(db, productId)
   if (!before) return { orphaned: [] }
   const orphaned = await dropFiles(db, ctx, before)
+  for (const old of await originalsOf(db, productId)) {
+    const gone = await removeAttachment(db, ctx, old.id)
+    if (gone.orphaned) orphaned.push(gone.orphaned)
+  }
   await q(db).delete(schema.productPhotos).where(eq(schema.productPhotos.productId, productId))
   return { orphaned }
 }

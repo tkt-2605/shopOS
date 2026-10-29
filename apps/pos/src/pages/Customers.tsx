@@ -268,7 +268,8 @@ export default function Customers() {
                 </td>
                 <td className="num">{c.phone ?? '—'}</td>
                 <td className="num">{c.gstin ?? '—'}</td>
-                <td className="r">{c.creditLimit > 0 ? <Rupees value={c.creditLimit} /> : <span style={{ color: 'var(--ink-3)' }}>none</span>}</td>
+                <td className="r">{c.creditEnforcement === 'none' ? <span style={{ color: 'var(--ink-3)' }}>no limit</span>
+                  : c.creditLimit > 0 ? <Rupees value={c.creditLimit} /> : <span style={{ color: 'var(--ink-3)' }}>no credit</span>}</td>
                 <td className="r">
                   {c.outstanding > 0
                     ? <Rupees value={c.outstanding} />
@@ -351,18 +352,19 @@ export default function Customers() {
               <input className="input num" id="c-gstin" value={draft.gstin}
                 onChange={(e) => setDraft({ ...draft, gstin: e.target.value.toUpperCase() })} />
             </Field>
-            <Field label="Credit limit" hint="Zero means no limit.">
-              <input className="input num" id="c-limit" value={draft.creditLimit}
+            <Field label="Credit limit" hint={draft.enforcement === 'none' ? 'No limit: any amount on credit.' : 'Zero means no credit.'}>
+              <input className="input num" id="c-limit" value={draft.enforcement === 'none' ? '' : draft.creditLimit}
+                disabled={draft.enforcement === 'none'} placeholder={draft.enforcement === 'none' ? 'No limit' : ''}
                 onChange={(e) => setDraft({ ...draft, creditLimit: e.target.value })} />
             </Field>
           </div>
 
-          <Field label="When over the limit">
+          <Field label="Credit">
             <select className="select" id="c-enforce" value={draft.enforcement}
               onChange={(e) => setDraft({ ...draft, enforcement: e.target.value as Draft['enforcement'] })}>
-              <option value="hard">Block the sale</option>
-              <option value="soft">Warn but allow</option>
-              <option value="none">Ignore the limit</option>
+              <option value="hard">Up to the limit, then block the sale</option>
+              <option value="soft">Up to the limit, then warn but allow</option>
+              <option value="none">No limit</option>
             </select>
           </Field>
 

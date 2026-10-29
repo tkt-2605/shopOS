@@ -234,14 +234,13 @@ describe('the other two numbers beside it', () => {
     const limited = await customerWhoBuysOnKhata()
     const generous = await customerWhoBuysOnKhata()
     const unlimited = await customerWhoBuysOnKhata()
-    await fx.db.execute(`UPDATE customers SET credit_limit = ? WHERE id = ?`, [rupees(100), limited])
-    await fx.db.execute(`UPDATE customers SET credit_limit = ? WHERE id = ?`, [rupees(10_000), generous])
+    await fx.db.execute(`UPDATE customers SET credit_limit = ?, credit_enforcement = 'soft' WHERE id = ?`, [rupees(100), limited])
+    await fx.db.execute(`UPDATE customers SET credit_limit = ?, credit_enforcement = 'soft' WHERE id = ?`, [rupees(10_000), generous])
     await creditSale(limited, 5)
     await creditSale(generous, 5)
     await creditSale(unlimited, 90)
 
-    /* A limit of zero is no limit, not a limit of nothing — otherwise every
-       customer on the khata is permanently over one. */
+    /* "No limit" (enforcement none) is never over one, however much is owed. */
     expect((await totalOutstandingAll(fx.db)).overLimit).toBe(1)
   })
 })

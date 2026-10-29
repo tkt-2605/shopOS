@@ -10,6 +10,7 @@ import { setSetting } from '../src/services/bootstrap.js'
 import { SUBMITTED, CANCELLED, DRAFT } from '../src/integrity/docstatus.js'
 import { freshDb, makeProduct, makeCustomer, type Fixture } from './helpers.js'
 import { newId } from '../src/ids.js'
+import { createCustomer } from '../src/services/customers.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
 let fx: Fixture
@@ -251,6 +252,49 @@ describe('submitting', () => {
 })
 
 describe('credit', () => {
+  /* Since 082 a limit of zero is no credit, and "No limit" is enforcement none. */
+  async function creditSale(customer: string, rupeesEach = 100, method: 'credit' | 'cash' = 'credit') {
+    const p = await makeProduct(fx.db, { baseRate: rupees(rupeesEach) })
+    await stockUp(fx.db, p, 10)
+    const draft = await billFor(p, 1, customer)
+    if (!draft.ok) throw new Error(draft.code)
+    return submitBill(fx.db, { billId: draft.billId, payments: [{ method, amount: draft.grandTotal }], actorId: fx.adminId })
+  }
+  const limit = (c: string, paise: number, enforcement: string) =>
+    fx.db.execute(`UPDATE customers SET credit_limit = ?, credit_enforcement = ? WHERE id = ?`, [paise, enforcement, c])
+
+  it('refuses any credit to a customer on a zero limit that blocks', async () => {
+    const c = await makeCustomer(fx.db)
+    await limit(c, 0, 'hard')
+    const r = await creditSale(c)
+    expect(r).toMatchObject({ ok: false, code: 'CREDIT_LIMIT_EXCEEDED', limit: 0 })
+  })
+
+  it('still takes cash from that customer', async () => {
+    const c = await makeCustomer(fx.db)
+    await limit(c, 0, 'hard')
+    expect((await creditSale(c, 100, 'cash')).ok).toBe(true)
+  })
+
+  it('lets a zero limit that only warns through', async () => {
+    const c = await makeCustomer(fx.db)
+    await limit(c, 0, 'soft')
+    expect((await creditSale(c)).ok).toBe(true)
+  })
+
+  it('gives any amount to a customer on No limit, however much is owed', async () => {
+    const c = await makeCustomer(fx.db)
+    await limit(c, 0, 'none')
+    expect((await creditSale(c, 5000)).ok).toBe(true)
+    expect((await creditSale(c, 5000)).ok).toBe(true)
+  })
+
+  it('gives a new customer made at the counter no credit until the shop says so', async () => {
+    const made = await createCustomer(fx.db, { actorId: fx.adminId }, { name: 'New face' })
+    if (!made.ok) throw new Error(made.code)
+    expect((await creditSale(made.customerId)).ok).toBe(false)
+  })
+
   it('blocks a credit sale past a hard limit', async () => {
     const p = await makeProduct(fx.db, { baseRate: rupees(1000) })
     await stockUp(fx.db, p, 10)

@@ -79,6 +79,8 @@ export async function placeOrder(
   if (input.lines.length > MAX_LINES) return { ok: false, code: 'TOO_MANY_LINES' }
 
   const categories = await listedCategoryIds(db)
+  /* Asked for a quotation: whatever price the phone sends, none was shown. */
+  const quoting = (await loadWebSettings(db)).quotes
   const lines: WebOrderLine[] = []
   for (const line of input.lines) {
     if (typeof line.productId !== 'string' || typeof line.unit !== 'string'
@@ -93,7 +95,7 @@ export async function placeOrder(
     if (line.unit !== product!.baseUnit && !await hasUnit(db, line.productId, line.unit)) {
       return { ok: false, code: 'BAD_LINE' }
     }
-    lines.push({ productId: line.productId, name: withBrand(product!.name, product!.brand), unit: line.unit, qty: line.qty, seenPrice: line.price as Money })
+    lines.push({ productId: line.productId, name: withBrand(product!.name, product!.brand), unit: line.unit, qty: line.qty, seenPrice: (quoting ? 0 : line.price) as Money })
   }
 
   if (await openOrderCount(db, account.id) >= MAX_OPEN_ORDERS) return { ok: false, code: 'TOO_MANY_OPEN' }
@@ -123,12 +125,12 @@ export async function placeOrder(
 }
 
 /** "Ball pen (Cello)", as the storefront shows it, unless the name already says the brand. */
-function withBrand(name: string, brand: string | null): string {
+export function withBrand(name: string, brand: string | null): string {
   const b = brand?.trim()
   return !b || name.toLowerCase().includes(b.toLowerCase()) ? name : `${name} (${b})`
 }
 
-async function hasUnit(db: SqlDriver, productId: string, unit: string): Promise<boolean> {
+export async function hasUnit(db: SqlDriver, productId: string, unit: string): Promise<boolean> {
   const [row] = await q(db).select({ id: schema.productUnits.id }).from(schema.productUnits)
     .where(and(
       eq(schema.productUnits.productId, productId),
@@ -146,7 +148,7 @@ async function openOrderCount(db: SqlDriver, accountId: string): Promise<number>
 
 export type AcceptResult =
   | { ok: true; documentId: string; docNo: string; tillTotal: Money }
-  | { ok: false; code: 'NOT_THE_MAIN' | 'NOT_FOUND' | 'NOT_PENDING' | 'NO_CUSTOMER' | 'NO_LINES' | 'INVALID_QTY' | 'UNKNOWN_PRODUCT' | 'PARTY_REQUIRED'; productId?: string }
+  | { ok: false; code: 'NOT_THE_MAIN' | 'NOT_FOUND' | 'NOT_PENDING' | 'AWAITING_CUSTOMER' | 'NO_CUSTOMER' | 'NO_LINES' | 'INVALID_QTY' | 'UNKNOWN_PRODUCT' | 'PARTY_REQUIRED'; productId?: string }
 
 /**
  * Accepted by the person at the main: a submitted sales order for the
@@ -162,6 +164,9 @@ export async function acceptWebOrder(
   const order = await loadWebOrder(db, input.webOrderId)
   if (!order) return { ok: false, code: 'NOT_FOUND' }
   if (order.status !== 'pending') return { ok: false, code: 'NOT_PENDING' }
+  /* Changes sent back and not yet answered: accepting now would take the list
+     the customer asked for, which the shop has just said it cannot fill. */
+  if (order.proposal !== null) return { ok: false, code: 'AWAITING_CUSTOMER' }
 
   const account = await loadAccount(db, order.accountId)
   const customerId = await customerFor(db, account, order, input.actorId)
@@ -325,12 +330,18 @@ export async function customerCancel(
   return { ok: true, order: (await loadWebOrder(db, order.id))! }
 }
 
-/** Orders nobody answered in time, turned away so the customer is not left waiting. */
+/**
+ * Orders nobody answered in time, turned away so the customer is not left
+ * waiting -- only when the shop has set a limit. With none (0, the default) an
+ * unanswered order stays waiting until a person answers it.
+ */
 export async function expireUnanswered(db: SqlDriver, now: Date = new Date()): Promise<number> {
   const { answerMinutes } = await loadWebSettings(db)
+  if (answerMinutes === 0) return 0
   const before = new Date(now.getTime() - answerMinutes * 60_000).toISOString()
   const stale = await q(db).select({ id: schema.webOrders.id }).from(schema.webOrders)
-    .where(and(eq(schema.webOrders.status, 'pending'), lt(schema.webOrders.placedAt, before)))
+    /* Not one sent back to the customer: it is waiting on them, not on the shop. */
+    .where(and(eq(schema.webOrders.status, 'pending'), lt(schema.webOrders.placedAt, before), isNull(schema.webOrders.proposedAt)))
   for (const { id } of stale) {
     await setStatus(db, id, 'rejected', null, now, { reason: 'The shop could not answer in time' })
   }

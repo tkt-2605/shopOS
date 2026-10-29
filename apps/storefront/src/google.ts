@@ -33,5 +33,5 @@ function load(): Promise<GoogleId> {
 export async function showGoogleButton(el: HTMLElement, clientId: string, onToken: (token: string) => void): Promise<void> {
   const id = await load()
   id.initialize({ client_id: clientId, callback: (r) => onToken(r.credential) })
-  id.renderButton(el, { theme: 'outline', size: 'large', shape: 'rectangular', text: 'continue_with', width: 280 })
+  id.renderButton(el, { theme: 'outline', size: 'large', shape: 'pill', text: 'continue_with', width: 280 })
 }

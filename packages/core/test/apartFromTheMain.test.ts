@@ -73,7 +73,7 @@ beforeEach(async () => {
 
   product = await makeProduct(main.db, { name: 'Shirt', baseRate: rupees(500), taxRateBp: 0 })
   customer = await makeCustomer(main.db, 'Ravi')
-  await main.db.execute(`UPDATE customers SET credit_limit = ? WHERE id = ?`, [rupees(1500), customer])
+  await main.db.execute(`UPDATE customers SET credit_limit = ?, credit_enforcement = 'hard' WHERE id = ?`, [rupees(1500), customer])
   await as(MAIN, () => stockIn(main, 10))
 
   await pull(c1, main)

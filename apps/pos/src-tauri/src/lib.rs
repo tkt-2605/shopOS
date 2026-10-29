@@ -1,5 +1,7 @@
 mod archive;
 mod attachments;
+mod autostart;
+mod cloud;
 mod backup;
 mod db;
 mod device;
@@ -16,6 +18,7 @@ mod invoice_mail;
 mod log;
 mod paths;
 mod portal_out;
+mod ports;
 mod pdf;
 mod printing;
 mod report_out;
@@ -25,6 +28,7 @@ mod support;
 mod support_data;
 mod sync_client;
 mod sync_server;
+mod tunnel;
 mod updater;
 mod version;
 mod web_server;
@@ -171,6 +175,7 @@ pub fn run() {
             app.manage(sync_server::SyncHost::default());
             app.manage(shop_copy::CopyShelf::default());
             app.manage(web_server::WebHost::default());
+            app.manage(tunnel::TunnelHost::default());
 
             Ok(())
         })
@@ -201,6 +206,14 @@ pub fn run() {
             web_server::web_reply,
             web_server::web_google_keys,
             web_server::web_open_whatsapp,
+            tunnel::web_tunnel_start,
+            tunnel::web_tunnel_stop,
+            tunnel::web_tunnel_status,
+            autostart::autostart_get,
+            autostart::autostart_set,
+            cloud::cloud_ready,
+            cloud::cloud_put_text,
+            cloud::cloud_put_photo,
             sync_client::sync_request,
             shop_copy::sync_copy_prepare,
             shop_copy::sync_copy_download,
@@ -256,9 +269,10 @@ pub fn run() {
         ])
         .build(context)
         .expect("error while building shopos")
-        .run(|_app, event| {
+        .run(|app, event| {
             // The window closed and the app is stopping as it should.
             if let tauri::RunEvent::Exit = event {
+                tunnel::stop_tunnel(app);
                 faults::end_clean();
             }
         });
@@ -283,4 +297,5 @@ fn refuse_to_open(
     app.manage(sync_server::SyncHost::default());
     app.manage(shop_copy::CopyShelf::default());
     app.manage(web_server::WebHost::default());
+    app.manage(tunnel::TunnelHost::default());
 }

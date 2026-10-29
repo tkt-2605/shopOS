@@ -14,8 +14,10 @@ import { centred, clamp, sourceSquare, zoomTo, type Placement, type Size } from 
 
 const FRAME = 320
 
-export function CropPhoto({ file, sizes, onDone, onCancel }: {
+export function CropPhoto({ file, sizes, onDone, onCancel, name }: {
   file: Blob
+  /** The item's name, for the preview card. */
+  name?: string | undefined
   /** Square sizes to make, in pixels, largest first. */
   sizes: readonly number[]
   onDone: (squares: Blob[]) => void
@@ -92,6 +94,7 @@ export function CropPhoto({ file, sizes, onDone, onCancel }: {
   return (
     <Modal
       title="Crop the photo"
+      wide
       onClose={onCancel}
       footer={(
         <>
@@ -101,6 +104,7 @@ export function CropPhoto({ file, sizes, onDone, onCancel }: {
         </>
       )}
     >
+      <div style={{ display: 'flex', gap: 22, alignItems: 'flex-start', flexWrap: 'wrap', justifyContent: 'center' }}>
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
         <div style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
           Drag to move, scroll or use the slider to zoom. The square is what customers see.
@@ -144,6 +148,51 @@ export function CropPhoto({ file, sizes, onDone, onCancel }: {
             onChange={(e) => zoomBy(Number(e.target.value))} />
         </label>
       </div>
+      {image && place && <Preview url={image.url} size={size!} place={place} name={name} />}
+      </div>
     </Modal>
+  )
+}
+
+/**
+ * The square as the storefront will show it, moving as the frame does: a card
+ * in the shop's grid, the top of the item's page, and the little picture in
+ * the cart. Drawn by scaling the frame's own placement, so it is exactly what
+ * "Use this square" will save. Rounded, because the storefront is.
+ */
+function Preview({ url, size, place, name }: { url: string; size: Size; place: Placement; name: string | undefined }) {
+  const shot = (side: number, radius: number) => {
+    const k = side / FRAME
+    return (
+      <div style={{ width: side, height: side, borderRadius: radius, overflow: 'hidden', position: 'relative', background: '#fff', flex: 'none' }}>
+        <img src={url} alt="" draggable={false} style={{
+          position: 'absolute', left: 0, top: 0, maxWidth: 'none', pointerEvents: 'none',
+          width: size.width * place.scale * k, height: size.height * place.scale * k,
+          transform: `translate(${place.x * k}px, ${place.y * k}px)`,
+        }} />
+      </div>
+    )
+  }
+  const label = name?.trim() || 'Item name'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: 220 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 600 }}>How customers see it</div>
+      <div style={{ background: '#f6f8fc', padding: 12, borderRadius: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>In the shop</div>
+        <div style={{ width: 150, background: '#fff', border: '1px solid #e8edf5', borderRadius: 18, padding: 5 }}>
+          {shot(138, 14)}
+          <div style={{ padding: '7px 5px 4px', fontSize: 12, fontWeight: 600, lineHeight: 1.25, color: '#0f172a' }}>{label}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 5px 4px' }}>
+            <span style={{ fontWeight: 700, fontSize: 12.5, color: '#0f172a' }}>₹ —</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: '#2563eb', border: '1px solid #2563eb', borderRadius: 99, padding: '2px 9px' }}>ADD</span>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>On the item’s page and in the cart</div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+          {shot(110, 16)}
+          {shot(44, 9)}
+        </div>
+      </div>
+    </div>
   )
 }

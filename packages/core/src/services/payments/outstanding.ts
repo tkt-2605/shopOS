@@ -145,7 +145,7 @@ export async function totalOutstandingAll(db: SqlDriver): Promise<OutstandingTot
         GROUP BY b.customer_id
      ),
      balances AS (
-       SELECT c.id, c.name, c.credit_limit,
+       SELECT c.id, c.name, c.credit_limit, c.credit_enforcement,
               billed.amount - COALESCE(taken.amount, 0) AS owed
          FROM billed
          JOIN customers c ON c.id = billed.id
@@ -155,7 +155,7 @@ export async function totalOutstandingAll(db: SqlDriver): Promise<OutstandingTot
      SELECT
        (SELECT COUNT(*) FROM balances WHERE owed > 0) AS customers,
        (SELECT COALESCE(SUM(owed), 0) FROM balances WHERE owed > 0) AS total,
-       (SELECT COUNT(*) FROM balances WHERE credit_limit > 0 AND owed > credit_limit) AS over_limit,
+       (SELECT COUNT(*) FROM balances WHERE credit_enforcement <> 'none' AND owed > credit_limit) AS over_limit,
        (SELECT id   FROM balances WHERE owed > 0 ORDER BY owed DESC, name LIMIT 1) AS worst_id,
        (SELECT name FROM balances WHERE owed > 0 ORDER BY owed DESC, name LIMIT 1) AS worst_name,
        (SELECT owed FROM balances WHERE owed > 0 ORDER BY owed DESC, name LIMIT 1) AS worst_owed`,

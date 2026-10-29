@@ -179,6 +179,12 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [79, '079_a_box_has_its_own_mrp.sql', 'breaking'],
   // New tables only; a till below it skips their records as tables it has not got.
   [80, '080_orders_from_the_web.sql', 'additive'],
+  /* Nullable columns on web_orders, written only by the main and read only by
+     the online-orders screens; a till below it relays an order without them. */
+  [81, '081_an_order_sent_back_changed.sql', 'additive'],
+  /* Zero credit limit turns from "no limit" into "no credit": a till below it
+     would give unlimited credit to a customer marked No credit. */
+  [82, '082_a_zero_limit_is_no_credit.sql', 'breaking'],
 ]
 
 /**
