@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lt, sql } from 'drizzle-orm'
+import { and, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { newId } from '../../ids.js'
@@ -13,6 +13,7 @@ import { createCustomer, customerByPhone } from '../customers.js'
 import { isListed, listedCategoryIds } from './catalog.js'
 import { loadAccount, type WebAccount } from './accounts.js'
 import { answersOnlineOrders, loadWebSettings } from './gate.js'
+import { mainTill } from '../sync/layout.js'
 import {
   isOpen, loadWebOrder, orderForAccount, ordersForAccount,
   type OrderRow, type WebOrderLine, type WebOrderStatus, type WebOrderView,
@@ -98,15 +99,18 @@ export async function placeOrder(
     lines.push({ productId: line.productId, name: withBrand(product!.name, product!.brand), unit: line.unit, qty: line.qty, seenPrice: (quoting ? 0 : line.price) as Money })
   }
 
-  if (await openOrderCount(db, account.id) >= MAX_OPEN_ORDERS) return { ok: false, code: 'TOO_MANY_OPEN' }
-
   const id = newId()
   const at = now.toISOString()
-  await db.transaction(async (tx) => {
+  const base = orderNoBase((await mainTill(db)).epoch)
+  /* The count inside the transaction that inserts, so two orders sent at the
+     same moment cannot both find room for one more. */
+  const placed = await db.transaction(async (tx) => {
+    if (await openOrderCount(tx, account.id) >= MAX_OPEN_ORDERS) return false
     const [top] = await q(tx).select({ n: sql<number | null>`MAX(${schema.webOrders.orderNo})` }).from(schema.webOrders)
+      .where(gte(schema.webOrders.orderNo, base))
     await q(tx).insert(schema.webOrders).values({
       id,
-      orderNo: (top?.n ?? 0) + 1,
+      orderNo: Math.max(top?.n ?? 0, base) + 1,
       accountId: account.id,
       clientOrderId: input.clientOrderId,
       status: 'pending',
@@ -120,8 +124,29 @@ export async function placeOrder(
       createdAt: at,
       updatedAt: at,
     })
+    return true
   })
+  if (!placed) return { ok: false, code: 'TOO_MANY_OPEN' }
   return { ok: true, order: (await loadWebOrder(db, id))! }
+}
+
+/** Order numbers each main gives out, before the next main's begin. */
+export const ORDER_NOS_PER_MAIN = 100_000
+
+/**
+ * Where a main's order numbers start: 0 for a shop's first main, and a range
+ * of its own for every main after it.
+ *
+ * Only the main numbers orders, but a new main may not yet hold every order
+ * the last one took -- it was off, or the line was down. Numbering from what
+ * it can see would hand out an `order_no` already taken, and when the two
+ * tills met the unique index would set one customer's order aside on every
+ * till but one. Each epoch numbering in its own range cannot collide with
+ * another. Epochs 0 and 1 share the first range, so a shop that has never
+ * changed its main keeps the numbers it has (`Order #12`, then `#13`).
+ */
+export function orderNoBase(epoch: number): number {
+  return Math.max(0, epoch - 1) * ORDER_NOS_PER_MAIN
 }
 
 /** "Ball pen (Cello)", as the storefront shows it, unless the name already says the brand. */
@@ -168,22 +193,26 @@ export async function acceptWebOrder(
      the customer asked for, which the shop has just said it cannot fill. */
   if (order.proposal !== null) return { ok: false, code: 'AWAITING_CUSTOMER' }
 
+  /*
+   * Accepting is several transactions -- the customer, the sales order, its
+   * submission, the order's status -- because the document services each open
+   * their own and the driver holds one at a time. So every step leaves behind
+   * what the next attempt needs to pick up where this one stopped: the new
+   * customer is linked to the account at once, and the sales order's id is
+   * written on the web order before it is submitted. A till that stops halfway
+   * and is asked again finishes the same order, never a second one.
+   */
   const account = await loadAccount(db, order.accountId)
   const customerId = await customerFor(db, account, order, input.actorId)
   if (customerId === null) return { ok: false, code: 'NO_CUSTOMER' }
+  if (account && account.customerId !== customerId) {
+    await q(db).update(schema.webAccounts).set({ customerId, updatedAt: now.toISOString() })
+      .where(eq(schema.webAccounts.id, account.id))
+  }
 
-  /* A sales order already raised for this order -- the till stopped between
-     raising it and saying so below -- is the one to use, not a second one. */
   let documentId: string
   let docNo: string
-  const [earlier] = await q(db)
-    .select({ id: schema.documents.id, docNo: schema.documents.docNo, docstatus: schema.documents.docstatus })
-    .from(schema.documents)
-    .where(and(
-      eq(schema.documents.kind, 'sales_order'),
-      eq(schema.documents.customerId, customerId),
-      inArray(schema.documents.notes, [NOTE(order.orderNo), OLD_NOTE(order.orderNo)]),
-    ))
+  const earlier = await earlierSalesOrder(db, order, customerId)
   if (earlier && earlier.docstatus !== CANCELLED) {
     documentId = earlier.id
     docNo = earlier.docNo
@@ -200,6 +229,10 @@ export async function acceptWebOrder(
     if (!made.ok) return { ok: false, code: made.code, ...(made.productId ? { productId: made.productId } : {}) }
     documentId = made.documentId
     docNo = made.docNo
+    /* Still pending: the phone reads its status from `status`, and a draft
+       neither cancels nor finishes it (`orderViews.ts`). */
+    await q(db).update(schema.webOrders).set({ documentId, updatedAt: now.toISOString() })
+      .where(eq(schema.webOrders.id, order.id))
   }
   await submitDocument(db, { documentId, actorId: input.actorId, now })
 
@@ -210,14 +243,33 @@ export async function acceptWebOrder(
     await q(tx).update(schema.webOrders).set({
       status: 'accepted', documentId, tillTotal: doc!.grandTotal, answeredAt: at, answeredBy: input.actorId, updatedAt: at,
     }).where(eq(schema.webOrders.id, order.id))
-    if (account && account.customerId !== customerId) {
-      await q(tx).update(schema.webAccounts).set({ customerId, updatedAt: at }).where(eq(schema.webAccounts.id, account.id))
-    }
     await writeAudit(tx, { actorId: input.actorId, now: () => at }, {
       entity: 'web_orders', entityId: order.id, action: 'submit', after: { status: 'accepted', document_id: documentId },
     })
   })
   return { ok: true, documentId, docNo, tillTotal: doc!.grandTotal }
+}
+
+/**
+ * The sales order an earlier attempt raised for this order: the one written
+ * on it, or, for an order a build before 0.6.0 started accepting, the one
+ * whose note names it.
+ */
+async function earlierSalesOrder(
+  db: SqlDriver, order: WebOrderView, customerId: string,
+): Promise<{ id: string; docNo: string; docstatus: number } | undefined> {
+  const columns = { id: schema.documents.id, docNo: schema.documents.docNo, docstatus: schema.documents.docstatus }
+  if (order.documentId) {
+    const [held] = await q(db).select(columns).from(schema.documents).where(eq(schema.documents.id, order.documentId))
+    if (held) return held
+  }
+  const [noted] = await q(db).select(columns).from(schema.documents)
+    .where(and(
+      eq(schema.documents.kind, 'sales_order'),
+      eq(schema.documents.customerId, customerId),
+      inArray(schema.documents.notes, [NOTE(order.orderNo), OLD_NOTE(order.orderNo)]),
+    ))
+  return noted
 }
 
 /**

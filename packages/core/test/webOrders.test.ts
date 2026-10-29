@@ -13,9 +13,10 @@ import { issueSession, readSession } from '../src/services/web/session.js'
 import { signIn, saveContact, verifyPhone, normalisePhone, loadAccount } from '../src/services/web/accounts.js'
 import {
   placeOrder, acceptWebOrder, rejectWebOrder, markWebOrder, cancelWebOrder, customerCancel, expireUnanswered,
-  MAX_OPEN_ORDERS,
+  MAX_OPEN_ORDERS, ORDER_NOS_PER_MAIN, orderNoBase,
 } from '../src/services/web/orders.js'
 import { loadWebOrder, orderForAccount, reviewWebOrder } from '../src/services/web/orderViews.js'
+import { HourlyThrottle } from '../src/services/web/throttle.js'
 import { handleWebRequest, newThrottles, currentCatalog, republishCatalog, publicStatus, type WebDeps } from '../src/services/web/routes.js'
 import { setProductPhoto, removeProductPhoto, listedWithoutPhoto, productPhoto } from '../src/services/web/photos.js'
 import { listedCategoryIds } from '../src/services/web/catalog.js'
@@ -335,6 +336,21 @@ describe('placing an order', () => {
     }, NOW)).toMatchObject({ ok: false, code: 'TOO_MANY_OPEN' })
   })
 
+  it('is numbered in a range of its own by each main after the first, so two mains never give one number twice', async () => {
+    const a = await customer('g-one', '9123456781')
+    const b = await customer('g-two', '9123456782')
+    await fx.db.execute(`UPDATE sync_state SET main_epoch = 1 WHERE id = 1`)
+    expect((await order(a.id)).orderNo).toBe(1)
+    expect((await order(a.id)).orderNo).toBe(2)
+
+    /* A new main that never heard of #2. */
+    await fx.db.execute(`UPDATE sync_state SET main_epoch = 2 WHERE id = 1`)
+    expect((await order(b.id)).orderNo).toBe(ORDER_NOS_PER_MAIN + 1)
+    expect((await order(b.id)).orderNo).toBe(ORDER_NOS_PER_MAIN + 2)
+    expect(orderNoBase(0)).toBe(0)
+    expect(orderNoBase(3)).toBe(2 * ORDER_NOS_PER_MAIN)
+  })
+
   it('is refused through the API while the shop is closed', async () => {
     const account = await customer()
     const session = await issueSession(fx.db, account.id, NOW)
@@ -412,6 +428,36 @@ describe('an order answered and collected', () => {
 
     await cancelBill(fx.db, { billId, reason: 'Wrong customer', actorId: fx.adminId })
     expect((await loadWebOrder(fx.db, placed.id))?.status).toBe('ready')
+  })
+
+  it('finishes the same order, for the same customer, when a till stopped halfway through accepting it', async () => {
+    const account = await customer('g-halfway', '9123456780')
+    const placed = await order(account.id)
+    const first = await acceptWebOrder(fx.db, { webOrderId: placed.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW })
+    if (!first.ok) throw new Error(first.code)
+    expect((await loadAccount(fx.db, account.id))?.customerId).not.toBeNull()
+    const customersBefore = await fx.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM customers`)
+
+    /* As if the till stopped after raising and submitting the sales order,
+       before saying the order was accepted. */
+    await fx.db.execute(`UPDATE web_orders SET status = 'pending', answered_at = NULL, answered_by = NULL WHERE id = ?`, [placed.id])
+
+    const again = await acceptWebOrder(fx.db, { webOrderId: placed.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW })
+    if (!again.ok) throw new Error(again.code)
+    expect(again.documentId).toBe(first.documentId)
+    expect((await loadDocument(fx.db, again.documentId))?.docstatus).toBe(1)
+    expect(await fx.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM customers`)).toEqual(customersBefore)
+    const raised = await fx.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM documents WHERE kind = 'sales_order'`)
+    expect(raised[0]!.n).toBe(1)
+
+    /* Stopped before the account was linked to the customer it was billed to,
+       which before 0.6.0 raised a second sales order for a second customer. */
+    await fx.db.execute(`UPDATE web_accounts SET customer_id = NULL WHERE id = ?`, [account.id])
+    await fx.db.execute(`UPDATE web_orders SET status = 'pending', answered_at = NULL, answered_by = NULL WHERE id = ?`, [placed.id])
+    const third = await acceptWebOrder(fx.db, { webOrderId: placed.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW })
+    if (!third.ok) throw new Error(third.code)
+    expect(third.documentId).toBe(first.documentId)
+    expect((await fx.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM documents WHERE kind = 'sales_order'`))[0]!.n).toBe(1)
   })
 
   it('never bills an unchecked phone to the shop customer who has that number', async () => {
@@ -559,12 +605,20 @@ describe('the rate limit', () => {
   it('stops one address signing in over and over', async () => {
     const d = deps()
     let last = 0
-    for (let i = 0; i < 31; i++) {
+    for (let i = 0; i < 121; i++) {
       last = (await handleWebRequest(fx.db, {
         method: 'POST', path: '/api/session', headers: { 'cf-connecting-ip': '203.0.113.9' }, body: '{"idToken":"x"}',
       }, d)).status
     }
     expect(last).toBe(429)
+  })
+
+  it('limits callers that came without an address as one caller, not as no caller', () => {
+    const t = new HourlyThrottle(2)
+    expect(t.take(undefined, NOW)).toBeNull()
+    expect(t.take(null, NOW)).toBeNull()
+    expect(t.take('', NOW)).toBeGreaterThan(0)
+    expect(t.take('203.0.113.9', NOW)).toBeNull()
   })
 })
 

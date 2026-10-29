@@ -11,9 +11,15 @@
  * listens on loopback and the only thing that can reach it is `cloudflared`,
  * so every socket is the same address; Cloudflare sets that header itself and
  * replaces whatever a caller sent in it.
+ *
+ * A request without it did not come through Cloudflare -- some program on the
+ * main PC itself -- and all such requests share one key rather than going
+ * unlimited.
  */
 
 const HOUR_MS = 60 * 60 * 1000
+/** The one key every caller without an address shares. */
+const NO_ADDRESS = '(none)'
 
 export class HourlyThrottle {
   private readonly seen = new Map<string, number[]>()
@@ -22,7 +28,7 @@ export class HourlyThrottle {
 
   /** Records a use by `key` and answers null, or the seconds until the next is allowed. */
   take(key: string | null | undefined, now: Date): number | null {
-    if (!key) return null
+    key = key || NO_ADDRESS
     const at = now.getTime()
     const recent = (this.seen.get(key) ?? []).filter((t) => at - t < HOUR_MS)
     if (recent.length >= this.limit) {

@@ -46,8 +46,13 @@ export interface WebThrottles {
   orders: HourlyThrottle
 }
 
+/*
+ * Sign-ins per address are generous because an address is not a person here:
+ * Indian mobile networks put a whole neighbourhood behind one (carrier NAT),
+ * and a sign-in costs one signature check. Orders are limited per account.
+ */
 export function newThrottles(): WebThrottles {
-  return { address: new HourlyThrottle(1200), signIn: new HourlyThrottle(30), orders: new HourlyThrottle(20) }
+  return { address: new HourlyThrottle(1200), signIn: new HourlyThrottle(120), orders: new HourlyThrottle(20) }
 }
 
 export interface WebDeps {
