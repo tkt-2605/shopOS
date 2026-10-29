@@ -185,6 +185,33 @@ pub fn backup_copy_out(app: tauri::AppHandle, name: String) -> Result<String, St
     copy_into(&app, &name, &dest)
 }
 
+/// Whether the chosen folder takes backups off this computer, or None when no
+/// folder is chosen. Read from the setting, not checked for being plugged in:
+/// a USB stick that is out today still counts.
+#[tauri::command]
+pub fn backup_folder_leaves_machine(app: tauri::AppHandle) -> Result<Option<bool>, String> {
+    let data = paths::data_dir(&app)?;
+    let folder = device::setting(&data, FOLDER_SETTING)?.map(PathBuf::from);
+    Ok(folder.map(|f| leaves_machine(&f, &data)))
+}
+
+/// A folder another drive holds, or one a sync app carries off the machine.
+///
+/// A folder on the same drive as the shop's data -- `C:\Backups` beside
+/// `C:\Users\...\AppData` -- dies with that disk, which is the one thing a
+/// copy is for. A Drive, OneDrive or Dropbox folder sits on the same disk but
+/// leaves it within minutes, so it counts.
+fn leaves_machine(folder: &Path, data: &Path) -> bool {
+    let root = |p: &Path| p.components().next().map(|c| c.as_os_str().to_ascii_lowercase());
+    if root(folder) != root(data) {
+        return true;
+    }
+    folder.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+        name.starts_with("onedrive") || name == "google drive" || name == "my drive" || name == "dropbox"
+    })
+}
+
 /// The backups already in the chosen folder, so the core can prune them by the
 /// same rule as the ones on this machine. A Drive account fills up, and the
 /// copies there are kept for exactly as long as the ones here.
@@ -351,7 +378,19 @@ fn without_peer_secrets(copy: &std::path::Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{target_in, without_peer_secrets};
+    use super::{leaves_machine, target_in, without_peer_secrets};
+    use std::path::Path;
+
+    #[test]
+    fn a_folder_leaves_the_machine_on_another_drive_or_in_a_sync_app_only() {
+        let data = Path::new(r"C:\Users\shop\AppData\Roaming\in.shopos.pos");
+        assert!(leaves_machine(Path::new(r"E:\ShopOS"), data));
+        assert!(leaves_machine(Path::new(r"C:\Users\shop\OneDrive - Personal\ShopOS"), data));
+        assert!(leaves_machine(Path::new(r"C:\Users\shop\Google Drive\ShopOS"), data));
+        assert!(leaves_machine(Path::new(r"G:\My Drive\ShopOS"), data));
+        assert!(!leaves_machine(Path::new(r"C:\Backups"), data));
+        assert!(!leaves_machine(Path::new(r"c:\Users\shop\Documents\ShopOS"), data));
+    }
 
     #[test]
     fn each_shop_gets_its_own_folder_inside_the_drive() {

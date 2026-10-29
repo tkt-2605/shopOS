@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { getSetting } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { deviceSetting } from '../../core/device'
@@ -30,11 +31,12 @@ export function ReadyCard() {
   useEffect(() => {
     let live = true
     void (async () => {
-      const [recovery, reports, sealed, contact] = await Promise.all([
+      const [recovery, reports, sealed, contact, leaves] = await Promise.all([
         getSetting(db, 'recovery_code_hash').catch(() => null),
         healthGoesDaily(),
         supportDataReady(),
         supportContact(),
+        invoke<boolean | null>('backup_folder_leaves_machine').catch(() => null),
       ])
       if (!live) return
       setPhone(contact?.phone ?? null)
@@ -46,8 +48,10 @@ export function ReadyCard() {
         },
         {
           label: 'Backups go somewhere off this computer',
-          done: deviceSetting('backup_folder') !== null || deviceSetting('backup_hook') !== null,
-          fix: 'A backup only on this PC is lost with it. Choose a pen drive or a Drive folder on Backups.',
+          done: leaves === true || deviceSetting('backup_hook') !== null,
+          fix: leaves === false
+            ? 'The backup folder is on this computer\'s own disk, so it is lost with it. Choose a pen drive, another disk, or a Google Drive or OneDrive folder on Backups.'
+            : 'A backup only on this PC is lost with it. Choose a pen drive or a Drive folder on Backups.',
         },
         {
           label: 'Support hears when something goes wrong',

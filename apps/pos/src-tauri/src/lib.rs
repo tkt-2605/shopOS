@@ -243,6 +243,7 @@ pub fn run() {
             backup::choose_folder,
             backup::backup_copy_out,
             backup::backup_folder_list,
+            backup::backup_folder_leaves_machine,
             backup::backup_folder_delete,
             backup::cloud_folders,
             backup::make_cloud_folder,

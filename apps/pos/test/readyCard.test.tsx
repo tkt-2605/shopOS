@@ -17,6 +17,14 @@ const build = { daily: false, sealed: false, phone: null as string | null }
 vi.mock('../src/core/reportOut', () => ({ healthGoesDaily: async () => build.daily }))
 vi.mock('../src/core/supportData', () => ({ supportDataReady: async () => build.sealed }))
 vi.mock('../src/core/support', () => ({ supportContact: async () => ({ phone: build.phone, whatsapp: false }) }))
+/* Rust's answer (`backup_folder_leaves_machine`), from the folder this test chose: anywhere but C: leaves. */
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: async (cmd: string) => {
+    if (cmd !== 'backup_folder_leaves_machine') throw new Error(cmd)
+    const folder = machine.get('backup_folder')
+    return folder === undefined ? null : !/^c:/i.test(folder)
+  },
+}))
 const { ReadyCard } = await import('../src/pages/settings/ReadyCard')
 
 beforeEach(async () => {
@@ -44,5 +52,14 @@ describe('ready for a bad day', () => {
     render(<ReadyCard />)
     expect(await screen.findByText('Ready for a bad day')).toBeTruthy()
     expect(document.body.textContent).toContain('Save support\'s number in the shop\'s phone: +91 98765 43210')
+  })
+
+  it('does not count a backup folder on the computer\'s own disk as off it', async () => {
+    await core.db!.execute(`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('recovery_code_hash', 'h', '2026-10-18')`)
+    machine.set('backup_folder', 'C:\\Backups')
+    Object.assign(build, { daily: true, sealed: true })
+    render(<ReadyCard />)
+    expect(await screen.findByText('Ready for a bad day: 1 to do')).toBeTruthy()
+    expect(document.body.textContent).toContain('on this computer\'s own disk')
   })
 })
