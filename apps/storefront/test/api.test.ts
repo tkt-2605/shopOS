@@ -27,6 +27,18 @@ describe('whether the shop can take an order', () => {
     expect((await checkShop()).state).toBe('open')
   })
 
+  it('asks again when the till was busy for a moment, rather than calling it closed', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? new Response(JSON.stringify({ error: 'BUSY' }), { status: 503 })
+        : new Response(JSON.stringify(STATUS), { status: 200 })
+    }))
+    expect((await checkShop()).state).toBe('open')
+    expect(calls).toBe(2)
+  })
+
   it('is closed when the till answers closed', async () => {
     network({ 'https://till.test/api/status': { status: 200, body: { ...STATUS, state: 'closed' } } })
     expect((await checkShop()).state).toBe('closed')

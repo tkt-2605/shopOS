@@ -1,6 +1,6 @@
 import type { SqlDriver } from '../../db/driver.js'
 import { loadShopProfile } from '../shop.js'
-import { loadWebSettings, whatsappNumber, whyNotServing } from './gate.js'
+import { loadWebSettings, whatsappNumber, whyNotServing, type WebSettings } from './gate.js'
 import { publishCatalog, type PublishedCatalog } from './catalog.js'
 import { verifyGoogleIdToken, type Jwks } from './google.js'
 import { bearer, issueSession, readSession } from './session.js'
@@ -60,6 +60,13 @@ export interface WebDeps {
   /** Google's signing keys as last fetched, or null when they never have been. */
   googleKeys: Jwks | null
   throttles: WebThrottles
+  /**
+   * How long whether this till serves, and its web settings, may be reused
+   * between requests, in ms. 0 or absent reads them on every request. The
+   * till passes a few seconds: it answers on the thread the counter bills on,
+   * and these are fifteen reads that change a few times a day.
+   */
+  settingsMs?: number
 }
 
 const NO_STORE = 'no-store'
@@ -71,13 +78,12 @@ const MAX_BODY = 64 * 1024
 export async function handleWebRequest(db: SqlDriver, req: WebRequest, deps: WebDeps): Promise<WebReply> {
   const path = req.path.split('?')[0] ?? '/'
 
-  const refusal = await whyNotServing(db)
+  const { refusal, settings } = await servingState(db, deps)
   if (refusal !== null) return json(503, { error: refusal }, { 'cache-control': NO_STORE })
 
   if (path.startsWith('/catalog/')) return catalogRoute(db, req.method, path, deps.now)
   if (!path.startsWith('/api/')) return json(404, { error: 'NOT_FOUND' }, { 'cache-control': NO_STORE })
 
-  const settings = await loadWebSettings(db)
   const cors = corsFor(req.headers['origin'], settings.origin)
   const reply = (status: number, body: unknown) => json(status, body, { 'cache-control': NO_STORE, ...cors })
 
@@ -156,6 +162,29 @@ export async function handleWebRequest(db: SqlDriver, req: WebRequest, deps: Web
   }
 
   return reply(404, { error: 'NOT_FOUND' })
+}
+
+interface ServingState {
+  refusal: Awaited<ReturnType<typeof whyNotServing>>
+  settings: WebSettings
+  readAt: number
+}
+
+const serving = new WeakMap<SqlDriver, ServingState>()
+
+/** Whether this till serves, and its settings, as of at most `settingsMs` ago. */
+async function servingState(db: SqlDriver, deps: WebDeps): Promise<ServingState> {
+  const now = deps.now.getTime()
+  const last = serving.get(db)
+  if (last && deps.settingsMs && now - last.readAt < deps.settingsMs) return last
+  const fresh = { refusal: await whyNotServing(db), settings: await loadWebSettings(db), readAt: now }
+  serving.set(db, fresh)
+  return fresh
+}
+
+/** Read the settings again on the next request: the owner has just changed them. */
+export function forgetServingState(db: SqlDriver): void {
+  serving.delete(db)
 }
 
 // ---------------------------------------------------------------- catalogue

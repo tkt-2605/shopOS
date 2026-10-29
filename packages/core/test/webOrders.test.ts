@@ -17,7 +17,7 @@ import {
 } from '../src/services/web/orders.js'
 import { loadWebOrder, orderForAccount, reviewWebOrder } from '../src/services/web/orderViews.js'
 import { HourlyThrottle } from '../src/services/web/throttle.js'
-import { handleWebRequest, newThrottles, currentCatalog, republishCatalog, publicStatus, type WebDeps } from '../src/services/web/routes.js'
+import { handleWebRequest, newThrottles, forgetServingState, currentCatalog, republishCatalog, publicStatus, type WebDeps } from '../src/services/web/routes.js'
 import { setProductPhoto, removeProductPhoto, listedWithoutPhoto, productPhoto } from '../src/services/web/photos.js'
 import { listedCategoryIds } from '../src/services/web/catalog.js'
 import { proposeChanges, withdrawProposal, answerProposal } from '../src/services/web/proposals.js'
@@ -112,6 +112,25 @@ describe('who answers the web', () => {
       const reply = await handleWebRequest(fx.db, { method: 'GET', path, headers: {}, body: '' }, deps())
       expect(reply.status).toBe(503)
     }
+  })
+})
+
+describe("the till's settings between requests", () => {
+  const status = { method: 'GET', path: '/api/status', headers: {}, body: '' }
+
+  it('are read afresh on every request unless the caller asks to reuse them', async () => {
+    expect((await handleWebRequest(fx.db, status, deps())).status).toBe(200)
+    await setSetting(fx.db, WEB_SETTINGS.enabled, 'off')
+    expect((await handleWebRequest(fx.db, status, deps())).status).toBe(503)
+  })
+
+  it('are reused for the time asked, and read again at once when the owner changes them', async () => {
+    const d = deps({ settingsMs: 5000 })
+    expect((await handleWebRequest(fx.db, status, d)).status).toBe(200)
+    await setSetting(fx.db, WEB_SETTINGS.enabled, 'off')
+    expect((await handleWebRequest(fx.db, status, d)).status).toBe(200)
+    forgetServingState(fx.db)
+    expect((await handleWebRequest(fx.db, status, d)).status).toBe(503)
   })
 })
 

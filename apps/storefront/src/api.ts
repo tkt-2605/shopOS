@@ -55,6 +55,8 @@ export class ApiError extends Error {
 }
 
 const TIMEOUT_MS = 8000
+/** How long to wait before asking a busy till again (its `retry-after`). */
+export const BUSY_WAIT_MS = 1000
 
 async function call<T>(path: string, init: RequestInit & { session?: string | null; timeout?: number } = {}): Promise<T> {
   const headers: Record<string, string> = {}
@@ -77,7 +79,12 @@ async function call<T>(path: string, init: RequestInit & { session?: string | nu
 export async function checkShop(): Promise<{ state: ShopState; status: Status | null }> {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return { state: 'offline', status: null }
   try {
-    const status = await call<Status>('/api/status', { timeout: 5000 })
+    const status = await call<Status>('/api/status', { timeout: 5000 }).catch(async (err: unknown) => {
+      /* Every slot on the till was taken for a moment: it is there, so ask once more. */
+      if (!(err instanceof ApiError && err.code === 'BUSY')) throw err
+      await new Promise((r) => setTimeout(r, BUSY_WAIT_MS))
+      return call<Status>('/api/status', { timeout: 5000 })
+    })
     return { state: status.state === 'open' ? 'open' : 'closed', status }
   } catch {
     /* The till is off. What it last uploaded still says who the shop is and

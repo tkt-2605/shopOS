@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { SqlDriver } from '@shopos/core'
 import {
   handleWebRequest, newThrottles, whyNotServing, rememberGoogleKeys, expireUnanswered,
+  forgetServingState, loadWebSettings, publicStatus,
   type Jwks, type WebRefusal,
 } from '@shopos/core/web'
 import { logEvent, describe } from './log'
@@ -36,6 +37,10 @@ interface Forwarded {
 export const WEB_PORT_DEFAULT = 7802
 const KEYS_EVERY_MS = 12 * 60 * 60 * 1000
 const EXPIRE_EVERY_MS = 60 * 1000
+/** How often Rust's copy of `/api/status` is renewed (`web_set_status`). */
+const STATUS_EVERY_MS = 30 * 1000
+/** Whether this till serves, and its web settings, reused between requests for this long. */
+const SETTINGS_MS = 5 * 1000
 
 let listening: UnlistenFn | null = null
 let keys: Jwks | null = null
@@ -126,10 +131,35 @@ async function startWeb(db: SqlDriver): Promise<void> {
   await startTunnel()
   keepShopUploaded(db)
   await refreshKeys(db)
+  await refreshLiveStatus(db)
   timers = [
     setInterval(() => { void refreshKeys(db) }, KEYS_EVERY_MS),
     setInterval(() => { void expireUnanswered(db).catch(() => undefined) }, EXPIRE_EVERY_MS),
+    setInterval(() => { void refreshLiveStatus(db) }, STATUS_EVERY_MS),
   ]
+}
+
+/**
+ * Hands Rust what `/api/status` says now, so it answers the storefront's most
+ * frequent question without waking this webview (`web_server.rs`). A till that
+ * should not serve clears it, and the request comes here to be refused.
+ */
+async function refreshLiveStatus(db: SqlDriver): Promise<void> {
+  try {
+    const serving = (await storefrontRefusal(db)) === null
+    const body = serving ? JSON.stringify(await publicStatus(db)) : null
+    const origin = serving ? (await loadWebSettings(db)).origin : null
+    await invoke('web_set_status', { body, origin })
+  } catch (err) {
+    await invoke('web_set_status', { body: null, origin: null }).catch(() => undefined)
+    logEvent('warn', 'web', `could not renew the storefront status: ${describe(err)}`)
+  }
+}
+
+/** The owner changed Settings, Online orders: phones see it on their next question, not up to half a minute later. */
+export async function webSettingsChanged(db: SqlDriver): Promise<void> {
+  forgetServingState(db)
+  if (await webServingOn() !== null) await refreshLiveStatus(db)
 }
 
 export async function stopWeb(): Promise<void> {
@@ -165,7 +195,7 @@ async function answer(db: SqlDriver, request: Forwarded): Promise<void> {
   try {
     const reply = await handleWebRequest(db, {
       method: request.method, path: request.path, headers: request.headers, body: request.body,
-    }, { now: new Date(), googleKeys: keys, throttles })
+    }, { now: new Date(), googleKeys: keys, throttles, settingsMs: SETTINGS_MS })
     if (reply.status >= 500) logEvent('warn', 'web', `${request.method} ${request.path}: ${reply.status}`)
     await invoke('web_reply', { id: request.id, status: reply.status, headers: reply.headers, body: reply.body })
   } catch (err) {

@@ -204,6 +204,7 @@ pub fn run() {
             web_server::web_serve_stop,
             web_server::web_serve_status,
             web_server::web_reply,
+            web_server::web_set_status,
             web_server::web_google_keys,
             web_server::web_open_whatsapp,
             tunnel::web_tunnel_start,

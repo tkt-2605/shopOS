@@ -35,7 +35,9 @@ pub const MAX_WEB_BODY: usize = 64 * 1024;
 
 /// Requests answered at once. `cloudflared` multiplexes many customers onto a
 /// few connections, and a shop's storefront is a handful of phones at a time.
-pub const MAX_WEB_CONNECTIONS: usize = 8;
+/// One more than this is told `BUSY` (503) at once rather than cut off, which
+/// a phone used to read as the till being off.
+pub const MAX_WEB_CONNECTIONS: usize = 16;
 
 /// The only paths a request may be for.
 pub const WEB_PREFIXES: [&str; 3] = ["/api/", "/catalog/", "/img/"];
@@ -132,8 +134,11 @@ pub fn serve_web(port: u16, answerer: Arc<dyn WebAnswerer>) -> Result<WebBound, 
                 break;
             }
             match incoming {
-                Ok(stream) => {
-                    let Some(slot) = Slot::take(&active) else { continue };
+                Ok(mut stream) => {
+                    let Some(slot) = Slot::take(&active) else {
+                        turn_away(stream);
+                        continue;
+                    };
                     let answerer = Arc::clone(&answerer);
                     std::thread::spawn(move || {
                         let _held = slot;
@@ -146,6 +151,37 @@ pub fn serve_web(port: u16, answerer: Arc<dyn WebAnswerer>) -> Result<WebBound, 
     });
 
     Ok(WebBound { port: bound, stop })
+}
+
+/// The answer when every slot is taken: try again in a moment.
+pub fn busy() -> WebReply {
+    let mut reply = WebReply::refuse(503, "BUSY");
+    reply.headers.push(("retry-after".into(), "1".into()));
+    reply.headers.push(("access-control-allow-origin".into(), "*".into()));
+    reply
+}
+
+/// Says `BUSY` on the listening thread, in a few tens of milliseconds at most.
+///
+/// The reply is small enough to fit the socket's buffer, so writing it does
+/// not wait on the caller. The request is then read off and thrown away:
+/// closing a socket with unread bytes in it makes Windows reset the
+/// connection, and a reset can reach the caller before the reply it follows.
+fn turn_away(mut stream: TcpStream) {
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+    if write_web(&mut stream, &busy()).is_err() {
+        return;
+    }
+    let _ = stream.shutdown(Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let mut sink = [0u8; 4096];
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(50) {
+        match stream.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
 }
 
 struct Slot(Arc<AtomicUsize>);
@@ -336,6 +372,33 @@ mod tests {
         let big = format!("POST /api/orders HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_WEB_BODY + 1);
         assert!(send(bound.port, &big).starts_with("HTTP/1.1 413"));
         assert!(echo.0.lock().unwrap().is_empty());
+        bound.stop();
+    }
+
+    struct Slow;
+
+    impl WebAnswerer for Slow {
+        fn answer(&self, _: WebRequest) -> WebReply {
+            std::thread::sleep(Duration::from_millis(800));
+            WebReply::json(200, "{}")
+        }
+    }
+
+    #[test]
+    fn says_busy_rather_than_hanging_up_when_every_slot_is_taken() {
+        let bound = serve_web(0, Arc::new(Slow)).unwrap();
+        let held: Vec<TcpStream> = (0..MAX_WEB_CONNECTIONS)
+            .map(|_| {
+                let mut c = TcpStream::connect(("127.0.0.1", bound.port)).unwrap();
+                c.write_all(b"GET /api/status HTTP/1.1\r\n\r\n").unwrap();
+                c
+            })
+            .collect();
+        std::thread::sleep(Duration::from_millis(200));
+        let got = send(bound.port, "GET /api/status HTTP/1.1\r\n\r\n");
+        assert!(got.starts_with("HTTP/1.1 503"), "{got}");
+        assert!(got.contains("BUSY") && got.contains("retry-after: 1"), "{got}");
+        drop(held);
         bound.stop();
     }
 

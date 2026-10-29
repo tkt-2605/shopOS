@@ -41,6 +41,6 @@ export type { ProposedLineInput, ProposeResult } from '../services/web/proposals
 export type { Proposal } from '../services/web/orderViews.js'
 export { productPhoto, setProductPhoto, removeProductPhoto, listedWithoutPhoto } from '../services/web/photos.js'
 export type { ProductPhoto } from '../services/web/photos.js'
-export { handleWebRequest, newThrottles, currentCatalog, republishCatalog, publicStatus } from '../services/web/routes.js'
+export { handleWebRequest, newThrottles, currentCatalog, republishCatalog, publicStatus, forgetServingState } from '../services/web/routes.js'
 export type { WebRequest, WebReply, WebDeps, WebThrottles } from '../services/web/routes.js'
 export { HourlyThrottle } from '../services/web/throttle.js'

@@ -54,6 +54,22 @@ pub struct WebHost {
     running: Mutex<Option<WebBound>>,
     waiting: Mutex<HashMap<u64, Sender<Reply>>>,
     next: AtomicU64,
+    status: Mutex<Option<LiveStatus>>,
+}
+
+/// `/api/status` as the webview last worked it out (`web_set_status`), with
+/// the one origin it may be read from.
+///
+/// Every open storefront asks for it about once a minute, and it is the
+/// answer that says whether the shop is there at all. Answered here, it costs
+/// the counter's webview nothing and is still answered while the webview is
+/// busy billing or reloading -- a phone that got no answer would show the shop
+/// as closed. The webview sends a fresh copy every half minute and after any
+/// change in Settings, Online orders, and clears it when it stops serving.
+#[derive(Clone)]
+struct LiveStatus {
+    body: String,
+    origin: Option<String>,
 }
 
 struct ToWebview {
@@ -66,6 +82,13 @@ impl WebAnswerer for ToWebview {
             return photo(&self.app, &request.method, hash);
         }
         let host = self.app.state::<WebHost>();
+        if request.method == "GET" && request.path.split('?').next() == Some("/api/status") {
+            let live = host.status.lock().ok().and_then(|s| s.clone());
+            if let Some(live) = live {
+                let origin = request.headers.iter().find(|(n, _)| n == "origin").map(|(_, v)| v.as_str());
+                return status_reply(&live, origin);
+            }
+        }
         let id = host.next.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = channel::<Reply>();
         if let Ok(mut waiting) = host.waiting.lock() {
@@ -98,6 +121,24 @@ impl WebAnswerer for ToWebview {
             }
         }
     }
+}
+
+/// The cached status, with the CORS headers `routes.ts` gives the same
+/// origin (`corsFor`): none for any other.
+fn status_reply(live: &LiveStatus, origin: Option<&str>) -> WebReply {
+    let mut headers = vec![
+        ("content-type".to_string(), "application/json".to_string()),
+        ("cache-control".to_string(), "no-store".to_string()),
+    ];
+    if let (Some(origin), Some(allowed)) = (origin, live.origin.as_deref()) {
+        if origin == allowed {
+            headers.push(("access-control-allow-origin".into(), origin.into()));
+            headers.push(("access-control-allow-headers".into(), "authorization, content-type".into()));
+            headers.push(("access-control-allow-methods".into(), "GET, POST, OPTIONS".into()));
+            headers.push(("vary".into(), "Origin".into()));
+        }
+    }
+    WebReply { status: 200, headers, body: live.body.clone().into_bytes() }
 }
 
 /// A product photo by its content hash. Only the WebP and the two photo types
@@ -155,6 +196,9 @@ pub fn web_serve_stop(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(current) = running.take() {
         current.stop();
     }
+    if let Ok(mut status) = host.status.lock() {
+        *status = None;
+    }
     Ok(())
 }
 
@@ -163,6 +207,16 @@ pub fn web_serve_status(app: tauri::AppHandle) -> Option<u16> {
     let host = app.state::<WebHost>();
     let running = host.running.lock().ok()?;
     running.as_ref().map(|b| b.port)
+}
+
+/// What `/api/status` says, from the webview; `None` sends status requests
+/// back to the webview, which is what a till that should not serve wants.
+#[tauri::command]
+pub fn web_set_status(app: tauri::AppHandle, body: Option<String>, origin: Option<String>) {
+    let host = app.state::<WebHost>();
+    if let Ok(mut status) = host.status.lock() {
+        *status = body.map(|body| LiveStatus { body, origin: origin.filter(|o| !o.is_empty()) });
+    };
 }
 
 #[tauri::command]
@@ -249,4 +303,30 @@ fn fetch_keys() -> Option<String> {
 #[cfg(not(windows))]
 fn fetch_keys() -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn live() -> LiveStatus {
+        LiveStatus { body: r#"{"state":"open"}"#.into(), origin: Some("https://shop.example.in".into()) }
+    }
+
+    fn header<'a>(reply: &'a WebReply, name: &str) -> Option<&'a str> {
+        reply.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn the_cached_status_is_readable_from_the_storefront_and_from_nowhere_else() {
+        let own = status_reply(&live(), Some("https://shop.example.in"));
+        assert_eq!(own.status, 200);
+        assert_eq!(own.body, br#"{"state":"open"}"#);
+        assert_eq!(header(&own, "access-control-allow-origin"), Some("https://shop.example.in"));
+        assert_eq!(header(&own, "cache-control"), Some("no-store"));
+
+        let other = status_reply(&live(), Some("https://elsewhere.example"));
+        assert_eq!(header(&other, "access-control-allow-origin"), None);
+        assert_eq!(header(&status_reply(&live(), None), "access-control-allow-origin"), None);
+    }
 }

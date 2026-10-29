@@ -4,7 +4,7 @@ import {
   loadWebSettings, saveWebSettings, isOnlineOrderShop, listedCategoryIds, listedWithoutPhoto, republishCatalog, type WebSettings,
 } from '@shopos/core/web'
 import { useCore, useUser } from '../../core/CoreProvider'
-import { keepTheStorefrontRight, storefrontPortTrouble, storefrontRefusal, tunnelProblem, tunnelState, webPort, webServingOn, type TunnelState } from '../../core/webHost'
+import { keepTheStorefrontRight, storefrontPortTrouble, storefrontRefusal, tunnelProblem, tunnelState, webPort, webServingOn, webSettingsChanged, type TunnelState } from '../../core/webHost'
 import { setStartsWithWindows, startsWithWindows } from '../../core/autostart'
 import { pushShop } from '../../core/cloudShop'
 import { Alert, Card, Field } from '../../ui/components'
@@ -79,6 +79,7 @@ export function OnlineSection() {
          a change would otherwise never have published it. */
       await republishCatalog(db).catch(() => undefined)
       await refreshStatus()
+      await webSettingsChanged(db)
       void pushShop(db)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
