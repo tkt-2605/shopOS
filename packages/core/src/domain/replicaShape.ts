@@ -208,6 +208,7 @@ export const NOT_REPLICATED: Readonly<Record<string, string>> = {
   sync_conflicts: 'where this machine dropped somebody\'s edit. The other till has its own view',
   sync_quarantine: 'a record this machine could not apply. The till that sent it applied it fine',
   discrepancies_seen: 'which discrepancies somebody at this till has been told about. The other till tells its own people',
+  migration_sums: 'what each migration said when it ran on this machine, to notice one edited afterwards',
   web_state: 'the main\'s key for signing customers\' web sessions, and Google\'s keys as it last fetched them. A new main makes its own',
 }
 

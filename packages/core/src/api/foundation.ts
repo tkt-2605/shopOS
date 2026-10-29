@@ -17,7 +17,7 @@ export { clock, setClock } from '../clock.js'
 export type { SqlDriver, Row, SqlValue, ExecResult, TxOptions } from '../db/driver.js'
 export { MERGE_BUDGET_MS } from '../db/driver.js'
 export { SqlError } from '../db/driver.js'
-export { migrate, currentVersion, SchemaTooNewError, SchemaUnversionedError, type Migration } from '../db/migrate.js'
+export { migrate, currentVersion, checkMigrationSums, SchemaTooNewError, SchemaUnversionedError, type Migration } from '../db/migrate.js'
 export { EXPECTED_SCHEMA_VERSION } from '../db/schemaVersion.js'
 export {
   MIN_PEER_SCHEMA_VERSION, MIGRATION_FILES, type MigrationKind,

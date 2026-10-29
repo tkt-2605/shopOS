@@ -1060,6 +1060,13 @@ export const productPhotos = sqliteTable('product_photos', {
 })
 
 /** The main's own keys for the web: never replicated. Migration 080. */
+/** A SHA-256 of what each migration said when it ran here. Migration 084, `checkMigrationSums`. */
+export const migrationSums = sqliteTable('migration_sums', {
+  version: integer().primaryKey(),
+  sum: text().notNull(),
+  recordedAt: text('recorded_at').notNull(),
+})
+
 export const webState = sqliteTable('web_state', {
   key: text().primaryKey(),
   value: text().notNull(),

@@ -174,3 +174,45 @@ function splitStatements(sql: string): string[] {
   if (buffer.trim() !== '') out.push(buffer.trim())
   return out.filter((s) => s !== '' && s !== ';')
 }
+
+/**
+ * The migrations this database has run whose text has changed since, by
+ * version -- normally none.
+ *
+ * Keeps a SHA-256 of each migration's statements (`migration_sums`, 084) the
+ * first time it is seen here, and compares every later run against it.
+ * Comments and line endings are left out of the sum, so a reworded comment or
+ * a checkout with CRLF is not a change; a changed statement is. A database
+ * that has not reached 084 answers none. It only reports: the caller logs it,
+ * and the till goes on billing.
+ */
+export async function checkMigrationSums(db: SqlDriver, migrations: Migration[], now: Date = new Date()): Promise<number[]> {
+  const table = await db.get<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_sums'`,
+  )
+  if (!table) return []
+  const current = await currentVersion(db)
+  // raw: a local bookkeeping table, read by the migration runner before anything else is trusted.
+  const held = new Map((await db.query<{ version: number; sum: string }>('SELECT version, sum FROM migration_sums'))
+    .map((r) => [r.version, r.sum]))
+  const changed: number[] = []
+  for (const m of migrations) {
+    if (m.version > current) continue
+    const sum = await migrationSum(m.sql)
+    const was = held.get(m.version)
+    if (was === undefined) {
+      await db.execute('INSERT OR IGNORE INTO migration_sums (version, sum, recorded_at) VALUES (?, ?, ?)',
+        [m.version, sum, now.toISOString()])
+    } else if (was !== sum) {
+      changed.push(m.version)
+    }
+  }
+  return changed
+}
+
+/** A migration's statements, without comments or line endings, as SHA-256 hex. */
+export async function migrationSum(sql: string): Promise<string> {
+  const text = splitStatements(sql.replace(/\r/g, '')).join('\n')
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}

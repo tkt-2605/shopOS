@@ -188,6 +188,8 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   /* Nullable columns on web_accounts, written and read only by the main as it
      answers the storefront; a till below it relays an account without them. */
   [83, '083_an_online_customer_can_be_stopped.sql', 'additive'],
+  // A new table that stays on each till; nothing about it crosses.
+  [84, '084_what_each_migration_said.sql', 'additive'],
 ]
 
 /**

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { openMemoryDatabase } from '../src/db/node-driver.js'
-import { migrate, currentVersion } from '../src/db/migrate.js'
+import { migrate, currentVersion, checkMigrationSums } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import type { SqlDriver } from '../src/db/driver.js'
 
@@ -261,5 +261,27 @@ describe('being told which migrations ran', () => {
 
   it('is optional, which is how every other caller uses it', async () => {
     await expect(migrate(db, MIGRATIONS.slice(0, 2))).resolves.toBe(2)
+  })
+})
+
+describe('what each migration said', () => {
+  it('is recorded once, and a changed statement is named while a changed comment or line ending is not', async () => {
+    await migrate(db, MIGRATIONS)
+    expect(await checkMigrationSums(db, MIGRATIONS)).toEqual([])
+    const [n] = await db.query<{ n: number }>('SELECT COUNT(*) AS n FROM migration_sums')
+    expect(n!.n).toBe(MIGRATIONS.length)
+
+    const reworded = MIGRATIONS.map((m) => m.version === 81
+      ? { ...m, sql: `-- a comment added later\r\n${m.sql.replace(/\n/g, '\r\n')}` }
+      : m)
+    expect(await checkMigrationSums(db, reworded)).toEqual([])
+
+    const edited = MIGRATIONS.map((m) => m.version === 82 ? { ...m, sql: `${m.sql}\nSELECT 1;` } : m)
+    expect(await checkMigrationSums(db, edited)).toEqual([82])
+  })
+
+  it('says nothing about a database below the migration that keeps them', async () => {
+    await migrate(db, MIGRATIONS.filter((m) => m.version <= 83))
+    expect(await checkMigrationSums(db, MIGRATIONS)).toEqual([])
   })
 })
