@@ -21,6 +21,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
+use crate::secret;
 
 const FILE: &str = "device.json";
 
@@ -106,8 +107,19 @@ fn writing() -> std::sync::MutexGuard<'static, ()> {
 
 #[tauri::command(async)]
 pub fn device_identity(app: tauri::AppHandle) -> Result<Identity, String> {
+    let dir = paths::data_dir(&app)?;
     let _guard = writing();
-    load_or_mint(&paths::data_dir(&app)?)
+    let identity = load_or_mint(&dir)?;
+    /* A secret saved in plain text by a version before sealing: sealed now,
+       the first time this version starts. */
+    for key in SECRET_KEYS {
+        if let Some(plain) = identity.settings.get(*key).filter(|v| !secret::is_sealed(v)).cloned() {
+            if let Ok(sealed) = secret::seal(&plain) {
+                put_raw(&dir, key, Some(&sealed))?;
+            }
+        }
+    }
+    Ok(for_webview(load_or_mint(&dir)?))
 }
 
 /// Records which counter this machine bills on. Null forgets the choice, which
@@ -118,7 +130,7 @@ pub fn device_set_register(
     register_id: Option<String>,
 ) -> Result<Identity, String> {
     let _guard = writing();
-    set_register(&paths::data_dir(&app)?, register_id)
+    set_register(&paths::data_dir(&app)?, register_id).map(for_webview)
 }
 
 /// Records one setting about this machine. A null or blank value forgets it
@@ -161,7 +173,7 @@ pub fn device_set_setting(
         }
     }
     let _guard = writing();
-    put(&dir, &key, value.as_deref())
+    put(&dir, &key, value.as_deref()).map(for_webview)
 }
 
 /// What `device_set_setting` answers when the person pressed Cancel. Matched by
@@ -182,7 +194,38 @@ fn needs_confirming<'a>(key: &str, value: Option<&'a str>, existing: Option<&str
     Some(command)
 }
 
+/// Settings that are secrets: kept sealed to this Windows account
+/// (`secret.rs`), read in the clear only here on the Rust side, and shown to
+/// the webview as `SAVED` and never as themselves.
+pub const SECRET_KEYS: &[&str] = &["mail_password"];
+
+/// What the webview sees in place of a secret that is saved.
+pub const SAVED: &str = "(saved)";
+
+fn for_webview(mut identity: Identity) -> Identity {
+    for key in SECRET_KEYS {
+        if let Some(value) = identity.settings.get_mut(*key) {
+            *value = SAVED.to_string();
+        }
+    }
+    identity
+}
+
 fn put(dir: &Path, key: &str, value: Option<&str>) -> Result<Identity, String> {
+    let value = value.map(str::trim).filter(|v| !v.is_empty());
+    if SECRET_KEYS.contains(&key) {
+        /* `SAVED` coming back is the webview re-saving what it was shown: keep the secret. */
+        if value == Some(SAVED) {
+            return load_or_mint(dir);
+        }
+        if let Some(plain) = value {
+            return put_raw(dir, key, Some(&secret::seal(plain)?));
+        }
+    }
+    put_raw(dir, key, value)
+}
+
+fn put_raw(dir: &Path, key: &str, value: Option<&str>) -> Result<Identity, String> {
     let existing = load_or_mint(dir)?;
     let mut settings = existing.settings;
     match value.map(str::to_string).filter(|v| !v.trim().is_empty()) {
@@ -242,10 +285,16 @@ pub fn identity_of(dir: &Path) -> Result<Identity, String> {
 /// is not a reason to create it.
 pub fn setting(dir: &Path, key: &str) -> Result<Option<String>, String> {
     let _guard = writing();
-    Ok(read_identity(&dir.join(FILE))?
+    let value = read_identity(&dir.join(FILE))?
         .and_then(|identity| identity.settings.get(key).cloned())
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty()))
+        .filter(|value| !value.is_empty());
+    /* A sealed value this account cannot open -- device.json copied from
+       another PC -- is no value: the shop types it again. */
+    Ok(match value {
+        Some(v) if secret::is_sealed(&v) => secret::unseal(&v).ok(),
+        other => other,
+    })
 }
 
 fn load_or_mint(dir: &Path) -> Result<Identity, String> {
@@ -681,6 +730,23 @@ mod tests {
         // A damaged file is refused here as it is everywhere else.
         std::fs::write(dir.join(FILE), "not json").unwrap();
         assert!(setting(&dir, "backup_hook").is_err());
+    }
+
+    #[test]
+    fn the_mail_password_is_kept_sealed_read_in_the_clear_here_and_never_shown_to_the_webview() {
+        let dir = temp("settings-secret");
+        let shown = put(&dir, "mail_password", Some("abcd efgh ijkl mnop")).map(for_webview).unwrap();
+        assert_eq!(shown.settings.get("mail_password").map(String::as_str), Some(SAVED));
+        #[cfg(windows)]
+        assert!(!std::fs::read_to_string(dir.join(FILE)).unwrap().contains("abcd"), "kept as typed");
+        assert_eq!(setting(&dir, "mail_password").unwrap().as_deref(), Some("abcd efgh ijkl mnop"));
+
+        // The webview saving back what it was shown keeps the secret.
+        put(&dir, "mail_password", Some(SAVED)).unwrap();
+        assert_eq!(setting(&dir, "mail_password").unwrap().as_deref(), Some("abcd efgh ijkl mnop"));
+
+        put(&dir, "mail_password", None).unwrap();
+        assert_eq!(setting(&dir, "mail_password").unwrap(), None);
     }
 
     #[test]

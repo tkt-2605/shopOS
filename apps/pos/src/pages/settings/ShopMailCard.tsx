@@ -14,7 +14,10 @@ import { Alert, Card, Field } from '../../ui/components'
  */
 export function ShopMailCard({ shopEmail }: { shopEmail: string | null }) {
   const [user, setUser] = useState(() => deviceSetting(MAIL_USER) ?? '')
-  const [password, setPassword] = useState(() => deviceSetting(MAIL_PASSWORD) ?? '')
+  /* Only what is typed here. A saved password is never sent back to this
+     screen -- Rust keeps it sealed and shows it as `(saved)` -- so an empty
+     box with one saved means "keep it". */
+  const [password, setPassword] = useState('')
   const [where, setWhere] = useState<Destinations | null>(null)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
@@ -27,12 +30,15 @@ export function ShopMailCard({ shopEmail }: { shopEmail: string | null }) {
   }, [round])
 
   const savedUser = deviceSetting(MAIL_USER) ?? ''
-  const savedPassword = deviceSetting(MAIL_PASSWORD) ?? ''
-  const changed = user.trim() !== savedUser || password.trim() !== savedPassword
+  const hasPassword = deviceSetting(MAIL_PASSWORD) !== null
+  const changed = user.trim() !== savedUser || password.trim() !== ''
 
   async function save(): Promise<void> {
     await setDeviceSetting(MAIL_USER, user.trim() === '' ? null : user.trim())
-    await setDeviceSetting(MAIL_PASSWORD, password.trim() === '' ? null : password.trim())
+    /* No address is no login: the password goes with it. */
+    if (user.trim() === '') await setDeviceSetting(MAIL_PASSWORD, null)
+    else if (password.trim() !== '') await setDeviceSetting(MAIL_PASSWORD, password.trim())
+    setPassword('')
     setRound((r) => r + 1)
   }
 
@@ -66,7 +72,7 @@ export function ShopMailCard({ shopEmail }: { shopEmail: string | null }) {
       title="Shop email"
       actions={<>
         <button className="btn sm" disabled={busy || !changed} onClick={() => void saveOnly()}>Save</button>
-        <button className="btn primary sm" disabled={busy || user.trim() === '' || password.trim() === ''}
+        <button className="btn primary sm" disabled={busy || user.trim() === '' || (password.trim() === '' && !hasPassword)}
           onClick={() => void saveAndTest()}>
           {busy ? 'Sending…' : 'Save and send a test'}
         </button>
@@ -87,6 +93,7 @@ export function ShopMailCard({ shopEmail }: { shopEmail: string | null }) {
         >
           <input
             className="input" id="mail-password" type="password" value={password} autoComplete="off"
+            placeholder={hasPassword ? 'Saved. Type a new one to change it.' : ''}
             onChange={(e) => { setPassword(e.target.value); setNote(null) }}
           />
         </Field>

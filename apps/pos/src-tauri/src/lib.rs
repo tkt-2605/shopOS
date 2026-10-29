@@ -17,6 +17,7 @@ mod instance;
 mod invoice_mail;
 mod log;
 mod paths;
+mod secret;
 mod portal_out;
 mod ports;
 mod pdf;
