@@ -19,7 +19,7 @@ import {
 import { loadWebOrder, orderForAccount, reviewWebOrder } from '../src/services/web/orderViews.js'
 import { HourlyThrottle } from '../src/services/web/throttle.js'
 import { handleWebRequest, newThrottles, forgetServingState, currentCatalog, republishCatalog, publicStatus, type WebDeps } from '../src/services/web/routes.js'
-import { setProductPhoto, removeProductPhoto, listedWithoutPhoto, productPhoto } from '../src/services/web/photos.js'
+import { setProductPhoto, removeProductPhoto, listedWithoutPhoto, listedPhotoFiles, productPhoto } from '../src/services/web/photos.js'
 import { listedCategoryIds } from '../src/services/web/catalog.js'
 import { proposeChanges, withdrawProposal, answerProposal } from '../src/services/web/proposals.js'
 import { setLadder } from '../src/services/pricing.js'
@@ -232,6 +232,15 @@ describe("an item's photo", () => {
     const item = (await buildCatalog(fx.db, NOW)).items.find((i) => i.name === 'Pen')
     expect(item).toMatchObject({ photo: big, thumb: small })
     expect((await listedWithoutPhoto(fx.db, await listedCategoryIds(fx.db))).map((p) => p.name)).toEqual(['Book'])
+  })
+
+  it('names the files behind each listed photo, for a new main to check it has them', async () => {
+    const big = 'e'.repeat(64)
+    const small = 'f'.repeat(64)
+    await setProductPhoto(fx.db, { actorId: fx.adminId }, { productId: pen, photo: stored(big), thumb: stored(small) })
+    expect(await listedPhotoFiles(fx.db, await listedCategoryIds(fx.db))).toEqual([
+      { id: pen, name: 'Pen', paths: [`ee/${big}.webp`, `ff/${small}.webp`] },
+    ])
   })
 
   it('hands back the files nothing points at once it is replaced or removed', async () => {

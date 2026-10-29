@@ -39,7 +39,7 @@ export type {
 export { proposeChanges, withdrawProposal, answerProposal } from '../services/web/proposals.js'
 export type { ProposedLineInput, ProposeResult } from '../services/web/proposals.js'
 export type { Proposal } from '../services/web/orderViews.js'
-export { productPhoto, setProductPhoto, removeProductPhoto, listedWithoutPhoto } from '../services/web/photos.js'
+export { productPhoto, setProductPhoto, removeProductPhoto, listedWithoutPhoto, listedPhotoFiles } from '../services/web/photos.js'
 export type { ProductPhoto } from '../services/web/photos.js'
 export { handleWebRequest, newThrottles, currentCatalog, republishCatalog, publicStatus, forgetServingState } from '../services/web/routes.js'
 export type { WebRequest, WebReply, WebDeps, WebThrottles } from '../services/web/routes.js'

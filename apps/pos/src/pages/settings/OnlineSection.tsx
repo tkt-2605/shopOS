@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { listCategories, isOn, loadShopProfile, type Category, type ShopProfile } from '@shopos/core'
 import {
-  loadWebSettings, saveWebSettings, isOnlineOrderShop, listedCategoryIds, listedWithoutPhoto, republishCatalog, type WebSettings,
+  loadWebSettings, saveWebSettings, isOnlineOrderShop, listedCategoryIds, listedWithoutPhoto, listedPhotoFiles, republishCatalog, type WebSettings,
 } from '@shopos/core/web'
 import { useCore, useUser } from '../../core/CoreProvider'
 import { keepTheStorefrontRight, storefrontPortTrouble, storefrontRefusal, tunnelProblem, tunnelState, webPort, webServingOn, webSettingsChanged, type TunnelState } from '../../core/webHost'
 import { setStartsWithWindows, startsWithWindows } from '../../core/autostart'
-import { pushShop } from '../../core/cloudShop'
+import { cloudReady, pushShop } from '../../core/cloudShop'
 import { Alert, Card, Field } from '../../ui/components'
 import { Intro, Switch } from './parts'
 
@@ -45,6 +46,9 @@ export function OnlineSection() {
   const [serving, setServing] = useState<{ port: number | null; why: string | null }>({ port: null, why: null })
   const [error, setError] = useState<string | null>(null)
   const [noPhoto, setNoPhoto] = useState<{ id: string; name: string }[]>([])
+  /* What only the main's own disk holds, and so does not come with becoming the main. */
+  const [photoNotHere, setPhotoNotHere] = useState<string[]>([])
+  const [cloudKey, setCloudKey] = useState<boolean | null>(null)
   const [tiered, setTiered] = useState(true)
   const [profile, setProfile] = useState<ShopProfile | null>(null)
   const [published, setPublished] = useState<string | null>(null)
@@ -60,6 +64,16 @@ export function OnlineSection() {
 
   useEffect(() => {
     void listedCategoryIds(db).then((ids) => listedWithoutPhoto(db, ids)).then(setNoPhoto)
+    void listedCategoryIds(db).then((ids) => listedPhotoFiles(db, ids)).then(async (items) => {
+      const missing: string[] = []
+      for (const item of items) {
+        const here = await Promise.all(item.paths.map((path) =>
+          invoke<boolean>('attachment_present', { path }).catch(() => true)))
+        if (here.includes(false)) missing.push(item.name)
+      }
+      setPhotoNotHere(missing)
+    })
+    void cloudReady().then(setCloudKey)
   }, [db, settings?.categoryIds.join(',')])
 
   useEffect(() => {
@@ -247,6 +261,27 @@ export function OnlineSection() {
           onSave={(v) => save({ whatsapp: v || null })}
         />
       </Card>
+
+      {cloudKey === false && serving.port !== null && (
+        <Card title="Cloudflare key not on this computer">
+          <p className="hint">
+            The till cannot upload the shop's copy for when it is off, so phones keep the last one the old
+            main sent. Copy <code>%USERPROFILE%\.shopos\cloudflare.env</code> from the PC that was the main
+            to the same place on this one, then restart the till.
+          </p>
+        </Card>
+      )}
+
+      {photoNotHere.length > 0 && (
+        <Card title={`Photos not on this computer (${photoNotHere.length})`}>
+          <p className="hint">
+            These were added on another till, most likely the one that was the main before. Photos travel as
+            a name only, so their files stayed there. Phones still see any Cloudflare already has; add them
+            again here (Inventory, open the item, Photo for the storefront) to be sure.
+          </p>
+          <p>{photoNotHere.slice(0, 60).join(' · ')}{photoNotHere.length > 60 ? ` and ${photoNotHere.length - 60} more` : ''}</p>
+        </Card>
+      )}
 
       {noPhoto.length > 0 && (
         <Card title={`Listed without a photo (${noPhoto.length})`}>

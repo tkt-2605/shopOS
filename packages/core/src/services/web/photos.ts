@@ -136,3 +136,29 @@ async function dropFiles(db: SqlDriver, ctx: AuditContext & { actorId: string },
   }
   return out
 }
+
+/**
+ * The files behind each listed item's storefront photo, for the main to check
+ * it has them. Rows travel by sync and files do not: a main that took over
+ * from another holds the rows for photos added on the old one, and none of
+ * their files.
+ */
+export async function listedPhotoFiles(
+  db: SqlDriver, categories: ReadonlySet<string>,
+): Promise<{ id: string; name: string; paths: string[] }[]> {
+  if (categories.size === 0) return []
+  const ids = [...categories]
+  /* raw: the attachments table twice, once per size, as `productPhoto`. */
+  const rows = await db.query<{ id: string; name: string; photo_path: string; thumb_path: string }>(
+    `SELECT p.id, p.name, big.stored_path AS photo_path, small.stored_path AS thumb_path
+       FROM products p
+       JOIN product_photos pp ON pp.product_id = p.id
+       JOIN attachments big ON big.id = pp.photo_id AND big.deleted_at IS NULL
+       JOIN attachments small ON small.id = pp.thumb_id AND small.deleted_at IS NULL
+      WHERE p.is_active = 1 AND p.deleted_at IS NULL
+        AND p.category_id IN (${ids.map(() => '?').join(', ')})
+      ORDER BY p.name`,
+    ids,
+  )
+  return rows.map((r) => ({ id: r.id, name: r.name, paths: [r.photo_path, r.thumb_path] }))
+}
