@@ -311,16 +311,17 @@ function OrderDetail({ order, onClose, onDone, onError }: {
 
         <table>
           <thead>
-            <tr><th>Item</th><th className="r">Qty</th><th className="r">They saw</th><th className="r">Till price</th><th className="r">On hand</th></tr>
+            <tr><th>Item</th><th className="r">Qty</th><th className="r">They saw</th><th className="r">Till price</th><th className="r">On hand</th><th className="r" title="Owed on accepted orders not yet billed">Promised</th></tr>
           </thead>
           <tbody>
-            {(lines ?? order.lines.map((l) => ({ ...l, tillPrice: l.seenPrice, onHand: 0, listed: true }))).map((l, i) => (
+            {(lines ?? order.lines.map((l) => ({ ...l, tillPrice: l.seenPrice, onHand: 0, promised: 0, listed: true }))).map((l, i) => (
               <tr key={i}>
                 <td>{l.name} <span className="src">{l.unit}</span>{!l.listed && <span className="src"> · no longer listed</span>}</td>
                 <td className="r">{l.qty}</td>
                 <td className="r"><Rupees value={l.seenPrice} /></td>
                 <td className="r" style={l.tillPrice !== l.seenPrice ? { fontWeight: 600 } : undefined}><Rupees value={l.tillPrice} /></td>
                 <td className="r">{lines ? Quantity.toUnits(l.onHand as never) : '…'}</td>
+                <td className="r">{lines ? (l.promised > 0 ? Quantity.toUnits(l.promised as never) : '—') : '…'}</td>
               </tr>
             ))}
           </tbody>

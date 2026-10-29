@@ -1,9 +1,9 @@
-import { desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { addDays, businessDate } from '../../dates.js'
 import type { Money } from '../../money.js'
-import { CANCELLED } from '../../integrity/docstatus.js'
+import { CANCELLED, SUBMITTED } from '../../integrity/docstatus.js'
 import { FINISHED } from '../documents/read.js'
 import { currentStock } from '../stock.js'
 import { isListed, listedCategoryIds, shelfPrice, shelfPricer } from './catalog.js'
@@ -182,6 +182,12 @@ export interface ReviewLine extends WebOrderLine {
   tillPrice: Money
   /** On hand in the item's base unit, as the counter would show it. */
   onHand: number
+  /**
+   * Already promised, in the base unit: what submitted sales orders still owe
+   * their customers -- online orders accepted and not yet billed among them.
+   * Nothing is set aside on the shelf, so on hand less this is what is free.
+   */
+  promised: number
   /** Still sold and still in a listed category. */
   listed: boolean
 }
@@ -203,8 +209,29 @@ export async function reviewWebOrder(
       ...line,
       tillPrice: s.price,
       onHand: await currentStock(db, line.productId),
+      promised: await promisedQty(db, line.productId),
       listed: await isListed(db, line.productId, categories),
     })
   }
   return { order, lines }
+}
+
+/**
+ * What submitted sales orders still owe of one item, in its base unit: each
+ * line's base quantity in proportion to what is left of it unbilled (closed
+ * short counts as done, as `fulfilled_qty` has it).
+ */
+export async function promisedQty(db: SqlDriver, productId: string): Promise<number> {
+  const di = schema.documentItems
+  const [row] = await q(db)
+    .select({ owed: sql<number | null>`SUM(${di.baseQty} * (${di.qty} - ${di.fulfilledQty}) / ${di.qty})` })
+    .from(di)
+    .innerJoin(schema.documents, eq(schema.documents.id, di.documentId))
+    .where(and(
+      eq(di.productId, productId),
+      eq(schema.documents.kind, 'sales_order'),
+      eq(schema.documents.docstatus, SUBMITTED),
+      gt(di.qty, di.fulfilledQty),
+    ))
+  return Math.round(Number(row?.owed ?? 0))
 }

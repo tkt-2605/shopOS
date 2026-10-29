@@ -6,6 +6,7 @@ import { setProductActive } from '../src/services/products.js'
 import { setSetting } from '../src/services/bootstrap.js'
 import { rupees, type Money } from '../src/money.js'
 import { newId } from '../src/ids.js'
+import { fromUnits } from '../src/quantity.js'
 import { whyNotServing, whatsappNumber, WEB_SETTINGS } from '../src/services/web/gate.js'
 import { buildCatalog, publishCatalog } from '../src/services/web/catalog.js'
 import { verifyGoogleIdToken, type Jwks } from '../src/services/web/google.js'
@@ -510,6 +511,19 @@ describe('an order answered and collected', () => {
     if (!third.ok) throw new Error(third.code)
     expect(third.documentId).toBe(first.documentId)
     expect((await fx.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM documents WHERE kind = 'sales_order'`))[0]!.n).toBe(1)
+  })
+
+  it('shows what accepted orders already owe of an item until they are billed', async () => {
+    const first = await order((await customer('g-first', '9123456784')).id)
+    const second = await order((await customer('g-second', '9123456785')).id)
+    expect((await reviewWebOrder(fx.db, second.id, NOW))?.lines[0]?.promised).toBe(0)
+
+    const accepted = await acceptWebOrder(fx.db, { webOrderId: first.id, actorId: fx.adminId, registerId: fx.seed.registerId, now: NOW })
+    if (!accepted.ok) throw new Error(accepted.code)
+    expect((await reviewWebOrder(fx.db, second.id, NOW))?.lines[0]?.promised).toBe(fromUnits(2))
+
+    await billOrder(accepted.documentId)
+    expect((await reviewWebOrder(fx.db, second.id, NOW))?.lines[0]?.promised).toBe(0)
   })
 
   it('never bills an unchecked phone to the shop customer who has that number', async () => {
