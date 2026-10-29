@@ -17,6 +17,17 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.6.0': {
+    title: 'A credit limit of ₹0 now means no credit, and online orders grow up',
+    points: [
+      'A customer with a credit limit of ₹0 now gets no credit. Customers who were on ₹0 before were moved to No limit, so nobody is refused who was allowed yesterday. New customers start with no credit until you give them a limit or No limit.',
+      'Online orders: send a changed order or a quotation back to the customer, see how much of each item other accepted orders already owe, and stop a customer ordering online or sign them out on every phone.',
+      'Settings, Online orders says on a new main till what it is missing: the Cloudflare key, or photos that were added on another till.',
+      'Ready for a bad day no longer counts a backup folder on this computer\'s own disk. Choose a pen drive, another disk, or a Drive or OneDrive folder.',
+      'The shop email password is now kept locked to this computer. Nothing to do; it goes on working.',
+      'Update every till in the shop to this version. Tills on 0.5.0 stop syncing with it until they are updated too.',
+    ],
+  },
   '0.5.0': {
     title: 'Online orders: customers order from their phone and collect at the counter',
     points: [

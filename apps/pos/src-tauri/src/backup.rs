@@ -378,9 +378,14 @@ fn without_peer_secrets(copy: &std::path::Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{leaves_machine, target_in, without_peer_secrets};
+    use super::{target_in, without_peer_secrets};
+    #[cfg(windows)]
+    use super::leaves_machine;
+    #[cfg(windows)]
     use std::path::Path;
 
+    /* Drive letters are a Windows idea: elsewhere `C:\Backups` is one path component. */
+    #[cfg(windows)]
     #[test]
     fn a_folder_leaves_the_machine_on_another_drive_or_in_a_sync_app_only() {
         let data = Path::new(r"C:\Users\shop\AppData\Roaming\in.shopos.pos");

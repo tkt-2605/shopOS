@@ -134,7 +134,7 @@ pub fn serve_web(port: u16, answerer: Arc<dyn WebAnswerer>) -> Result<WebBound, 
                 break;
             }
             match incoming {
-                Ok(mut stream) => {
+                Ok(stream) => {
                     let Some(slot) = Slot::take(&active) else {
                         turn_away(stream);
                         continue;
