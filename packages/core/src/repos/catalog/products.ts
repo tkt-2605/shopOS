@@ -109,7 +109,8 @@ export interface ProductListItem {
 
 export interface SearchOptions {
   term?: string
-  limit?: number
+  /** 50 unless said; null for every match, as the Inventory list wants. */
+  limit?: number | null
   offset?: number
   includeInactive?: boolean
   /** Browse one group rather than search: what a touch screen and an app need. */
@@ -168,7 +169,8 @@ export async function searchProducts(db: SqlDriver, opts: SearchOptions = {}): P
       schema.products.variantLabel,
       schema.products.name,
     )
-    .limit(opts.limit ?? 50)
+    // SQLite reads a negative LIMIT as none.
+    .limit(opts.limit === null ? -1 : opts.limit ?? 50)
     .offset(opts.offset ?? 0)
 
   return rows.map(({ scanned: hit, ...r }) => ({ ...toProduct(r), scanned: hit === 1 }))

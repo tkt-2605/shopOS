@@ -28,7 +28,7 @@ const { ProductForm } = await import('../src/pages/inventory/ProductForm')
 const { BLANK } = await import('../src/pages/inventory/draft')
 type Draft = typeof BLANK
 const { useParentSearch } = await import('../src/pages/inventory/useParentSearch')
-const { stored } = await import('../src/pages/inventory/prices')
+const { stored, costOn } = await import('../src/pages/inventory/prices')
 
 beforeEach(async () => {
   settings.clear()
@@ -98,6 +98,15 @@ describe('the selling rate and cost price, either side of GST', () => {
     expect(settings.get('rate_entry_gst')).toBe('before')
     // The same switch Stock In and purchase orders use.
     expect(settings.get('cost_entry_gst')).toBe('with')
+  })
+})
+
+describe('the list cost, either side of GST', () => {
+  it('shows the kept cost before GST, and adds the item GST and cess with it', () => {
+    expect(costOn(10000 as never, 1800, 0, 'before')).toBe(10000)
+    expect(costOn(10000 as never, 1800, 0, 'with')).toBe(11800)
+    expect(costOn(10000 as never, 2800, 1200, 'with')).toBe(14000)
+    expect(costOn(10000 as never, 0, 0, 'with')).toBe(10000)
   })
 })
 

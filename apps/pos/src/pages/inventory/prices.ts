@@ -36,6 +36,20 @@ export function otherSide(draft: Draft, text: string, typedOn: Side, mode: Side)
 }
 
 /**
+ * A kept cost, which is before GST, said on the side the list's switch is on:
+ * with the item's own GST and cess added for 'with'. A rate past what GST
+ * allows shows the cost as kept rather than a wrong figure.
+ */
+export function costOn(cost: Money.Money, rateBp: number, cessBp: number, mode: Side): Money.Money {
+  if (mode === 'before') return cost
+  try {
+    return (cost + Tax.addTax(cost, rateBp, 'intra_state', cessBp).taxTotal) as Money.Money
+  } catch {
+    return cost
+  }
+}
+
+/**
  * The amount as it is kept, on the side `want`: null for a blank box, 'bad'
  * for something that is not an amount or is below zero.
  */
