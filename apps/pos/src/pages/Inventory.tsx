@@ -365,6 +365,8 @@ export default function Inventory() {
           </>
         )}
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{rows.length} items</span>
+        {/* Out of the Cost heading, where it made that column the widest in the table. */}
+        <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Cost</span><GstSwitch mode={costMode} onChange={setCostMode} />
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>
         {canWrite && <CatalogueFile onDone={refresh} />}
@@ -381,9 +383,7 @@ export default function Inventory() {
                   HSN cell the heading row did not, which pushed every heading after
                   it one column left of its figures. */}
               <th>Item</th><th>Barcode</th>{features.tieredPricing && <th>Cheaper by quantity</th>}
-              <th>HSN</th><th className="r">GST</th><th className="r">MRP</th><th className="r" title={`The last price paid, or your cost price if newer; ${costMode === 'with' ? 'with' : 'before'} GST`}>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>Cost <GstSwitch mode={costMode} onChange={setCostMode} /></div>
-              </th><th className="r">Rate</th>
+              <th>HSN</th><th className="r">GST</th><th className="r">MRP</th><th className="r" title={`The last price paid, or your cost price if newer; ${costMode === 'with' ? 'with' : 'before'} GST`}>Cost</th><th className="r">Rate</th>
               <th className="r">On hand</th><th />
             </tr>
           </thead>
