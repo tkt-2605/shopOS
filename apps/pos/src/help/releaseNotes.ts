@@ -17,11 +17,11 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
-  '0.4.8': {
+  '0.4.9': {
     title: 'Every item in Inventory, costs with or without GST, and a fuller stock count',
     points: [
       'Inventory now lists every item, not only the first 200.',
-      'The Cost column in Inventory has an Excl. GST / Incl. GST switch. It is the same switch as the cost price on an item and in Stock In, and the till remembers it.',
+      'An Excl. GST / Incl. GST switch above the Inventory list sets how the Cost column is shown. It is the same switch as the cost price on an item and in Stock In, and the till remembers it.',
       'A new count sheet includes items the system thinks are at zero, so stock that was never entered can be counted.',
       'Searching an open count sheet also shows items that are not on it, with Add to this count beside each one. An item added to the shop after the sheet was opened can be counted this way.',
     ],
