@@ -206,3 +206,16 @@ describe('a purchase order', () => {
     expect(await costHint(fx.db, productId)).toMatchObject({ unitCost: rupees(60), source: 'purchase' })
   })
 })
+
+describe('a whole catalogue at once', () => {
+  it('lists every item when asked for all, and finds a cost for each past the SQLite bind limit', async () => {
+    await details(rupees(50))
+    for (let i = 0; i < 449; i++) await makeProduct(fx.db, { name: `Item ${String(i).padStart(3, '0')}` })
+    const all = await searchProducts(fx.db, { limit: null, includeInactive: true })
+    expect(all).toHaveLength(450)
+    expect(await searchProducts(fx.db, {})).toHaveLength(50)
+    // 450 ids, bound twice each, is past 999: the item's cost is still found.
+    const hints = await costHints(fx.db, all.map((p) => p.id))
+    expect(hints.get(productId)).toMatchObject({ unitCost: rupees(50), source: 'item' })
+  })
+})

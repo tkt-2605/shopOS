@@ -46,6 +46,8 @@ export type {
   CountScope, OpenCountInput, OpenCountResult, CountLine, CountSheet,
   CountSummary, SubmitCountResult, MovedLine,
 } from '../services/stockCount.js'
+export { addToCount } from '../services/stockCountAdd.js'
+export type { AddToCountResult } from '../services/stockCountAdd.js'
 export {
   listSuppliers, supplierSummaries, createSupplier, updateSupplier, archiveSupplier, restoreSupplier,
   findOrCreateSupplier, supplierPurchases, supplierItems, setSupplierOpening,

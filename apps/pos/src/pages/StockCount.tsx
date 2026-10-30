@@ -9,6 +9,7 @@ import { Card, Modal, Empty, Alert, Rupees } from '../ui/components'
 import { useConfirm } from '../ui/useConfirm'
 import { useShopChanged } from '../core/useShopChanged'
 import { useAction } from '../core/useAction'
+import { NotOnSheet } from './stockCount/NotOnSheet'
 
 /**
  * Counting the shelves.
@@ -67,6 +68,8 @@ export default function StockCount() {
       // By category once categories are something a shop actually fills in; the
       // service already takes that scope.
       scope: { kind: 'all' },
+      // Items the system thinks are at zero too: stock never entered is what a count is for.
+      includeEmpty: true,
       actorId: user.id,
     })
     if (!result.ok) {
@@ -200,7 +203,7 @@ export default function StockCount() {
             what gets recorded is the difference you found, not the total you wrote down.
           </div>
           <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 13 }}>
-            The sheet covers everything the system currently holds stock of. You do not have to
+            The sheet covers every item that keeps stock, at zero or not. You do not have to
             count it all in one go — count a shelf, leave the rest, and post when you are done.
             Uncounted lines are never touched.
           </div>
@@ -300,6 +303,8 @@ export default function StockCount() {
                 </tbody>
               </table>
             </div>
+            <NotOnSheet db={db} sheet={sheet} term={term} actorId={user.id} onError={setError}
+              onAdded={async () => { const next = await loadCount(db, sheet.id); if (next) setPhase({ kind: 'sheet', sheet: next }) }} />
           </Card>
 
           {confirming && (

@@ -37,11 +37,20 @@ export interface CostHint {
   taxPerUnit: Money
 }
 
+const HINT_SLICE = 400
+
 /** The cost to suggest for each of these items, where there is one. An item with neither is left out. */
 export async function costHints(db: SqlDriver, productIds: readonly string[]): Promise<Map<string, CostHint>> {
   const hints = new Map<string, CostHint>()
   if (productIds.length === 0) return hints
   const ids = [...new Set(productIds)]
+  // Every id is bound twice: in slices, so a whole catalogue stays under SQLite's 999.
+  if (ids.length > HINT_SLICE) {
+    for (let i = 0; i < ids.length; i += HINT_SLICE) {
+      for (const [id, hint] of await costHints(db, ids.slice(i, i + HINT_SLICE))) hints.set(id, hint)
+    }
+    return hints
+  }
   const marks = ids.map(() => '?').join(', ')
 
   /* raw: a window function in a derived table, the last purchase of each item
