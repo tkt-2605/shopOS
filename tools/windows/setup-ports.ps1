@@ -71,6 +71,11 @@ if (-not $left) { Say 'No reservations over 7801-7802.' Green }
 # 3. Firewall: the tills, on Private networks
 $places = @("$env:LOCALAPPDATA\ShopOS", "$env:LOCALAPPDATA\TRT ShopOS", "$env:LOCALAPPDATA\Programs\ShopOS",
   "$env:ProgramFiles\ShopOS", (Join-Path $PSScriptRoot '..\..\apps\pos\src-tauri\target\tills'))
+# Dev tills, wherever Cargo builds on this PC (.cargo/config.toml may move it off C:).
+try {
+  $cargoTarget = (cargo metadata --format-version 1 --no-deps --manifest-path (Join-Path $PSScriptRoot '..\..\Cargo.toml') 2>$null | ConvertFrom-Json).target_directory
+  if ($cargoTarget) { $places += (Join-Path $cargoTarget 'tills') }
+} catch {}
 $exes = $places | Where-Object { Test-Path $_ } |
   ForEach-Object { Get-ChildItem $_ -Recurse -Include 'shopos-pos.exe', 'ShopOS.exe' -ErrorAction SilentlyContinue } |
   Select-Object -ExpandProperty FullName -Unique

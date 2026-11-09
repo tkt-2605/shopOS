@@ -14,7 +14,14 @@ const srcTauri = dirname(fileURLToPath(import.meta.url))
 const appRoot = join(srcTauri, '..')
 // A Cargo workspace member builds into the *workspace* root's target/, not
 // its own -- apps/pos/src-tauri/target is a decoy left by rust-analyzer.
+// Cargo is asked rather than assumed, so a PC whose .cargo/config.toml moves
+// target-dir to another drive puts the build, and the tills, there.
 const workspaceRoot = join(srcTauri, '..', '..', '..')
+const metadata = spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps'],
+  { cwd: workspaceRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+const targetDir = metadata.status === 0
+  ? JSON.parse(metadata.stdout).target_directory
+  : join(workspaceRoot, 'target')
 const exeName = 'shopos-pos.exe'
 const tills = process.argv.slice(2).length > 0
   ? process.argv.slice(2).map(Number)
@@ -32,10 +39,10 @@ for (const n of tills) {
     process.exit(result.status ?? 1)
   }
 
-  const outDir = join(srcTauri, 'target', 'tills', `till-${n}`)
+  const outDir = join(targetDir, 'tills', `till-${n}`)
   mkdirSync(outDir, { recursive: true })
   try {
-    copyFileSync(join(workspaceRoot, 'target', 'release', exeName), join(outDir, exeName))
+    copyFileSync(join(targetDir, 'release', exeName), join(outDir, exeName))
   } catch (err) {
     // Windows holds a running exe open, and the stack trace for it says
     // "EBUSY" and nothing about what to do.
@@ -48,4 +55,4 @@ for (const n of tills) {
   console.log(`till ${n} -> ${join(outDir, exeName)}`)
 }
 
-console.log(`\nBuilt till ${tills.join(', till ')}. Each is a standalone exe under target/tills/till-N/.`)
+console.log(`\nBuilt till ${tills.join(', till ')}. Each is a standalone exe under ${join(targetDir, 'tills')}.`)
