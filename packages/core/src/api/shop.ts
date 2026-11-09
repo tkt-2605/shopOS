@@ -53,15 +53,15 @@ export * as Backup from '../services/backup.js'
 export type { BackupFile, BackupPlan, BackupEntry, BackupFormat, BackupKind, BackupSchedule, BackupEvery } from '../services/backup.js'
 export { applyUpgrades } from '../services/upgrade.js'
 export {
-  TIERS, isTier, GRACE_DAYS, GATED, verifyToken, readTokenUnverified, stateOf,
-  allows, allowsAny, tierRank, tierFor, overTillLimit, encodePayload, toBase64Url, fromBase64Url,
+  TIERS, isTier, GRACE_DAYS, GATED, ADD_ONS, isAddOn, verifyToken, readTokenUnverified, stateOf,
+  allows, allowsAny, includesAddOn, tierRank, tierFor, overTillLimit, encodePayload, toBase64Url, fromBase64Url,
 } from '../domain/licence.js'
 export type {
-  Tier, LicenceToken, LicenceState, GatedFeature, SigningKey,
+  Tier, LicenceToken, LicenceState, GatedFeature, AddOn, SigningKey,
   VerifyFailure, VerifyResult,
 } from '../domain/licence.js'
 export {
-  entitlement, entitled, installToken, removeToken, storedToken, storedCodes,
+  entitlement, entitled, addOnEntitled, installToken, removeToken, storedToken, storedCodes,
   tillOverage, witnessClock, UNLICENSED, CLOCK_SLACK_MS, useLicenceKeys,
 } from '../services/licence.js'
 export type {

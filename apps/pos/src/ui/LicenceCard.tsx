@@ -6,7 +6,7 @@ import {
 import { useCore } from '../core/CoreProvider'
 import { deviceStore } from '../core/device'
 import {
-  licenceLine, clockLine, installProblem, tierName, grantLine, stateWord,
+  licenceLine, clockLine, installProblem, tierName, grantLine, addOnLine, stateWord,
   FEATURES, planFor, type LicenceLine, type FeatureWords,
 } from '../core/licenceWords'
 import { copyText } from '../core/clipboard'
@@ -147,6 +147,7 @@ export function LicenceCard() {
                     licence the plan above has already said it, and the same
                     words twice on one screen reads as a mistake. */}
                 {state.grants.length > 1 && <div className="hint">{grantLine(grant)}</div>}
+                {grant.features.length > 0 && <div className="hint">{addOnLine(grant.features)}</div>}
               </div>
               <div className="licence-actions">
                 <button

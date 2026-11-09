@@ -217,12 +217,16 @@ export async function handle(
     const tier = field(request.body, 'tier')
     const paidThrough = field(request.body, 'paidThrough')
     const tills = numberField(request.body, 'tills') ?? 1
+    const features = (request.body as { features?: unknown } | null)?.features ?? []
 
     if (shopId === null) return bad('shopId is required')
     if (tier === null || !isTier(tier)) return bad('tier is single, cloud or branches')
+    if (!Array.isArray(features) || !features.every((f) => typeof f === 'string')) {
+      return bad('features is a list of add-on names')
+    }
 
     const issued = await issueLicence(deps.db, deps.signingKey, {
-      shopId, tier, paidThrough, tills, kid: deps.kid, issuedBy: 'admin-token', now,
+      shopId, tier, paidThrough, tills, features, kid: deps.kid, issuedBy: 'admin-token', now,
     })
     if (!issued.ok) return { status: 400, body: { error: issued.code, detail: issued.detail } }
 

@@ -3,13 +3,15 @@ import { getSetting, setSetting } from '../settings.js'
 import { requirePermission } from '../../integrity/permissions.js'
 import { tillRole } from '../sync/layout.js'
 import { shortShopId } from '../../domain/updateTarget.js'
+import { addOnEntitled, type EntitlementOptions } from '../licence.js'
 
 /*
  * Whether this till answers the web, and the settings that shape what it says.
  *
- * Three locks, all of which must be open. The shop has to be one of the shops
- * online orders were built for -- a list in the code, not a setting, so no
- * shop can turn this on by accident or by sync. The owner has to have turned
+ * Three locks, all of which must be open. The shop has to be one online
+ * orders were granted to -- by a licence code that carries `onlineOrders`,
+ * signed by the portal, so no shop can turn this on by accident, by a setting
+ * or by sync, and a new shop is let in without a release. The owner has to have turned
  * it on. And this till has to be the main: an order accepted by two tills is
  * two sales orders for one customer, and the main is the one till every other
  * till already defers to (`sync/layout.ts`).
@@ -19,7 +21,11 @@ import { shortShopId } from '../../domain/updateTarget.js'
  * storefront can say "closed" instead of "unreachable".
  */
 
-/** The shops online orders are for, by the short id on their reports and Licence screen. */
+/**
+ * Shops let in before a licence could carry the add-on, by the short id on
+ * their reports and Licence screen. Only shrinks: a shop leaves once it holds
+ * a code with `onlineOrders`, and no shop is added here again.
+ */
 export const ONLINE_ORDER_SHOPS: readonly string[] = ['01a122eb']
 
 export const WEB_SETTINGS = {
@@ -101,17 +107,18 @@ export async function loadWebSettings(db: SqlDriver): Promise<WebSettings> {
   }
 }
 
-/** Whether this shop is one online orders were built for. */
-export async function isOnlineOrderShop(db: SqlDriver): Promise<boolean> {
+/** Whether this shop was granted online orders. `opts` is for a test's or a bench's keys. */
+export async function isOnlineOrderShop(db: SqlDriver, opts: EntitlementOptions = {}): Promise<boolean> {
   const shopId = await getSetting(db, 'shop_id')
-  return shopId !== null && ONLINE_ORDER_SHOPS.includes(shortShopId(shopId))
+  if (shopId !== null && ONLINE_ORDER_SHOPS.includes(shortShopId(shopId))) return true
+  return addOnEntitled(db, 'onlineOrders', opts)
 }
 
 export type WebRefusal = 'NOT_THIS_SHOP' | 'TURNED_OFF' | 'NOT_THE_MAIN'
 
 /** Why this till may not answer the web, or null when it may. */
-export async function whyNotServing(db: SqlDriver): Promise<WebRefusal | null> {
-  if (!await isOnlineOrderShop(db)) return 'NOT_THIS_SHOP'
+export async function whyNotServing(db: SqlDriver, opts: EntitlementOptions = {}): Promise<WebRefusal | null> {
+  if (!await isOnlineOrderShop(db, opts)) return 'NOT_THIS_SHOP'
   if ((await getSetting(db, WEB_SETTINGS.enabled)) !== 'on') return 'TURNED_OFF'
   if (!await answersOnlineOrders(db)) return 'NOT_THE_MAIN'
   return null

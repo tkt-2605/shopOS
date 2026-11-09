@@ -86,6 +86,7 @@ switch (command) {
       paidThrough: flag('paid-through'),
       tills,
       kid: portal.kid,
+      features: (flag('features') ?? '').split(',').map((f) => f.trim()).filter((f) => f !== ''),
       issuedBy: 'cli',
     })
 
@@ -165,6 +166,7 @@ switch (command) {
       '  keygen [--kid <name>]                       a new signing keypair',
       '  issue --shop <id> [--tier <t>]              sign a licence',
       '        [--paid-through YYYY-MM-DD] [--tills n]',
+      '        [--features onlineOrders]                add-ons for this shop alone',
       '  show --shop <id>                            the shop\'s current licence',
       '  serve [--port 8787]                         run the HTTP service',
       '  digest                                      send the morning digest now',

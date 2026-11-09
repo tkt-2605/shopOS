@@ -52,6 +52,26 @@ export interface LicenceToken {
   issuedAt: string
   /** Which signing key. */
   kid: string
+  /**
+   * Add-ons this shop was granted outside the tier ladder. Absent on every
+   * code signed before add-ons existed, which read as none.
+   */
+  features?: readonly AddOn[]
+}
+
+/**
+ * What a shop can be granted one by one, rather than by buying a tier.
+ *
+ * Online orders are built for a few chosen shops, not sold to every shop on a
+ * plan, so they cannot sit on `GATED`'s ladder: a `cloud` licence must not
+ * switch a storefront on. The portal names the add-on in the signed code, so
+ * a shop is let in by issuing it a licence, not by a release.
+ */
+export const ADD_ONS = ['onlineOrders'] as const
+export type AddOn = (typeof ADD_ONS)[number]
+
+export function isAddOn(value: string): value is AddOn {
+  return (ADD_ONS as readonly string[]).includes(value)
 }
 
 /**
@@ -306,6 +326,20 @@ export function allowsAny(
 }
 
 /**
+ * Whether any grant in force carries an add-on.
+ *
+ * An add-on lives and lapses with the code it was signed into, under the same
+ * grace as everything else. It is never anything a shop needs to take money,
+ * so a lapse takes away only the add-on.
+ */
+export function includesAddOn(
+  grants: readonly { state: LicenceState; features?: readonly AddOn[] }[], addOn: AddOn,
+): boolean {
+  return grants.some((grant) => (grant.state === 'active' || grant.state === 'grace')
+    && (grant.features ?? []).includes(addOn))
+}
+
+/**
  * Whether the shop is running more tills than it has paid for.
  *
  * Returns the overage rather than a verdict, and nothing in the product
@@ -340,7 +374,13 @@ function parsePayload(bytes: Uint8Array): LicenceToken | null {
   if (typeof issuedAt !== 'string' || issuedAt === '') return null
   if (typeof kid !== 'string' || kid === '') return null
 
-  return { shopId, tier, paidThrough, tills, issuedAt, kid }
+  const { features } = raw
+  if (features === undefined) return { shopId, tier, paidThrough, tills, issuedAt, kid }
+  if (!Array.isArray(features) || !features.every((f) => typeof f === 'string')) return null
+  /* An add-on this build has never heard of is dropped, not refused: a newer
+     portal may grant something an older till cannot do, and the rest of the
+     code is still good. */
+  return { shopId, tier, paidThrough, tills, issuedAt, kid, features: features.filter(isAddOn) }
 }
 
 function isBusinessDate(value: unknown): value is string {
@@ -384,6 +424,9 @@ export function encodePayload(token: LicenceToken): string {
     tills: token.tills,
     issuedAt: token.issuedAt,
     kid: token.kid,
+    /* Left out when empty, so a code without add-ons is the same bytes it
+       was before add-ons existed. */
+    ...(token.features !== undefined && token.features.length > 0 ? { features: token.features } : {}),
   })))
 }
 

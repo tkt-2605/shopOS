@@ -51,6 +51,13 @@ export function tierName(tier: string): string {
  * bought once and do not expire, the cloud renews. So "does not expire" has to
  * be sayable next to a date, on the same card, without either looking wrong.
  */
+const ADD_ON_NAMES: Record<string, string> = { onlineOrders: 'online orders' }
+
+/** The add-ons a code carries, as a sentence: "With online orders." */
+export function addOnLine(features: readonly string[]): string {
+  return `With ${features.map((f) => ADD_ON_NAMES[f] ?? f).join(' and ')}.`
+}
+
 export function grantLine(
   grant: { tier: string; state: string; paidThrough: string | null; graceUntil: string | null },
 ): string {

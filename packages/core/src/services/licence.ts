@@ -4,9 +4,9 @@ import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { businessDate } from '../dates.js'
 import type { DeviceStore } from './deviceSettings.js'
 import {
-  verifyToken, readTokenUnverified, stateOf, allowsAny, overTillLimit, tierRank,
+  verifyToken, readTokenUnverified, stateOf, allowsAny, includesAddOn, overTillLimit, tierRank,
   GRACE_DAYS, type LicenceToken, type LicenceState, type Tier,
-  type GatedFeature, type SigningKey, type VerifyFailure,
+  type GatedFeature, type AddOn, type SigningKey, type VerifyFailure,
 } from '../domain/licence.js'
 import { LICENCE_KEYS } from '../config/licensing.js'
 
@@ -64,6 +64,8 @@ export interface Grant {
   paidThrough: string | null
   graceUntil: string | null
   tills: number
+  /** Add-ons the code carries, in force only while the grant is. */
+  features: readonly AddOn[]
   /** The shop the code names. Every grant here names this one. */
   shopId: string
   /** The code exactly as it was pasted, for showing and copying back out. */
@@ -185,6 +187,7 @@ export async function entitlement(
       paidThrough: token.paidThrough,
       graceUntil,
       tills: token.tills,
+      features: token.features ?? [],
       shopId: token.shopId,
       raw,
     })
@@ -233,6 +236,16 @@ export async function entitled(
      multi-counter code and a cloud code that ran out is still entitled to the
      counter, and asking only the best one would take it away. */
   return allowsAny((await entitlement(db, opts)).grants, feature)
+}
+
+/**
+ * Whether this shop holds a code in force that grants an add-on. A code for
+ * another shop grants nothing here, as with every other entitlement.
+ */
+export async function addOnEntitled(
+  db: SqlDriver, addOn: AddOn, opts: EntitlementOptions = {},
+): Promise<boolean> {
+  return includesAddOn((await entitlement(db, opts)).grants, addOn)
 }
 
 /**

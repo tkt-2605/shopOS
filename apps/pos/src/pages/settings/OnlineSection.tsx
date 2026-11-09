@@ -14,7 +14,8 @@ import { Intro, Switch } from './parts'
 /**
  * Online orders: the storefront this shop's main till answers.
  *
- * Shown only to a shop online orders were built for (`ONLINE_ORDER_SHOPS`).
+ * Shown only to a shop granted online orders (`isOnlineOrderShop`): a
+ * licence code carrying `onlineOrders`, or a shop on the old list.
  * Everything here is the shop's and travels to every till; which port the
  * tunnel reaches is this machine's, and is the one `cloudflared` is told.
  */

@@ -219,6 +219,8 @@ export interface IssuedLicence {
   paidThrough: string | null
   tills: number
   kid: string
+  /** Add-ons the code grants, read off the code itself. */
+  features: readonly string[]
   issuedAt: string
   issuedBy: string | null
 }

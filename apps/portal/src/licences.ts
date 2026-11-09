@@ -1,6 +1,6 @@
 import { randomBytes, type webcrypto } from 'node:crypto'
 import type { SqlDriver } from '@shopos/core'
-import { isTier, type LicenceToken, type Tier } from '@shopos/core/licence'
+import { isTier, isAddOn, readTokenUnverified, type LicenceToken, type Tier } from '@shopos/core/licence'
 import { signToken } from './keys.js'
 import type { IssuedLicence } from './store.js'
 
@@ -21,6 +21,8 @@ export interface IssueInput {
   paidThrough: string | null
   tills: number
   kid: string
+  /** Add-ons granted to this shop alone, e.g. `onlineOrders`. */
+  features?: readonly string[]
   /** Who issued it — a CLI user, or an account id from the portal. */
   issuedBy?: string | null
   now?: Date
@@ -28,7 +30,7 @@ export interface IssueInput {
 
 export type IssueResult =
   | { ok: true; licence: IssuedLicence }
-  | { ok: false; code: 'BAD_TIER' | 'BAD_DATE' | 'BAD_TILLS' | 'BAD_SHOP'; detail: string }
+  | { ok: false; code: 'BAD_TIER' | 'BAD_DATE' | 'BAD_TILLS' | 'BAD_SHOP' | 'BAD_FEATURE'; detail: string }
 
 export async function issueLicence(
   db: SqlDriver, key: webcrypto.CryptoKey, input: IssueInput,
@@ -45,6 +47,13 @@ export async function issueLicence(
   if (!Number.isInteger(input.tills) || input.tills < 1) {
     return { ok: false, code: 'BAD_TILLS', detail: 'tills is a whole number, at least 1' }
   }
+  /* Refused rather than dropped: a misspelt add-on signed into a code would
+     be a shop told it has online orders by a code that grants none. */
+  const features = [...new Set(input.features ?? [])]
+  const unknown = features.find((f) => !isAddOn(f))
+  if (unknown !== undefined) {
+    return { ok: false, code: 'BAD_FEATURE', detail: `not an add-on: ${unknown}` }
+  }
 
   const now = input.now ?? new Date()
   const token: LicenceToken = {
@@ -54,6 +63,7 @@ export async function issueLicence(
     tills: input.tills,
     issuedAt: now.toISOString(),
     kid: input.kid,
+    ...(features.length > 0 ? { features: features.filter(isAddOn) } : {}),
   }
 
   const raw = await signToken(key, token)
@@ -65,6 +75,7 @@ export async function issueLicence(
     paidThrough: token.paidThrough,
     tills: token.tills,
     kid: token.kid,
+    features: token.features ?? [],
     issuedAt: token.issuedAt,
     issuedBy: input.issuedBy ?? null,
   }
@@ -106,6 +117,9 @@ export async function currentLicence(
   return {
     id: row.id, shopId: row.shop_id, token: row.token, tier: row.tier,
     paidThrough: row.paid_through, tills: row.tills, kid: row.kid,
+    /* Read off the code rather than kept in a column: the signed code is the
+       one place it can never disagree with. */
+    features: readTokenUnverified(row.token)?.features ?? [],
     issuedAt: row.issued_at, issuedBy: row.issued_by,
   }
 }
