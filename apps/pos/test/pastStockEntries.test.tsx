@@ -14,7 +14,7 @@ import { makeProduct } from '../../../packages/core/test/helpers'
  */
 
 const core: { db: SqlDriver | null } = { db: null }
-vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core }))
+vi.mock('../src/core/CoreProvider', () => ({ useCore: () => core, useUser: () => ({ id: adminId, permissions: { resources: {} } }) }))
 const { PastEntries, StockInViews } = await import('../src/pages/stockIn/PastEntries')
 
 let db: SqlDriver
@@ -73,7 +73,7 @@ describe('past stock entries', () => {
   })
 
   it('keeps the new entry being typed while the list is looked at', () => {
-    render(<StockInViews newEntry={<input aria-label="typing" defaultValue="half done" />} />)
+    render(<StockInViews renderNew={() => <input aria-label="typing" defaultValue="half done" />} />)
     fireEvent.click(screen.getByText('Past entries'))
     fireEvent.click(screen.getByText('New entry'))
     expect((screen.getByLabelText('typing') as HTMLInputElement).value).toBe('half done')

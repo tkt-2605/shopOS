@@ -31,7 +31,10 @@ export interface ReturnOutcome {
   /** The value of the goods. What the credit note reverses. */
   refundTotal: Money
   /** What left the drawer, or went onto the khata. */
+  /** What went back by hand, through the refund method. */
   refundCash: Money
+  /** What came off the customer's account: the bill's unpaid credit first, or all of it onto the account. */
+  refundToAccount: Money
   pointsRestored: number
   pointsClawedBack: number
   creditNoteDocNo: string | null

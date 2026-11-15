@@ -31,6 +31,8 @@ export interface CreateDocumentInput {
   terms?: string | null
   /** Set by `convert.ts`; the document this one was made from. */
   convertedFrom?: string | null
+  /** Set by `amend.ts`; the issued document this one corrects (086). */
+  amendedFrom?: string | null
   actorId: string
   now?: Date
 }

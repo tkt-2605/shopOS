@@ -7,6 +7,7 @@ import type { Money } from '../money.js'
 import type { Qty } from '../quantity.js'
 import { requirePermission } from '../integrity/permissions.js'
 import { belowCostRefusal, priceToCheck, type BelowCostRefusal } from './belowCost.js'
+import { followFamily } from './variants.js'
 
 /**
  * Taking a product out of use without taking it out of history.
@@ -274,6 +275,8 @@ export async function saveProductDetails(
     if (['base_rate', 'tax_rate_bp', 'cess_rate_bp', 'cost_price', 'open_price'].some((c) => c in is)) {
       await rateUnderCost(tx, ctx, input.id, allow)
     }
+    // A family priced as one (085): the colours take the parent's price, whichever of them was saved.
+    await followFamily(tx, ctx, input.id)
     return { ok: true, productId: input.id, created: false }
   }
 }

@@ -9,7 +9,7 @@ import { writeAudit } from '../../integrity/audit.js'
 import { recheckDocStatus } from '../../integrity/transition.js'
 import { nextDocNo, seriesPrefix } from '../numbering.js'
 import { loadReturn } from './read.js'
-import { clawBackPoints, outstandingFor, payRefund, refundBasis, restorePoints } from './refund.js'
+import { clawBackPoints, creditFirst, outstandingFor, outstandingOn, payRefund, refundBasis, restorePoints } from './refund.js'
 import type { SubmitReturnResult } from './types.js'
 import { restock } from './restock.js'
 import { requirePermission } from '../../integrity/permissions.js'
@@ -38,6 +38,8 @@ export async function submitReturn(
   if (!bill || bill.docstatus !== SUBMITTED) return { ok: false, code: 'BILL_CANCELLED' }
 
   const split = splitRefund(ret.refundTotal, await refundBasis(db, ret.billId))
+  const owedOnBill = bill.customerId ? await outstandingOn(db, ret.billId) : ZERO
+  const refund = creditFirst(split.cash, owedOnBill, ret.refundMethod)
 
   // A refund onto the account can only take off what is owed. This product has
   // no store-credit wallet, and inventing one here would leave money sitting
@@ -111,8 +113,9 @@ export async function submitReturn(
 
     creditNoteDocNo = await payRefund(tx, {
       returnId: input.returnId,
+      billId: ret.billId,
       method: ret.refundMethod,
-      amount: split.cash,
+      ...refund,
       customerId: bill.customerId,
       reference: `${docNo} against ${bill.docNo}`,
       reason: ret.reason,
@@ -129,7 +132,10 @@ export async function submitReturn(
       .set({
         docstatus: SUBMITTED,
         docNo,
-        refundCash: split.cash,
+        /* What went back through the refund method. Onto the account, that is
+           the whole of it, as it always was; by hand, only what the bill did not
+           still owe -- the rest is the credit note's amount (`creditFirst`). */
+        refundCash: ret.refundMethod === 'credit' ? split.cash : refund.back,
         pointsRestored: split.pointsRestored,
         pointsRemoved: split.pointsRemoved,
         updatedAt: nowIso,
@@ -142,7 +148,8 @@ export async function submitReturn(
       before: { doc_no: ret.docNo },
       after: {
         doc_no: docNo,
-        refund_cash: split.cash,
+        refund_cash: ret.refundMethod === 'credit' ? split.cash : refund.back,
+        refund_to_account: refund.toAccount,
         points_restored: split.pointsRestored,
         points_removed: split.pointsRemoved,
       },
@@ -157,7 +164,8 @@ export async function submitReturn(
     returnId: input.returnId,
     docNo,
     refundTotal: ret.refundTotal,
-    refundCash: split.cash,
+    refundCash: refund.back,
+    refundToAccount: refund.toAccount,
     pointsRestored: split.pointsRestored,
     pointsClawedBack: split.pointsRemoved,
     creditNoteDocNo,

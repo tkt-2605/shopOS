@@ -26,6 +26,8 @@ import { Modal, Alert, Empty } from './components'
 
 const WHY: Record<RowProblem, string> = {
   NO_NAME: 'No name',
+  NO_FAMILY: 'Its variantof item is not here or in the file, or is a variant itself',
+  NO_VARIANT: 'It names a variantof item but not which variant it is',
   BAD_RATE: 'The rate is not a number',
   BAD_MRP: 'The MRP is not a number',
   BAD_COST: 'The cost is not a number',

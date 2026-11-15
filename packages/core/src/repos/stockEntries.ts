@@ -129,6 +129,9 @@ export interface StockEntryView extends StockEntryRow {
   notes: string | null
   roundOff: Money
   createdBy: string | null
+  /** The posted entry this one corrects, by number; and the one that corrected this. */
+  corrects: string | null
+  correctedBy: string | null
   lines: StockEntryLine[]
 }
 
@@ -138,10 +141,14 @@ export async function loadStockEntry(db: SqlDriver, id: string): Promise<StockEn
     id: string; doc_no: string; posting_date: string; entry_type: StockEntryType; docstatus: number
     supplier_name: string | null; supplier_invoice_no: string | null; supplier_invoice_date: string | null
     reference: string | null; notes: string | null; invoice_total: number; round_off: number; created_by: string | null
+    corrects: string | null; corrected_by: string | null
   }>(
     `SELECT e.id, e.doc_no, e.posting_date, e.entry_type, e.docstatus, COALESCE(s.name, e.supplier_name) AS supplier_name, e.supplier_invoice_no,
             e.supplier_invoice_date, e.reference, e.notes, e.invoice_total, e.round_off,
-            (SELECT COALESCE(u.full_name, u.username) FROM users u WHERE u.id = e.created_by) AS created_by
+            (SELECT COALESCE(u.full_name, u.username) FROM users u WHERE u.id = e.created_by) AS created_by,
+            (SELECT a.doc_no FROM stock_entries a WHERE a.id = e.amended_from) AS corrects,
+            (SELECT c.doc_no FROM stock_entries c WHERE c.amended_from = e.id AND c.docstatus <> 0
+              ORDER BY c.created_at DESC LIMIT 1) AS corrected_by
        FROM stock_entries e LEFT JOIN suppliers s ON s.id = e.supplier_id WHERE e.id = ?`, [id])
   if (!head) return null
 
@@ -187,6 +194,8 @@ export async function loadStockEntry(db: SqlDriver, id: string): Promise<StockEn
     invoiceTotal: head.invoice_total as Money,
     roundOff: head.round_off as Money,
     createdBy: head.created_by,
+    corrects: head.corrects,
+    correctedBy: head.corrected_by,
     lines: view,
   }
 }

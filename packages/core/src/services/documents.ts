@@ -28,6 +28,8 @@ export type {
 export { createDocument } from './documents/create.js'
 export { editDraftDocument } from './documents/edit.js'
 export type { EditDraftInput, EditDraftResult } from './documents/edit.js'
+export { amendDocument } from './documents/amend.js'
+export type { AmendDocumentInput, AmendDocumentResult } from './documents/amend.js'
 export { cancelDocument, submitDocument } from './documents/lifecycle.js'
 export type { CancelDocumentResult, SubmitDocumentResult } from './documents/lifecycle.js'
 export { listDocuments, loadDocument } from './documents/read.js'

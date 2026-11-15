@@ -24,10 +24,9 @@ vi.mock('../src/core/device', () => ({
   },
 }))
 
-const { ProductForm } = await import('../src/pages/inventory/ProductForm')
+const { PriceSection } = await import('../src/pages/inventory/PriceSection')
 const { BLANK } = await import('../src/pages/inventory/draft')
 type Draft = typeof BLANK
-const { useParentSearch } = await import('../src/pages/inventory/useParentSearch')
 const { stored, costOn } = await import('../src/pages/inventory/prices')
 
 beforeEach(async () => {
@@ -49,10 +48,14 @@ let current: Draft = BLANK
 function Form({ start }: { start: Draft }) {
   const [draft, setDraft] = useState(start)
   current = draft
-  const parent = useParentSearch(db, draft, setDraft as never)
+  /* The name and brand are on the item page's Item tab and the suggestion on
+     Price & tax; one draft holds both, so typing on one tab is read on the other. */
   return (
-    <ProductForm draft={draft} setDraft={setDraft} categories={[]} newCategory="" setNewCategory={vi.fn()}
-      onAddCategory={vi.fn()} parentName={undefined} parent={parent} />
+    <>
+      <input id="p-name" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+      <input id="p-brand" value={draft.brand} onChange={(e) => setDraft({ ...draft, brand: e.target.value })} />
+      <PriceSection draft={draft} setDraft={setDraft} lastCost={null} familyPriced={false} />
+    </>
   )
 }
 

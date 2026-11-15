@@ -135,6 +135,8 @@ export type CreateBillResult =
   | { ok: false; code: 'RATE_NOT_THE_RULE'; productId: string; productName: string; rate: Money; rule: Money }
   /** An item priced at the counter (068), sent at nothing: the amount was never typed. */
   | { ok: false; code: 'OPEN_PRICE_NEEDS_AMOUNT'; productId: string; productName: string }
+  /** An item that has colours (`variants.ts`), on a line: the colour is the thing sold. */
+  | { ok: false; code: 'PICK_A_VERSION'; productId: string; productName: string }
 
 export type SubmitBillResult =
   | {

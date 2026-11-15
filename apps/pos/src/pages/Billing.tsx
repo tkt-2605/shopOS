@@ -24,10 +24,10 @@ import { TabStrip } from './billing/TabStrip'
 import { CartTable } from './billing/CartTable'
 import { TotalsPanel } from './billing/TotalsPanel'
 import { CustomerPicker } from './billing/CustomerPicker'
-import { PaymentDialog, type Tender } from './billing/PaymentDialog'
+import { PaymentDialog, type TenderLine } from './billing/PaymentDialog'
 import { DoneDialog, type CompletedBill } from './billing/DoneDialog'
 import { OpenPriceDialog } from './billing/OpenPriceDialog'
-import { useScanChoice } from '../ui/ScanChoice'
+import { useScanChoice, codeOnSeveral } from '../ui/ScanChoice'
 import { usePriceChoice } from '../ui/PriceChoice'
 import { useDrawer } from './billing/useDrawer'
 import { useQuote } from './billing/QuoteDialog'
@@ -197,7 +197,7 @@ export default function Billing() {
     setTerm('')
     focusScan()
   }, [db, active.customer, tabs, focusScan])
-  const scanChoice = useScanChoice((p) => void addProduct(p))
+  const scanChoice = useScanChoice(async (p, n) => { for (let i = 0; i < n; i += 1) await addProduct(p) }, { quantities: true })
   const priceChoice = usePriceChoice(db, (p, choice) => void addProduct(p, undefined, choice), focusScan)
 
   // A barcode scanner types fast and finishes with Enter. An exact match on the
@@ -206,7 +206,7 @@ export default function Billing() {
     if (e.key === 'Escape') { setTerm(''); return }
     // Typed three letters and several things match: ↓ goes into the list rather
     // than forcing a reach for the mouse.
-    if (e.key === 'ArrowDown' && results.length > 0) {
+    if (e.key === 'ArrowDown' && results.length > 0 && !codeOnSeveral(search)) {
       e.preventDefault()
       resultPick.focusList()
       return
@@ -219,7 +219,7 @@ export default function Billing() {
     // One code on several items (069): the cashier picks, by the price on the pack.
     if (scanChoice.ask(rows, typed)) return
     const [pick] = rows
-    if (pick) return addProduct(pick)
+    if (pick) return scanChoice.askFamily(pick) ? setTerm('') : addProduct(pick)
     if (typed) tabs.patch((cart) => ({ ...cart, error: `Nothing in the catalog matches ${typed}.` }))
     setTerm('')
   }
@@ -233,7 +233,7 @@ export default function Billing() {
   const resultPick = usePickList({
     count: results.length,
     resetKey: term,
-    onPick: (i) => { const p = results[i]; if (p) void addProduct(p) },
+    onPick: (i) => { const p = results[i]; if (p && !scanChoice.askFamily(p)) void addProduct(p) },
   })
 
   /* Only where it is actually the rule: Rule 46(f) is about a tax invoice, and
@@ -268,7 +268,7 @@ export default function Billing() {
     editLine(key, (l) => ({ ...l, rate, manual: true, source: 'manual_override', sourceId: null }))
   }
 
-  const pay = useCallback(async (method: Tender, tendered?: Money.Money) => {
+  const pay = useCallback(async (tenders: TenderLine[]) => {
     if (active.lines.length === 0 || submitting.current) return
     if (repricing) return
     submitting.current = true
@@ -303,7 +303,7 @@ export default function Billing() {
       // Below cost: asked of somebody who may go ahead, refused with the reason for anyone else.
       const tried = await retryBelowCost((allowBelowCost) => submitBill(db, {
         billId,
-        payments: due > 0 ? [{ method, amount: due, ...(method === 'cash' && tendered ? { tendered } : {}) }] : [],
+        payments: due > 0 ? tenders : [],
         ...(redeemPoints > 0 ? { redeemPoints } : {}),
         batchPicks: picksOf(active.lines),
         ...(allowBelowCost ? { allowBelowCost } : {}),
@@ -324,7 +324,8 @@ export default function Billing() {
       return
     }
 
-    const change = method === 'cash' && tendered && tendered > due ? { change: tendered - due } : {}
+    const cash = tenders.find((t) => t.method === 'cash' && t.tendered !== undefined)
+    const change = cash?.tendered ? { change: cash.tendered - cash.amount } : {}
     setDone({ billId, docNo: result.docNo, total: totals.grandTotal, points: result.pointsEarned, ...change })
     setPrintMsg(null)
     // Print straight away; the dialog stays up so a failed print can be retried.
@@ -387,7 +388,7 @@ export default function Billing() {
             />
           </div>
 
-          <Results anchor={scanBox} open={term !== ''}>
+          <Results anchor={scanBox} open={term !== '' && !codeOnSeveral(search)}>
             <table>
                 <tbody {...resultPick.listProps}>
                   {results.map((p, i) => (
@@ -471,7 +472,7 @@ export default function Billing() {
           onAcknowledge={() => setAcknowledged(shortKey)}
           blockedOnShort={blockedOnShort}
           busy={busy}
-          onPay={(method, tendered) => void pay(method, tendered)}
+          onPay={(tenders) => void pay(tenders)}
           drawerClosed={drawer.closed}
           canOpenDrawer={drawer.canOpen}
           onOpenDrawer={drawer.open}

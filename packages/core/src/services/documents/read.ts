@@ -189,6 +189,9 @@ export interface DocumentDetail extends DocumentListItem {
   notes: string | null
   terms: string | null
   convertedFrom: string | null
+  /** The issued document this one corrects, by number; and the one that corrected this (086). */
+  corrects: string | null
+  correctedBy: string | null
   cancelReason: string | null
   createdBy: string
   items: DocumentItemRow[]
@@ -222,6 +225,10 @@ export async function loadDocument(db: SqlDriver, id: string): Promise<DocumentD
       notes: schema.documents.notes,
       terms: schema.documents.terms,
       convertedFrom: schema.documents.convertedFrom,
+      // raw: the numbers either side of a correction (086), each a correlated lookup.
+      corrects: sql<string | null>`(SELECT a.doc_no FROM documents a WHERE a.id = ${schema.documents.amendedFrom})`,
+      correctedBy: sql<string | null>`(SELECT c.doc_no FROM documents c WHERE c.amended_from = ${schema.documents.id}
+        ORDER BY c.created_at DESC LIMIT 1)`,
       cancelReason: schema.documents.cancelReason,
       createdBy: schema.documents.createdBy,
       createdByName: schema.users.fullName,

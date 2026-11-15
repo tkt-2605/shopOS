@@ -4,6 +4,7 @@ mod autostart;
 mod cloud;
 mod backup;
 mod db;
+mod dev_till;
 mod device;
 mod diagnostics;
 mod discovery;
@@ -45,7 +46,9 @@ pub fn run() {
        of a panic here is an icon that does nothing when it is double-clicked. */
     log::install_panic_hook();
 
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    // A dev till copied into `tills/till-N` runs as that till (`dev_till.rs`); a shop's build is untouched.
+    dev_till::apply(&mut context);
     let updates = updater::configured(&context.config().identifier, &context.config().plugins.0);
 
     let mut builder = tauri::Builder::default()

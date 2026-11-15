@@ -1,60 +1,66 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Money, Quantity, Tax, Permissions, searchProducts, recomputeStock, listBarcodes, setBarcodes, barcodesTaken,
-  listUnits, setUnits, listCategories, createCategory, renameCategory, removeCategory,
-  setProductCategory, setVariantOf, laddersFor, defaultPriceListId, Ladder, unitPrices,
-  setProductActive, saveProductDetails, costHint, type Category, type ProductListItem, type CostHint,
+  Quantity, Tax, Permissions, searchProducts, recomputeStock, listCategories, renameCategory, removeCategory,
+  laddersFor, defaultPriceListId, Ladder, productsByIds, familyTotals,
+  type Category, type ProductListItem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { recordStockCheck } from '../core/maintenance'
-import { Modal, Empty, Alert, Rupees } from '../ui/components'
-import { ProductHistory } from '../ui/ProductHistory'
+import { Empty, Alert, Rupees } from '../ui/components'
 import { useConfirm } from '../ui/useConfirm'
-import { belowCostMessage, retryBelowCost } from '../ui/belowCost'
-import { breakRows, saveBreaks } from './inventory/breaks'
-import { saveUnitPrices, unitDrafts } from './inventory/unitPrices'
 import { DoublePrices } from '../ui/DoublePrices'
 import { useShopChanged } from '../core/useShopChanged'
 import { CatalogueFile } from '../ui/CatalogueFile'
-import { BLANK, levelOf, type Draft } from './inventory/draft'
-import { costOn, stored } from './inventory/prices'
+import { costOn } from './inventory/prices'
 import { GstSwitch, useGstMode, COST_ENTRY } from '../ui/GstSwitch'
-import { useParentSearch } from './inventory/useParentSearch'
 import { useCostHints } from './inventory/useCostHints'
 import { costNote } from '../ui/costNote'
-import { ProductForm } from './inventory/ProductForm'
-import { ExpiringCard, ProductBatches } from './inventory/Batches'
+import { ExpiringCard } from './inventory/Batches'
+import { ItemPage, type ItemTab } from './inventory/ItemPage'
+import { NewItem } from './inventory/NewItem'
+import { familyRows } from './inventory/familyRows'
 
+/**
+ * Every item, and the way into each one.
+ *
+ * A family -- an item with variants (`variants.ts`) -- is one row with the
+ * stock its variants hold together, and its variants open under it. A
+ * variant is never a row of its own and never opens a page of its own: Open
+ * on one opens its family on the Variants tab with that variant marked. An
+ * item opens as a page (`ItemPage`), where the long dialog used to be.
+ */
 export default function Inventory() {
   const { db, features } = useCore()
   const user = useUser()
   const [term, setTerm] = useState('')
   const [rows, setRows] = useState<ProductListItem[]>([])
-  const [draft, setDraft] = useState<Draft | null>(null)
-  /* The whole product rather than four numbers copied out of it: the panel
-     reads the ledger itself, and a snapshot taken here would be one more
-     thing to keep in step with it. */
-  const [history, setHistory] = useState<ProductListItem | null>(null)
-  const [batchesFor, setBatchesFor] = useState<ProductListItem | null>(null)
+  const [parents, setParents] = useState<ProductListItem[]>([])
+  const [totals, setTotals] = useState<Map<string, { count: number; qty: Quantity.Qty }>>(new Map())
+  const [open, setOpen] = useState<Set<string>>(new Set())
+  const [page, setPage] = useState<{ item: ProductListItem; tab: ItemTab; highlightId: string | null } | null>(null)
+  const [adding, setAdding] = useState(false)
   const [confirmUi, ask] = useConfirm()
   const [notice, setNotice] = useState<string | null>(null)
   const [categories, setCategories] = useState<Category[]>([])
-  const [newCategory, setNewCategory] = useState('')
-  const parent = useParentSearch(db, draft, setDraft)
   const [browsing, setBrowsing] = useState('')
   const [ladders, setLadders] = useState<Map<string, Ladder.Rung[]>>(new Map())
   const [priceListId, setPriceListId] = useState('')
-  /** The last price paid for the item being edited, shown beside its cost price. */
-  const [lastCost, setLastCost] = useState<CostHint | null>(null)
 
   const canWrite = Permissions.can(user.permissions, 'product', 'write')
   const costs = useCostHints(db, rows)
-  const [costMode, setCostMode] = useGstMode(COST_ENTRY) // the item form's and Stock In's switch
+  const [costMode, setCostMode] = useGstMode(COST_ENTRY) // the item page's and Stock In's switch
 
   const refresh = useCallback(async () => {
-    setRows(await searchProducts(db, {
+    const found = await searchProducts(db, {
       term, limit: null, includeInactive: true, ...(browsing ? { categoryId: browsing } : {}),
-    }))
+    })
+    // A search can find a variant and not its family: the family is fetched so the variant has a row to sit under.
+    const missing = [...new Set(found.filter((p) => p.parentProductId && !found.some((r) => r.id === p.parentProductId))
+      .map((p) => p.parentProductId!))]
+    const [extra, sums] = await Promise.all([productsByIds(db, missing), familyTotals(db)])
+    setRows(found)
+    setParents(extra)
+    setTotals(sums)
   }, [db, term, browsing])
 
   useEffect(() => {
@@ -77,138 +83,19 @@ export default function Inventory() {
   }, [db])
   useEffect(() => { void refreshLadders() }, [refreshLadders])
 
-  async function save() {
-    if (!draft || draft.name.trim() === '') return
-
-    /* Said, not assumed. A price typed as "12.3.4" used to save the item at
-       ₹0, and a tax rate that was not a number saved it untaxed. */
-    // Kept with GST, whichever side it was typed on (`inventory/prices.ts`).
-    const rate = stored(draft, draft.baseRate, draft.rateSide, 'with') ?? Money.ZERO
-    if (rate === 'bad') { setNotice('The price is not an amount. Nothing was saved.'); return }
-    /* Null, not zero. A packet with no printed price is not a packet printed
-       with ₹0, and the receipt only shows the MRP line when there is one. */
-    const mrp = draft.mrp.trim() === '' ? null : Money.parseMoney(draft.mrp)
-    if (mrp !== null && mrp < 0) { setNotice('The MRP cannot be below zero. Nothing was saved.'); return }
-    if (draft.mrp.trim() !== '' && mrp === null) { setNotice('The MRP is not an amount. Nothing was saved.'); return }
-    const cost = stored(draft, draft.costPrice, draft.costSide, 'before')
-    if (cost === 'bad') { setNotice('The cost price is not an amount. Nothing was saved.'); return }
-    // No GST is a rate of nothing and no cess, whatever the hidden boxes still hold.
-    const percent = draft.noGst || draft.taxPercent.trim() === '' ? 0 : Number(draft.taxPercent)
-    if (!Number.isFinite(percent)) { setNotice('The tax rate is not a number. Nothing was saved.'); return }
-    const cessPercent = draft.noGst || draft.cessPercent.trim() === '' ? 0 : Number(draft.cessPercent)
-    if (!Number.isFinite(cessPercent)) { setNotice('The cess rate is not a number. Nothing was saved.'); return }
-    // One item per barcode (Settings, Features): asked before anything is written, so a refusal saves nothing.
-    const taken = await barcodesTaken(db, draft.id, draft.barcodes.map((b) => b.barcode))
-    if (taken.length > 0) { setNotice(`${takenMessage(taken)} Nothing was saved.`); return }
-
-    // Through the core, which checks the figures and writes the change to the
-    // history. The barcode column is not written here: setBarcodes owns the pair
-    // of products.barcode and the product_barcodes rows.
-    const details = (allowBelowCost: boolean) => saveProductDetails(db, { actorId: user.id }, {
-      id: draft.id,
-      name: draft.name,
-      brand: draft.brand,
-      hsnCode: draft.hsnCode,
-      taxRateBp: Math.round(percent * 100),
-      cessRateBp: Math.round(cessPercent * 100),
-      baseRate: rate,
-      mrp,
-      baseUnit: draft.baseUnit,
-      discountBlocked: draft.discountBlocked,
-      loyaltyBlocked: draft.loyaltyBlocked,
-      returnBlocked: draft.returnBlocked,
-      isStockTracked: draft.stockTracked,
-      openPrice: draft.openPrice,
-      costPrice: cost,
-      reorderLevel: levelOf(draft.reorderLevel),
-      reorderQty: levelOf(draft.reorderQty),
-      ...(allowBelowCost ? { allowBelowCost } : {}),
-    })
-    // A selling rate below cost: see `ui/belowCost.ts`.
-    const saved = await retryBelowCost(details, ask, setNotice)
-    if (saved === null) return
-    if (!saved.ok) {
-      setNotice(
-        saved.code === 'BELOW_COST' ? belowCostMessage(saved)
-        : saved.code === 'BAD_TAX' ? 'GST is between 0 and 100 per cent, and cess between 0 and 300. Nothing was saved.'
-        : saved.code === 'BAD_COST' ? 'The cost price cannot be below zero. Nothing was saved.'
-        : saved.code === 'BAD_LEVEL' ? 'The reorder figures have to be quantities, zero or more. Nothing was saved.'
-        : saved.code === 'UNKNOWN_PRODUCT' ? 'This item is no longer in the catalogue.'
-        : 'The item could not be saved. Check its name and price.',
-      )
-      return
+  /** An item asked for anywhere: a variant opens its family, with the variant marked. */
+  async function openItem(p: ProductListItem, tab: ItemTab = 'item') {
+    if (p.parentProductId) {
+      const [family] = await productsByIds(db, [p.parentProductId])
+      if (family) return setPage({ item: family, tab: 'variants', highlightId: p.id })
     }
-    const productId = saved.productId
-    // A code another item has is saved too (069); the scan will ask which, and the owner is told so.
-    const coded = await setBarcodes(db, { actorId: user.id }, productId, draft.barcodes)
-    if (!coded.ok) { setNotice(`The item was saved; its barcodes were not. ${takenMessage(coded.taken)}`); await refresh(); return }
-    const { shared } = coded
-
-    const units = await setUnits(db, { actorId: user.id }, productId, draft.units
-      .filter((u) => u.saleUnit.trim() !== '')
-      .map((u) => ({ saleUnit: u.saleUnit, baseUnits: Quantity.parseQty(u.baseUnits) ?? Quantity.qty(0) })))
-    if (!units.ok) {
-      setNotice(
-        units.code === 'IN_USE'
-          ? `${units.saleUnit} is on ${units.billCount} bill(s) and cannot be removed. The rest was saved.`
-          : units.code === 'CLASHES_WITH_BASE'
-            ? `This item is already counted in ${units.saleUnit}. The rest was saved.`
-            : units.code === 'WAS_THE_BASE'
-            ? `${units.saleUnit} is what this item's unit used to be called, and still means one on older bills. Use another name. The rest was saved.`
-            : `${units.saleUnit} needs how many ${draft.baseUnit} it holds. The rest was saved.`,
-      )
-      setDraft(null)
-      await refresh()
-      return
-    }
-
-    // Only with box prices on: off, the form shows none, and saving must not take any away.
-    if (features.unitPrices && !(await saveUnitPrices(db, {
-      actorId: user.id, productId, units: draft.units, ask, say: setNotice,
-    }))) { await refresh(); return }
-
-    // Only with breaks on: off, the form shows none, and saving must not take any away.
-    if (features.tieredPricing && priceListId && !(await saveBreaks(db, {
-      actorId: user.id, productId, priceListId, unit: draft.baseUnit || 'piece', rows: draft.ladder, ask, say: setNotice,
-    }))) return
-
-    await setProductCategory(db, { actorId: user.id }, productId, draft.categoryId || null)
-    if (shared.length > 0) {
-      const also = shared.map((s) => `${s.barcode} is also on ${s.productName}`).join('; ')
-      setNotice(`Saved. ${also} — scanning it will ask which item.`)
-    }
-
-    const variant = await setVariantOf(db, { actorId: user.id }, {
-      productId,
-      parentProductId: draft.parentProductId || null,
-      variantLabel: draft.variantLabel,
-    })
-    if (!variant.ok) {
-      setNotice(
-        variant.code === 'PARENT_IS_A_VARIANT'
-          ? 'That item is already a version of something else. Group this one under the original.'
-          : variant.code === 'HAS_VARIANTS'
-            ? `This item already has ${variant.count} version(s), so it cannot become a version of another.`
-            : 'An item cannot be a version of itself.',
-      )
-    }
-
-    setDraft(null)
-    parent.setSearch('')
-    await refresh()
-    await refreshLadders()
+    setPage({ item: p, tab, highlightId: null })
   }
 
-  async function addCategory() {
-    if (!draft) return
-    const made = await createCategory(db, { actorId: user.id }, { name: newCategory })
-    if (!made.ok) {
-      setNotice(made.code === 'NAME_TAKEN' ? 'There is already a group with that name.' : 'Give the group a name.')
-      return
-    }
-    setNewCategory('')
-    await refreshCategories()
-    setDraft({ ...draft, categoryId: made.categoryId })
+  async function made(productId: string, withVariants: boolean) {
+    setAdding(false)
+    const [item] = await productsByIds(db, [productId])
+    if (item) setPage({ item, tab: withVariants ? 'variants' : 'item', highlightId: null })
   }
 
   /**
@@ -223,17 +110,11 @@ export default function Inventory() {
   async function renameGroup() {
     const group = categories.find((c) => c.id === browsing)
     if (!group) return
-
     const name = window.prompt(`Rename “${group.name}” to what?`, group.name)
     if (name === null || name.trim() === '' || name.trim() === group.name) return
-
-    const result = await renameCategory(db, { actorId: user.id }, {
-      categoryId: group.id, name: name.trim(),
-    })
+    const result = await renameCategory(db, { actorId: user.id }, { categoryId: group.id, name: name.trim() })
     if (!result.ok) {
-      setNotice(result.code === 'NAME_TAKEN'
-        ? 'There is already a group with that name.'
-        : 'Give the group a name.')
+      setNotice(result.code === 'NAME_TAKEN' ? 'There is already a group with that name.' : 'Give the group a name.')
       return
     }
     await refreshCategories()
@@ -243,80 +124,19 @@ export default function Inventory() {
   async function removeGroup() {
     const group = categories.find((c) => c.id === browsing)
     if (!group) return
-
     /* Said in full, because "delete" beside a group holding two hundred items
        reads like it takes the items with it, and it does not. */
     const many = group.productCount === 1 ? '1 product' : `${group.productCount} products`
     if (!(await ask(
-      `Remove the group “${group.name}”?
-
-`
+      `Remove the group “${group.name}”?\n\n`
       + `Nothing is deleted: ${many} stay exactly as they are and simply stop `
       + 'being in a group. Any groups inside this one move to the top level.',
     ))) return
-
     await removeCategory(db, { actorId: user.id }, group.id)
     setBrowsing('')
     await refreshCategories()
     await refresh()
     setNotice(`“${group.name}” is gone. Its products are still here, in no group.`)
-  }
-
-  async function edit(p: ProductListItem) {
-    const [codes, units, cost, priced] = await Promise.all([
-      listBarcodes(db, p.id), listUnits(db, p.id), costHint(db, p.id), unitPrices(db, p.id),
-    ])
-    // Only a price actually paid: the item's own cost price is already in the box.
-    setLastCost(cost !== null && cost.source !== 'item' ? cost : null)
-    setDraft({
-      id: p.id, name: p.name, brand: p.brand ?? '',
-      barcodes: codes.length > 0
-        ? codes.map((c) => ({ barcode: c.barcode, label: c.label ?? '' }))
-        : [{ barcode: '', label: '' }],
-      units: unitDrafts(units, priced),
-      ladder: breakRows(ladders.get(p.id) ?? []),
-      categoryId: p.categoryId ?? '',
-      parentProductId: p.parentProductId ?? '',
-      variantLabel: p.variantLabel ?? '',
-      hsnCode: p.hsnCode ?? '', taxPercent: String(Tax.bpToPercent(p.taxRateBp)),
-      cessPercent: p.cessRateBp === 0 ? '' : String(Tax.bpToPercent(p.cessRateBp)),
-      noGst: p.taxRateBp === 0 && p.cessRateBp === 0,
-      baseRate: Money.format(p.baseRate), rateSide: 'with', mrp: p.mrp === null ? '' : Money.format(p.mrp),
-      costPrice: p.costPrice === null ? '' : Money.format(p.costPrice), costSide: 'before',
-      baseUnit: p.baseUnit,
-      discountBlocked: p.discountBlocked, loyaltyBlocked: p.loyaltyBlocked,
-      returnBlocked: p.returnBlocked, stockTracked: p.isStockTracked, openPrice: p.openPrice,
-      reorderLevel: p.reorderLevel === null ? '' : Quantity.formatQty(p.reorderLevel),
-      reorderQty: p.reorderQty === null ? '' : Quantity.formatQty(p.reorderQty),
-    })
-  }
-
-  /**
-   * Taking a product out of use, and putting it back.
-   *
-   * `is_active` has been read by the counter's search, the reorder list and
-   * this screen since the catalogue was written, and nothing could ever set it.
-   * What a shop did instead was rename the thing to "OLD - do not use".
-   *
-   * Nothing is deleted and nothing is hidden from history: the stock stays
-   * counted, old bills still reprint and the reports still name it. It stops
-   * appearing where a live product belongs.
-   */
-  async function retire(p: ProductListItem) {
-    if (p.isActive && !(await ask(
-      `Retire “${p.name}”?
-
-`
-      + 'It stops appearing at the counter and on the reorder list. Nothing is '
-      + 'deleted: the stock on hand stays counted, old bills still show it, and '
-      + 'it can be brought back from this screen at any time.',
-    ))) return
-
-    await setProductActive(db, { actorId: user.id }, p.id, !p.isActive)
-    await refresh()
-    setNotice(p.isActive
-      ? `“${p.name}” is retired. The counter will not find it.`
-      : `“${p.name}” is back on sale.`)
   }
 
   /**
@@ -341,6 +161,22 @@ export default function Inventory() {
     await refresh()
   }
 
+  if (page) {
+    return (
+      <ItemPage
+        key={`${page.item.id}-${page.tab}-${page.highlightId ?? ''}`}
+        item={page.item} tab={page.tab} highlightId={page.highlightId}
+        categories={categories} ladders={ladders} priceListId={priceListId}
+        onCategoriesChanged={refreshCategories}
+        onBack={() => { setPage(null); void refresh(); void refreshLadders() }}
+        onOpen={(next, tab) => void openItem(next, tab)}
+      />
+    )
+  }
+
+  const listed = familyRows(rows, parents, term.trim() !== '')
+  const cols = features.tieredPricing ? 10 : 9
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {notice && <Alert kind="ok">{notice}</Alert>}
@@ -364,13 +200,13 @@ export default function Inventory() {
             <button className="btn sm" onClick={() => void removeGroup()}>Remove group</button>
           </>
         )}
-        <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{rows.length} items</span>
+        <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{listed.length} items</span>
         {/* Out of the Cost heading, where it made that column the widest in the table. */}
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Cost</span><GstSwitch mode={costMode} onChange={setCostMode} />
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>
         {canWrite && <CatalogueFile onDone={refresh} />}
-        {canWrite && <button className="btn primary" onClick={() => { setLastCost(null); setDraft({ ...BLANK }) }}>New product</button>}
+        {canWrite && <button className="btn primary" onClick={() => setAdding(true)}>Add item</button>}
       </div>
 
       {features.batchExpiry && <ExpiringCard />}
@@ -388,101 +224,73 @@ export default function Inventory() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((p) => (
-              <tr key={p.id}>
-                <td>
-                  <div>
-                    {p.name}
-                    {p.variantLabel && <span className="badge" style={{ marginLeft: 6 }}>{p.variantLabel}</span>}
-                    {/* Said on the row, because a retired product that looks
-                        exactly like a live one is a product somebody will try
-                        to sell and then wonder why the counter cannot find. */}
-                    {!p.isActive && <span className="badge" style={{ marginLeft: 6 }}>retired</span>}
-                  </div>
-                  <div className="src">
-                    {[p.parentName ? `version of ${p.parentName}` : null, p.categoryName, p.brand]
-                      .filter(Boolean).join(' · ')}
-                  </div>
-                </td>
-                <td className="num">{p.barcode ?? <Missing />}</td>
-                {features.tieredPricing && (
-                  <td className="num" style={{ fontSize: 12 }}>
-                    {Ladder.describeLadder((ladders.get(p.id) ?? []).filter((r) => r.minQty > Quantity.QTY_SCALE))}
+            {listed.map(({ item: p, variants, marked }) => {
+              const family = totals.get(p.id)
+              const isFamily = family !== undefined || variants.length > 0
+              const shown = open.has(p.id) || (marked.size > 0)
+              const onHand = (p.qtyOnHand + (family?.qty ?? 0)) as Quantity.Qty
+              const toggle = () => setOpen((s) => { const n = new Set(s); if (n.has(p.id)) n.delete(p.id); else n.add(p.id); return n })
+              return [
+                <tr key={p.id} className={isFamily ? 'family-row' : undefined}>
+                  <td>
+                    <div>
+                      {isFamily && (
+                        <button type="button" className="caret" aria-expanded={shown}
+                          aria-label={`${shown ? 'Close' : 'Open'} the variants of ${p.name}`} onClick={toggle}>
+                          {shown ? '▾' : '▸'}
+                        </button>
+                      )}
+                      {p.name}
+                      {isFamily && <span className="badge" style={{ marginLeft: 6 }}>{family?.count ?? variants.length} variants</span>}
+                      {/* Said on the row, because a retired product that looks
+                          exactly like a live one is a product somebody will try
+                          to sell and then wonder why the counter cannot find. */}
+                      {!p.isActive && <span className="badge" style={{ marginLeft: 6 }}>retired</span>}
+                    </div>
+                    <div className="src">{[p.categoryName, p.brand].filter(Boolean).join(' · ')}</div>
                   </td>
-                )}
-                <td className="num">{p.hsnCode ?? <Missing />}</td>
-                <td className="r num">{Tax.bpToPercent(p.taxRateBp)}%</td>
-                <td className="r">{p.mrp !== null ? <Rupees value={p.mrp} /> : <Missing />}</td>
-                <td className="r" title={costs.has(p.id) ? costNote(costs.get(p.id)!) : 'No cost known yet'}>{costs.has(p.id) ? <Rupees value={costOn(costs.get(p.id)!.unitCost, p.taxRateBp, p.cessRateBp, costMode)} /> : <Missing />}</td>
-                <td className="r"><Rupees value={p.baseRate} /></td>
-                <td className="r num" style={{ color: p.qtyOnHand <= 0 ? 'var(--danger)' : undefined }}>
-                  {Quantity.formatQty(p.qtyOnHand)} {p.baseUnit}
-                </td>
-                <td className="r" style={{ whiteSpace: 'nowrap' }}>
-                  {/* Was "Cost", and gave one number with no way to see how it
-                      got there. The average is derived, so the rows it is
-                      derived from are the answer to any question about it. */}
-                  <button className="btn ghost sm" onClick={() => setHistory(p)}>History</button>
-                  {features.batchExpiry && (
-                    <button className="btn ghost sm" onClick={() => setBatchesFor(p)}>Batches</button>
+                  <td className="num">{p.barcode ?? variants[0]?.barcode ?? <Missing />}</td>
+                  {features.tieredPricing && (
+                    <td className="num" style={{ fontSize: 12 }}>
+                      {Ladder.describeLadder((ladders.get(p.id) ?? []).filter((r) => r.minQty > Quantity.QTY_SCALE))}
+                    </td>
                   )}
-                  {canWrite && (
-                    <button className="btn ghost sm" onClick={() => void edit(p)}>Edit</button>
-                  )}
-                  {canWrite && (
-                    <button className="btn ghost sm" onClick={() => void retire(p)}>
-                      {p.isActive ? 'Retire' : 'Bring back'}
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td colSpan={features.tieredPricing ? 10 : 9}><Empty>No products match</Empty></td></tr>}
+                  <td className="num">{p.hsnCode ?? <Missing />}</td>
+                  <td className="r num">{Tax.bpToPercent(p.taxRateBp)}%</td>
+                  <td className="r">{p.mrp !== null ? <Rupees value={p.mrp} /> : <Missing />}</td>
+                  <td className="r" title={costs.has(p.id) ? costNote(costs.get(p.id)!) : 'No cost known yet'}>{costs.has(p.id) ? <Rupees value={costOn(costs.get(p.id)!.unitCost, p.taxRateBp, p.cessRateBp, costMode)} /> : <Missing />}</td>
+                  <td className="r"><Rupees value={p.baseRate} /></td>
+                  <td className="r num" style={{ color: onHand <= 0 ? 'var(--danger)' : undefined }}>
+                    {Quantity.formatQty(onHand)} {p.baseUnit}
+                  </td>
+                  <td className="r"><button className="btn ghost sm" onClick={() => void openItem(p)}>Open</button></td>
+                </tr>,
+                ...(shown ? variants.map((v) => (
+                  <tr key={v.id} className={`variant-row${marked.has(v.id) ? ' marked' : ''}`}>
+                    <td>
+                      {v.variantLabel ?? v.name}
+                      {!v.isActive && <span className="badge" style={{ marginLeft: 6 }}>out of use</span>}
+                    </td>
+                    <td className="num">{v.barcode ?? <Missing />}</td>
+                    {features.tieredPricing && <td />}
+                    <td /><td /><td />
+                    <td />
+                    <td className="r">{v.baseRate === p.baseRate ? <span className="src">same</span> : <Rupees value={v.baseRate} />}</td>
+                    <td className="r num" style={{ color: v.qtyOnHand <= 0 ? 'var(--danger)' : undefined }}>
+                      {Quantity.formatQty(v.qtyOnHand)} {v.baseUnit}
+                    </td>
+                    <td className="r"><button className="btn ghost sm" onClick={() => void openItem(v)}>Open</button></td>
+                  </tr>
+                )) : []),
+              ]
+            })}
+            {listed.length === 0 && <tr><td colSpan={cols}><Empty>No products match</Empty></td></tr>}
           </tbody>
         </table>
       </div>
 
-      {draft && (
-        <Modal
-          title={draft.id ? 'Edit product' : 'New product'}
-          onClose={() => setDraft(null)}
-          footer={<>
-            <button className="btn" onClick={() => setDraft(null)}>Cancel</button>
-            <button className="btn primary" disabled={draft.name.trim() === ''} onClick={() => void save()}>Save</button>
-          </>}
-        >
-          <ProductForm
-            draft={draft}
-            setDraft={setDraft}
-            categories={categories}
-            newCategory={newCategory}
-            setNewCategory={setNewCategory}
-            onAddCategory={() => void addCategory()}
-            parentName={rows.find((r) => r.id === draft.parentProductId)?.name}
-            parent={parent}
-            lastCost={draft.id ? lastCost : null}
-          />
-        </Modal>
-      )}
-
+      {adding && <NewItem onMade={(id, withVariants) => void made(id, withVariants)} onClose={() => setAdding(false)} />}
       {confirmUi}
-      {history && (
-        <ProductHistory
-          productId={history.id}
-          name={history.name}
-          baseUnit={history.baseUnit}
-          onClose={() => setHistory(null)}
-        />
-      )}
-      {batchesFor && (
-        <ProductBatches
-          productId={batchesFor.id}
-          name={batchesFor.name}
-          baseUnit={batchesFor.baseUnit}
-          onHand={batchesFor.qtyOnHand}
-          onClose={() => setBatchesFor(null)}
-        />
-      )}
     </div>
   )
 }
@@ -490,10 +298,4 @@ export default function Inventory() {
 /** A cell with nothing in it, said the same quiet way in every column. */
 function Missing() {
   return <span style={{ color: 'var(--ink-3)' }}>—</span>
-}
-
-/** A code refused because the shop holds each code to one item. */
-function takenMessage(taken: readonly { barcode: string; productName: string }[]): string {
-  const which = taken.map((t) => `${t.barcode} is already on ${t.productName}`).join('; ')
-  return `${which}. Each barcode is on one item only (Settings, Features).`
 }

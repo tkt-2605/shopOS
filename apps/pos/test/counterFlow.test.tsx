@@ -222,4 +222,54 @@ describe('a scanner, which presses Enter before the search has run', () => {
     await waitFor(() => expect(document.querySelector('.cart tbody')?.textContent).toContain('Ball Pen Blue'))
     expect(document.querySelector('.cart tbody')?.textContent).not.toContain('A4 Copier Paper')
   })
+
+  it('asks once, not twice, when a shared code is typed slowly enough for the list to come up', async () => {
+    const paper = await db.get<{ id: string }>(`SELECT id FROM products WHERE name LIKE 'A4%'`)
+    const admin = core['user'] as { id: string }
+    await setBarcodes(db, { actorId: admin.id }, paper!.id, [{ barcode: PEN_BARCODE }])
+    render(<Billing />)
+    const box = screen.getByPlaceholderText(/Scan a barcode/)
+    fireEvent.change(box, { target: { value: PEN_BARCODE } })
+    // Long past the search's wait: the list has had every chance to appear.
+    await act(() => new Promise((r) => setTimeout(r, 400)))
+    expect(document.body.textContent).not.toContain('Ball Pen Blue')
+
+    fireEvent.keyDown(box, { key: 'Enter' })
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain(`${PEN_BARCODE} is on 2 items`)
+    expect(within(dialog).getAllByRole('option')).toHaveLength(2)
+    // The one list on screen is the dialog's.
+    expect(screen.getAllByText(/Ball Pen Blue/)).toHaveLength(1)
+  })
 })
+
+describe('a bill paid two ways', () => {
+  it('takes ₹1 in cash and the rest by UPI, and stores the two parts', async () => {
+    render(<Billing />)
+    await scan('A4')
+    await waitFor(() => expect(screen.getByText('Take payment')).toBeTruthy())
+    fireEvent.click(screen.getByText('Take payment'))
+    fireEvent.click(await screen.findByText(/^Split/))
+
+    const cash = await screen.findByLabelText('Cash')
+    fireEvent.change(cash, { target: { value: '1' } })
+    // Stepping into the next box fills it with what is left.
+    const upi = screen.getByLabelText('UPI')
+    fireEvent.focus(upi)
+    await waitFor(() => expect((upi as HTMLInputElement).value).not.toBe(''))
+    expect(document.body.textContent).toContain('The parts add up to the bill.')
+    fireEvent.keyDown(upi, { key: 'Enter' })
+
+    let billId = ''
+    await waitFor(async () => {
+      const row = await db.get<{ id: string }>(`SELECT id FROM bills WHERE docstatus = 1`)
+      expect(row).toBeDefined()
+      billId = row!.id
+    })
+    const parts = await db.query<{ method: string; amount: number }>(
+      `SELECT method, amount FROM bill_payments WHERE bill_id = ? ORDER BY method`, [billId])
+    const total = (await db.get<{ t: number }>(`SELECT grand_total AS t FROM bills WHERE id = ?`, [billId]))!.t
+    expect(parts).toEqual([{ method: 'cash', amount: 100 }, { method: 'upi', amount: total - 100 }])
+  })
+})
+

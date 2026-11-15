@@ -3,8 +3,12 @@ import { Money, type CustomerListItem } from '@shopos/core'
 import { Modal } from '../../ui/components'
 import type { ShortLine } from './cart'
 import { cashNotes } from './cashNotes'
+import { SplitTender } from './SplitTender'
 
 export type Tender = 'cash' | 'upi' | 'card' | 'credit'
+
+/** One part of what the bill is paid with. `tendered` is the cash handed over, on a cash part. */
+export interface TenderLine { method: Tender; amount: Money.Money; tendered?: Money.Money }
 
 /**
  * Taking the money: points first if the customer has any, then the shelf's
@@ -35,8 +39,8 @@ export function PaymentDialog({
   onAcknowledge: () => void
   blockedOnShort: boolean
   busy: boolean
-  /** `tendered` is the cash handed over, when the cashier typed it. */
-  onPay: (method: Tender, tendered?: Money.Money) => void
+  /** The parts the bill is paid with, adding up to `due`: one, or several when it is split. Empty when points pay it all. */
+  onPay: (tenders: TenderLine[]) => void
   onClose: () => void
   /** True when no cash session is open at this counter. */
   drawerClosed: boolean
@@ -47,6 +51,7 @@ export function PaymentDialog({
   const [received, setReceived] = useState('')
   const [float, setFloat] = useState('')
   const [drawerError, setDrawerError] = useState<string | null>(null)
+  const [splitting, setSplitting] = useState(false)
   const receivedRef = useRef<HTMLInputElement>(null)
 
   const tendered = received.trim() === '' ? null : Money.parseMoney(received)
@@ -54,8 +59,9 @@ export function PaymentDialog({
   const change = tendered !== null && !underpaid ? ((tendered - due) as Money.Money) : null
   const payCash = () => {
     if (blockedOnShort || busy || underpaid || (received.trim() !== '' && tendered === null)) return
-    onPay('cash', tendered !== null && tendered > due ? tendered : undefined)
+    onPay([{ method: 'cash', amount: due, ...(tendered !== null && tendered > due ? { tendered } : {}) }])
   }
+  const payAll = (method: Tender) => onPay([{ method, amount: due }])
 
   return (
     <Modal
@@ -147,7 +153,12 @@ export function PaymentDialog({
         </div>
       )}
 
-      {due > 0 && (
+      {due > 0 && splitting && (
+        <SplitTender due={due} canCredit={customer !== null} disabled={blockedOnShort || busy}
+          onPay={onPay} onBack={() => setSplitting(false)} />
+      )}
+
+      {due > 0 && !splitting && (
         <div className="cash-tender">
           <div className="cash-tender-row">
             <label htmlFor="cash-received">Cash received</label>
@@ -176,22 +187,26 @@ export function PaymentDialog({
       )}
 
       {due === 0 ? (
-        <button className="btn primary lg" disabled={blockedOnShort || busy} onClick={() => onPay('cash')}>
+        <button className="btn primary lg" disabled={blockedOnShort || busy} onClick={() => onPay([])}>
           Settle with points
         </button>
-      ) : (
+      ) : splitting ? null : (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <button className="btn primary lg" disabled={blockedOnShort || busy || underpaid} onClick={payCash}>
             {change !== null && change > 0 ? `Cash — give ${Money.formatWithSymbol(change)} back` : 'Cash'}
           </button>
-          <button className="btn lg" disabled={blockedOnShort || busy} onClick={() => onPay('upi')}>UPI</button>
-          <button className="btn lg" disabled={blockedOnShort || busy} onClick={() => onPay('card')}>Card</button>
+          <button className="btn lg" disabled={blockedOnShort || busy} onClick={() => payAll('upi')}>UPI</button>
+          <button className="btn lg" disabled={blockedOnShort || busy} onClick={() => payAll('card')}>Card</button>
           <button
             className="btn lg"
             disabled={blockedOnShort || busy || !customer}
-            onClick={() => onPay('credit')}
+            onClick={() => payAll('credit')}
           >
             Credit
+          </button>
+          <button className="btn" style={{ gridColumn: '1 / -1' }} disabled={blockedOnShort || busy}
+            onClick={() => setSplitting(true)}>
+            Split — part cash, part UPI, card or credit
           </button>
         </div>
       )}

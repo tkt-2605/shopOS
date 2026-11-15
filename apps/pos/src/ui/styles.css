@@ -252,6 +252,25 @@ button, input, select, textarea { font: inherit; color: inherit; }
  * the evidence that the class was wrong rather than the callers. */
 .card-scroll { overflow: auto; }
 
+/* An item's page (`pages/inventory/ItemPage.tsx`): its figures, then its tabs. */
+.item-head { display: flex; align-items: center; gap: 18px; }
+.item-figs { display: flex; gap: 22px; }
+.item-figs > div { display: flex; flex-direction: column; }
+.item-figs .k { font-size: 11px; color: var(--ink-3); }
+.item-figs .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tabs { display: flex; border-bottom: 1px solid var(--rule); margin-bottom: 14px; }
+.tabs button { padding: 9px 16px; font-size: 13.5px; color: var(--ink-2); background: none;
+  border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
+.tabs button[aria-selected="true"] { color: var(--accent-ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs .n { margin-left: 5px; font-size: 11px; color: var(--ink-3); }
+.tab-hint { font-size: 12px; color: var(--ink-3); }
+/* A family's row in the Inventory list, and its variants opened under it. */
+tr.family-row td:first-child { font-weight: 600; }
+tr.variant-row td { background: var(--surface-2); }
+tr.variant-row td:first-child { padding-left: 34px; }
+tr.variant-row.marked td { background: var(--accent-soft); }
+.caret { display: inline-block; width: 16px; padding: 0; border: 0; background: none; color: var(--ink-3); cursor: pointer; }
+
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: var(--row-py) var(--cell-px); border-bottom: 1px solid var(--rule-soft); }
 th {
@@ -436,6 +455,9 @@ tbody tr:hover { background: var(--accent-soft); }
   flex: 1 1 auto; min-height: 0; overflow: auto;
   display: flex; flex-direction: column; gap: 14px; padding: 18px;
 }
+/* A page's message raised while this dialog is open (`Alert`): kept in view while the form scrolls. */
+.modal-notices { position: sticky; top: -18px; z-index: 1; display: flex; flex-direction: column; gap: 8px; }
+.modal-notices:empty { display: none; }
 .modal-foot { flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--rule-soft); }
 
 /* Somebody already has this phone number. Shown while it is being typed, with

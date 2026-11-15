@@ -1,4 +1,5 @@
 import { eq, and, inArray, isNull } from 'drizzle-orm'
+import { isFamilyName } from '../stock.js'
 import type { SqlDriver } from '../../db/driver.js'
 import { q, schema } from '../../db/q.js'
 import { businessDate } from '../../dates.js'
@@ -174,6 +175,10 @@ export async function priceBill(
       .from(schema.products)
       .where(and(eq(schema.products.id, line.productId), isNull(schema.products.deletedAt)))
     if (!product) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
+    /* An item with colours is the family's name (`variants.ts`): the stock is
+       on the colours, and a line for the pen would sell from a shelf that has
+       none of them. The counter asks which colour; this is the rule underneath. */
+    if (await isFamilyName(db, product.id)) return { ok: false, code: 'PICK_A_VERSION', productId: product.id, productName: product.name }
 
     const discountBlocked = product.discountBlocked === 1
     const loyaltyBlocked = product.loyaltyBlocked === 1

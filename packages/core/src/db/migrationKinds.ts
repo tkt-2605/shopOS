@@ -190,6 +190,14 @@ export const MIGRATION_FILES: ReadonlyArray<readonly [number, string, MigrationK
   [83, '083_an_online_customer_can_be_stopped.sql', 'additive'],
   // A new table that stays on each till; nothing about it crosses.
   [84, '084_what_each_migration_said.sql', 'additive'],
+  /* A nullable column on products, read only when an item is saved; a till
+     below it passes a parent on without it, and its family stops following. */
+  [85, '085_versions_share_one_price.sql', 'additive'],
+  /* A nullable column on documents, read only to show which one a correction
+     replaced; a till below it passes a document on without the link. */
+  [86, '086_a_document_corrected.sql', 'additive'],
+  // Indexes for every foreign key, five redundant ones dropped, and a guard on gl_entries.voucher_type that skips rows applied by sync. No column, no row.
+  [87, '087_every_reference_has_an_index.sql', 'additive'],
 ]
 
 /**

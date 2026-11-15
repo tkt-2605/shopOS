@@ -11,6 +11,7 @@ import { defaultPriceListId, listIncludesTax, loadPriceCandidates } from '../../
 import { isOn } from '../features.js'
 import type { BelowCostRefusal } from '../belowCost.js'
 import { removeItemPrice, setItemPrice } from './itemPrices.js'
+import { allOrNothing } from '../allOrNothing.js'
 
 /*
  * A box's own price and its own MRP, for everyone (079).
@@ -110,32 +111,34 @@ export async function setUnitPrices(
     }
   }
 
-  // Prices first: one refused for being below cost leaves every MRP as it was too.
-  for (const unit of input.units) {
-    const was = before.get(unit.saleUnit)!
-    if (unit.rate === was.rate) continue
-    const one = await priceOfOne(db, listId!, input.productId, unit.saleUnit)
-    if (unit.rate === null) {
-      if (one) await removeItemPrice(db, ctx, one.id)
-      continue
+  /* Prices first: one refused for being below cost leaves every MRP as it was
+     too. And all of it in one transaction, so the second unit refused does not
+     leave the first one's new price written. */
+  return allOrNothing<SetUnitPricesResult>(db, async (tx, refuse) => {
+    for (const unit of input.units) {
+      const was = before.get(unit.saleUnit)!
+      if (unit.rate === was.rate) continue
+      const one = await priceOfOne(tx, listId!, input.productId, unit.saleUnit)
+      if (unit.rate === null) {
+        if (one) await removeItemPrice(tx, ctx, one.id)
+        continue
+      }
+      // Kept the way the shop's list quotes, as every rate on it is.
+      const written = await setItemPrice(tx, ctx, {
+        productId: input.productId, priceListId: listId!, saleUnit: unit.saleUnit, minQty: qty(QTY_SCALE),
+        rate: withTax ? unit.rate : splitTax(unit.rate, tax.rateBp, 'intra_state', tax.cessBp).taxableValue,
+        validFrom: null, validTo: null, allowBelowCost: input.allowBelowCost === true,
+      })
+      if (!written.ok) {
+        if (written.code === 'BELOW_COST') return refuse(written)
+        return refuse({ ok: false, code: 'UNKNOWN_UNIT', saleUnit: unit.saleUnit })
+      }
     }
-    // Kept the way the shop's list quotes, as every rate on it is.
-    const written = await setItemPrice(db, ctx, {
-      productId: input.productId, priceListId: listId!, saleUnit: unit.saleUnit, minQty: qty(QTY_SCALE),
-      rate: withTax ? unit.rate : splitTax(unit.rate, tax.rateBp, 'intra_state', tax.cessBp).taxableValue,
-      validFrom: null, validTo: null, allowBelowCost: input.allowBelowCost === true,
-    })
-    if (!written.ok) {
-      if (written.code === 'BELOW_COST') return written
-      return { ok: false, code: 'UNKNOWN_UNIT', saleUnit: unit.saleUnit }
-    }
-  }
 
-  const now = ctx.now?.() ?? new Date().toISOString()
-  for (const unit of input.units) {
-    const was = before.get(unit.saleUnit)!
-    if (unit.mrp === was.mrp) continue
-    await db.transaction(async (tx) => {
+    const now = ctx.now?.() ?? new Date().toISOString()
+    for (const unit of input.units) {
+      const was = before.get(unit.saleUnit)!
+      if (unit.mrp === was.mrp) continue
       await q(tx).update(schema.productUnits)
         .set({ mrp: unit.mrp, updatedAt: now })
         .where(and(eq(schema.productUnits.productId, input.productId), eq(schema.productUnits.saleUnit, unit.saleUnit)))
@@ -143,9 +146,9 @@ export async function setUnitPrices(
         entity: 'products', entityId: input.productId, action: 'update',
         before: { [`${unit.saleUnit} MRP`]: was.mrp }, after: { [`${unit.saleUnit} MRP`]: unit.mrp },
       })
-    })
-  }
-  return { ok: true }
+    }
+    return { ok: true }
+  })
 }
 
 /* -------------------------------------------------------------- helpers --- */

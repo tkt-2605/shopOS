@@ -8,7 +8,7 @@ import { DRAFT, SUBMITTED, CANCELLED, assertCanApply, parseDocStatus } from '../
 import { writeAudit } from '../integrity/audit.js'
 import { recheckDocStatus } from '../integrity/transition.js'
 import { businessDate } from '../dates.js'
-import { postMovement, reverseVoucher, currentStock } from './stock.js'
+import { postMovement, reverseVoucher, currentStock, isFamilyName } from './stock.js'
 import {
   checkBatch, ensureBatch, findBatch, moveBatch, reverseBatches, incomingPrice, ownPriceUnderCost, type BelowCostRefusal,
 } from './batches.js'
@@ -72,6 +72,8 @@ export interface CreateStockEntryInput {
   roundOff?: Money
   /** Give a batch a price below what it cost anyway: for a role allowed to, and recorded (`belowCost.ts`). */
   allowBelowCost?: boolean
+  /** Set by `amendStockEntry`: the posted entry this one corrects. */
+  amendedFrom?: string | null
   actorId: string
   now?: Date
 }
@@ -81,6 +83,8 @@ export type CreateStockEntryResult =
   | { ok: false; code: 'NO_LINES' }
   | { ok: false; code: 'ZERO_QTY'; productId: string }
   | { ok: false; code: 'UNKNOWN_PRODUCT'; productId: string }
+  /** Goods in to an item that has variants: they go onto one of the variants (`isFamilyName` in stock.ts). */
+  | { ok: false; code: 'PICK_A_VERSION'; productId: string }
   | { ok: false; code: 'INFLOW_NEEDS_POSITIVE_QTY'; productId: string }
   | { ok: false; code: 'BAD_BATCH_NO'; productId: string }
   | { ok: false; code: 'BAD_EXPIRY'; productId: string }
@@ -157,6 +161,11 @@ export async function createStockEntry(
       .from(schema.products)
       .where(and(eq(schema.products.id, line.productId), isNull(schema.products.deletedAt)))
     if (!exists) return { ok: false, code: 'UNKNOWN_PRODUCT', productId: line.productId }
+    /* Goods coming in go onto a variant, never onto the family's name. Going
+       out is allowed: that is how stock held before the variants is cleared. */
+    if (signedQty(input.entryType, line.qty) > 0 && await isFamilyName(db, line.productId)) {
+      return { ok: false, code: 'PICK_A_VERSION', productId: line.productId }
+    }
   }
 
   /* Batches are checked before anything is written, so a refusal leaves no
@@ -224,6 +233,7 @@ export async function createStockEntry(
       id: entryId,
       docNo: `DRAFT-${entryId}`,
       docstatus: DRAFT,
+      amendedFrom: input.amendedFrom ?? null,
       entryType: input.entryType,
       postingDate,
       supplierId: input.supplierId ?? null,

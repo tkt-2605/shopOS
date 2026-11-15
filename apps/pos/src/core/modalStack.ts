@@ -74,6 +74,11 @@ export function anyModalOpen(): boolean {
   return stack.length > 0
 }
 
+/** The dialog on top, for a page's message that must be seen above it (`Alert`). */
+export function topModal(): string | null {
+  return stack[stack.length - 1] ?? null
+}
+
 export function modalDepth(): number {
   return stack.length
 }

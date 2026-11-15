@@ -243,8 +243,12 @@ export async function payRefund(
   tx: SqlDriver,
   input: {
     returnId: string
+    billId: string
     method: RefundMethod
-    amount: Money
+    /** What comes off the account: the bill's own unpaid credit, and all of it when `method` is the account. */
+    toAccount: Money
+    /** What goes back by hand, through `method`. Nothing when `method` is the account. */
+    back: Money
     customerId: string | null
     reference: string
     reason: string | null
@@ -254,30 +258,31 @@ export async function payRefund(
     now: Date
   },
 ): Promise<string | null> {
-  if (input.amount <= 0) return null
-
-  if (input.method === 'credit') {
+  let noteNo: string | null = null
+  if (input.toAccount > 0) {
     const note = await postCreditNote(tx, {
       customerId: input.customerId!,
-      amount: input.amount,
+      amount: input.toAccount,
       reference: input.reference,
       notes: input.reason,
       ...(input.registerPrefix ? { registerPrefix: input.registerPrefix } : {}),
+      firstBillId: input.billId,
       actorId: input.actorId,
       now: input.now,
     })
     await q(tx).update(schema.salesReturns)
       .set({ creditNoteId: note.paymentId })
       .where(eq(schema.salesReturns.id, input.returnId))
-    return note.docNo
+    noteNo = note.docNo
   }
+  if (input.back <= 0 || input.method === 'credit') return noteNo
 
   const session = await openSessionFor(tx, input.registerId)
   if (session) {
     await postCashMovement(tx, {
       sessionId: session,
       direction: 'out',
-      amount: input.amount,
+      amount: input.back,
       method: input.method,
       sourceType: 'sales_return',
       sourceId: input.returnId,
@@ -285,5 +290,21 @@ export async function payRefund(
       now: input.now,
     })
   }
-  return null
+  return noteNo
+}
+
+/**
+ * How a refund on a bill sold partly on credit goes back (decided 15 Nov).
+ *
+ * What the bill still owes comes off the account first; only the rest goes
+ * back by hand. A bill of 1,000 -- 500 in cash, 500 on credit not yet paid --
+ * returned whole is 500 off the account and 500 in cash. Handed back in cash
+ * whole, the shop paid out 500 it had never been paid, against a debt it then
+ * had to chase. Asked for onto the account, the rest goes there too, within
+ * what the customer owes in all (`NOTHING_TO_CREDIT`).
+ */
+export function creditFirst(refund: Money, owedOnBill: Money, method: RefundMethod): { toAccount: Money; back: Money } {
+  const settles = paise(Math.max(0, Math.min(refund, owedOnBill)))
+  const rest = paise(refund - settles)
+  return method === 'credit' ? { toAccount: refund, back: ZERO } : { toAccount: settles, back: rest }
 }

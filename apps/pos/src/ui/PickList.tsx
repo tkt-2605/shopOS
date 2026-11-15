@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { topModal, onModalStackChange } from '../core/modalStack'
 
 /**
  * A list you can choose from without the mouse.
@@ -197,6 +198,21 @@ export function Results({ anchor, open, children }: {
   children: ReactNode
 }) {
   const [box, setBox] = useState<CSSProperties | null>(null)
+  /* A list belongs to the dialog it was drawn in, or to the page. A dialog
+     opened after it -- the "which one?" box a pick from this very list opens --
+     covers it, so the list steps aside until that dialog closes: drawn on the
+     body, it would otherwise float over the dialog it opened. */
+  const [covered, setCovered] = useState(false)
+  useEffect(() => {
+    const check = () => {
+      const top = topModal()
+      const dialog = top === null ? null
+        : [...document.querySelectorAll<HTMLElement>('[data-notices-for]')].find((el) => el.dataset.noticesFor === top)?.closest('.modal')
+      setCovered(top !== null && !(dialog?.contains(anchor.current ?? null) ?? false))
+    }
+    check()
+    return onModalStackChange(check)
+  }, [anchor])
 
   useLayoutEffect(() => {
     if (!open) { setBox(null); return }
@@ -233,7 +249,7 @@ export function Results({ anchor, open, children }: {
     }
   }, [open, anchor, children])
 
-  if (!open || !box) return null
+  if (!open || !box || covered) return null
 
   /* Tab hands the keyboard back to the search box and then carries on, so the
      next stop is the one after the box rather than wherever the body happens to

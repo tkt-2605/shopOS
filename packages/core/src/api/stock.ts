@@ -28,6 +28,12 @@ export * as Valuation from '../domain/valuation.js'
 export { reorderList, bySupplier } from '../repos/reorder.js'
 export { costHints, costHint } from '../repos/costs.js'
 export { listStockEntries, loadStockEntry } from '../repos/stockEntries.js'
+export {
+  loadEntryToEdit, saveStockEntryDraft, discardStockEntryDraft, amendStockEntry,
+} from '../services/stockEntryEdit.js'
+export type {
+  EntryToEdit, SaveDraftEntryInput, SaveDraftEntryResult, AmendEntryInput, AmendEntryResult,
+} from '../services/stockEntryEdit.js'
 export type { StockEntryFilter, StockEntryRow, StockEntryView, StockEntryLine, StockEntryState } from '../repos/stockEntries.js'
 export type { CostHint } from '../repos/costs.js'
 export { costFloors, underCost, mayAllowBelowCost } from '../services/belowCost.js'

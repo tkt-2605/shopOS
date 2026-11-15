@@ -50,6 +50,7 @@ export async function createDocument(
       notes: input.notes ?? null,
       terms: input.terms ?? null,
       convertedFrom: input.convertedFrom ?? null,
+      amendedFrom: input.amendedFrom ?? null,
       createdBy: input.actorId,
       createdAt: nowIso,
       updatedAt: nowIso,

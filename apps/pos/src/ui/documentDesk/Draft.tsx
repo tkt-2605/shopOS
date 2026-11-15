@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Money, Quantity, Tax, searchProducts, searchCustomers, listSuppliers, createDocument, editDraftDocument,
-  submitDocument, costHint, productsByIds, pricingContextFor,
+  submitDocument, amendDocument, costHint, productsByIds, pricingContextFor,
   type ProductListItem, type CustomerListItem, type Supplier, type DocumentKind, type DocumentDetail,
 } from '@shopos/core'
 import { useCore } from '../../core/CoreProvider'
 import { Field, Modal, Empty, Rupees } from '../components'
 import { usePickList } from '../PickList'
 import { useSearch } from '../useSearch'
-import { useScanChoice } from '../ScanChoice'
+import { useScanChoice, codeOnSeveral } from '../ScanChoice'
 import type { DeskConfig, Line } from './types'
 import { costNote } from '../costNote'
 import { pairOf, type Side } from '../gstPair'
@@ -44,6 +44,8 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
   const [gstMode, setGstMode] = useGstMode()
 
   const label = config.labels[kind]!
+  /** An issued one opened to correct: saving cancels it and issues the corrected one (`amendDocument`). */
+  const amending = editing?.docstatus === 1
 
   const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 25 }))
   const results = search.rows
@@ -99,13 +101,13 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
   const pick = usePickList({
     count: results.length,
     resetKey: term,
-    onPick: (i) => { const hit = results[i]; if (hit) add(hit) },
+    onPick: (i) => { const hit = results[i]; if (hit && !scanChoice.askFamily(hit)) void add(hit) },
     enter: async () => {
       const typed = term.trim()
       const rows = await search.latest()
       if (scanChoice.ask(rows, typed)) return
       const [hit] = rows
-      if (hit) return add(hit)
+      if (hit) return scanChoice.askFamily(hit) ? setTerm('') : add(hit)
       setTerm('')
       onError(`Nothing in the catalog matches ${typed}.`)
     },
@@ -174,6 +176,13 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
       ...(notes.trim() ? { notes: notes.trim() } : {}),
       actorId: userId,
     }
+    if (amending && editing) {
+      const fixed = await amendDocument(db, { ...fields, documentId: editing.id, registerId })
+      setBusy(false)
+      if (!fixed.ok) { onError(amendRefusal(fixed.code, label.name, config.party)); return }
+      onDone(`${label.name} ${fixed.replaced} corrected. It is now ${fixed.docNo}; ${fixed.replaced} is kept, cancelled.`)
+      return
+    }
     const made = editing
       ? await editDraftDocument(db, { ...fields, documentId: editing.id })
       : await createDocument(db, { ...fields, kind, registerId })
@@ -207,19 +216,28 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
   return (<>
     {scanChoice.dialog}
     <Modal
-      title={editing ? `Edit draft ${label.name.toLowerCase()} ${editing.docNo}` : `New ${label.name.toLowerCase()}`}
+      title={amending ? `Correct ${label.name.toLowerCase()} ${editing!.docNo}`
+        : editing ? `Edit draft ${label.name.toLowerCase()} ${editing.docNo}` : `New ${label.name.toLowerCase()}`}
       wide
       onClose={onClose}
       footer={<>
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn" disabled={busy || lines.length === 0} onClick={() => void save(false)}>
-          {editing ? 'Save draft' : 'Save as draft'}
-        </button>
+        {!amending && (
+          <button className="btn" disabled={busy || lines.length === 0} onClick={() => void save(false)}>
+            {editing ? 'Save draft' : 'Save as draft'}
+          </button>
+        )}
         <button className="btn primary" disabled={busy || lines.length === 0} onClick={() => void save(true)}>
-          Issue
+          {amending ? 'Save correction' : 'Issue'}
         </button>
       </>}
     >
+      {amending && (
+        <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 10 }}>
+          Saving cancels {editing!.docNo} and issues the corrected {label.name.toLowerCase()} under a new number.
+          {editing!.docNo} stays on the list, marked cancelled, so the one the customer was given can still be found.
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
         <Field label={config.party === 'supplier' ? 'Supplier' : 'Customer'}>
           <select className="select" id="doc-party" value={partyId} onChange={(e) => setPartyId(e.target.value)}>
@@ -246,7 +264,7 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
         onChange={(e) => setTerm(e.target.value)} onKeyDown={pick.searchKeyDown}
       />
 
-      {term !== '' && (
+      {term !== '' && !codeOnSeveral(search) && (
         <div className="card" style={{ maxHeight: 200, overflow: 'auto', marginTop: 8 }}>
           <table>
             <tbody {...pick.listProps}>
@@ -326,4 +344,20 @@ export function Draft({ config, kind, editing, onClose, onDone, onError, registe
       </div>
     </Modal>
   </>)
+}
+
+/** Why a correction was refused, in the words of the screen it was made on. */
+function amendRefusal(code: string, name: string, party: 'customer' | 'supplier'): string {
+  const lower = name.toLowerCase()
+  switch (code) {
+    case 'NO_LINES': return 'Add at least one item.'
+    case 'INVALID_QTY': return 'Every line needs a quantity above zero.'
+    case 'PARTY_REQUIRED': return party === 'supplier' ? 'A purchase order needs a supplier.' : 'A document needs a customer.'
+    case 'PARTLY_FULFILLED': case 'FULLY_FULFILLED':
+      return `Something has been ${party === 'supplier' ? 'received' : 'billed or ordered'} against this ${lower} since it was opened, so it can no longer be corrected. Nothing was changed.`
+    case 'ALREADY_CANCELLED': case 'NOT_ISSUED': return `This ${lower} was cancelled or changed on another counter since it was opened. Nothing was changed.`
+    case 'FROM_ONLINE_ORDER': return 'This order came from the online shop, and the customer is following it there. Answer it from Online orders instead.'
+    case 'UNKNOWN_DOCUMENT': return `This ${lower} is no longer here.`
+    default: return 'One of those items is no longer in the catalogue. Nothing was changed.'
+  }
 }

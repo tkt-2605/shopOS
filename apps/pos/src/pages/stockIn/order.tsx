@@ -128,6 +128,7 @@ export function refusalMessage(r: Exclude<ReceiveResult, { ok: true }>): string 
         + 'A batch has one expiry — check the pack and the delivery note.'
     case 'UNKNOWN_BATCH': return `There is no batch ${r.batchNo} of that item in stock.`
     case 'UNKNOWN_PRODUCT': return 'One of the items no longer exists.'
+    case 'PICK_A_VERSION': return 'An item has variants now. Take its line off and pick the variant the goods are.'
     case 'BATCH_WOULD_GO_NEGATIVE':
       return `Batch ${r.batchNo} holds only ${Quantity.formatQty(r.available)}. Check the quantities.`
     case 'PERIOD_CLOSED': return periodClosedMessage(r.closedThrough)

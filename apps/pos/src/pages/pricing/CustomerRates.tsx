@@ -12,7 +12,7 @@ import { belowCostMessage, retryBelowCost } from '../../ui/belowCost'
 import { LadderEditor, describeRowsProblem, type LadderRow } from '../../ui/LadderEditor'
 import { usePickList, Results } from '../../ui/PickList'
 import { useSearch } from '../../ui/useSearch'
-import { useScanChoice } from '../../ui/ScanChoice'
+import { useScanChoice, codeOnSeveral } from '../../ui/ScanChoice'
 
 /* The second tab: a customer's list, and the prices only they get. */
 
@@ -293,7 +293,7 @@ export function CustomerRates({ canWrite }: { canWrite: boolean }) {
                   <input className="input" ref={itemBox} placeholder="Add a rate — search the item"
                     value={productTerm} onChange={(e) => setProductTerm(e.target.value)}
                     onKeyDown={productPick.searchKeyDown} />
-                  <Results anchor={itemBox} open={productResults.length > 0}>
+                  <Results anchor={itemBox} open={productResults.length > 0 && !codeOnSeveral(productSearch)}>
                     <div {...productPick.listProps}>
                       {productResults.map((p, i) => (
                         <div key={p.id} style={{ padding: '7px 10px' }}

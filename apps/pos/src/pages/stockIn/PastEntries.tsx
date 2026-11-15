@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
-  Quantity, Tax, listStockEntries, loadStockEntry, listSuppliers,
+  Quantity, Tax, Permissions, listStockEntries, loadStockEntry, listSuppliers, discardStockEntryDraft,
   type StockEntryRow, type StockEntryView, type StockEntryState, type StockEntryType, type Supplier,
 } from '@shopos/core'
-import { useCore } from '../../core/CoreProvider'
-import { Card, DateRangePicker, DocStatusBadge, Empty, Modal, Rupees, rangePreset, type Range } from '../../ui/components'
+import { useCore, useUser } from '../../core/CoreProvider'
+import { Alert, Card, DateRangePicker, DocStatusBadge, Empty, Modal, Rupees, rangePreset, type Range } from '../../ui/components'
 
 /*
  * Every stock entry the shop has made, in one place: deliveries, opening
@@ -27,31 +27,44 @@ const KIND_NAME: Record<StockEntryType, string> = {
 
 const STATES: { id: StockEntryState; name: string }[] = [
   { id: 'submitted', name: 'Posted' },
+  { id: 'draft', name: 'Drafts' },
   { id: 'cancelled', name: 'Cancelled' },
   { id: 'all', name: 'All' },
 ]
 
+/** An entry the list asked the form to open. The counter makes asking twice for one entry a second request. */
+export interface OpenRequest { entryId: string; asked: number }
+
 /**
  * The Stock In page's two views: entering stock, and the entries made. The
  * entry form stays mounted while the list is shown, so lines being typed are
- * still there on coming back.
+ * still there on coming back. A draft opened, or a posted entry to correct,
+ * goes from the list into the form (`stockIn/editing.tsx`).
  */
-export function StockInViews({ newEntry }: { newEntry: ReactNode }) {
+export function StockInViews({ renderNew }: {
+  renderNew: (open: OpenRequest | null, onSaved: () => void) => ReactNode
+}) {
   const [view, setView] = useState<'new' | 'past'>('new')
+  const [open, setOpen] = useState<OpenRequest | null>(null)
+  const [saved, setSaved] = useState(0)
+  const edit = (entryId: string) => { setOpen((was) => ({ entryId, asked: (was?.asked ?? 0) + 1 })); setView('new') }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div className="segment" role="tablist" aria-label="Stock in">
         <button type="button" aria-pressed={view === 'new'} onClick={() => setView('new')}>New entry</button>
         <button type="button" aria-pressed={view === 'past'} onClick={() => setView('past')}>Past entries</button>
       </div>
-      <div style={{ display: view === 'new' ? 'block' : 'none' }}>{newEntry}</div>
-      {view === 'past' && <PastEntries />}
+      <div style={{ display: view === 'new' ? 'block' : 'none' }}>{renderNew(open, () => setSaved((n) => n + 1))}</div>
+      {view === 'past' && <PastEntries key={saved} onEdit={edit} />}
     </div>
   )
 }
 
-export function PastEntries() {
+export function PastEntries({ onEdit }: { onEdit?: (entryId: string) => void } = {}) {
   const { db } = useCore()
+  const user = useUser()
+  const canPost = Permissions.can(user.permissions, 'stock_entry', 'submit')
+  const [notice, setNotice] = useState<string | null>(null)
   const [range, setRange] = useState<Range>(rangePreset('month'))
   const [kind, setKind] = useState<StockEntryType | 'all'>('all')
   const [state, setState] = useState<StockEntryState>('submitted')
@@ -115,7 +128,7 @@ export function PastEntries() {
             {rows.map((r) => (
               <tr key={r.id} onClick={() => void loadStockEntry(db, r.id).then(setOpen)} style={{ cursor: 'pointer' }}>
                 <td>{r.postingDate}</td>
-                <td className="num">{r.docNo}</td>
+                <td className="num">{r.docstatus === 0 ? 'Draft' : r.docNo}</td>
                 <td>
                   {KIND_NAME[r.entryType]}
                   {r.docstatus !== 1 && <> <DocStatusBadge status={r.docstatus} /></>}
@@ -143,18 +156,46 @@ export function PastEntries() {
         </table>
       </div>
 
-      {open && <EntryDetail entry={open} onClose={() => setOpen(null)} />}
+      {notice && <Alert kind="ok">{notice}</Alert>}
+      {open && (
+        <EntryDetail
+          entry={open}
+          onClose={() => setOpen(null)}
+          {...(onEdit && canPost ? { onEdit: () => { setOpen(null); onEdit(open.id) } } : {})}
+          {...(open.docstatus === 0 ? {
+            onDiscard: async () => {
+              const gone = await discardStockEntryDraft(db, { entryId: open.id, actorId: user.id })
+              setOpen(null)
+              setNotice(gone.ok ? 'The draft was discarded.' : 'That draft was posted or removed on another counter.')
+              void refresh()
+            },
+          } : {})}
+        />
+      )}
     </div>
   )
 }
 
-function EntryDetail({ entry, onClose }: { entry: StockEntryView; onClose: () => void }) {
+function EntryDetail({ entry, onClose, onEdit, onDiscard }: {
+  entry: StockEntryView
+  onClose: () => void
+  /** Opens it in the form: a draft to finish, or a posted entry to correct. */
+  onEdit?: () => void
+  onDiscard?: () => void
+}) {
+  const draft = entry.docstatus === 0
   return (
     <Modal
-      title={`${KIND_NAME[entry.entryType]} ${entry.docNo}`}
+      title={draft ? `Draft ${KIND_NAME[entry.entryType].toLowerCase()}` : `${KIND_NAME[entry.entryType]} ${entry.docNo}`}
       wide
       onClose={onClose}
-      footer={<button className="btn" onClick={onClose}>Close</button>}
+      footer={<>
+        <button className="btn" onClick={onClose}>Close</button>
+        {onDiscard && <button className="btn" onClick={onDiscard}>Discard draft</button>}
+        {onEdit && entry.docstatus !== 2 && (
+          <button className="btn primary" onClick={onEdit}>{draft ? 'Open to finish' : 'Edit'}</button>
+        )}
+      </>}
     >
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, fontSize: 12.5, marginBottom: 10 }}>
         <span><span style={{ color: 'var(--ink-3)' }}>Date </span>{entry.postingDate}</span>
@@ -168,6 +209,8 @@ function EntryDetail({ entry, onClose }: { entry: StockEntryView; onClose: () =>
         {entry.reference && <span><span style={{ color: 'var(--ink-3)' }}>Reference </span>{entry.reference}</span>}
         {entry.createdBy && <span><span style={{ color: 'var(--ink-3)' }}>By </span>{entry.createdBy}</span>}
         <DocStatusBadge status={entry.docstatus} />
+        {entry.corrects && <span><span style={{ color: 'var(--ink-3)' }}>Corrects </span>{entry.corrects}</span>}
+        {entry.correctedBy && <span><span style={{ color: 'var(--ink-3)' }}>Corrected by </span>{entry.correctedBy}</span>}
       </div>
       {entry.notes && <div style={{ fontSize: 12.5, marginBottom: 10 }}>{entry.notes}</div>}
       <div className="card card-scroll">

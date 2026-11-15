@@ -1,4 +1,4 @@
-import { eq, and, ne, inArray, isNotNull, asc, desc, sql } from 'drizzle-orm'
+import { eq, and, ne, inArray, isNull, isNotNull, asc, desc, sql, count } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId, observeId } from '../ids.js'
@@ -499,4 +499,21 @@ export async function productValuation(
     .orderBy(asc(MADE))
 
   return method === 'fifo' ? fifo(movements) : movingAverage(movements)
+}
+
+/**
+ * Whether an item is a family's name: it has variants in use (`variants.ts`).
+ *
+ * Such an item holds no stock of its own going forward -- the stock is on the
+ * variants -- so nothing sells it or buys it in. A bill and a stock entry
+ * coming in each ask this. Kept out of
+ * `variants.ts`, which posts stock entries, so the stock entry service can
+ * ask it without a cycle: here, beside the rest of what a shelf may hold.
+ */
+export async function isFamilyName(db: SqlDriver, productId: string): Promise<boolean> {
+  const [family] = await q(db)
+    .select({ n: count() })
+    .from(schema.products)
+    .where(and(eq(schema.products.parentProductId, productId), isNull(schema.products.deletedAt), eq(schema.products.isActive, 1)))
+  return (family?.n ?? 0) > 0
 }

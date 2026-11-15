@@ -147,6 +147,7 @@ export const categories = sqliteTable('categories', {
     foreignColumns: [table.id],
     name: 'categories_parent_id_categories_id_fk'
   })),
+  index('idx_categories_parent').on(table.parentId),
 ])
 
 export const products = sqliteTable('products', {
@@ -185,6 +186,8 @@ export const products = sqliteTable('products', {
   costPrice: money('cost_price'),
   /** When the cost price was last set: newer than the last purchase, it is the one suggested (075). */
   costPriceAt: text('cost_price_at'),
+  /** On a parent: 1 when its versions take its price each time it is saved (085). */
+  familyPrice: integer('family_price'),
 }, (table) => [
   index('idx_products_parent').on(table.parentProductId),
   index('idx_products_reorder').on(table.reorderLevel),
@@ -247,7 +250,7 @@ export const itemPrices = sqliteTable('item_prices', {
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
 }, (table) => [
-  index('idx_item_prices_lookup').on(table.productId, table.priceListId, table.saleUnit),
+  index('idx_item_prices_price_list').on(table.priceListId),
 ])
 
 export const customers = sqliteTable('customers', {
@@ -273,6 +276,7 @@ export const customers = sqliteTable('customers', {
 }, (table) => [
   index('idx_customers_name').on(table.name),
   index('idx_customers_phone').on(table.phone),
+  index('idx_customers_price_list').on(table.priceListId),
 ])
 
 export const suppliers = sqliteTable('suppliers', {
@@ -351,6 +355,9 @@ export const cashSessions = sqliteTable('cash_sessions', {
    * allowed, this index has to go at the same time.
    */
   uniqueIndex('idx_cash_sessions_one_open').on(table.registerId),
+  index('idx_cash_sessions_register').on(table.registerId),
+  index('idx_cash_sessions_opened_by').on(table.openedBy),
+  index('idx_cash_sessions_closed_by').on(table.closedBy),
 ])
 
 export const cashMovements = sqliteTable('cash_movements', {
@@ -366,6 +373,7 @@ export const cashMovements = sqliteTable('cash_movements', {
   createdAt: text('created_at').notNull(),
 }, (table) => [
   index('idx_cash_movements_session').on(table.sessionId),
+  index('idx_cash_movements_created_by').on(table.createdBy),
 ])
 
 export const bills = sqliteTable('bills', {
@@ -417,6 +425,10 @@ export const bills = sqliteTable('bills', {
     name: 'bills_amended_from_bills_id_fk'
   })),
   index('idx_bills_amended_from').on(table.amendedFrom),
+  index('idx_bills_register_status_date').on(table.registerId, table.docstatus, table.postingDate),
+  index('idx_bills_session').on(table.sessionId),
+  index('idx_bills_created_by').on(table.createdBy),
+  index('idx_bills_cancelled_by').on(table.cancelledBy),
 ])
 
 export const billItems = sqliteTable('bill_items', {
@@ -451,7 +463,7 @@ export const billItems = sqliteTable('bill_items', {
   batchId: text('batch_id').references(() => batches.id),
 }, (table) => [
   index('idx_bill_items_product').on(table.productId),
-  index('idx_bill_items_bill').on(table.billId),
+  index('idx_bill_items_batch').on(table.batchId),
 ])
 
 export const billPayments = sqliteTable('bill_payments', {
@@ -494,6 +506,9 @@ export const salesReturns = sqliteTable('sales_returns', {
     name: 'sales_returns_amended_from_sales_returns_id_fk'
   })),
   index('idx_sales_returns_date').on(table.postingDate),
+  index('idx_sales_returns_credit_note').on(table.creditNoteId),
+  index('idx_sales_returns_created_by').on(table.createdBy),
+  index('idx_sales_returns_amended_from').on(table.amendedFrom),
 ])
 
 export const salesReturnItems = sqliteTable('sales_return_items', {
@@ -514,6 +529,7 @@ export const salesReturnItems = sqliteTable('sales_return_items', {
 }, (table) => [
   index('idx_sales_return_items_return').on(table.returnId),
   index('idx_sales_return_items_bill_item').on(table.billItemId),
+  index('idx_sales_return_items_product').on(table.productId),
 ])
 
 export const paymentEntries = sqliteTable('payment_entries', {
@@ -544,6 +560,9 @@ export const paymentEntries = sqliteTable('payment_entries', {
     name: 'payment_entries_amended_from_payment_entries_id_fk'
   })),
   index('idx_payment_entries_date').on(table.postingDate),
+  index('idx_payment_entries_supplier').on(table.supplierId),
+  index('idx_payment_entries_created_by').on(table.createdBy),
+  index('idx_payment_entries_amended_from').on(table.amendedFrom),
 ])
 
 export const paymentAllocations = sqliteTable('payment_allocations', {
@@ -586,6 +605,9 @@ export const stockEntries = sqliteTable('stock_entries', {
     name: 'stock_entries_amended_from_stock_entries_id_fk'
   })),
   index('idx_stock_entries_date').on(table.postingDate),
+  index('idx_stock_entries_supplier').on(table.supplierId, table.docstatus, table.postingDate),
+  index('idx_stock_entries_created_by').on(table.createdBy),
+  index('idx_stock_entries_amended_from').on(table.amendedFrom),
 ])
 
 export const stockEntryItems = sqliteTable('stock_entry_items', {
@@ -603,6 +625,7 @@ export const stockEntryItems = sqliteTable('stock_entry_items', {
   cessAmount: money('cess_amount').default(ZERO).notNull(),
 }, (table) => [
   index('idx_stock_entry_items_entry').on(table.entryId),
+  index('idx_stock_entry_items_product').on(table.productId),
 ])
 
 export const stockLedger = sqliteTable('stock_ledger', {
@@ -624,6 +647,7 @@ export const stockLedger = sqliteTable('stock_ledger', {
   index('idx_stock_ledger_voucher').on(table.voucherType, table.voucherId),
   index('idx_stock_ledger_product').on(table.productId, table.postingDate),
   index('idx_stock_ledger_made').on(table.productId, table.id),
+  index('idx_stock_ledger_created_by').on(table.createdBy),
 ])
 
 /** One batch of one product (062). The id is derived from the two, see `domain/batches.ts`. */
@@ -664,6 +688,7 @@ export const batchMovements = sqliteTable('batch_movements', {
   index('idx_batch_movements_product').on(table.productId),
   index('idx_batch_movements_voucher').on(table.voucherType, table.voucherId),
   index('idx_batch_movements_line').on(table.voucherLineId),
+  index('idx_batch_movements_created_by').on(table.createdBy),
 ])
 
 /**
@@ -697,6 +722,7 @@ export const stockEntryBatches = sqliteTable('stock_entry_batches', {
   batchId: text('batch_id').notNull().references(() => batches.id),
 }, (table) => [
   index('idx_stock_entry_batches_entry').on(table.entryId),
+  index('idx_stock_entry_batches_batch').on(table.batchId),
 ])
 
 export const productStock = sqliteTable('product_stock', {
@@ -737,6 +763,7 @@ export const loyaltyRedemptions = sqliteTable('loyalty_redemptions', {
 }, (table) => [
   index('idx_loyalty_redemptions_bill').on(table.billId),
   index('idx_loyalty_redemptions_entry').on(table.loyaltyEntryId),
+  index('idx_loyalty_redemptions_customer').on(table.customerId),
 ])
 
 export const auditLog = sqliteTable('audit_log', {
@@ -780,6 +807,7 @@ export const attachments = sqliteTable('attachments', {
 }, (table) => [
   index('idx_attachments_sha').on(table.sha256),
   index('idx_attachments_entity').on(table.entity, table.entityId),
+  index('idx_attachments_created_by').on(table.createdBy),
 ])
 
 export const stockCounts = sqliteTable('stock_counts', {
@@ -800,6 +828,9 @@ export const stockCounts = sqliteTable('stock_counts', {
   deletedAt: text('deleted_at'),
 }, (table) => [
   index('idx_stock_counts_open').on(table.docstatus),
+  index('idx_stock_counts_created_by').on(table.createdBy),
+  index('idx_stock_counts_entry').on(table.entryId),
+  index('idx_stock_counts_category').on(table.categoryId),
 ])
 
 export const stockCountItems = sqliteTable('stock_count_items', {
@@ -810,7 +841,7 @@ export const stockCountItems = sqliteTable('stock_count_items', {
   countedQty: qtyCol('counted_qty'),
   unitCost: money('unit_cost'),
 }, (table) => [
-  index('idx_stock_count_items_count').on(table.countId),
+  index('idx_stock_count_items_product').on(table.productId),
 ])
 
 export const productBarcodes = sqliteTable('product_barcodes', {
@@ -845,7 +876,7 @@ export const customerItemPrices = sqliteTable('customer_item_prices', {
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
 }, (table) => [
-  index('idx_customer_item_prices_lookup').on(table.customerId, table.productId, table.saleUnit),
+  index('idx_customer_item_prices_product').on(table.productId),
 ])
 
 export const docFormats = sqliteTable('doc_formats', {
@@ -888,6 +919,8 @@ export const documents = sqliteTable('documents', {
   cancelledBy: text('cancelled_by').references(() => users.id),
   cancelledAt: text('cancelled_at'),
   cancelReason: text('cancel_reason'),
+  /** The issued document this one corrects (086). */
+  amendedFrom: text('amended_from'),
   rev: integer().default(1).notNull(),
   originId: text('origin_id'),
   createdAt: text('created_at').notNull(),
@@ -902,6 +935,15 @@ export const documents = sqliteTable('documents', {
     foreignColumns: [table.id],
     name: 'documents_converted_from_documents_id_fk'
   })),
+  foreignKey(() => ({
+    columns: [table.amendedFrom],
+    foreignColumns: [table.id],
+    name: 'documents_amended_from_documents_id_fk'
+  })),
+  index('idx_documents_amended_from').on(table.amendedFrom),
+  index('idx_documents_created_by').on(table.createdBy),
+  index('idx_documents_cancelled_by').on(table.cancelledBy),
+  index('idx_documents_register').on(table.registerId),
 ])
 
 export const documentItems = sqliteTable('document_items', {
@@ -927,7 +969,7 @@ export const documentItems = sqliteTable('document_items', {
   cessAmount: money('cess_amount').default(ZERO).notNull(),
   rateIncludesTax: integer('rate_includes_tax').default(1).notNull(),
 }, (table) => [
-  index('idx_document_items_doc').on(table.documentId),
+  index('idx_document_items_product').on(table.productId),
 ])
 
 export const billFulfilments = sqliteTable('bill_fulfilments', {
@@ -1010,7 +1052,10 @@ export const webAccounts = sqliteTable('web_accounts', {
   blockedAt: text('blocked_at'),
   /** Migration 083. Sessions issued before this are refused. */
   signedOutBefore: text('signed_out_before'),
-})
+}, (table) => [
+  index('idx_web_accounts_customer').on(table.customerId),
+  index('idx_web_accounts_phone_verified_by').on(table.phoneVerifiedBy),
+])
 
 /** An order placed on the storefront, until and after a person answers it. Migration 080. */
 export const webOrders = sqliteTable('web_orders', {
@@ -1047,6 +1092,9 @@ export const webOrders = sqliteTable('web_orders', {
   agreedAt: text('agreed_at'),
 }, (table) => [
   index('idx_web_orders_status').on(table.status),
+  index('idx_web_orders_proposed_by').on(table.proposedBy),
+  index('idx_web_orders_answered_by').on(table.answeredBy),
+  index('idx_web_orders_document').on(table.documentId),
 ])
 
 /** Which of an item's attachments the storefront shows, in two sizes. Migration 080. */
@@ -1057,7 +1105,10 @@ export const productPhotos = sqliteTable('product_photos', {
   updatedAt: text('updated_at').notNull(),
   rev: integer().notNull().default(1),
   originId: text('origin_id'),
-})
+}, (table) => [
+  index('idx_product_photos_thumb').on(table.thumbId),
+  index('idx_product_photos_photo').on(table.photoId),
+])
 
 /** The main's own keys for the web: never replicated. Migration 080. */
 /** A SHA-256 of what each migration said when it ran here. Migration 084, `checkMigrationSums`. */

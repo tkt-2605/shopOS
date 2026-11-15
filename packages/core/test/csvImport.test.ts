@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { parseCsv, parseCsvRecords, toCsv } from '../src/domain/csv.js'
-import { planImport, applyImport, exportCatalogue, IMPORT_COLUMNS } from '../src/services/import.js'
+import { planImport, applyImport, IMPORT_COLUMNS } from '../src/services/import.js'
+import { exportCatalogue } from '../src/services/catalogueExport.js'
 import { rupees } from '../src/money.js'
 import { findByBarcode, findAllByBarcode } from '../src/repos/catalog/products.js'
 import { freshDb, makeProduct, type Fixture } from './helpers.js'

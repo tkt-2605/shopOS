@@ -9,6 +9,7 @@ import { unitExists } from './units.js'
 import { requirePermission } from '../../integrity/permissions.js'
 import { listIncludesTax } from '../../repos/pricing.js'
 import { rateRefusal, type BelowCostRefusal } from '../belowCost.js'
+import { allOrNothing } from '../allOrNothing.js'
 
 /*
  * Quantity breaks: the rate that applies from each quantity up, for a
@@ -75,36 +76,41 @@ export async function setLadder(
   })
   if (under) return under
 
-  const existing = await q(db)
-    .select({ id: schema.itemPrices.id, minQty: schema.itemPrices.minQty })
-    .from(schema.itemPrices)
-    .where(and(
-      eq(schema.itemPrices.productId, input.productId),
-      eq(schema.itemPrices.priceListId, input.priceListId),
-      eq(schema.itemPrices.saleUnit, input.saleUnit),
-      isNull(schema.itemPrices.deletedAt),
-    ))
-  const keep = new Set<number>(input.rungs.map((r) => r.minQty))
+  /* Every rung written and every dropped one removed in one transaction. A
+     rung refused partway used to leave the rungs before it written over the
+     old ladder -- half of each, which is a ladder nobody typed. */
+  return allOrNothing<SetLadderResult>(db, async (tx, refuse) => {
+    const existing = await q(tx)
+      .select({ id: schema.itemPrices.id, minQty: schema.itemPrices.minQty })
+      .from(schema.itemPrices)
+      .where(and(
+        eq(schema.itemPrices.productId, input.productId),
+        eq(schema.itemPrices.priceListId, input.priceListId),
+        eq(schema.itemPrices.saleUnit, input.saleUnit),
+        isNull(schema.itemPrices.deletedAt),
+      ))
+    const keep = new Set<number>(input.rungs.map((r) => r.minQty))
 
-  for (const rung of input.rungs) {
-    const written = await setItemPrice(db, ctx, {
-      productId: input.productId,
-      priceListId: input.priceListId,
-      saleUnit: input.saleUnit,
-      minQty: rung.minQty,
-      rate: rung.rate,
-      validFrom: input.validFrom ?? null,
-      validTo: input.validTo ?? null,
-      allowBelowCost: allow,
-    })
-    if (!written.ok) return written
-  }
+    for (const rung of input.rungs) {
+      const written = await setItemPrice(tx, ctx, {
+        productId: input.productId,
+        priceListId: input.priceListId,
+        saleUnit: input.saleUnit,
+        minQty: rung.minQty,
+        rate: rung.rate,
+        validFrom: input.validFrom ?? null,
+        validTo: input.validTo ?? null,
+        allowBelowCost: allow,
+      })
+      if (!written.ok) return refuse(written)
+    }
 
-  for (const row of existing) {
-    if (!keep.has(row.minQty)) await removeItemPrice(db, ctx, row.id)
-  }
+    for (const row of existing) {
+      if (!keep.has(row.minQty)) await removeItemPrice(tx, ctx, row.id)
+    }
 
-  return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.minQty)).length }
+    return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.minQty)).length }
+  })
 }
 
 /** The same, for a rate that belongs to one customer and one item. */
@@ -131,36 +137,39 @@ export async function setCustomerLadder(
   })
   if (under) return under
 
-  const existing = await q(db)
-    .select({ id: schema.customerItemPrices.id, minQty: schema.customerItemPrices.minQty })
-    .from(schema.customerItemPrices)
-    .where(and(
-      eq(schema.customerItemPrices.customerId, input.customerId),
-      eq(schema.customerItemPrices.productId, input.productId),
-      eq(schema.customerItemPrices.saleUnit, input.saleUnit),
-      isNull(schema.customerItemPrices.deletedAt),
-    ))
-  const keep = new Set<number>(input.rungs.map((r) => r.minQty))
+  // In one transaction, as setLadder is.
+  return allOrNothing<SetLadderResult>(db, async (tx, refuse) => {
+    const existing = await q(tx)
+      .select({ id: schema.customerItemPrices.id, minQty: schema.customerItemPrices.minQty })
+      .from(schema.customerItemPrices)
+      .where(and(
+        eq(schema.customerItemPrices.customerId, input.customerId),
+        eq(schema.customerItemPrices.productId, input.productId),
+        eq(schema.customerItemPrices.saleUnit, input.saleUnit),
+        isNull(schema.customerItemPrices.deletedAt),
+      ))
+    const keep = new Set<number>(input.rungs.map((r) => r.minQty))
 
-  for (const rung of input.rungs) {
-    const written = await setCustomerPrice(db, ctx, {
-      customerId: input.customerId,
-      productId: input.productId,
-      saleUnit: input.saleUnit,
-      minQty: rung.minQty,
-      rate: rung.rate,
-      validFrom: input.validFrom ?? null,
-      validTo: input.validTo ?? null,
-      allowBelowCost: allow,
-    })
-    if (!written.ok) return written
-  }
+    for (const rung of input.rungs) {
+      const written = await setCustomerPrice(tx, ctx, {
+        customerId: input.customerId,
+        productId: input.productId,
+        saleUnit: input.saleUnit,
+        minQty: rung.minQty,
+        rate: rung.rate,
+        validFrom: input.validFrom ?? null,
+        validTo: input.validTo ?? null,
+        allowBelowCost: allow,
+      })
+      if (!written.ok) return refuse(written)
+    }
 
-  for (const row of existing) {
-    if (!keep.has(row.minQty)) await removeCustomerPrice(db, ctx, row.id)
-  }
+    for (const row of existing) {
+      if (!keep.has(row.minQty)) await removeCustomerPrice(tx, ctx, row.id)
+    }
 
-  return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.minQty)).length }
+    return { ok: true, rungs: input.rungs.length, removed: existing.filter((r) => !keep.has(r.minQty)).length }
+  })
 }
 
 /** One product's ladder on one list, in the order it applies. */

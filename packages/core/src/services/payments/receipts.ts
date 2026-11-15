@@ -176,12 +176,14 @@ export async function postCreditNote(
     reference: string
     notes?: string | null
     registerPrefix?: string
+    /** The bill this note settles before any other: the one the goods came back from. */
+    firstBillId?: string
     actorId: string
     now: Date
   },
 ): Promise<{ paymentId: string; docNo: string; allocated: Money }> {
   const openBills = await loadOpenBills(tx, input.customerId)
-  const plan = planAllocation(input.amount, openBills)
+  const plan = planAllocation(input.amount, openBills, input.firstBillId)
 
   const paymentId = newId()
   const nowIso = input.now.toISOString()

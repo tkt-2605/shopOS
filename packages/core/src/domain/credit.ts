@@ -49,13 +49,16 @@ export interface AllocationPlan {
 }
 
 /** Oldest bill first — the convention a shopkeeper expects when clearing khata. */
-export function planAllocation(payment: Money, openBills: OpenBill[]): AllocationPlan {
+export function planAllocation(payment: Money, openBills: OpenBill[], first?: string): AllocationPlan {
   if (payment <= 0) {
     return { allocations: [], allocated: ZERO, unallocated: ZERO }
   }
 
+  /* Oldest first, except for the bill named `first`: a return's credit note
+     settles the bill the goods came back from before any other. */
   const ordered = [...openBills].sort((a, b) =>
-    a.postingDate === b.postingDate ? a.docNo.localeCompare(b.docNo) : a.postingDate.localeCompare(b.postingDate),
+    a.id === first ? -1 : b.id === first ? 1
+      : a.postingDate === b.postingDate ? a.docNo.localeCompare(b.docNo) : a.postingDate.localeCompare(b.postingDate),
   )
 
   const allocations: PaymentAllocation[] = []

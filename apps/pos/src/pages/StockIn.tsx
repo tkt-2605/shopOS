@@ -3,7 +3,8 @@ import {
   Money, Quantity, Permissions,
   searchProducts, createStockEntry, submitStockEntry, listSuppliers,
   directionOf, signedQty, noCostBasis, Batches, receivePurchaseOrder,
-  type ProductListItem, type StockEntryType, type Supplier, Tax, chargesTax,
+  loadEntryToEdit, saveStockEntryDraft, amendStockEntry,
+  type ProductListItem, type StockEntryType, type Supplier, Tax,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { useConfirm } from '../ui/useConfirm'
@@ -13,12 +14,13 @@ import { Field, Empty, Alert, Rupees } from '../ui/components'
 import { Attachments } from '../ui/Attachments'
 import { usePickList } from '../ui/PickList'
 import { useSearch } from '../ui/useSearch'
-import { useScanChoice } from '../ui/ScanChoice'
-import { BatchCells, PriceCells, costOf, costPair, ownPrice, sellsBelowCost, type Line } from './stockIn/cells'
+import { useScanChoice, codeOnSeveral } from '../ui/ScanChoice'
+import { costOf, costPair, ownPrice, type Line } from './stockIn/cells'
 import type { Side } from '../ui/gstPair'
-import { GstSwitch, useGstMode } from '../ui/GstSwitch'
-import { costNote } from '../ui/costNote'
-import { StockInViews } from './stockIn/PastEntries'
+import { useGstMode } from '../ui/GstSwitch'
+import { StockInViews, type OpenRequest } from './stockIn/PastEntries'
+import { LinesTable } from './stockIn/LinesTable'
+import { EditingBanner, editRefusal, linesFromEntry, type Editing } from './stockIn/editing'
 import { EntryKindField, SupplierField } from './stockIn/header'
 import { takeOrderToReceive } from '../core/nav'
 import {
@@ -27,10 +29,15 @@ import {
 
 /** Stock In: a new entry, and every entry made (`stockIn/PastEntries.tsx`). */
 export default function StockIn() {
-  return <StockInViews newEntry={<NewEntry />} />
+  return <StockInViews renderNew={(open, onSaved) => <NewEntry open={open} onSaved={onSaved} />} />
 }
 
-function NewEntry() {
+function NewEntry({ open, onSaved }: {
+  /** An entry from the list to open in this form: a draft to finish, or a posted one to correct. */
+  open: OpenRequest | null
+  /** Something the list shows has changed. */
+  onSaved: () => void
+}) {
   const { db, features, taxScheme } = useCore()
   const [confirmUi, ask] = useConfirm()
   const user = useUser()
@@ -69,6 +76,8 @@ function NewEntry() {
   const [order, setOrder] = useState<{ id: string; docNo: string } | null>(null)
   /** What posting a delivery left open on its order, said once beside the posted note. */
   const [orderNote, setOrderNote] = useState<string | null>(null)
+  /** The saved entry this form holds, when it holds one: see `stockIn/editing.tsx`. */
+  const [editing, setEditing] = useState<Editing | null>(null)
 
   const search = useSearch(term, (t) => searchProducts(db, { term: t, limit: 25 }))
   const results = search.rows
@@ -90,6 +99,31 @@ function NewEntry() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    if (open) void loadEntry(open.entryId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  async function loadEntry(id: string) {
+    setError(null)
+    const entry = await loadEntryToEdit(db, id)
+    if (!entry || entry.docstatus === 2) { setError('That entry was cancelled, so there is nothing to change.'); return }
+    if (entry.docstatus === 1 && entry.locked) { setError(editRefusal({ ok: false, code: entry.locked }, [])); return }
+    const { lines: loaded, missing } = await linesFromEntry(db, entry, batched)
+    setOrder(null)
+    setEntryType(entry.entryType)
+    setSupplierId(entry.supplierId ?? '')
+    setReference(entry.reference ?? '')
+    setInvoiceNo(entry.supplierInvoiceNo ?? '')
+    setInvoiceDate(entry.supplierInvoiceDate ?? '')
+    setRoundOff(entry.roundOff !== 0 ? Money.format(entry.roundOff) : '')
+    setLines(loaded)
+    setEditing({ id: entry.id, docNo: entry.docNo, docstatus: entry.docstatus })
+    setDone(null)
+    setOrderNote(null)
+    if (missing > 0) setError('An item on this entry is no longer in the catalogue, and was left off.')
+  }
+
   async function loadOrder(id: string) {
     const loaded = await orderLines(db, id, batched)
     if (!loaded.ok) { setError(loaded.message); return }
@@ -99,6 +133,7 @@ function NewEntry() {
     setReference(o.docNo)
     setLines(o.lines)
     setOrder({ id: o.id, docNo: o.docNo })
+    setEditing(null)
     setDone(null)
     setOrderNote(null)
   }
@@ -152,11 +187,11 @@ function NewEntry() {
   const rounding = purchase ? Money.parseMoney(roundOff) ?? 0 : 0
   const showCess = purchase && lines.some((l) => l.cess.trim() !== '')
 
-  async function submit() {
-    await posting.run(post)
+  async function submit(asDraft = false) {
+    await posting.run(() => post(asDraft))
   }
 
-  async function post() {
+  async function post(asDraft: boolean) {
     setError(null)
     setOrderNote(null)
     if (lines.some((l) => (Money.parseMoney(costText(l)) ?? 0) < 0)) {
@@ -184,7 +219,7 @@ function NewEntry() {
       await receive(order, expiries)
       return
     }
-    const create = (allowBelowCost: boolean) => createStockEntry(db, {
+    const input = (allowBelowCost: boolean) => ({
       entryType,
       supplierId: supplierId || null,
       supplierName: suppliers.find((x) => x.id === supplierId)?.name ?? null,
@@ -207,12 +242,32 @@ function NewEntry() {
       ...(allowBelowCost ? { allowBelowCost } : {}),
       actorId: user.id,
     })
+    const draftId = editing?.docstatus === 0 ? editing.id : null
+
+    if (asDraft) {
+      const kept = await retryBelowCost((allow) => saveStockEntryDraft(db, { ...input(allow), draftId }), ask, setError)
+      if (kept === null) return
+      if (!kept.ok) { setError(editRefusal(kept, lines)); return }
+      cleared('Saved as a draft. Nothing has touched the stock yet: open it from Past entries, Drafts, to finish it.')
+      return
+    }
+    if (editing?.docstatus === 1) {
+      const fixed = await retryBelowCost((allow) => amendStockEntry(db, { ...input(allow), entryId: editing.id }), ask, setError)
+      if (fixed === null) return
+      if (!fixed.ok) { setError(editRefusal(fixed, lines)); return }
+      posted(fixed.docNo, fixed.entryId)
+      setOrderNote(`It corrects ${fixed.replaced}, which is kept on the list, cancelled.`)
+      return
+    }
+
     // A price given to these goods below what they cost: see `ui/belowCost.ts`.
-    const entry = await retryBelowCost(create, ask, setError)
+    const entry = draftId
+      ? await retryBelowCost((allow) => saveStockEntryDraft(db, { ...input(allow), draftId }), ask, setError)
+      : await retryBelowCost((allow) => createStockEntry(db, input(allow)), ask, setError)
     if (entry === null) return
 
     if (!entry.ok) {
-      setError(refusalMessage(entry))
+      setError(entry.code === 'NOT_A_DRAFT' ? editRefusal(entry, lines) : refusalMessage(entry))
       return
     }
 
@@ -249,7 +304,16 @@ function NewEntry() {
   }
 
   function posted(docNo: string, entryId: string) {
+    cleared(null)
     setDone({ docNo, entryId })
+  }
+
+  /** The form emptied after a save, ready for the next entry. */
+  function cleared(note: string | null) {
+    setDone(null)
+    setOrderNote(note)
+    setEditing(null)
+    onSaved()
     setLines([])
     setReference('')
     setInvoiceNo('')
@@ -268,14 +332,14 @@ function NewEntry() {
   const pick = usePickList({
     count: results.length,
     resetKey: term,
-    onPick: (i) => { const hit = results[i]; if (hit) void add(hit) },
+    onPick: (i) => { const hit = results[i]; if (hit && !scanChoice.askFamily(hit)) void add(hit) },
     enter: async () => {
       const typed = term.trim()
       const rows = await search.latest()
       // One code on several items (069): received into the one somebody picks, never the first.
       if (scanChoice.ask(rows, typed)) return
       const [hit] = rows
-      if (hit) return add(hit)
+      if (hit) return scanChoice.askFamily(hit) ? setTerm('') : add(hit)
       setTerm('')
       setError(`Nothing in the catalog matches ${typed}.`)
     },
@@ -299,10 +363,12 @@ function NewEntry() {
       )}
 
       {order && <ReceivingBanner docNo={order.docNo} onStop={stopReceiving} />}
+      {editing && <EditingBanner editing={editing} onStop={() => cleared(null)} />}
+      {!done && orderNote && <Alert kind="ok">{orderNote}</Alert>}
 
       <div className="card">
         <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-          <EntryKindField value={entryType} locked={order !== null} onChange={setEntryType} />
+          <EntryKindField value={entryType} locked={order !== null || editing?.docstatus === 1} onChange={setEntryType} />
           <SupplierField suppliers={suppliers} value={supplierId} locked={order !== null} purchase={purchase}
             onChange={setSupplierId} onAdded={(id) => void loadSuppliers().then(() => setSupplierId(id))} />
           {purchase ? (
@@ -328,7 +394,7 @@ function NewEntry() {
         onChange={(e) => setTerm(e.target.value)} id="stock-search"
         onKeyDown={pick.searchKeyDown} />
 
-      {term !== '' && (
+      {term !== '' && !codeOnSeveral(search) && (
         <div className="card" style={{ maxHeight: 220, overflow: 'auto' }}>
           <table>
             <tbody {...pick.listProps}>
@@ -344,113 +410,10 @@ function NewEntry() {
         </div>
       )}
 
-      <div className="card card-scroll">
-        <table className="entry-lines">
-          <thead>
-            <tr>
-              <th>Item</th>
-              <th className="r">{directionOf(entryType) === 'out' ? 'Quantity lost' : 'Quantity'}</th>
-              {batched && <><th>Batch</th><th>Expiry</th></>}
-              {incoming && <><th className="r">MRP</th><th className="r">Sell at</th></>}
-              <th className="r">
-                Unit cost
-                {purchase && <div><GstSwitch mode={gstMode} onChange={setGstMode} /></div>}
-              </th>
-              {purchase && <th className="r">GST %</th>}
-              {showCess && <th className="r">Cess %</th>}
-              {/* The line's amount the way the switch reads, so the column
-                  never says the same thing twice; the GST itself is in the
-                  totals below, once for the bill. */}
-              <th className="r">{!purchase ? 'Value' : costMode === 'with' ? 'Amount incl. GST' : 'Amount excl. GST'}</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {lines.map((l) => {
-              const typed = Number(l.qty) || 0
-              const value = Math.round(Math.abs(typed) * (Money.parseMoney(costText(l)) ?? 0))
-              /* The answer rather than the convention. Whatever the sign rule
-                 is, a shopkeeper can see what the shelf will say afterwards
-                 before pressing save. */
-              const after = Quantity.addQty(
-                l.product.qtyOnHand, signedQty(entryType, Quantity.fromUnits(typed)),
-              )
-              return (
-                <tr key={l.key}>
-                  <td>
-                    {l.product.name}
-                    {/* What the shelf says now and after, in one line rather than a column of its own. */}
-                    <div className="src">
-                      on hand {Quantity.formatQty(l.product.qtyOnHand)} → {Quantity.formatQty(after)} {l.product.baseUnit}
-                    </div>
-                    {order && (
-                      <div className="src">
-                        {l.orderLine ? `on the order: ${Quantity.formatQty(l.orderLine.left)} open` : 'not on the order'}
-                      </div>
-                    )}
-                  </td>
-                  <td className="r">
-                    <input className="qty-input num" value={l.qty}
-                      onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} />
-                  </td>
-                  {batched && <BatchCells line={l} outgoing={outgoing(l)}
-                    onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
-                  {incoming && <PriceCells line={l} belowCost={sellsBelowCost(l, costText(l), chargesTax(taxScheme))}
-                    onChange={(change) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, ...change } : x))} />}
-                  <td className="r">
-                    {/* One box, read the way the switch in the header says. Flip
-                        it and the same cost is shown the other way; only on a
-                        purchase, since nothing else carries GST. */}
-                    <input className="qty-input num" placeholder="0.00" aria-label="Unit cost"
-                      value={shownCost(l)} onChange={(e) => typeCost(l, costMode, e.target.value)} />
-                    {/* Where the figure in the box came from, so a cost that was
-                        filled in is never mistaken for one that was typed. */}
-                    {l.hint && !outgoing(l) && (
-                      <div className="src">{l.costFilled ? '' : 'was '}{costNote(l.hint)}</div>
-                    )}
-                    {/* Said, not enforced. A shopkeeper holding a delivery note
-                        they cannot read must still be able to record the stock;
-                        a save that refuses here is a shelf that goes uncounted.
-
-                        But a blank cost is not nothing. It falls back to the
-                        last rate known for the item, which is usually close
-                        enough — and where there has never been one the item
-                        enters at zero, and every sale of it reads as pure
-                        profit for ever with nothing saying so. Those are two
-                        different sentences and only one of them is alarming. */}
-                    {directionOf(entryType) === 'in' && Money.parseMoney(costText(l)) === null && (
-                      <div className="src warn-note">
-                        {unpriced.has(l.product.id)
-                          ? 'no cost ever recorded — profit on this item will read as 100%'
-                          : 'no cost — the last rate paid will be assumed'}
-                      </div>
-                    )}
-                  </td>
-                  {purchase && (
-                    <td className="r">
-                      <input className="qty-input num" style={{ width: 56 }} value={l.gst}
-                        onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, gst: e.target.value } : x))} />
-                    </td>
-                  )}
-                  {showCess && (
-                    <td className="r">
-                      <input className="qty-input num" style={{ width: 56 }} value={l.cess}
-                        onChange={(e) => setLines((prev) => prev.map((x) => x.key === l.key ? { ...x, cess: e.target.value } : x))} />
-                    </td>
-                  )}
-                  <td className="r"><Rupees value={purchase && costMode === 'with' ? value + taxOf(l) : value} /></td>
-                  <td className="r">
-                    <button className="btn ghost sm" onClick={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}>✕</button>
-                  </td>
-                </tr>
-              )
-            })}
-            {lines.length === 0 && (
-              <tr><td colSpan={(batched ? 7 : 5) + (incoming ? 2 : 0) + (purchase ? 1 : 0) + (showCess ? 1 : 0)}><Empty>Nothing added yet</Empty></td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <LinesTable lines={lines} setLines={setLines} entryType={entryType} batched={batched} incoming={incoming}
+        purchase={purchase} showCess={showCess} gstMode={gstMode} setGstMode={setGstMode} costMode={costMode}
+        order={order} unpriced={unpriced} taxScheme={taxScheme} outgoing={outgoing} costText={costText}
+        shownCost={shownCost} typeCost={typeCost} taxOf={taxOf} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <span style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>{purchase ? 'Value excl. GST' : 'Total value'}</span>
@@ -471,13 +434,18 @@ function NewEntry() {
           </span>
         )}
         <span style={{ flex: 1 }} />
+        {!order && editing?.docstatus !== 1 && (
+          <button className="btn" disabled={lines.length === 0 || posting.busy} onClick={() => void submit(true)}>
+            {editing ? 'Save draft' : 'Save as draft'}
+          </button>
+        )}
         <button
           className="btn primary"
           disabled={!canPost || lines.length === 0 || posting.busy}
           title={canPost ? undefined : 'Your role cannot post stock entries'}
           onClick={() => void submit()}
         >
-          {posting.busy ? 'Posting…' : 'Post entry'}
+          {posting.busy ? 'Posting…' : editing?.docstatus === 1 ? 'Save correction' : 'Post entry'}
         </button>
       </div>
     </div>

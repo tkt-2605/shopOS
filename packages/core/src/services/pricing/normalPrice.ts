@@ -95,29 +95,36 @@ export async function settleDoublePrice(
 
   if (input.keep === 'list' && found.listRate !== found.sellingRate) {
     await requirePermission(db, ctx.actorId, 'product', 'write')
-    const now = ctx.now?.() ?? new Date().toISOString()
-    await q(db).update(schema.products)
-      .set({ baseRate: found.listRate, updatedAt: now })
-      .where(eq(schema.products.id, input.productId))
-    await writeAudit(db, ctx, {
-      entity: 'products', entityId: input.productId, action: 'update',
-      before: { base_rate: found.sellingRate }, after: { base_rate: found.listRate, reason: 'kept the shop list price' },
-    })
   }
+  /* The selling rate moved and the list's rate taken off together: apart, a
+     crash between them left the item charging the list's rate twice over --
+     once as its own rate and once from the list. */
+  return db.transaction(async (tx) => {
+    if (input.keep === 'list' && found.listRate !== found.sellingRate) {
+      const now = ctx.now?.() ?? new Date().toISOString()
+      await q(tx).update(schema.products)
+        .set({ baseRate: found.listRate, updatedAt: now })
+        .where(eq(schema.products.id, input.productId))
+      await writeAudit(tx, ctx, {
+        entity: 'products', entityId: input.productId, action: 'update',
+        before: { base_rate: found.sellingRate }, after: { base_rate: found.listRate, reason: 'kept the shop list price' },
+      })
+    }
 
-  const rows = await q(db)
-    .select({ id: schema.itemPrices.id })
-    .from(schema.itemPrices)
-    .innerJoin(schema.products, eq(schema.products.id, schema.itemPrices.productId))
-    .where(and(
-      eq(schema.itemPrices.productId, input.productId),
-      eq(schema.itemPrices.priceListId, listId),
-      eq(schema.itemPrices.saleUnit, schema.products.baseUnit),
-      lte(schema.itemPrices.minQty, qty(QTY_SCALE)),
-      isNull(schema.itemPrices.deletedAt),
-    ))
-  for (const r of rows) await removeItemPrice(db, ctx, r.id)
-  return { ok: true }
+    const rows = await q(tx)
+      .select({ id: schema.itemPrices.id })
+      .from(schema.itemPrices)
+      .innerJoin(schema.products, eq(schema.products.id, schema.itemPrices.productId))
+      .where(and(
+        eq(schema.itemPrices.productId, input.productId),
+        eq(schema.itemPrices.priceListId, listId),
+        eq(schema.itemPrices.saleUnit, schema.products.baseUnit),
+        lte(schema.itemPrices.minQty, qty(QTY_SCALE)),
+        isNull(schema.itemPrices.deletedAt),
+      ))
+    for (const r of rows) await removeItemPrice(tx, ctx, r.id)
+    return { ok: true } as const
+  })
 }
 
 export interface PriceElsewhere {

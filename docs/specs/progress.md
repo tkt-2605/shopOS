@@ -1650,6 +1650,33 @@ counted *in* still cannot change: 500 pieces would become 500 boxes.
 - No migration: every column already existed. A till still on 0.4.6 would not
   know the old word, so rename only once every till is on the release with it.
 
+## Split payments, corrections and the schema review (13-15 November, 0.7.0)
+
+- **Split payment.** Take payment, Split: an amount box per tender (cash, UPI,
+  card, credit with a customer); the parts must add to the bill
+  (`PAYMENT_MISMATCH`). Each part posts as it would alone, so the drawer
+  expects only the cash and the khata only the credit. No migration: a bill
+  always could carry several `bill_payments`.
+- **Credit first on returns** (decided 15 Nov). What the bill still owes on
+  credit comes off the khata first, as a credit note set against that bill
+  (`creditFirst`, `planAllocation(..., first)`); only the rest goes back by the
+  method chosen. Cancelling a return now also puts refunded cash back in the
+  drawer's expected count, which it never did.
+- **Corrections.** An issued purchase, quotation or order is corrected by a
+  copy with a fresh number that names the one it replaced (`amended_from`,
+  086), cancelled and reissued in one transaction. Purchases can be saved as
+  drafts. Fresh numbers rather than `-1`, for sync.
+- **Schema review.** 8/10 on 13 Nov. 087 indexes every foreign key (the
+  sqlite3 shell `.lint fkey-indexes` rule, held by `schemaLint.test.ts`),
+  drops five indexes a UNIQUE already covered, and refuses an unknown
+  `gl_entries.voucher_type` written locally (never one arriving by sync). The
+  four flows the atomicity audit found could be left half-written --
+  processReturn, splitIntoVersions, settleDoublePrice and the ladder and unit
+  price saves -- run in one transaction through `services/allOrNothing.ts`.
+  Left as they are, by choice: no CHECK on fourteen key-value and lookup
+  tables, and no `created_at` on line tables; either needs a table rebuild,
+  which is breaking, for nothing a shop would see.
+
 ## Not committed
 
 `docs/specs.zip` — a redundant archive of `docs/specs/`. Left untracked

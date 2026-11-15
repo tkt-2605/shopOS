@@ -50,6 +50,8 @@ const productShape = {
   parentName: parent.name,
   variantLabel: schema.products.variantLabel,
   qtyOnHand: sql<Qty>`COALESCE(${schema.productStock.qtyOnHand}, 0)`,
+  // raw: a correlated count of the row's own versions, which no join here can carry without multiplying rows
+  versions: sql<number>`(SELECT COUNT(*) FROM products v WHERE v.parent_product_id = ${schema.products.id} AND v.deleted_at IS NULL AND v.is_active = 1)`,
 }
 
 export interface ProductListItem {
@@ -100,6 +102,11 @@ export interface ProductListItem {
   parentProductId: string | null
   parentName: string | null
   variantLabel: string | null
+  /**
+   * How many versions in use hang off this item. More than none makes it a
+   * family's name: it is not sold, and the counter asks which colour.
+   */
+  versions: number
   /**
    * Found because the search term is one of its barcodes. Only a search sets
    * it; two such rows are one code on two items, and the screen asks which.

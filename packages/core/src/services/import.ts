@@ -1,17 +1,18 @@
-import { eq, and, isNull, sql } from 'drizzle-orm'
+import { eq, and, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { newId, derivedId } from '../ids.js'
 import { parseMoney, ZERO, type Money } from '../money.js'
-import { parseQty, QTY_SCALE, type Qty } from '../quantity.js'
+import { parseQty, type Qty } from '../quantity.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
-import { parseCsvRecords, toCsv } from '../domain/csv.js'
+import { parseCsvRecords } from '../domain/csv.js'
 import { isHsn } from '../domain/hsn.js'
 import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
 import { addPrimaryBarcode, importRowsTakingACode } from './barcodes.js'
 import { requirePermission } from '../integrity/permissions.js'
 import { importRowsUnderCost } from './belowCost.js'
+import { familyProblems, attachFamilies } from './importFamilies.js'
 
 /**
  * Getting a shop's catalogue in, from the spreadsheet it already has.
@@ -65,6 +66,8 @@ import { importRowsUnderCost } from './belowCost.js'
 /** The columns a file may carry. Only `name` is required. */
 export const IMPORT_COLUMNS = [
   'name', 'brand', 'category', 'barcode', 'hsn', 'tax', 'unit', 'rate', 'mrp', 'cost', 'openingqty',
+  // The family a row is a variant of, by name, and which kind it is (`importFamilies.ts`).
+  'variantof', 'variant',
 ] as const
 
 export type ImportAction = 'create' | 'update'
@@ -72,6 +75,10 @@ export type ImportAction = 'create' | 'update'
 export type RowProblem =
   /** No name, and a product without one cannot be sold or found. */
   | 'NO_NAME'
+  /** A variant of an item that is in neither the shop nor the file, or is a variant itself. */
+  | 'NO_FAMILY'
+  /** A family named, and no kind: Blue, 500 g. */
+  | 'NO_VARIANT'
   /** A rate that is not a number. Blank is fine; `12.3.4` is not. */
   | 'BAD_RATE'
   | 'BAD_MRP'
@@ -118,6 +125,9 @@ export interface PlannedRow {
   /** What one unit of the opening stock cost. Only read with `openingQty`, on a new item. */
   cost: Money | null
   openingQty: Qty | null
+  /** The family this row is a variant of, by name, and its label in it. */
+  variantOf: string | null
+  variant: string | null
 }
 
 export interface ImportPlan {
@@ -148,6 +158,7 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
       name: schema.products.name,
       brand: schema.products.brand,
       barcode: schema.products.barcode,
+      parentProductId: schema.products.parentProductId,
     })
     .from(schema.products)
     .where(isNull(schema.products.deletedAt))
@@ -201,11 +212,13 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     const barcode = (row['barcode'] ?? '').trim() || null
     const hsn = (row['hsn'] ?? '').trim() || null
     const unit = (row['unit'] ?? '').trim() || null
+    const variantOf = (row['variantof'] ?? '').trim() || null
+    const variant = (row['variant'] ?? '').trim() || null
 
     const refuse = (problem: RowProblem): void => {
       planned.push({
         line, name, action: null, problem, productId: null, brand, category,
-        barcode, hsn, taxRateBp: null, rate: null, mrp: null, unit, cost: null, openingQty: null,
+        barcode, hsn, taxRateBp: null, rate: null, mrp: null, unit, cost: null, openingQty: null, variantOf, variant,
       })
     }
 
@@ -285,8 +298,16 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
       unit,
       cost: cost === null ? null : cost,
       openingQty: openingQty === null ? null : openingQty,
+      variantOf, variant,
     })
   })
+
+  // A family is a link between rows, so it is checked once every row is read.
+  const family = familyProblems(planned.filter((r) => r.problem === null), existing)
+  for (const row of planned) {
+    const problem = family.get(row.line)
+    if (problem) { row.problem = problem; row.action = null }
+  }
 
   /* After matching, which says whose cost applies: the file's, for a new item. */
   const under = await importRowsUnderCost(db, planned.filter((r) => r.problem === null).map((r) => ({
@@ -295,7 +316,7 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
   })))
   for (const row of planned) if (under.has(row.line)) { row.problem = 'BELOW_COST'; row.action = null }
   // And whose a code becomes, where the shop holds every code to one item (`uniqueBarcode`).
-  const taken = await importRowsTakingACode(db, planned.filter((r) => r.problem === null).map((r) => ({ key: r.line, productId: r.productId, barcode: r.barcode })))
+  const taken = await importRowsTakingACode(db, planned.filter((r) => r.problem === null).map((r) => ({ key: r.line, productId: r.productId, barcode: r.barcode, family: r.variantOf })))
   for (const row of planned) if (taken.has(row.line)) { row.problem = 'BARCODE_TAKEN'; row.action = null }
 
   return {
@@ -351,10 +372,12 @@ export async function applyImport(
   let stockIgnored = 0
   await db.transaction(async (tx) => {
     const categoryId = await categoriesFor(tx, ctx, usable, now)
+    const written: { productId: string; variantOf: string | null; variant: string | null }[] = []
 
     for (const row of usable) {
       if (row.action === 'create') {
         const id = await importedProductId(tx, row.barcode, row.name)
+        written.push({ productId: id, variantOf: row.variantOf, variant: row.variant })
         await q(tx).insert(schema.products).values({
           id,
           name: row.name,
@@ -383,6 +406,7 @@ export async function applyImport(
         }
         continue
       }
+      written.push({ productId: row.productId as string, variantOf: row.variantOf, variant: row.variant })
       if (row.openingQty !== null && row.openingQty > 0) stockIgnored += 1
       /* Only what the file actually said. `undefined` is "the file was
          silent"; a blank cell parses to null above and lands here as
@@ -422,6 +446,8 @@ export async function applyImport(
       })
       updated += 1
     }
+    // Once every row is in, so a family that is a new line in this same file is there to belong to.
+    await attachFamilies(tx, ctx, written, now)
 
     /* The column was read, checked, shown on the plan -- and then dropped here,
        so a shop that imported its catalogue with its stock got the catalogue and
@@ -445,61 +471,6 @@ export async function applyImport(
   })
 
   return { created, updated, skipped: plan.skip, stocked: opening.length, stockIgnored }
-}
-
-/**
- * The catalogue as a file, in the same shape `planImport` reads.
- *
- * Round-tripping is the point: a shop exports, edits prices in Excel, and
- * imports the same file back. Every column here is one this importer
- * understands, and `csvRoundTrip.test.ts` holds that to account -- an export
- * with a column the import ignores is a column of edits that silently do
- * nothing.
- */
-export async function exportCatalogue(db: SqlDriver): Promise<string> {
-  const rows = await q(db)
-    .select({
-      name: schema.products.name,
-      brand: schema.products.brand,
-      category: schema.categories.name,
-      barcode: schema.products.barcode,
-      hsn: schema.products.hsnCode,
-      taxRateBp: schema.products.taxRateBp,
-      unit: schema.products.baseUnit,
-      rate: schema.products.baseRate,
-      mrp: schema.products.mrp,
-      onHand: sql<number>`COALESCE(${schema.productStock.qtyOnHand}, 0)`,
-      value: sql<number>`COALESCE(${schema.productStock.stockValue}, 0)`,
-    })
-    .from(schema.products)
-    // Left joined, so an item never counted or never grouped still gets a row
-    // rather than vanishing from its own catalogue.
-    .leftJoin(schema.productStock, eq(schema.productStock.productId, schema.products.id))
-    .leftJoin(schema.categories, and(
-      eq(schema.categories.id, schema.products.categoryId),
-      isNull(schema.categories.deletedAt),
-    ))
-    .where(and(isNull(schema.products.deletedAt), eq(schema.products.isActive, 1)))
-    .orderBy(schema.products.name)
-
-  return toCsv(
-    ['name', 'brand', 'category', 'barcode', 'hsn', 'tax', 'unit', 'rate', 'mrp', 'cost', 'openingqty'],
-    rows.map((r) => [
-      r.name,
-      r.brand ?? '',
-      r.category ?? '',
-      r.barcode ?? '',
-      r.hsn ?? '',
-      // Basis points back to the percentage a person typed.
-      r.taxRateBp === 0 ? '' : String(r.taxRateBp / 100),
-      r.unit,
-      money2(r.rate),
-      r.mrp === null ? '' : money2(r.mrp),
-      // What one on the shelf is valued at: derived from the value, which is what is kept.
-      r.onHand > 0 ? money2(Math.round(r.value * QTY_SCALE / r.onHand) as Money) : '',
-      String(r.onHand / QTY_SCALE),
-    ]),
-  )
 }
 
 /**
@@ -548,10 +519,6 @@ function money(raw: string | undefined): Money | null | 'bad' {
   const value = parseMoney(cleaned)
   // A price below zero is not a price.
   return value === null || value < 0 ? 'bad' : value
-}
-
-function money2(value: Money): string {
-  return (value / 100).toFixed(2)
 }
 
 /**

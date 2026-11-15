@@ -191,6 +191,7 @@ interface ReturnRow {
   postingDate: string
   refundTotal: Money
   refundMethod: RefundMethod
+  refundCash: Money
   reason: string | null
   creditNoteId: string | null
   pointsRestored: number
@@ -207,6 +208,7 @@ export async function loadReturn(db: SqlDriver, returnId: string): Promise<Retur
       postingDate: schema.salesReturns.postingDate,
       refundTotal: schema.salesReturns.refundTotal,
       refundMethod: schema.salesReturns.refundMethod,
+      refundCash: schema.salesReturns.refundCash,
       reason: schema.salesReturns.reason,
       creditNoteId: schema.salesReturns.creditNoteId,
       pointsRestored: schema.salesReturns.pointsRestored,

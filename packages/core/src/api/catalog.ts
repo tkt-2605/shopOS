@@ -45,13 +45,16 @@ export {
   setVariantOf, variantFamily,
 } from '../services/grouping.js'
 export type { Category, CategoryResult, VariantMember, VariantResult } from '../services/grouping.js'
+export { addVersions, setFamilyPrice, familyPriced, familyVersions, splitIntoVersions, editVersion, versionName, familyTotals } from '../services/variants.js'
+export type { AddVersionsResult, SplitResult, EditVersionResult } from '../services/variants.js'
 export { listBarcodes, setBarcodes, productIdForBarcode, productIdsForBarcode, barcodesTaken, sharedBarcodes } from '../services/barcodes.js'
 export type { Barcode, BarcodeInput, SetBarcodesResult, SharedBarcode, BarcodeOnSeveral } from '../services/barcodes.js'
 export { pricingContextFor, resolveLinePrice } from '../repos/pricing.js'
 export type { BillPricingContext, ResolvedLinePrice } from '../repos/pricing.js'
 export {
-  planImport, applyImport, exportCatalogue, IMPORT_COLUMNS,
+  planImport, applyImport, IMPORT_COLUMNS,
 } from '../services/import.js'
+export { exportCatalogue } from '../services/catalogueExport.js'
 export type {
   ImportPlan, PlannedRow, ImportResult, CatalogueImportResult, ImportAction, RowProblem,
 } from '../services/import.js'

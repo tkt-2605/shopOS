@@ -35,9 +35,8 @@ vi.mock('../src/core/attachments', () => ({
 
 const { default: StockIn } = await import('../src/pages/StockIn')
 const { Draft } = await import('../src/ui/documentDesk/Draft')
-const { ProductForm } = await import('../src/pages/inventory/ProductForm')
+const { PriceSection } = await import('../src/pages/inventory/PriceSection')
 const { BLANK } = await import('../src/pages/inventory/draft')
-const { useParentSearch } = await import('../src/pages/inventory/useParentSearch')
 
 beforeEach(async () => {
   db = openMemoryDatabase()
@@ -277,10 +276,8 @@ describe('a purchase order', () => {
 describe('the item form', () => {
   /** The form as the page holds it, with the page's own "Version of" search. */
   function Form({ draft, lastCost }: { draft: typeof BLANK; lastCost?: CostHint }) {
-    const parent = useParentSearch(db, draft, vi.fn())
     return (
-      <ProductForm draft={draft} setDraft={vi.fn()} categories={[]} newCategory="" setNewCategory={vi.fn()}
-        onAddCategory={vi.fn()} parentName={undefined} parent={parent} lastCost={lastCost ?? null} />
+      <PriceSection draft={draft} setDraft={vi.fn()} lastCost={lastCost ?? null} familyPriced={false} />
     )
   }
 

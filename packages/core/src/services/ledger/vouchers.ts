@@ -82,8 +82,13 @@ async function billLines(tx: SqlDriver, billId: string): Promise<Built | null> {
 async function returnLines(tx: SqlDriver, returnId: string): Promise<Built | null> {
   const ret = await tx.get<{
     posting_date: string; refund_cash: number; refund_method: string; customer_id: string | null
+    to_account: number
   }>(
-    `SELECT r.posting_date, r.refund_cash, r.refund_method, b.customer_id
+    /* raw: the credit note's amount, beside the return. On a refund made by hand
+       it is what the bill still owed and came off the account first (`creditFirst`). */
+    `SELECT r.posting_date, r.refund_cash, r.refund_method, b.customer_id,
+            CASE WHEN r.refund_method = 'credit' THEN 0
+                 ELSE COALESCE((SELECT p.amount FROM payment_entries p WHERE p.id = r.credit_note_id), 0) END AS to_account
        FROM sales_returns r JOIN bills b ON b.id = r.bill_id WHERE r.id = ?`, [returnId])
   if (!ret) return null
   const t = (await tx.get<TaxSums & { refund: number }>(
@@ -104,7 +109,8 @@ async function returnLines(tx: SqlDriver, returnId: string): Promise<Built | nul
       debit('sales', t.taxable),
       ...outputTax(debit, t),
       credit(refundAccount, ret.refund_cash, refundAccount === 'debtors' ? customer : null),
-      credit('loyalty', t.refund - ret.refund_cash),
+      credit('debtors', ret.to_account, customer),
+      credit('loyalty', t.refund - ret.refund_cash - ret.to_account),
       debit('stock', back),
       credit('cogs', back),
     ],

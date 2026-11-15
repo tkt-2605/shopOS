@@ -1,4 +1,4 @@
-import { eq, ne, and, desc, isNull, notInArray, inArray, sql } from 'drizzle-orm'
+import { eq, ne, and, or, desc, isNull, notInArray, inArray, sql } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
 import { derivedId } from '../ids.js'
@@ -213,7 +213,10 @@ async function putBarcode(
 /** The other items each of these codes is on. */
 async function alsoOn(db: SqlDriver, productId: string, codes: string[]): Promise<SharedBarcode[]> {
   if (codes.length === 0) return []
-  return q(db)
+  /* The colours of one pen share the pen's code on purpose, and the scan asks
+     which colour. A code held only inside the item's own family is not taken. */
+  const family = await familyIds(db, productId)
+  const rows = await q(db)
     .select({
       barcode: schema.productBarcodes.barcode,
       productId: schema.productBarcodes.productId,
@@ -228,6 +231,49 @@ async function alsoOn(db: SqlDriver, productId: string, codes: string[]): Promis
       isNull(schema.products.deletedAt),
     ))
     .orderBy(schema.productBarcodes.barcode, schema.products.name)
+  return rows.filter((r) => !family.has(r.productId))
+}
+
+/** The item, its parent and the parent's other versions. Just the item when it is in no family. */
+async function familyIds(db: SqlDriver, productId: string): Promise<Set<string>> {
+  if (productId === '') return new Set()
+  const [self] = await q(db)
+    .select({ parent: schema.products.parentProductId })
+    .from(schema.products)
+    .where(eq(schema.products.id, productId))
+  const root = self?.parent ?? productId
+  const members = await q(db)
+    .select({ id: schema.products.id })
+    .from(schema.products)
+    .where(and(or(eq(schema.products.id, root), eq(schema.products.parentProductId, root)), isNull(schema.products.deletedAt)))
+  return new Set([productId, ...members.map((m) => m.id)])
+}
+
+/**
+ * Puts a set of codes on an item inside a caller's transaction, first one
+ * primary, without asking about other items: for `addVersions`, which hands
+ * the parent's codes to its new colours. Not audited here; the caller audits
+ * the item it made.
+ */
+export async function putBarcodes(
+  tx: SqlDriver, productId: string, codes: readonly { barcode: string; label: string | null }[], now: string,
+): Promise<void> {
+  for (const [index, code] of codes.entries()) {
+    await putBarcode(tx, productId, code.barcode, code.label, index === 0, now)
+  }
+  await q(tx).update(schema.products)
+    .set({ barcode: codes[0]?.barcode ?? null, updatedAt: now, rev: sql`${schema.products.rev} + 1` })
+    .where(eq(schema.products.id, productId))
+}
+
+/** Takes every code off an item inside a caller's transaction: a parent whose codes went to its colours. */
+export async function takeOffBarcodes(tx: SqlDriver, productId: string, now: string): Promise<void> {
+  await q(tx).update(schema.productBarcodes)
+    .set({ deletedAt: now })
+    .where(and(eq(schema.productBarcodes.productId, productId), isNull(schema.productBarcodes.deletedAt)))
+  await q(tx).update(schema.products)
+    .set({ barcode: null, updatedAt: now, rev: sql`${schema.products.rev} + 1` })
+    .where(eq(schema.products.id, productId))
 }
 
 /**
@@ -261,18 +307,23 @@ export async function sharedBarcodes(db: SqlDriver): Promise<BarcodeOnSeveral[]>
       barcode: schema.productBarcodes.barcode,
       productId: schema.productBarcodes.productId,
       productName: schema.products.name,
+      root: sql<string>`COALESCE(${schema.products.parentProductId}, ${schema.products.id})`,
     })
     .from(schema.productBarcodes)
     .innerJoin(schema.products, eq(schema.products.id, schema.productBarcodes.productId))
     .where(and(isNull(schema.productBarcodes.deletedAt), isNull(schema.products.deletedAt)))
     .orderBy(schema.productBarcodes.barcode, schema.products.name)
-  const byCode = new Map<string, BarcodeOnSeveral>()
+  const byCode = new Map<string, BarcodeOnSeveral & { roots: Set<string> }>()
   for (const r of rows) {
-    const entry = byCode.get(r.barcode) ?? { barcode: r.barcode, items: [] }
+    const entry = byCode.get(r.barcode) ?? { barcode: r.barcode, items: [], roots: new Set<string>() }
     if (!entry.items.some((i) => i.productId === r.productId)) entry.items.push({ productId: r.productId, productName: r.productName })
+    entry.roots.add(r.root)
     byCode.set(r.barcode, entry)
   }
-  return [...byCode.values()].filter((e) => e.items.length > 1)
+  // A code shared only by the colours of one item is meant (`addVersions`), not a muddle to sort out.
+  return [...byCode.values()]
+    .filter((e) => e.items.length > 1 && e.roots.size > 1)
+    .map(({ barcode, items }) => ({ barcode, items }))
 }
 
 /**
@@ -285,6 +336,8 @@ export async function sharedBarcodes(db: SqlDriver): Promise<BarcodeOnSeveral[]>
  */
 export async function importRowsTakingACode(db: SqlDriver, rows: readonly {
   key: number; productId: string | null; barcode: string | null
+  /** The family the row is a variant of, by name: its variants share one code on purpose. */
+  family?: string | null
 }[]): Promise<Set<number>> {
   const refused = new Set<number>()
   const coded = rows.filter((r) => r.barcode !== null && r.barcode.trim() !== '')
@@ -292,14 +345,28 @@ export async function importRowsTakingACode(db: SqlDriver, rows: readonly {
   const claimed = new Map<string, string>()
   for (const row of [...coded].sort((a, b) => a.key - b.key)) {
     const code = row.barcode!.trim()
-    const who = row.productId ?? `new:${row.key}`
+    // A family claims a code as one: the XO pen's colours are one owner of the pen's code.
+    const who = row.family ? `family:${row.family.trim().toLowerCase()}` : row.productId ?? `new:${row.key}`
     const first = claimed.get(code)
     if (first !== undefined && first !== who) { refused.add(row.key); continue }
+    const kin = new Set([...(row.productId ? await familyIds(db, row.productId) : []), ...(row.family ? await familyNamed(db, row.family) : [])])
     const holders = await productIdsForBarcode(db, code)
-    if (holders.some((id) => id !== row.productId)) { refused.add(row.key); continue }
+    if (holders.some((id) => id !== row.productId && !kin.has(id))) { refused.add(row.key); continue }
     claimed.set(code, who)
   }
   return refused
+}
+
+/** The item called this, with no family of its own, and its variants: a family named in a file. */
+async function familyNamed(db: SqlDriver, name: string): Promise<string[]> {
+  // raw: a case-blind match on the name, and its variants by the same row, which the builder has no word for
+  const rows = await db.query<{ id: string }>(
+    `SELECT id FROM products WHERE deleted_at IS NULL AND (
+       (parent_product_id IS NULL AND lower(trim(name)) = lower(trim(?)))
+       OR parent_product_id IN (SELECT id FROM products WHERE parent_product_id IS NULL AND lower(trim(name)) = lower(trim(?))))`,
+    [name, name],
+  )
+  return rows.map((r) => r.id)
 }
 
 /** Every item a scan could mean. Empty for a code the shop does not have. */

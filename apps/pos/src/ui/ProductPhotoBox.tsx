@@ -31,7 +31,12 @@ function dataUrlToBlob(url: string): Blob | null {
   return new Blob([bytes], { type: m[1] ?? '' })
 }
 
-export function ProductPhotoBox({ productId, name }: { productId: string; name?: string }) {
+export function ProductPhotoBox({ productId, name, compact = false }: {
+  productId: string
+  name?: string
+  /** In a narrow column beside a form: no rule above it, and the buttons under the picture. */
+  compact?: boolean
+}) {
   const { db } = useCore()
   const user = useUser()
   const [shown, setShown] = useState<'hidden' | 'elsewhere' | 'here'>('hidden')
@@ -116,7 +121,7 @@ export function ProductPhotoBox({ productId, name }: { productId: string; name?:
 
   return (
     <div
-      style={{ marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}
+      style={compact ? undefined : { marginTop: 14, paddingTop: 13, borderTop: '1px solid var(--rule-soft)' }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => { e.preventDefault(); if (shown === 'here') take(e.dataTransfer.files[0]) }}
       onPaste={(e) => { if (shown === 'here') take(e.clipboardData.files[0]) }}
@@ -129,9 +134,11 @@ export function ProductPhotoBox({ productId, name }: { productId: string; name?:
       </div>
       {crop}
       {error && <Alert>{error}</Alert>}
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+      <div style={compact
+        ? { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-start' }
+        : { display: 'flex', gap: 12, alignItems: 'center' }}>
         {preview
-          ? <img src={preview} alt="" style={{ width: 96, height: 96, objectFit: 'contain', border: '1px solid var(--rule-soft)' }} />
+          ? <img src={preview} alt="" style={{ width: compact ? '100%' : 96, maxWidth: 160, aspectRatio: '1', objectFit: 'contain', border: '1px solid var(--rule-soft)' }} />
           : photo && <span className="src">The photo is on another till.</span>}
         {shown === 'here' && (
           <>

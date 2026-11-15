@@ -89,13 +89,8 @@ export function ReturnSheet({
     if (!result.ok) { setProblem(describeProblem(result, bill)); return }
 
     const parts: string[] = []
-    if (result.refundCash > 0) {
-      parts.push(
-        method === 'credit'
-          ? `${Money.formatWithSymbol(result.refundCash)} off their khata`
-          : `${Money.formatWithSymbol(result.refundCash)} back`,
-      )
-    }
+    if (result.refundToAccount > 0) parts.push(`${Money.formatWithSymbol(result.refundToAccount)} off their khata`)
+    if (result.refundCash > 0) parts.push(`${Money.formatWithSymbol(result.refundCash)} back`)
     if (result.pointsRestored > 0) parts.push(`${result.pointsRestored} points returned`)
     if (result.pointsClawedBack > 0) parts.push(`${result.pointsClawedBack} points taken off`)
     onDone(`${result.docNo} — ${parts.join(', ') || 'nothing to pay back'}.`, result.returnId)
@@ -225,9 +220,20 @@ export function ReturnSheet({
                 </div>
               </>
             )}
+            {/* Credit first (15 Nov): what this bill still owes comes off the
+                khata before any money goes back, so the shop never hands out
+                cash for goods it was not paid for. */}
+            {method !== 'credit' && preview.settlesOnBill > 0 && (
+              <>
+                <div className="total-line">
+                  <span>Off their khata — this bill still owed it</span>
+                  <Rupees value={preview.settlesOnBill} />
+                </div>
+              </>
+            )}
             <div className="total-line grand">
               <span>{method === 'credit' ? 'Off their khata' : 'To hand back'}</span>
-              <Rupees value={preview.cash} className="amount" />
+              <Rupees value={(method === 'credit' ? preview.cash : preview.cash - preview.settlesOnBill) as never} className="amount" />
             </div>
             {preview.pointsRemoved > 0 && (
               <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 6 }}>
@@ -243,8 +249,11 @@ export function ReturnSheet({
 }
 
 function describeHandover(preview: ReturnPreview, method: RefundMethod): string {
-  const money = Money.formatWithSymbol(preview.cash)
-  const cash = method === 'credit' ? `${money} off the khata` : money
+  const byHand = (preview.cash - preview.settlesOnBill) as Money.Money
+  const cash = method === 'credit' ? `${Money.formatWithSymbol(preview.cash)} off the khata`
+    : preview.settlesOnBill === 0 ? Money.formatWithSymbol(preview.cash)
+      : byHand > 0 ? `${Money.formatWithSymbol(byHand)} + ${Money.formatWithSymbol(preview.settlesOnBill)} off the khata`
+        : `${Money.formatWithSymbol(preview.settlesOnBill)} off the khata`
   return preview.pointsRestored > 0 ? `${cash} and ${preview.pointsRestored} pts` : cash
 }
 

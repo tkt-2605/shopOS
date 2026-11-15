@@ -169,6 +169,8 @@ export interface ReturnPreview extends RefundSplit {
   lines: { billItemId: string; productName: string; qty: Qty; refund: Money }[]
   /** What the customer still owes on this bill, if anything. */
   outstanding: Money
+  /** Of `cash`, what comes off the account before anything goes back by hand (`creditFirst`). */
+  settlesOnBill: Money
 }
 
 export type PreviewReturnResult =
@@ -184,6 +186,7 @@ export async function previewReturn(
   if (!computed.ok) return computed
 
   const split = splitRefund(computed.refundTotal, await refundBasis(db, input.billId))
+  const outstanding = await outstandingOn(db, input.billId)
 
   return {
     ok: true,
@@ -192,6 +195,7 @@ export async function previewReturn(
     lines: computed.lines.map((l) => ({
       billItemId: l.billItemId, productName: l.productName, qty: l.qty, refund: l.refund,
     })),
-    outstanding: await outstandingOn(db, input.billId),
+    outstanding,
+    settlesOnBill: paise(Math.min(split.cash, outstanding)),
   }
 }

@@ -170,7 +170,10 @@ export function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onC
       footer={<>
         <button className="btn" onClick={onClose}>Close</button>
         <button className="btn" onClick={() => void print()}>Print</button>
-        {isDraft && canWrite && onEdit && (
+        {/* An issued one is corrected rather than changed: cancelled and issued
+            again under a new number (`amendDocument`), so only while nothing has
+            been made from it -- the same rule as cancelling it. */}
+        {(isDraft || (isIssued && untouched && canCancel)) && canWrite && onEdit && (
           <button className="btn" disabled={busy} onClick={onEdit}>Edit</button>
         )}
         {isDraft && canWrite && (
@@ -203,6 +206,8 @@ export function Detail({ doc, config, canCancel, canWrite, canBill, onClose, onC
         </span>
         {doc.validUntil && <span><span style={{ color: 'var(--ink-3)' }}>Valid until </span>{doc.validUntil}</span>}
         <span><DocStatusBadge status={doc.docstatus} /></span>
+        {doc.corrects && <span><span style={{ color: 'var(--ink-3)' }}>Corrects </span>{doc.corrects}</span>}
+        {doc.correctedBy && <span><span style={{ color: 'var(--ink-3)' }}>Corrected by </span>{doc.correctedBy}</span>}
       </div>
 
       {doc.cancelReason && <Alert kind="warn">Cancelled: {doc.cancelReason}</Alert>}

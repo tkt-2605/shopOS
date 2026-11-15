@@ -57,6 +57,8 @@ export function unsavedMessage(reason: string): string {
         + 'saved. Change the line’s quantity or unit again to reprice it, or type the rate.'
     case 'OPEN_PRICE_NEEDS_AMOUNT':
       return 'A loose item on the bill has no amount. Type what the customer pays for it in its rate box.'
+    case 'PICK_A_VERSION':
+      return 'An item on the bill has variants now. Take its line off and scan it again to pick the variant.'
     default:
       return 'The bill on screen could not be saved, so it cannot be taken yet. Check the lines and try again.'
   }

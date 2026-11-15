@@ -9,6 +9,7 @@ import { reverseBatches } from '../batches.js'
 import { closedFor, type PeriodClosed } from '../books.js'
 import { loadReturn } from './read.js'
 import { regrantPoints, unrestorePoints } from './refund.js'
+import { openSessionFor, postCashMovement } from '../cash.js'
 import { requirePermission } from '../../integrity/permissions.js'
 import { reverseVoucherGl } from '../ledger.js'
 
@@ -61,6 +62,27 @@ export async function cancelReturn(
         docstatusFrom: SUBMITTED, docstatusTo: CANCELLED,
         after: { cancel_reason: `${ret.docNo} cancelled` },
       })
+    }
+    /* And the money handed back by hand goes back into the drawer's count, as
+       a cancelled bill's takes it out. Left out, the evening count came up
+       short by every refund that was undone: the books had the money back and
+       the drawer was never told. Onto the account moved no money. */
+    if (ret.refundMethod !== 'credit' && ret.refundCash > 0) {
+      const [bill] = await q(tx).select({ registerId: schema.bills.registerId })
+        .from(schema.bills).where(eq(schema.bills.id, ret.billId))
+      const session = bill ? await openSessionFor(tx, bill.registerId) : null
+      if (session) {
+        await postCashMovement(tx, {
+          sessionId: session,
+          direction: 'in',
+          amount: ret.refundCash,
+          method: ret.refundMethod,
+          sourceType: 'sales_return',
+          sourceId: input.returnId,
+          userId: input.actorId,
+          now,
+        })
+      }
     }
     if (ret.pointsRestored > 0) await unrestorePoints(tx, ret.billId, ret.pointsRestored)
     if (ret.pointsRemoved > 0) await regrantPoints(tx, ret.billId, ret.pointsRemoved)

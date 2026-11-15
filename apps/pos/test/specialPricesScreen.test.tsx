@@ -28,9 +28,9 @@ vi.mock('../src/core/CoreProvider', () => ({
 }))
 
 const { default: Pricing } = await import('../src/pages/Pricing')
-const { ProductForm } = await import('../src/pages/inventory/ProductForm')
+const { PriceSection } = await import('../src/pages/inventory/PriceSection')
+const { RenameUnit } = await import('../src/pages/inventory/RenameUnit')
 const { BLANK } = await import('../src/pages/inventory/draft')
-const { useParentSearch } = await import('../src/pages/inventory/useParentSearch')
 
 beforeEach(async () => {
   db = openMemoryDatabase()
@@ -107,10 +107,8 @@ describe('Special Prices', () => {
 
 describe('the item form', () => {
   function Form({ draft }: { draft: typeof BLANK }) {
-    const parent = useParentSearch(db, draft, vi.fn())
     return (
-      <ProductForm draft={draft} setDraft={vi.fn()} categories={[]} newCategory="" setNewCategory={vi.fn()}
-        onAddCategory={vi.fn()} parentName={undefined} parent={parent} lastCost={null} />
+      <PriceSection draft={draft} setDraft={vi.fn()} lastCost={null} familyPriced={false} />
     )
   }
 
@@ -121,7 +119,8 @@ describe('the item form', () => {
   })
 
   it('shows the unit on an item that exists, renamable but not changeable, rather than hiding it', () => {
-    render(<Form draft={{ ...BLANK, id: pen, name: 'Ball Pen Black', baseUnit: 'piece' }} />)
+    // The Item tab's unit box, which is this component.
+    render(<RenameUnit draft={{ ...BLANK, id: pen, name: 'Ball Pen Black', baseUnit: 'piece' }} setDraft={vi.fn()} />)
     const unit = screen.getByLabelText('Unit') as HTMLInputElement
     expect(unit.value).toBe('piece')
     expect(unit.disabled).toBe(true)
@@ -131,10 +130,8 @@ describe('the item form', () => {
   it('renames the unit on the spot, and says stock and prices are unchanged', async () => {
     const setDraft = vi.fn()
     function Live() {
-      const parent = useParentSearch(db, BLANK, vi.fn())
       return (
-        <ProductForm draft={{ ...BLANK, id: pen, name: 'Ball Pen Black', baseUnit: 'piece' }} setDraft={setDraft} categories={[]}
-          newCategory="" setNewCategory={vi.fn()} onAddCategory={vi.fn()} parentName={undefined} parent={parent} lastCost={null} />
+        <RenameUnit draft={{ ...BLANK, id: pen, name: 'Ball Pen Black', baseUnit: 'piece' }} setDraft={setDraft} />
       )
     }
     render(<Live />)

@@ -1,10 +1,10 @@
 import {
-  cloneElement, isValidElement, useEffect, useId, useRef,
+  cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState,
   type ReactElement, type ReactNode, type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
 import { Money, businessDate } from '@shopos/core'
-import { pushModal, popModal, isTopModal } from '../core/modalStack'
+import { pushModal, popModal, isTopModal, topModal, onModalStackChange } from '../core/modalStack'
 
 /** What a screen is looking at. The same shape the report queries take. */
 export interface Range {
@@ -279,7 +279,10 @@ export function Modal({
         onKeyDown={onKeyDown}
       >
         <div className="modal-head">{title}</div>
-        <div className="modal-body">{children}</div>
+        <div className="modal-body">
+          <div className="modal-notices" data-notices-for={id} />
+          {children}
+        </div>
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
     </div>,
@@ -291,10 +294,39 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>
 }
 
+/**
+ * A message, where the person is looking.
+ *
+ * A page's message raised while a dialog is open -- the item form refusing a
+ * barcode another item has -- used to land on the page behind the dialog,
+ * where nobody looks and nothing can be clicked. So an Alert that is not
+ * itself in a dialog shows at the top of the dialog on top while one is open,
+ * and goes back to its place on the page when the dialog closes. An Alert
+ * written inside a dialog stays where it was written.
+ */
 export function Alert({ kind = 'bad', children }: { kind?: 'bad' | 'warn' | 'ok'; children: ReactNode }) {
+  const anchor = useRef<HTMLSpanElement>(null)
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    const place = () => {
+      const top = topModal()
+      const inDialog = Boolean(anchor.current?.closest('.modal'))
+      setSlot(top === null || inDialog
+        ? null
+        : [...document.querySelectorAll<HTMLElement>('[data-notices-for]')].find((el) => el.dataset.noticesFor === top) ?? null)
+    }
+    place()
+    return onModalStackChange(place)
+  }, [])
   const cls = kind === 'bad' ? 'alert' : `alert ${kind}`
   // Announced, not only shown: an error interrupts, anything else waits its turn.
-  return <div className={cls} role={kind === 'bad' ? 'alert' : 'status'}>{children}</div>
+  const message = <div className={cls} role={kind === 'bad' ? 'alert' : 'status'}>{children}</div>
+  return (
+    <>
+      <span ref={anchor} hidden />
+      {slot ? createPortal(message, slot) : message}
+    </>
+  )
 }
 
 export function DocStatusBadge({ status }: { status: number }) {
