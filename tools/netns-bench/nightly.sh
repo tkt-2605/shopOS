@@ -38,11 +38,15 @@ result() { # result <name> <command...>: run it, keep its output and evidence
 fail=0
 {
   echo "ShopOS nightly $(date -u '+%Y-%m-%d %H:%M UTC'), commit $(git -c safe.directory="*" -C "$here" log -1 --format=%h 2>/dev/null || echo unknown)"
+  echo "node $(node -v 2>&1) at $(command -v node || echo 'nowhere on PATH')"
   echo "soak: STEPS=$STEPS SEED=$SOAK_SEED   catch-up: SALES=$SALES CUTS=$CUTS SEED=$CATCHUP_SEED"
   result soak env STEPS="$STEPS" SEED="$SOAK_SEED" "$here/soak.sh" || fail=1
   result catchup env SALES="$SALES" CUTS="$CUTS" SEED="$CATCHUP_SEED" "$here/catchup.sh" || fail=1
   for name in soak catchup; do
     grep -E '^FAIL' "$night/$name.out" | sed "s/^/  $name: /"
+    # A till that never opened its port says why in its own log; lib.sh's
+    # start prints that log's last lines, and they belong in the summary.
+    grep -E -A5 'did not start' "$night/$name.out" | head -12 | sed "s/^/  $name: /"
   done
   [ "$fail" -eq 0 ] && echo "all passed" || echo "evidence: $night"
 } >"$night/summary.txt"

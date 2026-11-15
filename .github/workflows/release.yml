@@ -110,7 +110,9 @@ jobs:
       - run: cargo build --release --manifest-path crates/shopos-net/Cargo.toml
       - name: the run
         run: |
-          sudo env STEPS=500 SALES=1000 NIGHTLY_DIR=/var/tmp/shopos-release tools/netns-bench/nightly.sh | tee summary.txt
+          # PATH through sudo: sudo resets it, and the tills then ran on the
+          # runner's own node, not the one npm ci built better-sqlite3 for.
+          sudo env "PATH=$PATH" STEPS=500 SALES=1000 NIGHTLY_DIR=/var/tmp/shopos-release tools/netns-bench/nightly.sh | tee summary.txt
           status=${PIPESTATUS[0]}
           { echo '### Soak before release'; echo '```'; cat summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"

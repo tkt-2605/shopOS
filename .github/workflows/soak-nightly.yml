@@ -48,7 +48,8 @@ jobs:
       - name: the night's run
         id: run
         run: |
-          sudo env STEPS='${{ inputs.steps || 1000 }}' SALES='${{ inputs.sales || 2000 }}' \
+          # PATH through sudo, so the tills run on the node npm ci built for.
+          sudo env "PATH=$PATH" STEPS='${{ inputs.steps || 1000 }}' SALES='${{ inputs.sales || 2000 }}' \
             NIGHTLY_DIR=/var/tmp/shopos-nightly tools/netns-bench/nightly.sh | tee summary.txt
           status=${PIPESTATUS[0]}
           {
