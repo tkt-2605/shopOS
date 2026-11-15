@@ -17,6 +17,17 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.7.0': {
+    title: 'Split a payment, correct a document, and sell one item in several variants',
+    points: [
+      'Take payment, Split: part cash, part UPI, card or credit. Type the first part; the next box fills with what is left. On a return, what the bill still owes on credit comes off their khata first, and only the rest is handed back.',
+      'A purchase, quotation or order can be corrected: Edit makes a corrected copy with a new number and cancels the old one. A purchase can be saved as a draft and finished later.',
+      'An item opens as a page with tabs. Variants (an XO pen in blue, black and red) live on its Variants tab, can share one barcode and follow the item\'s price; a scan of that barcode asks which one.',
+      'Cancelling a cash return now puts the money back in the drawer\'s expected cash, so the evening count matches.',
+      'Reports and the day-end count are faster on a shop with many bills.',
+      'Tills on 0.6.0 keep syncing with this version while you update them one by one.',
+    ],
+  },
   '0.6.0': {
     title: 'A credit limit of ₹0 now means no credit, and online orders grow up',
     points: [
