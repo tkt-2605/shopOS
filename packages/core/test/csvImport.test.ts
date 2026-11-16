@@ -87,14 +87,15 @@ describe('planning an import', () => {
   it('counts what it would create and what it would change', async () => {
     await makeProduct(fx.db, { name: 'Rice' })
 
-    const plan = await planImport(fx.db, file('Rice,,1006,5,kg,120\r\nDal,,0713,5,kg,90\r\n'))
+    // No unit on Rice's row: the item is in pieces, and a row in kg would be another item.
+    const plan = await planImport(fx.db, file('Rice,,1006,5,,120\r\nDal,,0713,5,kg,90\r\n'))
     expect(plan).toMatchObject({ create: 1, update: 1, skip: 0 })
   })
 
   it('matches on barcode before name', async () => {
     const id = await makeProduct(fx.db, { name: 'Old name', barcode: '8901234567890' })
 
-    const plan = await planImport(fx.db, file('Rice 5kg,8901234567890,1006,5,kg,120\r\n'))
+    const plan = await planImport(fx.db, file('Rice 5kg,8901234567890,1006,5,,120\r\n'))
     expect(plan.rows[0]).toMatchObject({ action: 'update', productId: id })
   })
 
@@ -104,9 +105,13 @@ describe('planning an import', () => {
     await makeProduct(fx.db, { name: 'Sugar', barcode: '8901234567890' })
     await makeProduct(fx.db, { name: 'Rice' })
 
-    const plan = await planImport(fx.db, file('Rice,8901234567890,,5,kg,120\r\n'))
+    const plan = await planImport(fx.db, file('Rice,8901234567890,,5,,120\r\n'))
     expect(plan.rows[0]).toMatchObject({ problem: 'BARCODE_TAKEN', action: null })
     expect(plan.skip).toBe(1)
+    // Nor in another unit: Rice in kg is not this Rice, and the code is still Sugar's.
+    await fx.db.execute(`UPDATE products SET base_unit = 'kg' WHERE name = 'Sugar'`)
+    const kg = await planImport(fx.db, file('Rice,8901234567890,,5,kg,120\r\n'))
+    expect(kg.rows[0]).toMatchObject({ problem: 'BARCODE_TAKEN', action: null })
   })
 
   it('names the line number Excel shows', async () => {
@@ -506,5 +511,66 @@ describe('the same file on two tills', () => {
     await fx.db.execute(`UPDATE products SET name = 'Toor Dal' WHERE name = 'Dal'`)
     const again = await applyImport(fx.db, ctx, await planImport(fx.db, csv))
     expect(again.created).toBe(1)
+  })
+})
+
+describe('the box and the loose piece', () => {
+  /* A box of ten pencils and the pencils sold loose: one name, one brand, two
+     items, as the item screen lets a shop make them. A file of loose prices
+     was read as ten-rupee price cuts to the boxes and refused as below cost. */
+  async function box(name: string, barcode?: string): Promise<string> {
+    const id = await makeProduct(fx.db, { name, baseRate: 5500, taxRateBp: 0, ...(barcode ? { barcode } : {}) })
+    await fx.db.execute(
+      `UPDATE products SET brand = 'APSARA', base_unit = 'pack', cost_price = 4500, cost_price_at = '2026-11-01T00:00:00.000Z' WHERE id = ?`, [id])
+    return id
+  }
+
+  it('makes a loose piece beside a box of the same name, rather than repricing the box', async () => {
+    const pack = await box('PLATINUM', '8901324055795')
+    const plan = await planImport(fx.db, 'name,brand,unit,rate,cost\r\nPLATINUM,APSARA,piece,6,4.50\r\n')
+    expect(plan.rows[0]).toMatchObject({ problem: null, action: 'create' })
+
+    await applyImport(fx.db, ctx, plan)
+    const rows = await fx.db.query<{ id: string; base_unit: string; base_rate: number }>(
+      `SELECT id, base_unit, base_rate FROM products WHERE name = 'PLATINUM' ORDER BY base_rate`)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ base_unit: 'piece', base_rate: 600 })
+    expect(rows[1]).toMatchObject({ id: pack, base_unit: 'pack', base_rate: 5500 })
+  })
+
+  it('tells the two apart by unit, and refuses a row that names neither', async () => {
+    await box('PLATINUM', '8901324055795')
+    const piece = await makeProduct(fx.db, { name: 'PLATINUM', baseRate: 600, taxRateBp: 0 })
+    await fx.db.execute(`UPDATE products SET brand = 'APSARA', base_unit = 'piece' WHERE id = ?`, [piece])
+
+    const loose = await planImport(fx.db, 'name,brand,unit,rate\r\nPLATINUM,APSARA,Piece,7\r\n')
+    expect(loose.rows[0]).toMatchObject({ problem: null, action: 'update', productId: piece })
+
+    const either = await planImport(fx.db, 'name,brand,rate\r\nPLATINUM,APSARA,7\r\n')
+    expect(either.rows[0]?.problem).toBe('NAME_AMBIGUOUS')
+  })
+
+  it('takes a box and a piece of one name from the same file', async () => {
+    const plan = await planImport(fx.db, 'name,brand,unit,rate\r\nSTRIPES,NATARAJ,pack,50\r\nSTRIPES,NATARAJ,piece,6\r\n')
+    expect(plan.rows.map((r) => r.action)).toEqual(['create', 'create'])
+  })
+
+  it('reads a row in another unit as another item, never as a correction to the unit', async () => {
+    /* The price of a duplicate is a line in a list that can be merged; the
+       price of a wrong match is a box's stock counted as pieces. */
+    await makeProduct(fx.db, { name: 'Rice' })
+    const plan = await planImport(fx.db, 'name,unit,rate\r\nRice,kg,120\r\n')
+    expect(plan.rows[0]).toMatchObject({ problem: null, action: 'create' })
+  })
+
+  it('never changes the unit an item is counted in', async () => {
+    /* Ten packs renamed to pieces are ten pencils: the stock does not move. */
+    const pack = await box('PLATINUM RT', '8901324056532')
+    const renamed = await planImport(fx.db, 'name,barcode,unit,rate\r\nPLATINUM RT,8901324056532,piece,65\r\n')
+    expect(renamed.rows[0]?.problem).toBe('UNIT_DIFFERS')
+
+    await applyImport(fx.db, ctx, await planImport(fx.db, 'name,brand,unit,rate\r\nPLATINUM RT,APSARA,PACK,65\r\n'))
+    const [row] = await fx.db.query<{ base_unit: string; base_rate: number }>(`SELECT base_unit, base_rate FROM products WHERE id = ?`, [pack])
+    expect(row).toEqual({ base_unit: 'pack', base_rate: 6500 })
   })
 })

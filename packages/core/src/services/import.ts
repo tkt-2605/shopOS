@@ -52,6 +52,15 @@ import { familyProblems, attachFamilies } from './importFamilies.js'
  * and when that name is more than one item here it is refused rather than
  * given to whichever was found first.
  *
+ * And with its unit, when the row says one. Pencils sold in a box of ten and
+ * the same pencils sold loose are two items with one name and one brand, as
+ * the item screen lets a shop make them: `PLATINUM, APSARA, piece` is the loose
+ * one, never a price change to the box. A row with no unit matches whichever
+ * unit the item is in. A file never changes an item's unit, because the stock
+ * is counted in it: ten packs renamed to pieces are ten pencils, not a hundred.
+ * A row whose barcode is an item in another unit is refused (`UNIT_DIFFERS`);
+ * the unit is renamed on the item, which knows what that means.
+ *
  * A name and brand may repeat when barcodes tell the items apart. Six exam pads
  * of no brand at six prices are six things on the shelf, and the shop's old
  * system held them under one name; refusing them made the import rename them,
@@ -98,6 +107,8 @@ export type RowProblem =
   | 'NAME_AMBIGUOUS'
   /** The barcode is on several items here (069), and the row names none of them. */
   | 'BARCODE_SHARED'
+  /** The barcode is an item sold in another unit here; a file does not change what stock is counted in. */
+  | 'UNIT_DIFFERS'
   /**
    * The selling rate, without its GST, is below what the item costs: the file's
    * own cost for a new item, the latest recorded for one already here
@@ -158,6 +169,7 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
       name: schema.products.name,
       brand: schema.products.brand,
       barcode: schema.products.barcode,
+      baseUnit: schema.products.baseUnit,
       parentProductId: schema.products.parentProductId,
     })
     .from(schema.products)
@@ -173,7 +185,8 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
   /* A code may be on several items since 069, so each code holds a set. */
   const byBarcode = new Map<string, Set<string>>()
   const hold = (code: string, id: string) => byBarcode.set(code, (byBarcode.get(code) ?? new Set()).add(id))
-  const byName = new Map<string, { id: string; brand: string; coded: boolean }[]>()
+  const byName = new Map<string, { id: string; brand: string; unit: string; coded: boolean }[]>()
+  const unitOf = new Map(existing.map((p) => [p.id, p.baseUnit.trim().toLowerCase()]))
   for (const p of existing) {
     if (p.barcode !== null && p.barcode !== '') hold(p.barcode, p.id)
   }
@@ -183,7 +196,7 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
   for (const p of existing) {
     const key = p.name.trim().toLowerCase()
     byName.set(key, [...(byName.get(key) ?? []), {
-      id: p.id, brand: (p.brand ?? '').trim().toLowerCase(), coded: coded.has(p.id),
+      id: p.id, brand: (p.brand ?? '').trim().toLowerCase(), unit: p.baseUnit.trim().toLowerCase(), coded: coded.has(p.id),
     }])
   }
 
@@ -240,7 +253,9 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
 
     const lowerName = name.toLowerCase()
     const lowerBrand = brand?.toLowerCase() ?? null
-    const nameKey = `${lowerName}\u0000${lowerBrand ?? ''}`
+    const lowerUnit = unit?.toLowerCase() ?? null
+    // The unit is part of what a row names: the box and the loose pencil may share the rest.
+    const nameKey = `${lowerName}\u0000${lowerBrand ?? ''}\u0000${lowerUnit ?? ''}`
     if (barcode !== null && seenBarcodes.get(barcode)?.has(nameKey)) { refuse('BARCODE_TWICE'); return }
     const before = seenNames.get(nameKey)
     if (before !== undefined && (barcode === null || !before.allCoded)) { refuse('NAME_TWICE'); return }
@@ -248,13 +263,16 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     /* The items this name could mean. With a brand, the item of that brand --
        or, when there is none, one with no brand yet, which the file is now
        giving one. Without a brand, every item of that name. */
+    const ofBrand = (items: { id: string; brand: string; unit: string; coded: boolean }[]) => {
+      if (lowerBrand === null) return items
+      const branded = items.filter((p) => p.brand === lowerBrand)
+      return branded.length > 0 ? branded : items.filter((p) => p.brand === '')
+    }
     const sameName = byName.get(lowerName) ?? []
-    const candidates = lowerBrand === null
-      ? sameName
-      : (() => {
-          const branded = sameName.filter((p) => p.brand === lowerBrand)
-          return branded.length > 0 ? branded : sameName.filter((p) => p.brand === '')
-        })()
+    /* Whatever its unit: the items a code is told apart from by name. */
+    const anyUnit = ofBrand(sameName)
+    /* And in the row's unit, when it says one: an item in another unit is another item. */
+    const candidates = ofBrand(sameName.filter((p) => lowerUnit === null || p.unit === lowerUnit))
 
     /* Barcode first, then exact name -- and since 069 a code may be several
        items', so the name says which of them. A row with a barcode that
@@ -269,8 +287,13 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
       if (named.length > 1) { refuse('NAME_AMBIGUOUS'); return }
       if (named.length === 1) matchedByBarcode = named[0]
       // The one item with this code, under a name the shop has since changed.
-      else if (holders.length === 1 && candidates.length === 0 && !sharedInFile) matchedByBarcode = holders[0]
-      else if (holders.length === 1 && candidates.length > 0) { refuse('BARCODE_TAKEN'); return }
+      else if (holders.length === 1 && anyUnit.length === 0 && !sharedInFile) {
+        if (lowerUnit !== null && unitOf.get(holders[0]!) !== lowerUnit) { refuse('UNIT_DIFFERS'); return }
+        matchedByBarcode = holders[0]
+      }
+      // This item's code, in a unit it is not counted in.
+      else if (holders.length === 1 && anyUnit.some((p) => p.id === holders[0])) { refuse('UNIT_DIFFERS'); return }
+      else if (holders.length === 1 && anyUnit.length > 0) { refuse('BARCODE_TAKEN'); return }
       else if (!sharedInFile) { refuse('BARCODE_SHARED'); return }
       // Otherwise a new item, sharing a code the file gives to other names too.
     }
@@ -415,7 +438,6 @@ export async function applyImport(
       if (row.brand !== null) change['brand'] = row.brand
       if (row.category !== null) change['categoryId'] = categoryId(row.category)
       if (row.hsn !== null) change['hsnCode'] = row.hsn
-      if (row.unit !== null) change['baseUnit'] = row.unit
       if (row.taxRateBp !== null) change['taxRateBp'] = row.taxRateBp
       if (row.rate !== null) change['baseRate'] = row.rate
       if (row.mrp !== null) change['mrp'] = row.mrp

@@ -39,6 +39,7 @@ const WHY: Record<RowProblem, string> = {
   BARCODE_TAKEN: 'That barcode already belongs to a different item here',
   BARCODE_SHARED: 'That barcode is on several items here, and none of them has this name',
   NAME_AMBIGUOUS: 'More than one item here has that name — add its brand or barcode',
+  UNIT_DIFFERS: 'That barcode is an item sold in another unit here — change the unit on the item',
   BELOW_COST: 'The rate is below what the item costs — set it on the item, where the owner can allow it',
 }
 
