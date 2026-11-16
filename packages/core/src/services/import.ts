@@ -1,18 +1,20 @@
 import { eq, and, isNull } from 'drizzle-orm'
 import type { SqlDriver } from '../db/driver.js'
 import { q, schema } from '../db/q.js'
-import { newId, derivedId } from '../ids.js'
-import { parseMoney, ZERO, type Money } from '../money.js'
-import { parseQty, type Qty } from '../quantity.js'
+import { ZERO, type Money } from '../money.js'
+import type { Qty } from '../quantity.js'
 import { writeAudit, type AuditContext } from '../integrity/audit.js'
 import { parseCsvRecords } from '../domain/csv.js'
 import { isHsn } from '../domain/hsn.js'
+import { money, tax, quantity } from '../domain/importCells.js'
+import { categoriesFor, importedProductId } from './importIds.js'
 import { businessDate } from '../dates.js'
 import { createStockEntry, submitStockEntry } from './stockEntry.js'
 import { addPrimaryBarcode, importRowsTakingACode } from './barcodes.js'
 import { requirePermission } from '../integrity/permissions.js'
 import { importRowsUnderCost } from './belowCost.js'
 import { familyProblems, attachFamilies } from './importFamilies.js'
+import { followFamily } from './variants.js'
 
 /**
  * Getting a shop's catalogue in, from the spreadsheet it already has.
@@ -111,8 +113,9 @@ export type RowProblem =
   | 'UNIT_DIFFERS'
   /**
    * The selling rate, without its GST, is below what the item costs: the file's
-   * own cost for a new item, the latest recorded for one already here
-   * (`services/belowCost.ts`). Set it from the item, where an owner can allow it.
+   * own cost where the row has one, the latest recorded where it does not
+   * (`services/belowCost.ts`). A warning rather than a refusal for a person who
+   * may go below cost: `applyImport` takes these rows when told to allow them.
    */
   | 'BELOW_COST'
 
@@ -122,6 +125,11 @@ export interface PlannedRow {
   name: string
   action: ImportAction | null
   problem: RowProblem | null
+  /**
+   * On a `BELOW_COST` row: what it would have done, and the price and cost
+   * that stopped it, both per base unit before GST. Allowed, it does that.
+   */
+  belowCost?: { action: ImportAction; sellsAt: Money; cost: Money }
   /** The product this row would change, when the action is `update`. */
   productId: string | null
   brand: string | null
@@ -150,6 +158,8 @@ export interface ImportPlan {
   create: number
   update: number
   skip: number
+  /** Of the skipped, those held only for selling below cost: a person who may can allow them. */
+  belowCost: number
 }
 
 /**
@@ -332,15 +342,24 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     if (problem) { row.problem = problem; row.action = null }
   }
 
-  /* After matching, which says whose cost applies: the file's, for a new item. */
+  // Whose a code becomes, where the shop holds every code to one item (`uniqueBarcode`).
+  const taken = await importRowsTakingACode(db, planned.filter((r) => r.problem === null).map((r) => ({ key: r.line, productId: r.productId, barcode: r.barcode, family: r.variantOf })))
+  for (const row of planned) if (taken.has(row.line)) { row.problem = 'BARCODE_TAKEN'; row.action = null }
+
+  /* Last, so a row held for its price has passed every other check: allowing
+     it must not let through anything else that was wrong with it. After
+     matching, which says whose cost applies. */
   const under = await importRowsUnderCost(db, planned.filter((r) => r.problem === null).map((r) => ({
     key: r.line, name: r.name, productId: r.action === 'update' ? r.productId : null,
     rate: r.rate, cost: r.cost, taxRateBp: r.taxRateBp,
   })))
-  for (const row of planned) if (under.has(row.line)) { row.problem = 'BELOW_COST'; row.action = null }
-  // And whose a code becomes, where the shop holds every code to one item (`uniqueBarcode`).
-  const taken = await importRowsTakingACode(db, planned.filter((r) => r.problem === null).map((r) => ({ key: r.line, productId: r.productId, barcode: r.barcode, family: r.variantOf })))
-  for (const row of planned) if (taken.has(row.line)) { row.problem = 'BARCODE_TAKEN'; row.action = null }
+  for (const row of planned) {
+    const held = under.get(row.line)
+    if (!held || row.action === null) continue
+    row.belowCost = { action: row.action, ...held }
+    row.problem = 'BELOW_COST'
+    row.action = null
+  }
 
   return {
     headers,
@@ -349,6 +368,7 @@ export async function planImport(db: SqlDriver, text: string): Promise<ImportPla
     create: planned.filter((r) => r.action === 'create').length,
     update: planned.filter((r) => r.action === 'update').length,
     skip: planned.filter((r) => r.problem !== null).length,
+    belowCost: planned.filter((r) => r.problem === 'BELOW_COST').length,
   }
 }
 
@@ -385,9 +405,19 @@ export interface CatalogueImportResult extends ImportResult {
  */
 export async function applyImport(
   db: SqlDriver, ctx: AuditContext, plan: ImportPlan,
+  opts: { allowBelowCost?: boolean } = {},
 ): Promise<CatalogueImportResult> {
   await requirePermission(db, ctx.actorId, 'product', 'write')
-  const usable = plan.rows.filter((r) => r.problem === null && r.action !== null)
+  /* Below cost, allowed by somebody who may: the clearance price, or a file
+     whose costs went up. Refused outright to anybody else, as at the item. */
+  if (opts.allowBelowCost) await requirePermission(db, ctx.actorId, 'below_cost', 'write')
+  const allowed = opts.allowBelowCost
+    ? plan.rows.filter((r) => r.problem === 'BELOW_COST' && r.belowCost).map((r) => ({ ...r, action: r.belowCost!.action, problem: null }))
+    : []
+  const usable = [...plan.rows.filter((r) => r.problem === null && r.action !== null), ...allowed]
+  const allowedLines = new Set(allowed.map((r) => r.line))
+  /** Each allowed row, written to the audit trail the way the item page writes one. */
+  const underCost: { productId: string; name: string; sellsAt: Money; cost: Money }[] = []
   const now = new Date().toISOString()
   let created = 0
   let updated = 0
@@ -411,6 +441,9 @@ export async function applyImport(
           taxRateBp: row.taxRateBp ?? 0,
           baseRate: row.rate ?? (0 as Money),
           mrp: row.mrp,
+          /* Its cost price, whether or not it came with stock: a file's cost
+             used to value only the opening stock, and was lost without it. */
+          ...(row.cost !== null ? { costPrice: row.cost, costPriceAt: now } : {}),
           createdAt: now,
           updatedAt: now,
         })
@@ -423,6 +456,7 @@ export async function applyImport(
           after: { name: row.name, base_rate: row.rate ?? 0, source: 'csv import' },
         })
         created += 1
+        if (allowedLines.has(row.line)) underCost.push({ productId: id, name: row.name, ...row.belowCost! })
         if (row.openingQty !== null && row.openingQty > 0) {
           // A first count with no cost is stock valued at nothing, and every sale of it all margin.
           opening.push({ productId: id, qty: row.openingQty, unitCost: row.cost ?? ZERO })
@@ -441,6 +475,10 @@ export async function applyImport(
       if (row.taxRateBp !== null) change['taxRateBp'] = row.taxRateBp
       if (row.rate !== null) change['baseRate'] = row.rate
       if (row.mrp !== null) change['mrp'] = row.mrp
+      /* The cost price, as typed on the item: the Cost column and the
+         below-cost floor read it while it is newer than the last purchase.
+         It used to be dropped here without a word. */
+      if (row.cost !== null) { change['costPrice'] = row.cost; change['costPriceAt'] = now }
 
       await q(tx).update(schema.products)
         .set(change)
@@ -467,9 +505,20 @@ export async function applyImport(
         },
       })
       updated += 1
+      if (allowedLines.has(row.line)) underCost.push({ productId: row.productId as string, name: row.name, ...row.belowCost! })
     }
     // Once every row is in, so a family that is a new line in this same file is there to belong to.
     await attachFamilies(tx, ctx, written, now)
+    /* A family priced as one stays one price, as when it is saved on its page:
+       a parent's new rate goes down to its variants, a variant's goes back to
+       the parent's. Without this a file could price one colour on its own. */
+    for (const row of usable) if (row.action === 'update') await followFamily(tx, ctx, row.productId as string)
+    for (const line of underCost) {
+      await writeAudit(tx, ctx, {
+        entity: 'products', entityId: line.productId, action: 'update',
+        after: { below_cost: `${line.name}: ${(line.sellsAt / 100).toFixed(2)} under ${(line.cost / 100).toFixed(2)}`, source: 'csv import' },
+      })
+    }
 
     /* The column was read, checked, shown on the plan -- and then dropped here,
        so a shop that imported its catalogue with its stock got the catalogue and
@@ -492,98 +541,5 @@ export async function applyImport(
     }
   })
 
-  return { created, updated, skipped: plan.skip, stocked: opening.length, stockIgnored }
-}
-
-/**
- * The category each name in the file means, making the ones the shop lacks.
- *
- * By name, ignoring case, as `createCategory` holds them unique. Made here in
- * the import's own transaction rather than through `createCategory`, which
- * opens one of its own, so a failed import does not leave its categories behind.
- */
-async function categoriesFor(
-  tx: SqlDriver, ctx: AuditContext, rows: PlannedRow[], now: string,
-): Promise<(name: string) => string> {
-  const ids = new Map<string, string>()
-  const known = await q(tx)
-    .select({ id: schema.categories.id, name: schema.categories.name })
-    .from(schema.categories)
-    .where(isNull(schema.categories.deletedAt))
-  for (const c of known) ids.set(c.name.trim().toLowerCase(), c.id)
-
-  for (const row of rows) {
-    if (row.category === null || ids.has(row.category.toLowerCase())) continue
-    // Derived, as an imported product is, so two tills importing one file make one category.
-    const derived = await derivedId('categories', 'import', row.category.toLowerCase())
-    const [taken] = await q(tx).select({ id: schema.categories.id }).from(schema.categories)
-      .where(eq(schema.categories.id, derived))
-    const id = taken ? newId() : derived
-    await q(tx).insert(schema.categories).values({ id, name: row.category, createdAt: now, updatedAt: now })
-    await writeAudit(tx, ctx, {
-      entity: 'categories', entityId: id, action: 'create',
-      after: { name: row.category, source: 'csv import' },
-    })
-    ids.set(row.category.toLowerCase(), id)
-  }
-
-  return (name) => ids.get(name.toLowerCase()) as string
-}
-
-/* ── reading one cell ──────────────────────────────────────────────────── */
-
-/** `null` for a blank cell, `'bad'` for one that is not a number. */
-function money(raw: string | undefined): Money | null | 'bad' {
-  const text = (raw ?? '').trim()
-  if (text === '') return null
-  // A file from a wholesaler often carries the symbol and thousands commas.
-  const cleaned = text.replace(/[₹,\s]/g, '')
-  const value = parseMoney(cleaned)
-  // A price below zero is not a price.
-  return value === null || value < 0 ? 'bad' : value
-}
-
-/**
- * A tax percentage as basis points.
- *
- * `5`, `5%` and `5.0` are all five per cent. A number above 100 is refused
- * rather than clamped: somebody has typed basis points into a percent column,
- * and importing it as 2,800% tax would be visible only on the first bill.
- */
-function tax(raw: string | undefined): number | null | 'bad' {
-  const text = (raw ?? '').trim().replace('%', '')
-  if (text === '') return null
-  const value = Number(text)
-  if (!Number.isFinite(value) || value < 0 || value > 100) return 'bad'
-  return Math.round(value * 100)
-}
-
-function quantity(raw: string | undefined): Qty | null | 'bad' {
-  const text = (raw ?? '').trim()
-  if (text === '') return null
-  const value = parseQty(text)
-  // Opening stock is what is on the shelf, which is not below nothing.
-  return value === null || value < 0 ? 'bad' : value
-}
-
-/**
- * The id an imported product is created under.
- *
- * Derived from what the row is -- its barcode and name, or its name where it
- * has no barcode (the name too since 069, when one code may be two items) -- so two tills importing the same file while apart create the same product
- * rather than two, which the merge then joins into one. A random id would give
- * the shop every item twice, and nothing would refuse it: `code` is empty on
- * an import, so no UNIQUE is there to notice.
- *
- * A hint and not a key. A name can be changed; if something already holds the
- * derived id here -- an item renamed and then imported again -- the row gets a
- * fresh one instead of failing the whole import on a primary key.
- */
-async function importedProductId(tx: SqlDriver, barcode: string | null, name: string): Promise<string> {
-  const named = name.trim().toLowerCase()
-  const id = barcode?.trim()
-    ? await derivedId('products', 'import', barcode.trim(), named)
-    : await derivedId('products', 'import', named)
-  const [taken] = await q(tx).select({ id: schema.products.id }).from(schema.products).where(eq(schema.products.id, id))
-  return taken ? newId() : id
+  return { created, updated, skipped: plan.skip - allowed.length, stocked: opening.length, stockIgnored }
 }

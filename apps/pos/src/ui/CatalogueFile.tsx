@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react'
 import {
-  planImport, applyImport, exportCatalogue, businessDate, IMPORT_COLUMNS, type ImportPlan, type RowProblem,
+  planImport, applyImport, exportCatalogue, businessDate, mayAllowBelowCost, IMPORT_COLUMNS,
+  type ImportPlan, type RowProblem,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { saveFile } from '../core/exportFile'
-import { Modal, Alert, Empty } from './components'
+import { Modal, Alert, Empty, Rupees } from './components'
 
 /**
  * The catalogue, in and out of a spreadsheet.
@@ -53,6 +54,9 @@ export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }
   const [busy, setBusy] = useState(false)
   const [said, setSaid] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
+  /** Whether this person may sell below cost, and whether they have said to, for this file. */
+  const [mayAllow, setMayAllow] = useState(false)
+  const [allowBelow, setAllowBelow] = useState(false)
 
   async function download() {
     const csv = await exportCatalogue(db)
@@ -69,6 +73,8 @@ export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }
       /* Read in the webview rather than through Rust: this is a file the
          person just picked in a dialog, it is text, and it never touches the
          database until `apply`. */
+      setAllowBelow(false)
+      setMayAllow(await mayAllowBelowCost(db, user.id))
       setPlan(await planImport(db, await file.text()))
     } catch (err) {
       setProblem(err instanceof Error ? err.message : 'That file could not be read.')
@@ -79,7 +85,7 @@ export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }
     if (!plan) return
     setBusy(true)
     try {
-      const result = await applyImport(db, { actorId: user.id }, plan)
+      const result = await applyImport(db, { actorId: user.id }, plan, { allowBelowCost: mayAllow && allowBelow })
       setPlan(null)
       setFileName('')
       setSaid(
@@ -102,7 +108,11 @@ export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }
     }
   }
 
-  const skipped = plan?.rows.filter((r) => r.problem !== null) ?? []
+  /* Below cost is a warning, not a fault in the file: those rows are listed on
+     their own, with the price and the cost, and may be let in. */
+  const below = plan?.rows.filter((r) => r.problem === 'BELOW_COST' && r.belowCost) ?? []
+  const skipped = plan?.rows.filter((r) => r.problem !== null && !below.includes(r)) ?? []
+  const taking = plan ? plan.create + plan.update + (mayAllow && allowBelow ? below.length : 0) : 0
 
   return (
     <>
@@ -132,10 +142,10 @@ export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }
             <button className="btn" onClick={() => { setPlan(null); setProblem(null) }}>Cancel</button>
             <button
               className="btn primary"
-              disabled={busy || plan.create + plan.update === 0}
+              disabled={busy || taking === 0}
               onClick={() => void apply()}
             >
-              {busy ? 'Importing…' : `Import ${plan.create + plan.update} items`}
+              {busy ? 'Importing…' : `Import ${taking} items`}
             </button>
           </>}
         >
@@ -144,14 +154,16 @@ export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }
           <div className="stat-row">
             <div><strong>{plan.create}</strong> new</div>
             <div><strong>{plan.update}</strong> to update</div>
-            <div><strong>{plan.skip}</strong> skipped</div>
+            {below.length > 0 && <div><strong>{below.length}</strong> below cost</div>}
+            <div><strong>{skipped.length}</strong> skipped</div>
           </div>
 
           <div style={{ fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.55, marginTop: 10 }}>
             Nothing has been changed yet. Items are matched on barcode first, then on an
             exact name and brand. <strong>A blank cell leaves what is already there alone</strong> — a
             file with only name and rate is a price update, and will not wipe your HSN codes.
-            Opening stock and its cost are recorded for new items only.
+            A cost in the file becomes the item’s cost price, new item or not. Opening stock
+            is recorded for new items only.
           </div>
 
           {plan.unknownColumns.length > 0 && (
@@ -159,6 +171,42 @@ export function CatalogueFile({ onDone }: { onDone: () => void | Promise<void> }
               These columns will be ignored: {plan.unknownColumns.join(', ')}.
               Understood columns are {IMPORT_COLUMNS.join(', ')}.
             </Alert>
+          )}
+
+          {below.length > 0 && (
+            <>
+              <div style={{ fontWeight: 600, marginTop: 14, marginBottom: 6 }}>
+                Priced below cost
+              </div>
+              <Alert kind="warn">
+                {below.length === 1 ? 'This item would sell' : `These ${below.length} items would sell`} for less
+                than {below.length === 1 ? 'it costs' : 'they cost'}, before GST.{' '}
+                {mayAllow
+                  ? 'They are left out unless you tick the box below.'
+                  : 'They will be left out: only someone allowed to sell below cost, such as the owner, can import them.'}
+              </Alert>
+              <div className="card card-scroll" style={{ maxHeight: 200, marginTop: 6 }}>
+                <table>
+                  <thead><tr><th className="r">Line</th><th>Name</th><th className="r">Sells at</th><th className="r">Costs</th></tr></thead>
+                  <tbody>
+                    {below.map((row) => (
+                      <tr key={row.line}>
+                        <td className="r num">{row.line}</td>
+                        <td>{row.name}</td>
+                        <td className="r"><Rupees value={row.belowCost!.sellsAt} /></td>
+                        <td className="r"><Rupees value={row.belowCost!.cost} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {mayAllow && (
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                  <input type="checkbox" checked={allowBelow} onChange={(e) => setAllowBelow(e.target.checked)} />
+                  Import {below.length === 1 ? 'this one' : `these ${below.length}`} below cost anyway
+                </label>
+              )}
+            </>
           )}
 
           {skipped.length > 0 && (

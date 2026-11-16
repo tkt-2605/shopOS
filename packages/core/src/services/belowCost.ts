@@ -192,16 +192,18 @@ export async function belowCostRefusal(
 
 /**
  * Rows of a catalogue file whose rate would sell the item below what it cost,
- * by `key`. A new item (no `productId`) is held against the cost in the file;
- * one already here against its latest recorded. A row with no cost to go on,
- * or no rate, is left alone, as everywhere else. `services/import.ts` turns
- * these into refusals on the plan.
+ * by `key`, with the price and the cost it was held against. A row carrying a
+ * cost is held against that cost, new item or not: the file is the newer word
+ * on what it costs, and it becomes the item's cost price on the way in. One
+ * without is held against the latest recorded. A row with no cost to go on, or
+ * no rate, is left alone, as everywhere else. `services/import.ts` turns these
+ * into warnings on the plan, which a person who may go below cost can allow.
  */
 export async function importRowsUnderCost(db: SqlDriver, rows: readonly {
   key: number; name: string; productId: string | null
   rate: Money | null; cost: Money | null; taxRateBp: number | null
-}[]): Promise<Set<number>> {
-  const under = new Set<number>()
+}[]): Promise<Map<number, { sellsAt: Money; cost: Money }>> {
+  const under = new Map<number, { sellsAt: Money; cost: Money }>()
   const priced = rows.filter((r) => r.rate !== null && r.rate > 0)
   if (priced.length === 0) return under
   const known = priced.flatMap((r) => (r.productId ? [r.productId] : []))
@@ -216,16 +218,14 @@ export async function importRowsUnderCost(db: SqlDriver, rows: readonly {
     const held = row.productId ? ratesOf.get(row.productId) : undefined
     const taxRateBp = row.taxRateBp ?? held?.taxRateBp ?? 0
     const cessRateBp = held?.cessRateBp ?? 0
-    const floor = row.productId
-      ? floors.get(row.productId)
-      : row.cost !== null && row.cost > 0
-        ? await floorAt(db, row.cost, addTax(row.cost, taxRateBp, 'intra_state', cessRateBp).taxTotal)
-        : undefined
+    const floor = row.cost !== null && row.cost > 0
+      ? await floorAt(db, row.cost, addTax(row.cost, taxRateBp, 'intra_state', cessRateBp).taxTotal)
+      : row.productId ? floors.get(row.productId) : undefined
     if (floor === undefined) continue
     const price = await priceToCheck(db, {
       productId: row.productId ?? '', name: row.name, rate: row.rate as Money, includesTax: true, taxRateBp, cessRateBp,
     })
-    if (price.perBase < floor) under.add(row.key)
+    if (price.perBase < floor) under.set(row.key, { sellsAt: price.perBase as Money, cost: floor })
   }
   return under
 }

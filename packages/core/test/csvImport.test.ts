@@ -6,6 +6,8 @@ import { rupees } from '../src/money.js'
 import { findByBarcode, findAllByBarcode } from '../src/repos/catalog/products.js'
 import { freshDb, makeProduct, type Fixture } from './helpers.js'
 import type { SqlDriver } from '../src/db/driver.js'
+import { createUser } from '../src/services/auth.js'
+import { PermissionError } from '../src/integrity/permissions.js'
 
 /**
  * A shop's catalogue, in and out.
@@ -572,5 +574,82 @@ describe('the box and the loose piece', () => {
     await applyImport(fx.db, ctx, await planImport(fx.db, 'name,brand,unit,rate\r\nPLATINUM RT,APSARA,PACK,65\r\n'))
     const [row] = await fx.db.query<{ base_unit: string; base_rate: number }>(`SELECT base_unit, base_rate FROM products WHERE id = ?`, [pack])
     expect(row).toEqual({ base_unit: 'pack', base_rate: 6500 })
+  })
+})
+
+describe('a file of new costs and prices', () => {
+  /* A supplier's price drop is a file of new costs and new rates for items
+     the shop already has. The costs used to be dropped without a word, and the
+     new rates held against the old costs and refused. */
+  async function item(name: string, rate: number, cost: number): Promise<string> {
+    const id = await makeProduct(fx.db, { name, baseRate: rate, taxRateBp: 0 })
+    await fx.db.execute(`UPDATE products SET cost_price = ?, cost_price_at = '2026-11-01T00:00:00.000Z' WHERE id = ?`, [cost, id])
+    return id
+  }
+  const costOf = async (id: string) =>
+    (await fx.db.query<{ cost_price: number | null }>(`SELECT cost_price FROM products WHERE id = ?`, [id]))[0]!.cost_price
+
+  it('saves the cost on an item already here', async () => {
+    const id = await item('Stapler', 12000, 9000)
+    const plan = await planImport(fx.db, 'name,cost\r\nStapler,95\r\n')
+    expect(plan.rows[0]).toMatchObject({ action: 'update', problem: null })
+    await applyImport(fx.db, ctx, plan)
+    expect(await costOf(id)).toBe(9500)
+  })
+
+  it('saves the cost of a new item that came without stock', async () => {
+    await applyImport(fx.db, ctx, await planImport(fx.db, 'name,rate,cost\r\nGlue stick,20,14\r\n'))
+    const [row] = await fx.db.query<{ cost_price: number }>(`SELECT cost_price FROM products WHERE name = 'Glue stick'`)
+    expect(row!.cost_price).toBe(1400)
+  })
+
+  it('holds a new rate against the new cost in the same row', async () => {
+    // Was 120 on a cost of 90; the supplier now charges 70 and the shop sells at 80.
+    const id = await item('Stapler', 12000, 9000)
+    const plan = await planImport(fx.db, 'name,rate,cost\r\nStapler,80,70\r\n')
+    expect(plan.rows[0]).toMatchObject({ action: 'update', problem: null })
+    await applyImport(fx.db, ctx, plan)
+    expect(await costOf(id)).toBe(7000)
+  })
+
+  it('warns of a rate below cost, and lets in only what is allowed', async () => {
+    const id = await item('Stapler', 12000, 9000)
+    const plan = await planImport(fx.db, 'name,rate\r\nStapler,60\r\n')
+    expect(plan.rows[0]).toMatchObject({ problem: 'BELOW_COST', belowCost: { action: 'update', sellsAt: 6000, cost: 9000 } })
+    expect(plan.belowCost).toBe(1)
+
+    // Not allowed: left out, as before.
+    expect(await applyImport(fx.db, ctx, plan)).toMatchObject({ updated: 0, skipped: 1 })
+    const rate = async () => (await fx.db.query<{ base_rate: number }>(`SELECT base_rate FROM products WHERE id = ?`, [id]))[0]!.base_rate
+    expect(await rate()).toBe(12000)
+
+    // Allowed by the owner: in, and on the audit trail with the price and the cost.
+    expect(await applyImport(fx.db, ctx, plan, { allowBelowCost: true })).toMatchObject({ updated: 1, skipped: 0 })
+    expect(await rate()).toBe(6000)
+    const audit = await fx.db.query<{ diff: string }>(
+      `SELECT diff FROM audit_log WHERE entity_id = ? AND diff LIKE '%below_cost%'`, [id])
+    expect(audit).toHaveLength(1)
+  })
+
+  it('refuses the allowing to a role that may not sell below cost', async () => {
+    await item('Stapler', 12000, 9000)
+    const made = await createUser(fx.db, {
+      username: 'stock', password: 'counter-9', roleId: fx.seed.roleIds['Stockist']!, actorId: fx.adminId,
+    })
+    if (!made.ok) throw new Error(made.code)
+    const plan = await planImport(fx.db, 'name,rate\r\nStapler,60\r\n')
+    await expect(applyImport(fx.db, { actorId: made.userId }, plan, { allowBelowCost: true }))
+      .rejects.toBeInstanceOf(PermissionError)
+  })
+
+  it('keeps a family priced as one at one price', async () => {
+    const pen = await makeProduct(fx.db, { name: 'XO pen', baseRate: 1000, taxRateBp: 0 })
+    const blue = await makeProduct(fx.db, { name: 'XO pen (Blue)', baseRate: 1000, taxRateBp: 0 })
+    await fx.db.execute(`UPDATE products SET family_price = 1 WHERE id = ?`, [pen])
+    await fx.db.execute(`UPDATE products SET parent_product_id = ?, variant_label = 'Blue' WHERE id = ?`, [pen, blue])
+
+    await applyImport(fx.db, ctx, await planImport(fx.db, 'name,rate\r\nXO pen (Blue),15\r\n'))
+    const [row] = await fx.db.query<{ base_rate: number }>(`SELECT base_rate FROM products WHERE id = ?`, [blue])
+    expect(row!.base_rate).toBe(1000)
   })
 })
