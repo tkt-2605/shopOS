@@ -22,6 +22,8 @@ export { taxLikeName, taxForHsn, nameWords } from '../repos/catalog/taxLikes.js'
 export type { TaxLike } from '../repos/catalog/taxLikes.js'
 export { setProductActive, saveProductDetails } from '../services/products.js'
 export type { ProductDetails, SaveProductResult } from '../services/products.js'
+export { planRemoval, removeProducts } from '../services/productRemoval.js'
+export type { RemovalPlan, RemovalRow, RemovalAction, RemovalReason, ProductRemovalResult } from '../services/productRemoval.js'
 export {
   listUnits, setUnits, renameBaseUnit, listPriceLists, createPriceList, updatePriceList,
   archivePriceList, restorePriceList,

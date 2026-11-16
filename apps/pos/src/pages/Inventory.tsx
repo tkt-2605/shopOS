@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Quantity, Tax, Permissions, searchProducts, recomputeStock, listCategories, renameCategory, removeCategory,
-  laddersFor, defaultPriceListId, Ladder, productsByIds, familyTotals,
-  type Category, type ProductListItem,
+  laddersFor, defaultPriceListId, Ladder, productsByIds, familyTotals, familyVersions, planRemoval, removeProducts,
+  type Category, type ProductListItem, type RemovalRow,
 } from '@shopos/core'
 import { useCore, useUser } from '../core/CoreProvider'
 import { recordStockCheck } from '../core/maintenance'
@@ -45,15 +45,24 @@ export default function Inventory() {
   const [browsing, setBrowsing] = useState('')
   const [ladders, setLadders] = useState<Map<string, Ladder.Rung[]>>(new Map())
   const [priceListId, setPriceListId] = useState('')
+  /** The items ticked for removing, by id: kept across searches, so a shop can gather them from several. */
+  const [chosen, setChosen] = useState<Set<string>>(new Set())
+  /** Out-of-use items are a list of their own: on the main one they were rows nobody can sell. */
+  const [retiredOnly, setRetiredOnly] = useState(false)
+  /** Tick boxes only while choosing: the rest of the time they are a column of clutter. */
+  const [selecting, setSelecting] = useState(false)
 
   const canWrite = Permissions.can(user.permissions, 'product', 'write')
+  const canDelete = Permissions.can(user.permissions, 'product', 'delete')
+  const ticking = canDelete && selecting
   const costs = useCostHints(db, rows)
   const [costMode, setCostMode] = useGstMode(COST_ENTRY) // the item page's and Stock In's switch
 
   const refresh = useCallback(async () => {
-    const found = await searchProducts(db, {
+    const everything = await searchProducts(db, {
       term, limit: null, includeInactive: true, ...(browsing ? { categoryId: browsing } : {}),
     })
+    const found = everything.filter((p) => p.isActive !== retiredOnly)
     // A search can find a variant and not its family: the family is fetched so the variant has a row to sit under.
     const missing = [...new Set(found.filter((p) => p.parentProductId && !found.some((r) => r.id === p.parentProductId))
       .map((p) => p.parentProductId!))]
@@ -61,12 +70,12 @@ export default function Inventory() {
     setRows(found)
     setParents(extra)
     setTotals(sums)
-  }, [db, term, browsing])
+  }, [db, term, browsing, retiredOnly])
 
   useEffect(() => {
     const id = setTimeout(() => void refresh(), term === '' ? 0 : 140)
     return () => clearTimeout(id)
-  }, [refresh, term, browsing])
+  }, [refresh, term, browsing, retiredOnly])
   // And again when the other till changes a product or a price.
   useShopChanged(refresh)
 
@@ -161,6 +170,63 @@ export default function Inventory() {
     await refresh()
   }
 
+  /**
+   * Removing every ticked item at once (`productRemoval.ts`).
+   *
+   * The plan is shown before anything happens, in the shop's words: which go
+   * for good, which have bills or stock and so are only taken out of use, and
+   * which stay because a family still has variants nobody ticked.
+   */
+  async function removeChosen() {
+    const plan = await planRemoval(db, [...chosen])
+    const names = (rows: RemovalRow[]) => {
+      const shown = rows.slice(0, 6).map((r) => `  ${r.name}`)
+      return [...shown, ...(rows.length > 6 ? [`  and ${rows.length - 6} more`] : [])].join('\n')
+    }
+    const of = (n: number) => (n === 1 ? '1 item' : `${n} items`)
+    const retire = plan.rows.filter((r) => r.action === 'retire')
+    const families = plan.rows.filter((r) => r.reason === 'HAS_VARIANTS')
+    const done = plan.rows.filter((r) => r.reason === 'ALREADY_RETIRED')
+    if (plan.delete + plan.retire === 0) {
+      setNotice(families.length > 0
+        ? 'Nothing to remove: tick a family’s variants with it, or remove the variants first.'
+        : 'Nothing to remove: those items are already out of use.')
+      return
+    }
+    const parts = [
+      ...(plan.delete > 0 ? [`${of(plan.delete)} will be deleted. They were never sold, bought or counted, and their barcodes become free.`] : []),
+      ...(retire.length > 0 ? [`${of(retire.length)} have bills or stock, so they cannot be deleted. They will be taken out of use instead: off the counter and the reorder list, still on old bills.\n${names(retire)}`] : []),
+      ...(families.length > 0 ? [`${of(families.length)} will stay, because they still have variants you did not tick.\n${names(families)}`] : []),
+      ...(done.length > 0 ? [`${of(done.length)} are already out of use and stay as they are.`] : []),
+    ]
+    if (!(await ask({
+      title: `Remove ${of(chosen.size)}?`,
+      message: parts.join('\n\n'),
+      confirmLabel: plan.retire > 0 && plan.delete === 0 ? `Take ${of(plan.retire)} out of use` : 'Remove',
+      cancelLabel: 'Keep them',
+    }))) return
+    const result = await removeProducts(db, { actorId: user.id }, [...chosen])
+    setChosen(new Set())
+    setSelecting(false)
+    await refresh()
+    setNotice([
+      ...(result.deleted > 0 ? [`${of(result.deleted)} deleted.`] : []),
+      ...(result.retired > 0 ? [`${of(result.retired)} taken out of use.`] : []),
+      ...(result.kept > 0 ? [`${of(result.kept)} kept.`] : []),
+    ].join(' '))
+  }
+
+  const tick = (id: string) => setChosen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+
+  /* A family ticked is the family with every variant it has, out of use or
+     not, shown or not: it can only go once they all do (`productRemoval.ts`). */
+  async function tickWithVariants(ids: readonly string[], on: boolean) {
+    const families = ids.filter((id) => totals.has(id) || rows.some((r) => r.parentProductId === id))
+    const versions = await Promise.all(families.map((id) => familyVersions(db, id, { includeRetired: true })))
+    const all = [...ids, ...versions.flat().map((v) => v.id)]
+    setChosen((s) => { const n = new Set(s); for (const id of all) if (on) n.add(id); else n.delete(id); return n })
+  }
+
   if (page) {
     return (
       <ItemPage
@@ -175,7 +241,9 @@ export default function Inventory() {
   }
 
   const listed = familyRows(rows, parents, term.trim() !== '')
-  const cols = features.tieredPricing ? 10 : 9
+  const cols = (features.tieredPricing ? 10 : 9) + (ticking ? 1 : 0)
+  const listedIds = listed.map((l) => l.item.id)
+  const allTicked = listedIds.length > 0 && listedIds.every((id) => chosen.has(id))
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -185,6 +253,11 @@ export default function Inventory() {
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <input className="input" style={{ maxWidth: 320 }} placeholder="Search products"
           value={term} onChange={(e) => setTerm(e.target.value)} id="product-search" />
+        <select className="input" style={{ maxWidth: 140 }} value={retiredOnly ? 'retired' : 'live'}
+          onChange={(e) => { setRetiredOnly(e.target.value === 'retired'); setChosen(new Set()) }} aria-label="In use or out of use">
+          <option value="live">In use</option>
+          <option value="retired">Out of use</option>
+        </select>
         <select className="input" style={{ maxWidth: 200 }} value={browsing}
           onChange={(e) => setBrowsing(e.target.value)} aria-label="Group">
           <option value="">Every group</option>
@@ -205,11 +278,25 @@ export default function Inventory() {
         <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Cost</span><GstSwitch mode={costMode} onChange={setCostMode} />
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>
+        {canDelete && (
+          <button className="btn" onClick={() => { setSelecting((on) => !on); setChosen(new Set()) }}>
+            {selecting ? 'Done' : 'Select'}
+          </button>
+        )}
         {canWrite && <CatalogueFile onDone={refresh} />}
         {canWrite && <button className="btn primary" onClick={() => setAdding(true)}>Add item</button>}
       </div>
 
       {features.batchExpiry && <ExpiringCard />}
+
+      {ticking && (
+        <div className="card" style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 12px' }}>
+          <span>{chosen.size === 0 ? 'Tick the items to remove' : chosen.size === 1 ? '1 item ticked' : `${chosen.size} items ticked`}</span>
+          <span style={{ flex: 1 }} />
+          {chosen.size > 0 && <button className="btn sm" onClick={() => setChosen(new Set())}>Clear</button>}
+          <button className="btn sm danger" disabled={chosen.size === 0} onClick={() => void removeChosen()}>Remove…</button>
+        </div>
+      )}
 
       <div className="card card-scroll">
         <table>
@@ -218,6 +305,12 @@ export default function Inventory() {
               {/* One heading per cell below, in the same order: the rows carried an
                   HSN cell the heading row did not, which pushed every heading after
                   it one column left of its figures. */}
+              {ticking && (
+                <th style={{ width: 28 }}>
+                  <input type="checkbox" aria-label="Tick every item listed" checked={allTicked}
+                    onChange={() => void tickWithVariants(listedIds, !allTicked)} />
+                </th>
+              )}
               <th>Item</th><th>Barcode</th>{features.tieredPricing && <th>Cheaper by quantity</th>}
               <th>HSN</th><th className="r">GST</th><th className="r">MRP</th><th className="r" title={`The last price paid, or your cost price if newer; ${costMode === 'with' ? 'with' : 'before'} GST`}>Cost</th><th className="r">Rate</th>
               <th className="r">On hand</th><th />
@@ -232,6 +325,9 @@ export default function Inventory() {
               const toggle = () => setOpen((s) => { const n = new Set(s); if (n.has(p.id)) n.delete(p.id); else n.add(p.id); return n })
               return [
                 <tr key={p.id} className={isFamily ? 'family-row' : undefined}>
+                  {ticking && (
+                    <td><input type="checkbox" aria-label={`Tick ${p.name}`} checked={chosen.has(p.id)} onChange={() => void tickWithVariants([p.id], !chosen.has(p.id))} /></td>
+                  )}
                   <td>
                     <div>
                       {isFamily && (
@@ -267,6 +363,9 @@ export default function Inventory() {
                 </tr>,
                 ...(shown ? variants.map((v) => (
                   <tr key={v.id} className={`variant-row${marked.has(v.id) ? ' marked' : ''}`}>
+                    {ticking && (
+                      <td><input type="checkbox" aria-label={`Tick ${v.name}`} checked={chosen.has(v.id)} onChange={() => tick(v.id)} /></td>
+                    )}
                     <td>
                       {v.variantLabel ?? v.name}
                       {!v.isActive && <span className="badge" style={{ marginLeft: 6 }}>out of use</span>}

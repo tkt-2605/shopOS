@@ -58,7 +58,7 @@ export const ENFORCED: Record<Resource, readonly Capability[]> = {
   sales_return: ['create', 'submit', 'cancel'],
   payment: ['create', 'cancel'],
   stock_entry: ['submit'],
-  product: ['write'],
+  product: ['write', 'delete'],
   customer: ['create', 'write'],
   supplier: ['create', 'write', 'delete'],
   price_list: ['write'],
