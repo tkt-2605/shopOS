@@ -46,10 +46,22 @@ export interface PricingContext {
  */
 export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): Promise<PriceCandidates> {
   const [product] = await q(db)
-    .select({ baseRate: schema.products.baseRate, baseUnit: schema.products.baseUnit })
+    .select({ baseRate: schema.products.baseRate, baseUnit: schema.products.baseUnit, parent: schema.products.parentProductId })
     .from(schema.products)
     .where(eq(schema.products.id, ctx.productId))
   if (!product) throw new Error(`unknown product: ${ctx.productId}`)
+
+  /* Whose price rows to read. A variant in a family priced as one (085)
+     takes its family's rows -- the quantity breaks, the price lists' rates,
+     the customers' own rates -- written once, on the parent, as it takes the
+     parent's rate. Rows written for this one colour (Special Prices can name
+     it) still come first, each kind of row on its own: a customer's price for
+     the blue pen does not hide the family's breaks on the list. */
+  const family = await familyRowsFor(db, product.parent)
+  const ownOrFamily = async (read: (productId: string) => Promise<PriceTier[]>): Promise<PriceTier[]> => {
+    const own = await read(ctx.productId)
+    return own.length > 0 || !family ? own : read(family)
+  }
 
   let baseRate = product.baseRate
   if (ctx.batchId) {
@@ -75,25 +87,30 @@ export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): P
   const ladderUnit = product.baseUnit === ctx.saleUnit ? null : product.baseUnit
 
   if (ctx.customerId) {
-    const tiers: PriceTier[] = await customerTiers(db, ctx.customerId, ctx.productId, ctx.saleUnit)
-
-    // Only when this customer has said nothing about this unit — see loadTiers.
-    if (ladderUnit && tiers.length === 0) {
-      const base = await customerTiers(db, ctx.customerId, ctx.productId, ladderUnit)
-      tiers.push(...base.map((r) => converted(r, factor)))
-    }
+    const customerId = ctx.customerId
+    const tiers = await ownOrFamily(async (productId) => {
+      const rows: PriceTier[] = await customerTiers(db, customerId, productId, ctx.saleUnit)
+      // Only when this customer has said nothing about this unit — see loadTiers.
+      if (ladderUnit && rows.length === 0) {
+        const base = await customerTiers(db, customerId, productId, ladderUnit)
+        rows.push(...base.map((r) => converted(r, factor)))
+      }
+      return rows
+    })
 
     if (tiers.length > 0) candidates.customerTiers = tiers
   }
 
   if (ctx.customerPriceListId) {
-    candidates.customerListTiers = await loadTiers(
-      db, ctx.productId, ctx.customerPriceListId, ctx.saleUnit, ladderUnit, factor,
-    )
+    const listId = ctx.customerPriceListId
+    candidates.customerListTiers = await ownOrFamily((productId) => loadTiers(
+      db, productId, listId, ctx.saleUnit, ladderUnit, factor,
+    ))
   }
   if (ctx.defaultPriceListId && ctx.defaultPriceListId !== ctx.customerPriceListId) {
-    candidates.defaultListTiers = await loadTiers(
-      db, ctx.productId, ctx.defaultPriceListId, ctx.saleUnit, ladderUnit, factor,
+    const listId = ctx.defaultPriceListId
+    candidates.defaultListTiers = await ownOrFamily((productId) => loadTiers(
+      db, productId, listId, ctx.saleUnit, ladderUnit, factor,
       {
         // Box prices switched off: the box's own rows are kept and not read.
         ownUnit: ctx.unitPrices !== false,
@@ -102,10 +119,18 @@ export async function loadPriceCandidates(db: SqlDriver, ctx: PricingContext): P
            ten -- only a rung at one piece, which is a price and not a break. */
         baseFrom: ctx.quantityBreaks === false ? qty(QTY_SCALE) : null,
       },
-    )
+    ))
   }
 
   return candidates
+}
+
+/** The parent whose price rows a variant reads, when its family is priced as one. */
+async function familyRowsFor(db: SqlDriver, parentId: string | null): Promise<string | null> {
+  if (!parentId) return null
+  const [parent] = await q(db).select({ familyPrice: schema.products.familyPrice })
+    .from(schema.products).where(eq(schema.products.id, parentId))
+  return parent?.familyPrice === 1 ? parentId : null
 }
 
 /** What a price row says, whichever table it is in. */
