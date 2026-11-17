@@ -17,6 +17,17 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.8.0': {
+    title: 'Remove several items at once, and imports that understand boxes, loose pieces and costs',
+    points: [
+      'Items, Select: tick several items and press Remove. Items never sold, bought or counted are deleted and their barcodes are free again; items with bills or stock are taken out of use instead, and the screen says which before anything happens. Ticking a family ticks all its variants.',
+      'Out-of-use items are no longer mixed in with the rest: choose Out of use beside the group to see them.',
+      'Importing a file: a box and the loose pieces of the same item are told apart by the unit column, so loose pencils come in next to their boxes instead of being refused. An import never changes the unit an item is counted in.',
+      'A cost in the file is now saved as the item\'s cost, for new and existing items. A price below cost is shown with the cost beside it, and the owner can tick to import it anyway.',
+      'A variant of a family priced as one now gets the family\'s quantity breaks and special rates.',
+      'Tills on 0.7.0 keep syncing with this version while you update them one by one.',
+    ],
+  },
   '0.7.0': {
     title: 'Split a payment, correct a document, and sell one item in several variants',
     points: [
