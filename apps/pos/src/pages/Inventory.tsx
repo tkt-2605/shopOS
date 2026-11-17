@@ -250,8 +250,9 @@ export default function Inventory() {
       {notice && <Alert kind="ok">{notice}</Alert>}
       {canWrite && <DoublePrices onDone={refresh} />}
 
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-        <input className="input" style={{ maxWidth: 320 }} placeholder="Search products"
+      <div className="toolbar">
+        <div className="toolbar-group">
+        <input className="input search" placeholder="Search products"
           value={term} onChange={(e) => setTerm(e.target.value)} id="product-search" />
         <select className="input" style={{ maxWidth: 140 }} value={retiredOnly ? 'retired' : 'live'}
           onChange={(e) => { setRetiredOnly(e.target.value === 'retired'); setChosen(new Set()) }} aria-label="In use or out of use">
@@ -273,10 +274,11 @@ export default function Inventory() {
             <button className="btn sm" onClick={() => void removeGroup()}>Remove group</button>
           </>
         )}
-        <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>{listed.length} items</span>
+        <span className="note">{listed.length === 1 ? '1 item' : `${listed.length} items`}</span>
         {/* Out of the Cost heading, where it made that column the widest in the table. */}
-        <span style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Cost</span><GstSwitch mode={costMode} onChange={setCostMode} />
-        <span style={{ flex: 1 }} />
+        <span className="pair"><span className="note">Cost</span><GstSwitch mode={costMode} onChange={setCostMode} /></span>
+        </div>
+        <div className="toolbar-group end">
         <button className="btn" onClick={() => void checkStock()}>Check stock integrity</button>
         {canDelete && (
           <button className="btn" onClick={() => { setSelecting((on) => !on); setChosen(new Set()) }}>
@@ -285,6 +287,7 @@ export default function Inventory() {
         )}
         {canWrite && <CatalogueFile onDone={refresh} />}
         {canWrite && <button className="btn primary" onClick={() => setAdding(true)}>Add item</button>}
+        </div>
       </div>
 
       {features.batchExpiry && <ExpiringCard />}

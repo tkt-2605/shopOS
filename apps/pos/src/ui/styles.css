@@ -987,3 +987,22 @@ tbody tr:hover { background: var(--accent-soft); }
 .remedies { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding: 8px 10px; background: var(--surface-2, var(--ground)); border: 1px solid var(--rule); }
 .remedy { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
 .remedy .btn { margin-left: auto; }
+
+/* A row of filters and actions above a list. When the window narrows it wraps
+   onto a second line instead of squeezing: squeezed, "21 items" broke over two
+   lines and the GST switch was cut to "Ex". */
+.toolbar, .toolbar-group { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+.toolbar-group > * { flex-shrink: 0; }
+/* The filters take the room there is; the actions move down as one row, kept to the right. */
+/* Measured by its own width, not the window's: the sidebar takes a share. On
+   one line while filters and actions both fit; below that the actions go down
+   as a row of their own, and the filters wrap among themselves only once they
+   alone are wider than the room. */
+.toolbar { container-type: inline-size; }
+.toolbar > .toolbar-group:first-child { flex: 1 1 auto; min-width: 0; }
+@container (max-width: 1500px) { .toolbar > .toolbar-group.end { flex-basis: 100%; } }
+.toolbar > .toolbar-group.end { margin-left: auto; justify-content: flex-end; }
+.toolbar .search { flex: 1 1 200px; min-width: 160px; max-width: 320px; }
+.toolbar .note { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
+.toolbar .pair { display: inline-flex; gap: 6px; align-items: center; }
+.toolbar .segment-sm { margin-top: 0; }
