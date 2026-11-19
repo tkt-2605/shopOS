@@ -69,7 +69,7 @@ export type {
   PlaceOfSupply, RateSummaryRow,
 } from '../domain/receipt.js'
 export { BILL_WORDING, formatRate, rateSummaryOf } from '../domain/receipt.js'
-export { buildInvoiceHtml } from '../domain/invoiceHtml.js'
+export { buildInvoiceHtml, joinSheets } from '../domain/invoiceHtml.js'
 export type { InvoiceHtmlOptions } from '../domain/invoiceHtml.js'
 export {
   createCustomer, updateCustomer, customerByPhone, nextCustomerCode, backfillCustomerCodes,

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  migrate, bootstrap, newId, recordOpeningBalance, createBill, submitBill, Money, Receipt,
+  migrate, bootstrap, newId, recordOpeningBalance, recordPayment, createBill, submitBill, Money, Receipt,
   type SqlDriver, type BootstrapResult,
 } from '@shopos/core'
 /* Around `@shopos/core` for the reason `invoiceFromBill.test.tsx` gives: the
@@ -9,7 +9,7 @@ import {
 import { openMemoryDatabase } from '../../../packages/core/src/db/node-driver'
 import { MIGRATIONS } from '../../../packages/core/src/db/migrations'
 import {
-  printBill, printStatement, listPrinters, defaultPrinter, setReceiptPrinter, type ReceiptPrinter,
+  printBill, printStatement, printBillsDue, NOTHING_DUE, listPrinters, defaultPrinter, setReceiptPrinter, type ReceiptPrinter,
 } from '../src/core/print'
 
 /**
@@ -122,6 +122,61 @@ describe('the roll printer', () => {
     expect(lines.some((l) => l.includes('BALANCE DUE'))).toBe(true)
     // No printer chosen on this machine: Windows' default, which is what null says.
     expect(sent[0]!.printer).toBeNull()
+  })
+
+  it('prints the ticked unpaid bills on one slip, and leaves off one paid since it was ticked', async () => {
+    const customerId = newId()
+    const now = new Date().toISOString()
+    await db.execute(
+      `INSERT INTO customers (id, name, code, credit_enforcement, created_at, updated_at)
+       VALUES (?, 'Meena Stores', 'C-7', 'none', ?, ?)`,
+      [customerId, now, now],
+    )
+    const productId = newId()
+    await db.execute(
+      `INSERT INTO products (id, name, base_rate, tax_rate_bp, created_at, updated_at)
+       VALUES (?, 'Ball Pen Blue', 10000, 0, ?, ?)`,
+      [productId, now, now],
+    )
+    const onCredit = async (): Promise<{ billId: string; docNo: string }> => {
+      const draft = await createBill(db, {
+        registerId: seed.registerId, customerId, lines: [{ productId, qty: 10_000 as never }], actorId: adminId,
+      })
+      if (!draft.ok) throw new Error('draft failed')
+      const done = await submitBill(db, {
+        billId: draft.billId, payments: [{ method: 'credit', amount: draft.grandTotal }], actorId: adminId,
+      })
+      if (!done.ok) throw new Error(`submit failed: ${done.code}`)
+      const [row] = await db.query<{ doc_no: string }>(`SELECT doc_no FROM bills WHERE id = ?`, [draft.billId])
+      return { billId: draft.billId, docNo: row!.doc_no }
+    }
+    const a = await onCredit()
+    const b = await onCredit()
+    const c = await onCredit()
+
+    // Ticked, then settled on the account before the slip is printed.
+    const paid = await recordPayment(db, {
+      customerId, amount: Money.rupees(100), method: 'cash',
+      allocations: [{ billId: a.billId, amount: Money.rupees(100) }],
+      registerId: seed.registerId, actorId: adminId,
+    })
+    expect(paid.ok).toBe(true)
+
+    expect(await printBillsDue(db, customerId, [a.billId, b.billId, c.billId])).toEqual({ ok: true })
+    const lines = Receipt.visibleLines(sent[0]!.text)
+    expect(lines.some((l) => l.includes('BILLS DUE'))).toBe(true)
+    expect(lines.some((l) => l.includes(a.docNo))).toBe(false)
+    expect(lines.some((l) => l.includes(b.docNo))).toBe(true)
+    expect(lines.some((l) => l.includes(c.docNo))).toBe(true)
+    expect(lines.some((l) => l.includes('TOTAL DUE') && l.includes('200.00'))).toBe(true)
+
+    // A slip is not a document: nothing new was written for it.
+    const [count] = await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM payment_entries`)
+    expect(count!.n).toBe(1)
+
+    sent = []
+    expect(await printBillsDue(db, customerId, [a.billId])).toEqual({ ok: false, message: NOTHING_DUE })
+    expect(sent).toEqual([])
   })
 
   it('sends nothing for a customer it cannot find, and says so', async () => {

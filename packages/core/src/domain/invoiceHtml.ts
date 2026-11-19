@@ -546,3 +546,28 @@ function styles(pageSize: string, preview: boolean): string {
 function wordsFor(doc: ReceiptDoc): DocWording {
   return doc.wording ?? BILL_WORDING
 }
+
+/**
+ * Several invoices as one document, each starting on a new page: what the
+ * credit account's "All invoices as one PDF" hands to Edge. Every sheet is a
+ * whole page built by `buildInvoiceHtml` with the same format, so the first
+ * one's head (its styles and its page size) serves them all; only the bodies
+ * are joined. A sheet that is not one is left out rather than guessed at.
+ */
+export function joinSheets(sheets: readonly string[], title: string): string {
+  const bodyOf = (html: string): string | null => {
+    const start = html.indexOf('<body>')
+    const end = html.lastIndexOf('</body>')
+    return start < 0 || end < start ? null : html.slice(start + '<body>'.length, end)
+  }
+  const first = sheets[0]
+  if (first === undefined) return ''
+  const head = first.slice(0, first.indexOf('<body>')).replace(/<title>[\s\S]*?<\/title>/, `<title>${esc(title)}</title>`)
+  const bodies = sheets.map(bodyOf).filter((b): b is string => b !== null)
+  return [
+    head,
+    '<body>',
+    bodies.map((b, i) => (i === 0 ? `<div>${b}</div>` : `<div style="break-before: page">${b}</div>`)).join(''),
+    '</body></html>',
+  ].join('')
+}

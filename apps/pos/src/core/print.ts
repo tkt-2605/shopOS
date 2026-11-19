@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { deviceSetting } from './device'
 import { logoRaster, logoBlockOf } from './logoRaster'
 import {
-  Receipt, loadShopProfile, loadBillDetail, loadBillLoyalty, loadCustomer, customerAccount, businessDate, formatFor,
+  Receipt, loadShopProfile, loadBillDetail, loadBillLoyalty, loadCustomer, customerAccount, customerStatement, businessDate, formatFor,
   loadTaxScheme, billWording, schemeStatement, rateSummaryOf, batchTextFor,
   type SqlDriver, type ReceiptDoc, type ReceiptItem,
 } from '@shopos/core'
@@ -185,6 +185,64 @@ export async function printStatement(
 
   return send(Receipt.buildStatement(doc), printerName())
 }
+
+/**
+ * The chosen unpaid bills on one slip, with one total. A reference only:
+ * nothing is saved and nothing gets a number. See `domain/receipt/billsDue.ts`.
+ *
+ * The open bills are read again here, not taken from the screen, so a bill
+ * settled since it was ticked is left off rather than printed as owed.
+ */
+export async function printBillsDue(
+  db: SqlDriver,
+  customerId: string,
+  billIds: readonly string[],
+): Promise<PrintResult> {
+  const customer = await loadCustomer(db, customerId)
+  if (!customer) return { ok: false, message: 'That customer could not be found.' }
+
+  const due = await loadBillsDue(db, customerId, billIds)
+  if (!due) return { ok: false, message: NOTHING_DUE }
+
+  const shop = await loadShopProfile(db)
+  return send(Receipt.buildBillsDue({
+    shop: { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin },
+    customerName: customer.name,
+    customerCode: customer.code,
+    customerPhone: customer.phone,
+    asAt: businessDate(),
+    bills: due.bills,
+    items: due.items,
+    billsTotal: due.billsTotal,
+    total: due.total,
+    footer: shop.receiptFooter,
+  }), printerName())
+}
+
+/**
+ * The ticked bills that still owe, each read again with its items: what the
+ * one long bill lists. Null when none of them owes anything now. Shared with
+ * the PDF so the paper and the page list the same lines.
+ */
+export interface LoadedBillsDue extends Receipt.BillsDue {
+  items: Receipt.CombinedLine[]
+  billsTotal: Receipt.BillsDue['total']
+}
+
+export async function loadBillsDue(db: SqlDriver, customerId: string, billIds: readonly string[]): Promise<LoadedBillsDue | null> {
+  const due = Receipt.billsDue(await customerStatement(db, customerId), billIds)
+  if (due.bills.length === 0) return null
+  const details = (await Promise.all(due.bills.map((b) => loadBillDetail(db, b.billId))))
+    .filter((d): d is NonNullable<typeof d> => d !== null)
+  return {
+    ...due,
+    items: Receipt.combinedItems(details),
+    billsTotal: details.reduce((s, d) => s + d.grandTotal, 0) as typeof due.total,
+  }
+}
+
+/** Shared with the PDF so both say the same thing. */
+export const NOTHING_DUE = 'None of the chosen bills has anything left to pay.'
 
 /**
  * Blank means "whatever Windows calls the default", which is what `send` expects.

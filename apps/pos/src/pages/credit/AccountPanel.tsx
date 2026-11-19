@@ -10,6 +10,7 @@ import { printStatement } from '../../core/print'
 import { statementPdf } from '../../core/pdf'
 import { useAction } from '../../core/useAction'
 import { StatementView } from './StatementView'
+import { TickedBillsActions } from './TickedBills'
 
 /*
  * One customer's account, with everything that can be done to it in one place:
@@ -62,6 +63,32 @@ export function AccountPanel({
   const busy = action.busy
 
   const due = account.bills.reduce((s, b) => s + b.outstanding, 0)
+
+  /* Bills ticked for a list of bills due. Only ever from `account.bills`,
+     which holds unpaid bills alone, so a paid one cannot be ticked. The list
+     is a reference: ticking takes no payment and does not touch the amount
+     box, which is filled in the ordinary way. */
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
+  /* A bill settled while this is open leaves the list, and its tick with it. */
+  useEffect(() => {
+    setPicked((p) => {
+      const open = new Set(account.bills.map((b) => b.billId))
+      const kept = [...p].filter((id) => open.has(id))
+      return kept.length === p.size ? p : new Set(kept)
+    })
+  }, [account.bills])
+  const pickedRows = account.bills.filter((b) => picked.has(b.billId))
+  const pickedTotal = pickedRows.reduce((s, b) => s + b.outstanding, 0)
+  const allPicked = account.bills.length > 0 && pickedRows.length === account.bills.length
+
+  function pick(billId: string, on: boolean) {
+    setPicked((p) => {
+      const next = new Set(p)
+      if (on) next.add(billId)
+      else next.delete(billId)
+      return next
+    })
+  }
 
   /* Fetched rather than derived from what is already on screen: the statement
      includes cash purchases and returns, which the open-bills list by
@@ -267,6 +294,13 @@ export function AccountPanel({
           <table>
             <thead>
               <tr>
+                <th style={{ width: 28 }}>
+                  <input
+                    type="checkbox" aria-label="Tick every bill"
+                    checked={allPicked} disabled={account.bills.length === 0}
+                    onChange={(e) => setPicked(new Set(e.target.checked ? account.bills.map((b) => b.billId) : []))}
+                  />
+                </th>
                 <th>Bill</th><th>Date</th>
                 <th className="r">On credit</th><th className="r">Paid</th><th className="r">Still due</th><th />
               </tr>
@@ -274,6 +308,13 @@ export function AccountPanel({
             <tbody>
               {account.bills.map((r) => (
                 <tr key={r.billId} style={targetBill === r.billId ? { background: 'var(--accent-soft)' } : undefined}>
+                  <td>
+                    <input
+                      type="checkbox" aria-label={`Tick ${r.docNo}`}
+                      checked={picked.has(r.billId)}
+                      onChange={(e) => pick(r.billId, e.target.checked)}
+                    />
+                  </td>
                   <td className="num">{r.docNo}</td>
                   <td className="num">{r.postingDate}</td>
                   <td className="r"><Rupees value={r.creditTotal} /></td>
@@ -290,10 +331,24 @@ export function AccountPanel({
                 </tr>
               ))}
               {account.bills.length === 0 && (
-                <tr><td colSpan={6}><Empty>Nothing outstanding</Empty></td></tr>
+                <tr><td colSpan={7}><Empty>Nothing outstanding</Empty></td></tr>
               )}
             </tbody>
           </table>
+        )}
+
+        {tab === 'due' && account.bills.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12.5, color: 'var(--ink-3)', flex: 1 }}>
+              {pickedRows.length === 0
+                ? 'Tick bills to print them as one bill: every item on them and one total. Only for reference: no payment is taken, no stock moves and nothing is saved.'
+                : <>
+                    {pickedRows.length} bill{pickedRows.length === 1 ? '' : 's'} ticked,{' '}
+                    <Rupees value={pickedTotal as never} /> due on them
+                  </>}
+            </span>
+            <TickedBillsActions customerId={account.customer.id} picked={[...picked]} onError={setError} onChanged={onChanged} />
+          </div>
         )}
 
         {tab === 'paid' && (
@@ -411,3 +466,4 @@ function describePayment(result: { code: string } & Record<string, unknown>): st
       return 'That could not be recorded.'
   }
 }
+

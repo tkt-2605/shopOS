@@ -236,6 +236,8 @@ pub fn run() {
             report_out::report_health_daily,
             invoice_mail::bill_mail_ready,
             invoice_mail::bill_mail,
+            invoice_mail::bills_pdf,
+            invoice_mail::bills_pdf_cancel,
             portal_out::switches_fetch,
             health::health_send,
             backup::backup_list,

@@ -1,9 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
-  Money, customerAccount, businessDate, loadShopProfile, loadCustomer,
+  Money, Quantity, joinSheets, customerAccount, businessDate, loadShopProfile, loadCustomer,
   type SqlDriver, type CustomerAccount,
 } from '@shopos/core'
 import type { SaveResult } from './exportFile'
+import { NOTHING_DUE, loadBillsDue, type LoadedBillsDue } from './print'
+import { billSheetHtml } from './printHtml'
 
 /**
  * Documents that leave the shop.
@@ -164,4 +166,121 @@ export async function reportPdf(
     ...(input.totals ? { totals: input.totals } : {}),
     footer: 'All amounts in rupees.',
   })
+}
+
+/**
+ * The chosen unpaid bills as a page, for the customer who settles once a
+ * month and wants the list on WhatsApp. A reference only, like the slip:
+ * nothing is saved and nothing gets a number. The open bills are read again
+ * here, so a bill paid since it was ticked does not appear as owed.
+ */
+export async function billsDuePdf(
+  db: SqlDriver,
+  customerId: string,
+  billIds: readonly string[],
+): Promise<SaveResult> {
+  const customer = await loadCustomer(db, customerId)
+  if (!customer) return { ok: false, message: 'That customer could not be found.' }
+
+  const due = await loadBillsDue(db, customerId, billIds)
+  if (!due) return { ok: false, message: NOTHING_DUE }
+
+  const asAt = businessDate()
+  const shop = await loadShopProfile(db)
+
+  const meta: [string, string][] = [
+    ['Customer', customer.name + (customer.code ? ` (${customer.code})` : '')],
+  ]
+  if (customer.phone) meta.push(['Phone', customer.phone])
+  if (customer.address) meta.push(['Address', customer.address])
+  meta.push(['As at', asAt])
+
+  return write(`bills-due-${slug(customer.name)}-${asAt}.pdf`, {
+    title: `${shop.name} — bills due`,
+    subtitle: customer.name,
+    meta,
+    columns: [
+      { label: 'Item', width: 3.2 },
+      { label: 'Qty', width: 1.1, alignRight: true },
+      { label: 'Each', width: 1.1, alignRight: true },
+      { label: 'Amount', width: 1.3, alignRight: true },
+    ],
+    rows: due.items.map((l) => [
+      l.returnedQty > 0 ? `${l.name} (${Quantity.formatQty(l.returnedQty)} returned since)` : l.name,
+      `${Quantity.formatQty(l.qty)} ${l.saleUnit}`,
+      Money.format(l.each),
+      Money.format(l.amount),
+    ]),
+    totals: totalsOf(due),
+    footer: `All amounts in rupees. From ${due.bills.length} bill${due.bills.length === 1 ? '' : 's'}: ${due.bills.map((b) => b.docNo).join(', ')}. A list of bills already given, not a new bill; nothing was sold or taken from stock.`,
+  })
+}
+
+/** The lines under the items, as the slip has them. */
+function totalsOf(due: LoadedBillsDue): [string, string][] {
+  const items = due.items.reduce((s, l) => s + l.amount, 0)
+  const out: [string, string][] = [['Items', Money.format(items as Money.Money)]]
+  const adjust = due.billsTotal - items
+  if (adjust !== 0) out.push(['Discount and round off', Money.format(adjust as Money.Money)])
+  const settled = due.billsTotal - due.total
+  if (settled !== 0) out.push(['Paid and returned', Money.format(-settled as Money.Money)])
+  out.push(['Total due (Rs.)', Money.format(due.total)])
+  return out
+}
+
+/** Where `invoicesPdf` has got to, for the screen that waits on it. */
+export type InvoicesProgress =
+  | { stage: 'pages'; done: number; total: number }
+  | { stage: 'printing'; total: number }
+
+/** Said by the Rust side when Cancel stopped it; not an error to show. */
+const STOPPED = 'Stopped.'
+
+/**
+ * Each ticked bill's own A4 invoice, the one the customer was given, in one
+ * PDF: a page or more per bill, oldest first. A reference only, like the one
+ * long bill: nothing is saved to the books and nothing gets a number.
+ *
+ * The pages are built one bill at a time so the screen can count them and
+ * Cancel is heard between bills; then Edge prints the lot once, which is why
+ * two hundred bills take seconds and not minutes. Cancel during that stops Edge.
+ */
+export async function invoicesPdf(
+  db: SqlDriver,
+  customerId: string,
+  billIds: readonly string[],
+  progress: (p: InvoicesProgress) => void,
+  cancelled: () => boolean,
+): Promise<SaveResult | { ok: false; stopped: true }> {
+  const customer = await loadCustomer(db, customerId)
+  if (!customer) return { ok: false, message: 'That customer could not be found.' }
+  const due = await loadBillsDue(db, customerId, billIds)
+  if (!due) return { ok: false, message: NOTHING_DUE }
+
+  const sheets: string[] = []
+  for (const [i, bill] of due.bills.entries()) {
+    if (cancelled()) return { ok: false, stopped: true }
+    progress({ stage: 'pages', done: i, total: due.bills.length })
+    const sheet = await billSheetHtml(db, bill.billId)
+    if (!sheet.ok) return { ok: false, message: `${bill.docNo}: ${sheet.message}` }
+    sheets.push(sheet.html)
+    // Lets the screen draw the count and a Cancel click land between bills.
+    await new Promise((r) => setTimeout(r, 0))
+  }
+  if (cancelled()) return { ok: false, stopped: true }
+  progress({ stage: 'printing', total: due.bills.length })
+
+  const filename = `invoices-${slug(customer.name)}-${businessDate()}.pdf`
+  try {
+    const path = await invoke<string>('bills_pdf', { filename, html: joinSheets(sheets, `${customer.name}, ${due.bills.length} invoices`) })
+    return { ok: true, path }
+  } catch (err) {
+    if (err === STOPPED) return { ok: false, stopped: true }
+    return { ok: false, message: typeof err === 'string' ? err : 'The PDF could not be made.' }
+  }
+}
+
+/** Stops `invoicesPdf` while Edge is printing; between bills it hears `cancelled`. */
+export async function cancelInvoicesPdf(): Promise<void> {
+  await invoke('bills_pdf_cancel').catch(() => {})
 }

@@ -28,7 +28,7 @@ const RESERVED: [&str; 22] = [
 /// on the screen would not be the name on the disk; that is refused, as are
 /// control characters and the reserved device names. Surrounding spaces are
 /// trimmed, as they always were, and the path handed back is the real one.
-fn safe_name(name: &str, allowed: &[&str]) -> Result<String, String> {
+pub(crate) fn safe_name(name: &str, allowed: &[&str]) -> Result<String, String> {
     let trimmed = name.trim();
     let refuse = || Err(format!("\"{name}\" is not a usable file name"));
 
@@ -74,7 +74,7 @@ pub(crate) fn exports_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn write(app: &tauri::AppHandle, name: &str, bytes: &[u8]) -> Result<String, String> {
+pub(crate) fn write(app: &tauri::AppHandle, name: &str, bytes: &[u8]) -> Result<String, String> {
     write_or_beside(&exports_dir(app)?.join(name), bytes)
 }
 

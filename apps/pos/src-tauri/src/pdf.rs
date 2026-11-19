@@ -92,6 +92,30 @@ const HELVETICA_BOLD_W: [u16; 95] = [
     389, 280, 389, 584,
 ];
 
+/// Room kept on the footer's line for the page number.
+const FOOTER_PAGE_NO: f64 = 70.0;
+
+/// Words into lines no wider than `max`; a word wider than a line is cut to fit.
+fn wrap_words(font: &str, size: f64, s: &str, max: f64) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        let tried = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+        if text_width(font, size, &tried) <= max {
+            line = tried;
+        } else {
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            line = fit(font, size, word, max);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// How wide this string sets, in points.
 fn text_width(font: &str, size: f64, s: &str) -> f64 {
     if font == FONT_MONO {
@@ -320,7 +344,13 @@ pub fn render(doc: &PdfDoc) -> Vec<u8> {
     }
 
     if let Some(footer) = &doc.footer {
-        page.text(FONT_REGULAR, 8.5, MARGIN, BOTTOM - 14.0, footer);
+        // Wrapped, clear of "Page 1 of 1" on the right: one long line ran off
+        // the page and through the page number (the bills-due PDF, 19 Nov).
+        // Down from the usual line, three at most, still inside the paper.
+        let width = PAGE_W - 2.0 * MARGIN - FOOTER_PAGE_NO;
+        for (i, line) in wrap_words(FONT_REGULAR, 8.5, footer, width).iter().take(3).enumerate() {
+            page.text(FONT_REGULAR, 8.5, MARGIN, BOTTOM - 14.0 - i as f64 * 10.5, line);
+        }
     }
 
     pages.push(page);
@@ -422,6 +452,16 @@ fn assemble(pages: &[Page]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_footer_wraps_inside_the_page_and_clear_of_the_page_number() {
+        let text = "All amounts in rupees. From 2 bills: BMR/2627/00015, BMR/2627/00018. A list of bills already given, not a new bill; nothing was sold or taken from stock.";
+        let max = PAGE_W - 2.0 * MARGIN - FOOTER_PAGE_NO;
+        let lines = wrap_words(FONT_REGULAR, 8.5, text, max);
+        assert!(lines.len() >= 2, "{lines:?}");
+        assert!(lines.iter().all(|l| text_width(FONT_REGULAR, 8.5, l) <= max), "{lines:?}");
+        assert_eq!(lines.join(" "), text);
+    }
 
     fn doc(rows: usize) -> PdfDoc {
         PdfDoc {

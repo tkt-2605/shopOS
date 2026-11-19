@@ -41,3 +41,5 @@ export { WIDTH, forThermal, smallColumns, previewLines, visibleLines, signed } f
 export type { PreviewAlign, PreviewLine } from './receipt/escpos.js'
 export { buildStatement } from './receipt/statement.js'
 export type { StatementLine, StatementDoc } from './receipt/statement.js'
+export { billsDue, buildBillsDue, combinedItems } from './receipt/billsDue.js'
+export type { BillDue, BillsDue, BillsDueDoc, CombinedLine, DueItemIn } from './receipt/billsDue.js'
