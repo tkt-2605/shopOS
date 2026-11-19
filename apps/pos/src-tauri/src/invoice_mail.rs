@@ -16,7 +16,6 @@
 /// page the shop sees in the preview, with the fonts this machine has -- Nirmala
 /// UI for Tamil -- embedded. No crate, and nothing to keep up to date.
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -30,32 +29,6 @@ static RENDERING: Mutex<()> = Mutex::new(());
 const RENDER_DEADLINE: Duration = Duration::from_secs(60);
 /// What a bill's PDF can reasonably come to, logo and all.
 const MAX_PDF_BYTES: usize = 10 * 1024 * 1024;
-
-/// Several bills in one PDF (`bills_pdf`): two hundred pages take Edge a while,
-/// and each carries the logo.
-#[cfg_attr(not(windows), allow(dead_code))]
-const MANY_DEADLINE: Duration = Duration::from_secs(10 * 60);
-const MANY_MAX_BYTES: usize = 200 * 1024 * 1024;
-
-/// Set by `bills_pdf_cancel`: the Edge printing now is stopped, and nothing is saved.
-static CANCELLED: AtomicBool = AtomicBool::new(false);
-
-/// How long Edge may take, and how big a PDF is believable.
-#[derive(Clone, Copy)]
-struct Limits {
-    deadline: Duration,
-    max_bytes: usize,
-    /// Only `bills_pdf` listens to Cancel: a press left over must never stop
-    /// the next bill being emailed.
-    cancellable: bool,
-}
-const ONE_BILL: Limits = Limits { deadline: RENDER_DEADLINE, max_bytes: MAX_PDF_BYTES, cancellable: false };
-
-impl Limits {
-    fn cancelled(&self) -> bool {
-        self.cancellable && CANCELLED.load(Ordering::SeqCst)
-    }
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,34 +73,10 @@ pub fn bill_mail(
     if one.len() != 1 {
         return Err("A bill is emailed to one address.".into());
     }
-    let pdf = render_pdf(&app, &html, ONE_BILL)?;
+    let pdf = render_pdf(&app, &html)?;
     let (mail, error) = report_out::queue_invoice(&app, &to, &subject, &body, &attach_name(&doc_no), &pdf)?;
     Ok(BillMailed { mail, error })
 }
-
-/// Several bills' invoices as one PDF, a page or more each, saved beside the
-/// other exports. The webview hands over the pages already joined (one
-/// document, each bill starting a new page); a reference only, so nothing is
-/// written to the books. `bills_pdf_cancel` stops it partway.
-#[tauri::command(async)]
-pub fn bills_pdf(app: tauri::AppHandle, filename: String, html: String) -> Result<String, String> {
-    let name = crate::exports::safe_name(&filename, &["pdf"])?;
-    if edge().is_none() {
-        return Err("Microsoft Edge is not on this PC, and it is what turns a bill into a PDF.".into());
-    }
-    CANCELLED.store(false, Ordering::SeqCst);
-    let pdf = render_pdf(&app, &html, Limits { deadline: MANY_DEADLINE, max_bytes: MANY_MAX_BYTES, cancellable: true })?;
-    crate::exports::write(&app, &name, &pdf)
-}
-
-/// Stops the `bills_pdf` under way, if there is one.
-#[tauri::command]
-pub fn bills_pdf_cancel() {
-    CANCELLED.store(true, Ordering::SeqCst);
-}
-
-/// What a stopped PDF says; the screen knows it and shows no error for it.
-const STOPPED: &str = "Stopped.";
 
 /// `BMR/2627/00012` as a file name a mail client shows: `BMR-2627-00012.pdf`.
 fn attach_name(doc_no: &str) -> String {
@@ -150,13 +99,13 @@ fn edge() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn render_pdf(app: &tauri::AppHandle, html: &str, limits: Limits) -> Result<Vec<u8>, String> {
+fn render_pdf(app: &tauri::AppHandle, html: &str) -> Result<Vec<u8>, String> {
     let _one = RENDERING.lock().unwrap_or_else(|e| e.into_inner());
     let edge = edge().ok_or("Microsoft Edge is not on this PC, and it is what turns a bill into a PDF.")?;
     let data = paths::data_dir(app)?;
     let work = data.join("pdf-work").join(report_out::stamp());
     std::fs::create_dir_all(&work).map_err(|e| format!("Could not create {}: {e}", work.display()))?;
-    let result = render_in(&edge, &data.join("pdf-browser"), &work, html, limits);
+    let result = render_in(&edge, &data.join("pdf-browser"), &work, html);
     // Kept when it failed: the page and Edge's log are what explain it.
     if result.is_ok() {
         let _ = std::fs::remove_dir_all(&work);
@@ -165,13 +114,13 @@ fn render_pdf(app: &tauri::AppHandle, html: &str, limits: Limits) -> Result<Vec<
 }
 
 /// Writes the page, has Edge print it, and reads the PDF back.
-fn render_in(edge: &Path, profile: &Path, work: &Path, html: &str, limits: Limits) -> Result<Vec<u8>, String> {
+fn render_in(edge: &Path, profile: &Path, work: &Path, html: &str) -> Result<Vec<u8>, String> {
     let page = work.join("invoice.html");
     let out = work.join("invoice.pdf");
     files::write_durably(&page, html.as_bytes())?;
     let url = format!("file:///{}", page.to_string_lossy().replace('\\', "/"));
     let log = work.join("edge.log");
-    let ended = run(edge, &log, limits, &[
+    let ended = run(edge, &log, &[
         "--headless=new".into(),
         "--disable-gpu".into(),
         "--no-first-run".into(),
@@ -183,16 +132,13 @@ fn render_in(edge: &Path, profile: &Path, work: &Path, html: &str, limits: Limit
         format!("--print-to-pdf={}", out.display()),
         url,
     ])?;
-    if limits.cancelled() {
-        return Err(STOPPED.into());
-    }
-    let pdf = settled(&out, PDF_WAIT, limits).ok_or_else(|| {
+    let pdf = settled(&out, PDF_WAIT).ok_or_else(|| {
         let said = std::fs::read_to_string(&log).unwrap_or_default();
         let tail: String = said.lines().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
         let tail: String = tail.chars().take(400).collect();
         format!("Edge did not produce the PDF ({ended}){}", if tail.is_empty() { String::new() } else { format!(": {tail}") })
     })?;
-    if !pdf.starts_with(b"%PDF") || pdf.len() > limits.max_bytes {
+    if !pdf.starts_with(b"%PDF") || pdf.len() > MAX_PDF_BYTES {
         return Err("The PDF Edge produced is not usable.".into());
     }
     Ok(pdf)
@@ -209,7 +155,7 @@ const PDF_WAIT: Duration = Duration::from_secs(20);
 /// once. Reading the file then found nothing, and the shop's first two emailed
 /// bills on till 1 failed with "Edge did not produce the PDF" while every test,
 /// which waited on the whole process tree, passed.
-fn settled(path: &Path, wait: Duration, limits: Limits) -> Option<Vec<u8>> {
+fn settled(path: &Path, wait: Duration) -> Option<Vec<u8>> {
     let started = std::time::Instant::now();
     let mut last: Option<u64> = None;
     loop {
@@ -217,7 +163,7 @@ fn settled(path: &Path, wait: Duration, limits: Limits) -> Option<Vec<u8>> {
         if size.is_some() && size == last {
             return std::fs::read(path).ok();
         }
-        if started.elapsed() > wait || limits.cancelled() {
+        if started.elapsed() > wait {
             return None;
         }
         last = size;
@@ -227,7 +173,7 @@ fn settled(path: &Path, wait: Duration, limits: Limits) -> Option<Vec<u8>> {
 
 /// Runs Edge and says how it ended, for an error that has to explain itself.
 #[cfg(windows)]
-fn run(program: &Path, log: &Path, limits: Limits, args: &[String]) -> Result<String, String> {
+fn run(program: &Path, log: &Path, args: &[String]) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     // A file rather than a pipe: a pipe nobody reads fills, and Edge stops.
@@ -244,12 +190,7 @@ fn run(program: &Path, log: &Path, limits: Limits, args: &[String]) -> Result<St
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => return Ok(format!("Edge ended with {status}")),
-            None if limits.cancelled() => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(STOPPED.into());
-            }
-            None if started.elapsed() > limits.deadline => {
+            None if started.elapsed() > RENDER_DEADLINE => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err("Edge took too long to make the PDF.".into());
@@ -260,7 +201,7 @@ fn run(program: &Path, log: &Path, limits: Limits, args: &[String]) -> Result<St
 }
 
 #[cfg(not(windows))]
-fn run(_: &Path, _: &Path, _: Limits, _: &[String]) -> Result<String, String> {
+fn run(_: &Path, _: &Path, _: &[String]) -> Result<String, String> {
     Err("Bills are emailed from a Windows till.".into())
 }
 
@@ -288,9 +229,9 @@ mod tests {
                 std::fs::write(&out, b"%PDF-1.4 late").unwrap();
             })
         };
-        assert_eq!(settled(&out, Duration::from_secs(5), ONE_BILL).as_deref(), Some(&b"%PDF-1.4 late"[..]));
+        assert_eq!(settled(&out, Duration::from_secs(5)).as_deref(), Some(&b"%PDF-1.4 late"[..]));
         writer.join().unwrap();
-        assert!(settled(&dir.join("never.pdf"), Duration::from_millis(600), ONE_BILL).is_none());
+        assert!(settled(&dir.join("never.pdf"), Duration::from_millis(600)).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -305,7 +246,7 @@ mod tests {
         std::fs::create_dir_all(&work).unwrap();
         let html = "<!doctype html><html><head><meta charset='utf-8'></head><body style=\"font-family:'Segoe UI','Nirmala UI'\">\
                     <h1>Tax Invoice BMR/2627/00012</h1><p>Total \u{20b9}1,234.50</p><p>\u{0BA4}\u{0BAE}\u{0BBF}\u{0BB4}\u{0BCD}</p></body></html>";
-        let pdf = render_in(&edge, &root.join("profile"), &work, html, ONE_BILL).unwrap();
+        let pdf = render_in(&edge, &root.join("profile"), &work, html).unwrap();
         let text = String::from_utf8_lossy(&pdf);
         assert!(pdf.starts_with(b"%PDF"));
         assert!(text.contains("NirmalaUI"), "the Tamil font is embedded");

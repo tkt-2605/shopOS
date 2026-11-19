@@ -1,11 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
-  Money, Quantity, joinSheets, customerAccount, businessDate, loadShopProfile, loadCustomer,
+  Money, Quantity, customerAccount, businessDate, loadShopProfile, loadCustomer,
   type SqlDriver, type CustomerAccount,
 } from '@shopos/core'
 import type { SaveResult } from './exportFile'
 import { NOTHING_DUE, loadBillsDue, type LoadedBillsDue } from './print'
-import { billSheetHtml } from './printHtml'
 
 /**
  * Documents that leave the shop.
@@ -226,61 +225,4 @@ function totalsOf(due: LoadedBillsDue): [string, string][] {
   if (settled !== 0) out.push(['Paid and returned', Money.format(-settled as Money.Money)])
   out.push(['Total due (Rs.)', Money.format(due.total)])
   return out
-}
-
-/** Where `invoicesPdf` has got to, for the screen that waits on it. */
-export type InvoicesProgress =
-  | { stage: 'pages'; done: number; total: number }
-  | { stage: 'printing'; total: number }
-
-/** Said by the Rust side when Cancel stopped it; not an error to show. */
-const STOPPED = 'Stopped.'
-
-/**
- * Each ticked bill's own A4 invoice, the one the customer was given, in one
- * PDF: a page or more per bill, oldest first. A reference only, like the one
- * long bill: nothing is saved to the books and nothing gets a number.
- *
- * The pages are built one bill at a time so the screen can count them and
- * Cancel is heard between bills; then Edge prints the lot once, which is why
- * two hundred bills take seconds and not minutes. Cancel during that stops Edge.
- */
-export async function invoicesPdf(
-  db: SqlDriver,
-  customerId: string,
-  billIds: readonly string[],
-  progress: (p: InvoicesProgress) => void,
-  cancelled: () => boolean,
-): Promise<SaveResult | { ok: false; stopped: true }> {
-  const customer = await loadCustomer(db, customerId)
-  if (!customer) return { ok: false, message: 'That customer could not be found.' }
-  const due = await loadBillsDue(db, customerId, billIds)
-  if (!due) return { ok: false, message: NOTHING_DUE }
-
-  const sheets: string[] = []
-  for (const [i, bill] of due.bills.entries()) {
-    if (cancelled()) return { ok: false, stopped: true }
-    progress({ stage: 'pages', done: i, total: due.bills.length })
-    const sheet = await billSheetHtml(db, bill.billId)
-    if (!sheet.ok) return { ok: false, message: `${bill.docNo}: ${sheet.message}` }
-    sheets.push(sheet.html)
-    // Lets the screen draw the count and a Cancel click land between bills.
-    await new Promise((r) => setTimeout(r, 0))
-  }
-  if (cancelled()) return { ok: false, stopped: true }
-  progress({ stage: 'printing', total: due.bills.length })
-
-  const filename = `invoices-${slug(customer.name)}-${businessDate()}.pdf`
-  try {
-    const path = await invoke<string>('bills_pdf', { filename, html: joinSheets(sheets, `${customer.name}, ${due.bills.length} invoices`) })
-    return { ok: true, path }
-  } catch (err) {
-    if (err === STOPPED) return { ok: false, stopped: true }
-    return { ok: false, message: typeof err === 'string' ? err : 'The PDF could not be made.' }
-  }
-}
-
-/** Stops `invoicesPdf` while Edge is printing; between bills it hears `cancelled`. */
-export async function cancelInvoicesPdf(): Promise<void> {
-  await invoke('bills_pdf_cancel').catch(() => {})
 }

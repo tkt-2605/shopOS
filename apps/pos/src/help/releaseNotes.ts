@@ -17,6 +17,15 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  '0.8.1': {
+    title: 'Ticked bills on one long bill, or all their invoices in one print',
+    points: [
+      'Credit, a customer: tick their bills and press Print as one bill. Every item on those bills comes out on one long bill with one total. It is only for reference: no payment is taken, nothing is saved and no stock moves.',
+      'Print all invoices opens the print window on each ticked bill’s own invoice, a bill to a page; choose Save as PDF there to keep a file. A window counts them while they are got ready, and Cancel stops it.',
+      'A long footer on a PDF statement or report now wraps onto the next line instead of running into the page number.',
+      'Tills on 0.8.0 and 0.7.0 keep syncing with this version while you update them one by one.',
+    ],
+  },
   '0.8.0': {
     title: 'Remove several items at once, and imports that understand boxes, loose pieces and costs',
     points: [
